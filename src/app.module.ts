@@ -16,6 +16,7 @@ import { RedisModule } from './redis/redis.module';
 import { HealthModule } from './modules/health/health.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { CameraModule } from './modules/camera/camera.module';
+import { ChildModule } from './modules/child/child.module';
 import { GroupModule } from './modules/group/group.module';
 import { KindergartenModule } from './modules/kindergarten/kindergarten.module';
 import { LocationModule } from './modules/location/location.module';
@@ -69,6 +70,7 @@ import { DomainErrorFilter } from './common/filters/domain-error.filter';
     LocationModule,
     GroupModule,
     CameraModule,
+    ChildModule,
   ],
   providers: [
     // The interceptor establishes a tenant-scoped TypeORM transaction (with
