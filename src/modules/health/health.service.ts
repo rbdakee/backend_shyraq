@@ -1,10 +1,16 @@
 import { Injectable } from '@nestjs/common';
+import { DataSource } from 'typeorm';
+import { RedisService } from '@/redis/redis.service';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
-import { HealthStatusDto } from './dto/health-status.dto';
+import { HealthReadyDto, HealthStatusDto } from './dto/health-status.dto';
 
 @Injectable()
 export class HealthService {
-  constructor(private readonly clock: ClockPort) {}
+  constructor(
+    private readonly clock: ClockPort,
+    private readonly dataSource: DataSource,
+    private readonly redis: RedisService,
+  ) {}
 
   getStatus(): HealthStatusDto {
     return {
@@ -13,5 +19,32 @@ export class HealthService {
       uptime_seconds: process.uptime(),
       timestamp: this.clock.now().toISOString(),
     };
+  }
+
+  async getReadiness(): Promise<HealthReadyDto> {
+    const [db, redis] = await Promise.all([this.checkDb(), this.checkRedis()]);
+
+    return {
+      status: db === 'up' && redis === 'up' ? 'ok' : 'degraded',
+      checks: { db, redis },
+    };
+  }
+
+  private async checkDb(): Promise<'up' | 'down'> {
+    try {
+      await this.dataSource.query('SELECT 1');
+      return 'up';
+    } catch {
+      return 'down';
+    }
+  }
+
+  private async checkRedis(): Promise<'up' | 'down'> {
+    try {
+      const pong = await this.redis.ping();
+      return pong === 'PONG' ? 'up' : 'down';
+    } catch {
+      return 'down';
+    }
   }
 }

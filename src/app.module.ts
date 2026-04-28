@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { existsSync } from 'fs';
 import path from 'path';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
@@ -28,6 +29,13 @@ import { PendingRoleSelectGuard } from './common/guards/pending-role-select.guar
 import { TenantContextInterceptor } from './common/interceptors/tenant-context.interceptor';
 import { DomainErrorFilter } from './common/filters/domain-error.filter';
 
+const resolveI18nPath = (): string => {
+  const compiledPath = path.join(__dirname, 'i18n');
+  return existsSync(compiledPath)
+    ? compiledPath
+    : path.join(process.cwd(), 'src', 'i18n');
+};
+
 @Module({
   imports: [
     ConfigModule.forRoot({
@@ -46,7 +54,7 @@ import { DomainErrorFilter } from './common/filters/domain-error.filter';
         fallbackLanguage: configService.getOrThrow('app.fallbackLanguage', {
           infer: true,
         }),
-        loaderOptions: { path: path.join(__dirname, '/i18n/'), watch: true },
+        loaderOptions: { path: resolveI18nPath(), watch: true },
       }),
       resolvers: [
         {
