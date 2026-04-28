@@ -8,8 +8,14 @@ export const AppDataSource = new DataSource({
   port: process.env.DATABASE_PORT
     ? parseInt(process.env.DATABASE_PORT, 10)
     : 5432,
-  username: process.env.DATABASE_USERNAME,
-  password: process.env.DATABASE_PASSWORD,
+  // Migrations require schema-owner / superuser privileges (RLS DDL, role
+  // creation). The runtime app connection is intentionally a non-superuser
+  // (`shyraq_app`) so RLS policies actually apply. When DATABASE_MIGRATION_*
+  // is set, the CLI uses it; otherwise it falls back to DATABASE_USERNAME.
+  username:
+    process.env.DATABASE_MIGRATION_USERNAME ?? process.env.DATABASE_USERNAME,
+  password:
+    process.env.DATABASE_MIGRATION_PASSWORD ?? process.env.DATABASE_PASSWORD,
   database: process.env.DATABASE_NAME,
   synchronize: process.env.DATABASE_SYNCHRONIZE === 'true',
   dropSchema: false,

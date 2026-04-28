@@ -14,11 +14,19 @@ FRONTEND_DOMAIN=http://localhost:3000
 BACKEND_DOMAIN=http://localhost:3000
 
 # --- PostgreSQL ---
+# DATABASE_USERNAME / PASSWORD must be a non-superuser role (e.g. `shyraq_app`,
+# created by InitExtensions migration). PostgreSQL exempts SUPERUSER (and
+# BYPASSRLS) roles from row-level security regardless of FORCE RLS, so the
+# bootstrap superuser cannot be used as the application connection.
 DATABASE_TYPE=postgres
 DATABASE_HOST=localhost
 DATABASE_PORT=5432
-DATABASE_USERNAME=shyraq
-DATABASE_PASSWORD=shyraq
+DATABASE_USERNAME=shyraq_app
+DATABASE_PASSWORD=shyraq_app
+# Migration CLI uses DATABASE_MIGRATION_* if set (must own the schema —
+# typically the bootstrap superuser). Falls back to DATABASE_USERNAME above.
+DATABASE_MIGRATION_USERNAME=shyraq
+DATABASE_MIGRATION_PASSWORD=shyraq
 DATABASE_NAME=shyraq
 DATABASE_SYNCHRONIZE=false
 DATABASE_MAX_CONNECTIONS=100

@@ -101,6 +101,11 @@ export class AuthAndUsersTables1777593601000 implements MigrationInterface {
     await queryRunner.query(
       `ALTER TABLE "refresh_tokens" ENABLE ROW LEVEL SECURITY`,
     );
+    // FORCE so the table-owning role (used by the app for ALL queries) is
+    // also subject to RLS. Without it the owner bypasses every policy.
+    await queryRunner.query(
+      `ALTER TABLE "refresh_tokens" FORCE ROW LEVEL SECURITY`,
+    );
     await queryRunner.query(`
       CREATE POLICY tenant_isolation ON "refresh_tokens"
         USING (
@@ -118,6 +123,9 @@ export class AuthAndUsersTables1777593601000 implements MigrationInterface {
     // kindergartens.id is the tenant key itself.
     await queryRunner.query(
       `ALTER TABLE "kindergartens" ENABLE ROW LEVEL SECURITY`,
+    );
+    await queryRunner.query(
+      `ALTER TABLE "kindergartens" FORCE ROW LEVEL SECURITY`,
     );
     await queryRunner.query(`
       CREATE POLICY tenant_isolation ON "kindergartens"
@@ -141,7 +149,19 @@ export class AuthAndUsersTables1777593601000 implements MigrationInterface {
       `DROP POLICY IF EXISTS tenant_isolation ON "kindergartens"`,
     );
     await queryRunner.query(
+      `ALTER TABLE IF EXISTS "kindergartens" NO FORCE ROW LEVEL SECURITY`,
+    );
+    await queryRunner.query(
+      `ALTER TABLE IF EXISTS "kindergartens" DISABLE ROW LEVEL SECURITY`,
+    );
+    await queryRunner.query(
       `DROP POLICY IF EXISTS tenant_isolation ON "refresh_tokens"`,
+    );
+    await queryRunner.query(
+      `ALTER TABLE IF EXISTS "refresh_tokens" NO FORCE ROW LEVEL SECURITY`,
+    );
+    await queryRunner.query(
+      `ALTER TABLE IF EXISTS "refresh_tokens" DISABLE ROW LEVEL SECURITY`,
     );
     await queryRunner.query(`DROP TABLE IF EXISTS "saas_refresh_tokens"`);
     await queryRunner.query(`DROP TABLE IF EXISTS "saas_users"`);
