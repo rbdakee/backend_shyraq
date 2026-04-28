@@ -1,0 +1,11 @@
+# Force LF line endings on all text files — matches brocoders prettier config
+# and keeps repo consistent across Windows/macOS/Linux.
+* text=auto eol=lf
+
+# Binary files
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary

@@ -1,0 +1,76 @@
+# ============================================================
+# Shyraq Backend v2 — Environment Variables
+# Copy to .env for local dev. Validated at startup.
+# ============================================================
+
+# --- Runtime ---
+NODE_ENV=development
+APP_PORT=3000
+APP_NAME="Shyraq API"
+API_PREFIX=api
+APP_FALLBACK_LANGUAGE=kk
+APP_HEADER_LANGUAGE=x-custom-lang
+FRONTEND_DOMAIN=http://localhost:3000
+BACKEND_DOMAIN=http://localhost:3000
+
+# --- PostgreSQL ---
+DATABASE_TYPE=postgres
+DATABASE_HOST=localhost
+DATABASE_PORT=5432
+DATABASE_USERNAME=shyraq
+DATABASE_PASSWORD=shyraq
+DATABASE_NAME=shyraq
+DATABASE_SYNCHRONIZE=false
+DATABASE_MAX_CONNECTIONS=100
+DATABASE_SSL_ENABLED=false
+DATABASE_REJECT_UNAUTHORIZED=false
+DATABASE_CA=
+DATABASE_KEY=
+DATABASE_CERT=
+DATABASE_URL=
+
+# --- Redis ---
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_PASSWORD=
+
+# --- JWT / Refresh tokens (B1 v2) ---
+# Access tokens — JWT HS256. Refresh tokens — opaque random hex (32B), SHA-256 hashed.
+# No refresh-JWT secret.
+AUTH_JWT_SECRET=replace-me-with-strong-random-access-secret
+AUTH_JWT_TOKEN_EXPIRES_IN=15m
+REFRESH_TOKEN_TTL_DAYS=30
+
+# --- Password hashing ---
+# bcrypt cost: 12 in prod/dev (~250ms), 4 in test (~5ms).
+BCRYPT_COST=12
+
+# --- SuperAdmin seed user ---
+# Used by seed scripts to upsert bootstrap super_admin row.
+# CHANGE BEFORE FIRST PRODUCTION DEPLOY.
+SUPER_ADMIN_SEED_EMAIL=admin@shyraq.local
+SUPER_ADMIN_SEED_PASSWORD=admin123
+
+# --- OTP test backdoor ---
+# CSV of phone numbers that bypass real SMS send and accept OTP_TEST_CODE.
+# Leave empty in production. Active when non-empty.
+OTP_TEST_PHONES=
+OTP_TEST_CODE=000000
+
+# --- Rate limiting ---
+RATE_LIMIT_OTP_REQUEST_LIMIT=5
+RATE_LIMIT_OTP_REQUEST_WINDOW_SEC=3600
+RATE_LIMIT_SUPER_ADMIN_LOGIN_LIMIT=10
+RATE_LIMIT_SUPER_ADMIN_LOGIN_WINDOW_SEC=3600
+
+# --- Providers (all default to mock until real credentials added) ---
+SMS_PROVIDER=mock
+PAYMENT_PROVIDER=mock
+OFD_PROVIDER=mock
+FACE_PROVIDER=mock
+
+# --- Multi-tenancy (RLS) ---
+# DB role used by app — must NOT have BYPASSRLS. SuperAdmin queries use a separate role.
+# DATABASE_USERNAME above is the regular tenant-scoped role.
+DATABASE_SUPERADMIN_USERNAME=shyraq_superadmin
+DATABASE_SUPERADMIN_PASSWORD=shyraq_superadmin
