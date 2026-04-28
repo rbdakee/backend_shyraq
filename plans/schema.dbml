@@ -1,0 +1,1345 @@
+// Shyraq — Database Schema
+// dbdiagram.io
+
+// ─────────────────────────────────────────
+// ENUMS
+// ─────────────────────────────────────────
+
+Enum staff_role {
+  admin
+  mentor
+  specialist
+  reception
+}
+
+Enum child_status {
+  card_created
+  active
+  archived
+}
+
+Enum guardian_role {
+  primary
+  secondary
+  nanny
+}
+
+Enum guardian_status {
+  pending_approval
+  approved
+  rejected
+  revoked
+}
+
+Enum enrollment_status {
+  new
+  in_processing
+  waitlist
+  card_created
+  cancelled
+  archive
+}
+
+Enum attendance_event_type {
+  check_in
+  check_out
+}
+
+Enum attendance_method {
+  face_id
+  manual
+  otp_pickup
+}
+
+Enum child_intraday_status {
+  present
+  absent
+  sick
+  late
+  early_pickup
+  on_vacation
+}
+
+Enum timeline_entry_type {
+  check_in
+  check_out
+  activity
+  meal
+  nap
+  note
+  photo
+  mood
+  medication
+}
+
+Enum payment_status {
+  pending
+  partial
+  paid
+  overdue
+  refunded
+  cancelled
+}
+
+Enum payment_type {
+  monthly
+  prepayment_3m
+  prepayment_6m
+  prepayment_12m
+  prepayment_24m
+  additional_service
+  late_pickup_fee
+  other
+}
+
+Enum parent_request_type {
+  trusted_person
+  day_off
+  late_pickup
+  vacation
+  open_request
+}
+
+Enum parent_request_status {
+  pending
+  accepted
+  rejected
+  cancelled
+}
+
+Enum content_type {
+  news
+  menu
+  schedule_pub
+  qundylyq
+  birthday
+}
+
+Enum content_target_type {
+  all
+  group
+  child
+}
+
+Enum content_status {
+  draft
+  scheduled
+  published
+}
+
+Enum tariff_type {
+  monthly_base
+  additional_service
+  late_pickup
+  meal_upgrade
+}
+
+Enum fiscal_receipt_status {
+  pending
+  issued
+  failed
+  cancelled
+}
+
+Enum refund_status {
+  pending
+  processed
+  failed
+}
+
+Enum face_subject_type {
+  child
+  guardian
+  staff
+}
+
+Enum face_event_type {
+  child_checkin
+  child_checkout
+  guardian_pickup
+  unknown
+}
+
+Enum face_event_status {
+  matched
+  unmatched
+  manual_override
+  rejected_low_confidence
+  rejected_spoof
+}
+
+Enum liveness_method {
+  none
+  passive
+  active_blink
+}
+
+Enum custom_discount_status {
+  draft
+  active
+  paused
+  expired
+  cancelled
+}
+
+Enum custom_discount_type {
+  percentage
+  fixed_amount
+}
+
+Enum qr_purpose {
+  identity
+}
+
+Enum meal_type {
+  breakfast
+  snack_am
+  lunch
+  snack_pm
+  dinner
+}
+
+Enum saas_user_role {
+  super_admin
+  support
+}
+
+Enum subscription_status {
+  active
+  trial
+  suspended
+  cancelled
+}
+
+// ─────────────────────────────────────────
+// CORE / TENANCY
+// ─────────────────────────────────────────
+
+Table kindergartens {
+  id              uuid      [pk, default: `gen_random_uuid()`]
+  name            varchar   [not null]
+  slug            varchar   [unique, not null]
+  address         text
+  phone           varchar
+  settings        jsonb     [not null, default: `{}`]
+  // timezone, currency, late_pickup_fee_amount,
+  // otp_expiry_seconds, prepay_3m/6m/12m_discount, payment_grace_days
+  plan            varchar   [not null, default: 'standard']
+  is_active       boolean   [not null, default: true]
+  created_at      timestamptz [not null, default: `now()`]
+  updated_at      timestamptz [not null, default: `now()`]
+}
+
+Table users {
+  id            uuid        [pk, default: `gen_random_uuid()`]
+  phone         varchar(20) [unique, not null]
+  full_name     varchar     [not null]
+  avatar_url    text
+  iin           char(12)    [unique]
+  date_of_birth date
+  locale        varchar(5)  [not null, default: 'ru'] // 'ru' | 'kk'
+  is_active     boolean     [not null, default: true]
+  last_login_at timestamptz
+  created_at    timestamptz [not null, default: `now()`]
+  updated_at    timestamptz [not null, default: `now()`]
+
+  indexes {
+    phone
+    iin
+  }
+}
+
+Table refresh_tokens {
+  id              uuid        [pk, default: `gen_random_uuid()`]
+  user_id         uuid        [not null, ref: > users.id]
+  kindergarten_id uuid        [ref: > kindergartens.id]
+  token_hash      varchar     [unique, not null]
+  device_id       varchar
+  ip_address      varchar
+  expires_at      timestamptz [not null]
+  revoked_at      timestamptz
+  created_at      timestamptz [not null, default: `now()`]
+}
+
+// ─────────────────────────────────────────
+// STAFF
+// ─────────────────────────────────────────
+
+Table staff_members {
+  id              uuid       [pk, default: `gen_random_uuid()`]
+  kindergarten_id uuid       [not null, ref: > kindergartens.id]
+  user_id         uuid       [not null, ref: > users.id]
+  role            staff_role [not null]
+  specialist_type varchar    // 'psychologist', 'speech_therapist', etc.
+  is_active       boolean    [not null, default: true]
+  hired_at        date
+  fired_at        date
+  created_at      timestamptz [not null, default: `now()`]
+  updated_at      timestamptz [not null, default: `now()`]
+
+  indexes {
+    (kindergarten_id, user_id) [unique]
+    (kindergarten_id, role)
+  }
+}
+
+// ─────────────────────────────────────────
+// GROUPS & LOCATIONS
+// ─────────────────────────────────────────
+
+Table locations {
+  id              uuid [pk, default: `gen_random_uuid()`]
+  kindergarten_id uuid [not null, ref: > kindergartens.id]
+  name            varchar [not null]
+  description     text
+  created_at      timestamptz [not null, default: `now()`]
+}
+
+Table groups {
+  id                  uuid    [pk, default: `gen_random_uuid()`]
+  kindergarten_id     uuid    [not null, ref: > kindergartens.id]
+  name                varchar [not null]
+  capacity            int     [not null, default: 20]
+  age_range_min       int     // месяцы
+  age_range_max       int
+  current_location_id uuid    [ref: > locations.id]
+  is_active           boolean [not null, default: true]
+  created_at          timestamptz [not null, default: `now()`]
+  updated_at          timestamptz [not null, default: `now()`]
+}
+
+Table group_mentors {
+  id              uuid [pk, default: `gen_random_uuid()`]
+  group_id        uuid [not null, ref: > groups.id]
+  staff_member_id uuid [not null, ref: > staff_members.id]
+  assigned_at     timestamptz [not null, default: `now()`]
+  unassigned_at   timestamptz
+  is_primary      boolean [not null, default: false]
+
+  // Инварианты (см. SQL-patches внизу файла):
+  //  1. Один mentor = ровно одна активная группа
+  //     idx_group_mentors_one_active: UNIQUE(staff_member_id) WHERE unassigned_at IS NULL
+  //  2. У группы может быть несколько менторов, но РОВНО ОДИН primary
+  //     idx_group_mentors_one_primary_per_group:
+  //       UNIQUE(group_id) WHERE is_primary = TRUE AND unassigned_at IS NULL
+  //  3. Первый назначаемый mentor группы автоматически is_primary=true (логика сервиса)
+}
+
+// ─────────────────────────────────────────
+// CHILDREN
+// ─────────────────────────────────────────
+
+Table children {
+  id               uuid         [pk, default: `gen_random_uuid()`]
+  kindergarten_id  uuid         [not null, ref: > kindergartens.id]
+  iin              char(12)     // nullable: карточка может быть создана до получения ИИН
+  full_name        varchar      [not null]
+  date_of_birth    date         [not null]
+  gender           char(1)
+  photo_url        text
+  status           child_status [not null, default: 'card_created']
+  current_group_id uuid         [ref: > groups.id]
+  enrollment_date  date
+  archived_at      timestamptz
+  archive_reason   text
+  medical_notes    text
+  allergy_notes    text
+  created_at       timestamptz  [not null, default: `now()`]
+  updated_at       timestamptz  [not null, default: `now()`]
+
+  indexes {
+    (kindergarten_id, iin) [unique, name: 'idx_children_iin_kindergarten'] // partial: WHERE iin IS NOT NULL
+    (kindergarten_id, status)
+  }
+}
+
+Table child_group_history {
+  id              uuid [pk, default: `gen_random_uuid()`]
+  child_id        uuid [not null, ref: > children.id]
+  kindergarten_id uuid [not null, ref: > kindergartens.id]
+  from_group_id   uuid [ref: > groups.id]
+  to_group_id     uuid [ref: > groups.id]
+  transferred_at  timestamptz [not null, default: `now()`]
+  transferred_by  uuid [not null, ref: > staff_members.id]
+  reason          text
+}
+
+Table child_guardians {
+  id                  uuid             [pk, default: `gen_random_uuid()`]
+  kindergarten_id     uuid             [not null, ref: > kindergartens.id]
+  child_id            uuid             [not null, ref: > children.id]
+  user_id             uuid             [not null, ref: > users.id]
+  role                guardian_role    [not null]
+  status              guardian_status  [not null, default: 'pending_approval']
+  has_approval_rights boolean          [not null, default: false]
+  // max 2 users with has_approval_rights = true per child
+  approved_by         uuid             [ref: > users.id]
+  approved_at         timestamptz
+  revoked_by          uuid             [ref: > users.id]
+  revoked_at          timestamptz
+  can_pickup          boolean          [not null, default: true]
+  permissions         jsonb            [not null, default: `'{}'`]
+  // Per-guardian permissions overrides (primary управляет для secondary/nanny).
+  // Полный whitelist ключей JSONB (все boolean) — см. endpoints.md §4.13 Guardian Permissions Matrix:
+  //   toggleable:  view_timeline, view_payments, pay_invoices, view_diagnostics,
+  //                view_content, view_cctv, receive_push_non_pickup, create_requests
+  //   locked:      prepayment, trusted_people_manage
+  // Отсутствующий ключ = default по role.
+  // can_pickup и has_approval_rights — отдельные колонки этой таблицы, не часть JSONB.
+  // approvals (alias has_approval_rights) — locked, меняется только через §4.2 PATCH .../rights.
+  permissions_updated_by uuid          [ref: > users.id]
+  permissions_updated_at timestamptz
+  created_at          timestamptz      [not null, default: `now()`]
+  updated_at          timestamptz      [not null, default: `now()`]
+}
+
+// ─────────────────────────────────────────
+// ENROLLMENT (LEADS)
+// ─────────────────────────────────────────
+
+Table enrollments {
+  id                uuid              [pk, default: `gen_random_uuid()`]
+  kindergarten_id   uuid              [not null, ref: > kindergartens.id]
+  child_id          uuid              [ref: > children.id]
+  contact_name      varchar           [not null]
+  contact_phone     varchar           [not null]
+  child_name        varchar
+  child_dob         date
+  child_iin         char(12)
+  status            enrollment_status [not null, default: 'new']
+  source            varchar
+  notes             text
+  assigned_to       uuid              [ref: > staff_members.id]
+  status_changed_at timestamptz       [not null, default: `now()`]
+  created_at        timestamptz       [not null, default: `now()`]
+  updated_at        timestamptz       [not null, default: `now()`]
+
+  indexes {
+    (kindergarten_id, status)
+  }
+}
+
+Table enrollment_status_log {
+  id              uuid              [pk, default: `gen_random_uuid()`]
+  enrollment_id   uuid              [not null, ref: > enrollments.id]
+  kindergarten_id uuid              [not null, ref: > kindergartens.id]
+  from_status     enrollment_status
+  to_status       enrollment_status [not null]
+  changed_by      uuid              [not null, ref: > staff_members.id]
+  comment         text
+  created_at      timestamptz       [not null, default: `now()`]
+}
+
+// ─────────────────────────────────────────
+// ATTENDANCE & TIMELINE
+// ─────────────────────────────────────────
+
+Table attendance_events {
+  id                uuid                  [pk, default: `gen_random_uuid()`]
+  kindergarten_id   uuid                  [not null, ref: > kindergartens.id]
+  child_id          uuid                  [not null, ref: > children.id]
+  event_type        attendance_event_type [not null]
+  method            attendance_method     [not null]
+  recorded_by       uuid                  [ref: > staff_members.id]
+  pickup_user_id    uuid                  [ref: > users.id]
+  pickup_request_id uuid                  // ref: > pickup_requests.id
+  notes             text
+  recorded_at       timestamptz           [not null, default: `now()`]
+  created_at        timestamptz           [not null, default: `now()`]
+
+  indexes {
+    (kindergarten_id, recorded_at)
+    (child_id, recorded_at)
+  }
+}
+
+Table child_daily_status {
+  id              uuid                  [pk, default: `gen_random_uuid()`]
+  kindergarten_id uuid                  [not null, ref: > kindergartens.id]
+  child_id        uuid                  [not null, ref: > children.id]
+  date            date                  [not null]
+  status          child_intraday_status [not null, default: 'absent']
+  note            text
+  set_by          uuid                  [ref: > staff_members.id]
+  updated_at      timestamptz           [not null, default: `now()`]
+
+  indexes {
+    (child_id, date) [unique]
+    (kindergarten_id, date)
+  }
+}
+
+Table timeline_entries {
+  id              uuid               [pk, default: `gen_random_uuid()`]
+  kindergarten_id uuid               [not null, ref: > kindergartens.id]
+  child_id        uuid               [not null, ref: > children.id]
+  entry_type      timeline_entry_type [not null]
+  title           varchar
+  body            text
+  media_urls      text[]
+  metadata        jsonb
+  recorded_by     uuid               [ref: > staff_members.id]
+  entry_time      timestamptz        [not null, default: `now()`]
+  created_at      timestamptz        [not null, default: `now()`]
+
+  indexes {
+    (child_id, entry_time)
+  }
+}
+
+// ─────────────────────────────────────────
+// SCHEDULE
+// ─────────────────────────────────────────
+
+Table schedule_templates {
+  id              uuid    [pk, default: `gen_random_uuid()`]
+  kindergarten_id uuid    [not null, ref: > kindergartens.id]
+  group_id        uuid    [ref: > groups.id]
+  name            varchar [not null]
+  recurrence      varchar [not null, default: 'weekly']
+  is_active       boolean [not null, default: true]
+  valid_from      date    [not null]
+  valid_until     date
+  created_at      timestamptz [not null, default: `now()`]
+}
+
+Table schedule_template_slots {
+  id            uuid    [pk, default: `gen_random_uuid()`]
+  template_id   uuid    [not null, ref: > schedule_templates.id]
+  day_of_week   varchar [not null] // 'mon','tue','wed','thu','fri','sat','sun'
+  start_time    time    [not null]
+  end_time      time    [not null]
+  activity_name varchar [not null]
+  location_id   uuid    [ref: > locations.id]
+  description   text
+}
+
+Table activity_events {
+  id               uuid    [pk, default: `gen_random_uuid()`]
+  kindergarten_id  uuid    [not null, ref: > kindergartens.id]
+  group_id         uuid    [not null, ref: > groups.id]
+  template_slot_id uuid    [ref: > schedule_template_slots.id]
+  activity_name    varchar [not null]
+  location_id      uuid    [ref: > locations.id]
+  starts_at        timestamptz [not null]
+  ends_at          timestamptz
+  status           varchar [not null, default: 'scheduled']
+  // 'scheduled', 'in_progress', 'completed', 'cancelled'
+  created_by       uuid    [ref: > staff_members.id]
+  notes            text
+  created_at       timestamptz [not null, default: `now()`]
+
+  indexes {
+    (group_id, starts_at)
+  }
+}
+
+// ─────────────────────────────────────────
+// CCTV
+// ─────────────────────────────────────────
+
+Table cameras {
+  id              uuid    [pk, default: `gen_random_uuid()`]
+  kindergarten_id uuid    [not null, ref: > kindergartens.id]
+  location_id     uuid    [not null, ref: > locations.id]
+  name            varchar [not null]
+  stream_url      text    [not null] // rtsp://mediamtx:8554/cam-{id}
+  is_active       boolean [not null, default: true]
+  created_at      timestamptz [not null, default: `now()`]
+
+  indexes {
+    location_id
+  }
+}
+
+// ─────────────────────────────────────────
+// PAYMENTS
+// ─────────────────────────────────────────
+
+Table payment_accounts {
+  id              uuid         [pk, default: `gen_random_uuid()`]
+  kindergarten_id uuid         [not null, ref: > kindergartens.id]
+  child_id        uuid         [not null, ref: > children.id]
+  balance         decimal(12,2) [not null, default: 0]
+  // positive = кредит, negative = задолженность
+  created_at      timestamptz  [not null, default: `now()`]
+  updated_at      timestamptz  [not null, default: `now()`]
+
+  indexes {
+    (kindergarten_id, child_id) [unique]
+  }
+}
+
+Table invoices {
+  id                    uuid           [pk, default: `gen_random_uuid()`]
+  kindergarten_id       uuid           [not null, ref: > kindergartens.id]
+  child_id              uuid           [not null, ref: > children.id]
+  payment_account_id    uuid           [not null, ref: > payment_accounts.id]
+  tariff_plan_id        uuid           [ref: > tariff_plans.id] // откуда сгенерирован
+  invoice_type          payment_type   [not null]
+  period_start          date
+  period_end            date
+  amount_due            decimal(12,2)  [not null]
+  discount_pct          decimal(5,2)   [not null, default: 0]
+  discount_reason       varchar
+  amount_after_discount decimal(12,2)  [not null]
+  status                payment_status [not null, default: 'pending']
+  due_date              date           [not null]
+  description           text
+  prorated_for_days     int            // null если полный период
+  created_at            timestamptz    [not null, default: `now()`]
+  updated_at            timestamptz    [not null, default: `now()`]
+
+  indexes {
+    child_id
+    (kindergarten_id, due_date)
+    (kindergarten_id, status)
+  }
+}
+
+Table payments {
+  id               uuid         [pk, default: `gen_random_uuid()`]
+  kindergarten_id  uuid         [not null, ref: > kindergartens.id]
+  invoice_id       uuid         [not null, ref: > invoices.id]
+  child_id         uuid         [not null, ref: > children.id]
+  payer_user_id    uuid         [ref: > users.id]
+  amount           decimal(12,2) [not null]
+  provider         varchar      [not null]
+  // 'halyk_epay'  — Halyk Bank ePay
+  // 'kaspi_pay'   — Kaspi Pay API (Kaspi.kz)
+  // 'tiptoppay'   — TipTopPay (любые карты)
+  // 'freedom_pay' — Freedom Pay (любые карты)
+  // 'cash'        — наличные (offline подтверждение)
+  provider_txn_id  varchar
+  idempotency_key  varchar      [unique, not null]
+  status           varchar      [not null, default: 'initiated']
+  // 'initiated', 'processing', 'completed', 'failed', 'refunded'
+  provider_payload jsonb
+  paid_at          timestamptz
+  refund_id        uuid         [ref: > refunds.id] // если был возврат
+  created_at       timestamptz  [not null, default: `now()`]
+  updated_at       timestamptz  [not null, default: `now()`]
+
+  indexes {
+    (provider, provider_txn_id)
+  }
+}
+
+// ─────────────────────────────────────────
+// PARENT REQUESTS
+// ─────────────────────────────────────────
+
+Table parent_requests {
+  id                  uuid                  [pk, default: `gen_random_uuid()`]
+  kindergarten_id     uuid                  [not null, ref: > kindergartens.id]
+  child_id            uuid                  [not null, ref: > children.id]
+  requester_user_id   uuid                  [not null, ref: > users.id]
+  request_type        parent_request_type   [not null]
+  status              parent_request_status [not null, default: 'pending']
+  date_from           date
+  date_to             date
+  details             jsonb                 [not null, default: `{}`]
+  // trusted_person: { trusted_person_id }  (теперь ссылка на trusted_people)
+  // late_pickup:    { expected_time, fee_accepted }
+  // open_request:   { subject, message }
+  recipient_type      varchar               // 'admin' | 'mentor' | 'specialist' (для open_request)
+  recipient_staff_id  uuid                  [ref: > staff_members.id]
+  reviewed_by         uuid                  [ref: > staff_members.id]
+  reviewed_at         timestamptz
+  review_note         text
+  invoice_id          uuid                  [ref: > invoices.id]
+  created_at          timestamptz           [not null, default: `now()`]
+  updated_at          timestamptz           [not null, default: `now()`]
+
+  indexes {
+    (kindergarten_id, status)
+    child_id
+  }
+}
+
+Table pickup_requests {
+  id                   uuid        [pk, default: `gen_random_uuid()`]
+  kindergarten_id      uuid        [not null, ref: > kindergartens.id]
+  child_id             uuid        [not null, ref: > children.id]
+  requested_by_user_id uuid        [not null, ref: > users.id]
+  trusted_person_id    uuid        [ref: > trusted_people.id] // новая ссылка
+  trusted_person_phone varchar(20) [not null] // snapshot-копия (denormalization)
+  trusted_person_name  varchar     [not null] // snapshot-копия
+  trusted_person_iin   char(12)
+  otp_ref              varchar     [not null] // Redis key
+  status               varchar     [not null, default: 'otp_sent']
+  // 'otp_sent', 'validated', 'expired', 'cancelled'
+  validated_by         uuid        [ref: > staff_members.id]
+  validated_at         timestamptz
+  attendance_event_id  uuid        [ref: > attendance_events.id]
+  parent_request_id    uuid        [ref: > parent_requests.id]
+  expires_at           timestamptz [not null]
+  created_at           timestamptz [not null, default: `now()`]
+}
+
+// ─────────────────────────────────────────
+// DIAGNOSTICS & PROGRESS
+// ─────────────────────────────────────────
+
+Table diagnostic_templates {
+  id              uuid    [pk, default: `gen_random_uuid()`]
+  kindergarten_id uuid    [not null, ref: > kindergartens.id]
+  specialist_type varchar [not null]
+  name            varchar [not null]
+  description     text
+  version         int     [not null, default: 1]
+  is_active       boolean [not null, default: true]
+  schema          jsonb   [not null]
+  // { sections: [{ title, fields: [{ key, label, type, required, options, min, max }] }] }
+  // type: text | number | boolean | select | multiselect | date | scale
+  created_by      uuid    [not null, ref: > staff_members.id]
+  created_at      timestamptz [not null, default: `now()`]
+  updated_at      timestamptz [not null, default: `now()`]
+
+  indexes {
+    (kindergarten_id, specialist_type)
+  }
+}
+
+Table diagnostic_entries {
+  id              uuid [pk, default: `gen_random_uuid()`]
+  kindergarten_id uuid [not null, ref: > kindergartens.id]
+  child_id        uuid [not null, ref: > children.id]
+  template_id     uuid [not null, ref: > diagnostic_templates.id]
+  specialist_id   uuid [not null, ref: > staff_members.id]
+  assessment_date date [not null]
+  data            jsonb [not null] // ответы по ключам из template.schema
+  summary         text
+  recommendations text
+  attachments     text[]
+  created_at      timestamptz [not null, default: `now()`]
+  updated_at      timestamptz [not null, default: `now()`]
+
+  indexes {
+    (child_id, assessment_date)
+    (kindergarten_id, assessment_date)
+  }
+}
+
+Table progress_notes {
+  id              uuid [pk, default: `gen_random_uuid()`]
+  kindergarten_id uuid [not null, ref: > kindergartens.id]
+  child_id        uuid [not null, ref: > children.id]
+  mentor_id       uuid [not null, ref: > staff_members.id]
+  body            text [not null]
+  media_urls      text[]
+  noted_at        timestamptz [not null, default: `now()`]
+  created_at      timestamptz [not null, default: `now()`]
+
+  indexes {
+    (child_id, noted_at)
+  }
+}
+
+// ─────────────────────────────────────────
+// CONTENT
+// ─────────────────────────────────────────
+
+Table content_posts {
+  id              uuid               [pk, default: `gen_random_uuid()`]
+  kindergarten_id uuid               [not null, ref: > kindergartens.id]
+  content_type    content_type       [not null]
+  target_type     content_target_type [not null, default: 'all']
+  target_group_id uuid               [ref: > groups.id]
+  target_child_id uuid               [ref: > children.id]
+  title           varchar            // legacy, fallback
+  body            text               // legacy, fallback
+  title_i18n      jsonb              // {ru: "...", kz: "..."}
+  body_i18n       jsonb              // {ru: "...", kz: "..."}
+  media_urls      text[]
+  metadata        jsonb
+  // qundylyq:  { month, theme }
+  // birthday:  { child_id, age }
+  scheduled_for   timestamptz        // отложенная публикация
+  published_at    timestamptz
+  expires_at      timestamptz
+  status          varchar            [not null, default: 'draft']
+  // 'draft', 'scheduled', 'published'
+  created_by      uuid               [ref: > staff_members.id]
+  created_at      timestamptz        [not null, default: `now()`]
+  updated_at      timestamptz        [not null, default: `now()`]
+
+  indexes {
+    (kindergarten_id, published_at)
+  }
+}
+
+Table group_stories {
+  id              uuid    [pk, default: `gen_random_uuid()`]
+  kindergarten_id uuid    [not null, ref: > kindergartens.id]
+  group_id        uuid    [not null, ref: > groups.id]
+  created_by      uuid    [not null, ref: > staff_members.id]
+  media_url       text    [not null]
+  media_type      varchar [not null] // 'image' | 'video'
+  caption         text
+  views           int     [not null, default: 0]
+  expires_at      timestamptz [not null] // created_at + 24h
+  created_at      timestamptz [not null, default: `now()`]
+
+  indexes {
+    expires_at
+    (group_id, expires_at)
+  }
+}
+
+// ─────────────────────────────────────────
+// NOTIFICATIONS
+// ─────────────────────────────────────────
+
+Table push_tokens {
+  id           uuid    [pk, default: `gen_random_uuid()`]
+  user_id      uuid    [not null, ref: > users.id]
+  token        text    [not null]
+  platform     varchar [not null] // 'ios' | 'android'
+  app_version  varchar
+  is_active    boolean [not null, default: true]
+  last_used_at timestamptz
+  created_at   timestamptz [not null, default: `now()`]
+
+  indexes {
+    (user_id, token) [unique]
+  }
+}
+
+Table notifications {
+  id                uuid    [pk, default: `gen_random_uuid()`]
+  kindergarten_id   uuid    [ref: > kindergartens.id]
+  recipient_user_id uuid    [not null, ref: > users.id]
+  channel           varchar [not null] // 'push', 'websocket', 'in_app'
+  event_key         varchar [not null] // см. "Notification event catalog" в architecture.md §5.14
+  title             varchar           // legacy / fallback
+  body              text              // legacy / fallback
+  title_i18n        jsonb             // {ru, kz}
+  body_i18n         jsonb             // {ru, kz}
+  data              jsonb
+  status            varchar [not null, default: 'queued']
+  // 'queued', 'sent', 'delivered', 'failed'
+  sent_at           timestamptz
+  read_at           timestamptz
+  failed_reason     text
+  created_at        timestamptz [not null, default: `now()`]
+
+  indexes {
+    (recipient_user_id, created_at)
+    (recipient_user_id, event_key)
+  }
+}
+
+Table notification_preferences {
+  id            uuid    [pk, default: `gen_random_uuid()`]
+  user_id       uuid    [not null, ref: > users.id]
+  event_key     varchar [not null]
+  push_enabled  boolean [not null, default: true]
+  ws_enabled    boolean [not null, default: true]
+  created_at    timestamptz [not null, default: `now()`]
+  updated_at    timestamptz [not null, default: `now()`]
+
+  indexes {
+    (user_id, event_key) [unique]
+  }
+}
+
+// ─────────────────────────────────────────
+// BILLING — TARIFFS, HOLIDAYS, REFUNDS, LINE ITEMS
+// ─────────────────────────────────────────
+
+Table tariff_plans {
+  id              uuid [pk, default: `gen_random_uuid()`]
+  kindergarten_id uuid [not null, ref: > kindergartens.id]
+  name            varchar [not null]
+  description     jsonb // {ru: "...", kz: "..."}
+  tariff_type     tariff_type [not null]
+  amount          decimal(12,2) [not null]
+  currency        varchar(3) [not null, default: 'KZT']
+  applies_to      varchar [not null, default: 'child']
+  // 'child', 'group', 'age_range'
+  group_id        uuid [ref: > groups.id]
+  age_min_months  int
+  age_max_months  int
+  is_active       boolean [not null, default: true]
+  valid_from      date [not null]
+  valid_until     date
+  discount_rules  jsonb
+  // { sibling_discount_pct, prepay_3m_pct, prepay_6m_pct, prepay_12m_pct, prepay_24m_pct?, benefit_category }
+  // prepay_24m_pct — опциональный долгий горизонт предоплаты (настраивается админом).
+  created_at      timestamptz [not null, default: `now()`]
+  updated_at      timestamptz [not null, default: `now()`]
+
+  indexes {
+    (kindergarten_id, is_active)
+    (kindergarten_id, tariff_type)
+  }
+}
+
+Table tariff_assignments {
+  id              uuid [pk, default: `gen_random_uuid()`]
+  kindergarten_id uuid [not null, ref: > kindergartens.id]
+  child_id        uuid [not null, ref: > children.id]
+  tariff_plan_id  uuid [not null, ref: > tariff_plans.id]
+  custom_amount   decimal(12,2) // переопределение (льгота)
+  custom_reason   varchar
+  valid_from      date [not null]
+  valid_until     date
+  assigned_by     uuid [ref: > staff_members.id]
+  created_at      timestamptz [not null, default: `now()`]
+
+  indexes {
+    (child_id, valid_from)
+  }
+}
+
+Table invoice_line_items {
+  id              uuid [pk, default: `gen_random_uuid()`]
+  invoice_id      uuid [not null, ref: > invoices.id]
+  kindergarten_id uuid [not null, ref: > kindergartens.id]
+  description     varchar [not null]
+  tariff_plan_id  uuid [ref: > tariff_plans.id]
+  quantity        decimal(10,2) [not null, default: 1]
+  unit_price      decimal(12,2) [not null]
+  line_total      decimal(12,2) [not null]
+  created_at      timestamptz [not null, default: `now()`]
+}
+
+Table kindergarten_holidays {
+  id              uuid [pk, default: `gen_random_uuid()`]
+  kindergarten_id uuid [not null, ref: > kindergartens.id]
+  date            date [not null]
+  name            jsonb // {ru: "...", kz: "..."}
+  is_billable     boolean [not null, default: false]
+  created_at      timestamptz [not null, default: `now()`]
+
+  indexes {
+    (kindergarten_id, date) [unique]
+  }
+}
+
+Table refunds {
+  id              uuid [pk, default: `gen_random_uuid()`]
+  kindergarten_id uuid [not null, ref: > kindergartens.id]
+  payment_id      uuid [not null, ref: > payments.id]
+  invoice_id      uuid [ref: > invoices.id]
+  amount          decimal(12,2) [not null]
+  reason          varchar [not null]
+  status          refund_status [not null, default: 'pending']
+  processed_by    uuid [ref: > staff_members.id]
+  provider_ref    varchar
+  created_at      timestamptz [not null, default: `now()`]
+  updated_at      timestamptz [not null, default: `now()`]
+}
+
+// ─────────────────────────────────────────
+// FISCAL (ОФД РК)
+// ─────────────────────────────────────────
+
+Table fiscal_receipts {
+  id              uuid [pk, default: `gen_random_uuid()`]
+  kindergarten_id uuid [not null, ref: > kindergartens.id]
+  payment_id      uuid [not null, ref: > payments.id]
+  provider        varchar [not null]  // 'kassa24', 'rekassa', 'webkassa'
+  kkm_id          varchar
+  fiscal_sign     varchar
+  receipt_number  varchar
+  total_amount    decimal(12,2) [not null]
+  vat_amount      decimal(12,2)
+  qr_url          text
+  ofd_payload     jsonb
+  status          fiscal_receipt_status [not null, default: 'pending']
+  issued_at       timestamptz
+  retry_count     int [not null, default: 0]
+  error_message   text
+  created_at      timestamptz [not null, default: `now()`]
+  updated_at      timestamptz [not null, default: `now()`]
+
+  indexes {
+    payment_id
+    (kindergarten_id, status)
+    (provider, fiscal_sign)
+  }
+}
+
+// ─────────────────────────────────────────
+// FACE ID (InsightFace)
+// ─────────────────────────────────────────
+
+Table face_profiles {
+  id                    uuid [pk, default: `gen_random_uuid()`]
+  kindergarten_id       uuid [not null, ref: > kindergartens.id]
+  subject_type          face_subject_type [not null]
+  subject_id            uuid [not null]
+  // Полиморф: children.id | users.id | staff_members.id
+  provider              varchar [not null, default: 'insightface']
+  external_id           varchar
+  embedding_vector_ref  varchar
+  photo_url             text [not null]
+  is_active             boolean [not null, default: true]
+  enrolled_by           uuid [ref: > staff_members.id]
+  enrolled_at           timestamptz [not null, default: `now()`]
+  created_at            timestamptz [not null, default: `now()`]
+
+  indexes {
+    (kindergarten_id, subject_type, subject_id)
+    external_id [unique]
+  }
+}
+
+Table face_recognition_events {
+  id                   uuid [pk, default: `gen_random_uuid()`]
+  kindergarten_id      uuid [not null, ref: > kindergartens.id]
+  camera_device_id     varchar [not null]
+  face_profile_id      uuid [ref: > face_profiles.id]
+  confidence           decimal(5,2)      // 0..100 match score
+  spoof_score          decimal(5,2)      // 0..100 liveness (выше = живее)
+  liveness_method      liveness_method [not null, default: 'passive']
+  event_type           face_event_type [not null]
+  matched_photo_url    text
+  attendance_event_id  uuid [ref: > attendance_events.id]
+  status               face_event_status [not null, default: 'matched']
+  created_at           timestamptz [not null, default: `now()`]
+
+  indexes {
+    (kindergarten_id, created_at)
+    face_profile_id
+  }
+}
+
+// Фиксация consent на биометрию (обязательно по закону РК перед enrollment Face ID).
+// Захват происходит офлайн в садике: персонал отмечает подпись родителя/опекуна
+// (или самого сотрудника — при enrollment его профиля).
+Table face_enrollment_consents {
+  id                    uuid [pk, default: `gen_random_uuid()`]
+  kindergarten_id       uuid [not null, ref: > kindergartens.id]
+  subject_type          face_subject_type [not null]
+  subject_id            uuid [not null]
+  // Полиморф: children.id | users.id | staff_members.id (как в face_profiles)
+  captured_by_staff_id  uuid [not null, ref: > staff_members.id]
+  captured_at           timestamptz [not null, default: `now()`]
+  signature_url         text  // скан/фото подписанного согласия, S3 key
+  face_profile_id       uuid [ref: > face_profiles.id] // связка после enrollment
+  revoked_at            timestamptz
+  revoke_reason         text
+  created_at            timestamptz [not null, default: `now()`]
+
+  indexes {
+    (kindergarten_id, subject_type, subject_id)
+  }
+}
+
+// Несколько embedding'ов на один face_profile (video enrollment 5-10 кадров)
+Table face_embeddings {
+  id              uuid [pk, default: `gen_random_uuid()`]
+  face_profile_id uuid [not null, ref: > face_profiles.id]
+  vector_ref      varchar [not null] // Qdrant point ID или pgvector row id
+  frame_index     int [not null, default: 0]
+  quality_score   decimal(5,2) // качество кадра (для приоритета)
+  captured_at     timestamptz [not null, default: `now()`]
+
+  indexes {
+    face_profile_id
+  }
+}
+
+// ─────────────────────────────────────────
+// MEAL PLANS (структурированное меню)
+// ─────────────────────────────────────────
+
+Table meal_plans {
+  id              uuid [pk, default: `gen_random_uuid()`]
+  kindergarten_id uuid [not null, ref: > kindergartens.id]
+  date            date [not null]
+  group_id        uuid [ref: > groups.id] // null = общее на садик
+  is_published    boolean [not null, default: true]
+  notes           jsonb // локализованные заметки
+  source          varchar [not null, default: 'manual']
+  // 'manual' | 'auto_copied_from_previous_week'
+  copied_from     uuid [ref: > meal_plans.id]
+  created_by      uuid [ref: > staff_members.id]
+  created_at      timestamptz [not null, default: `now()`]
+  updated_at      timestamptz [not null, default: `now()`]
+
+  indexes {
+    (kindergarten_id, date)
+    (group_id, date)
+  }
+}
+
+Table meal_items {
+  id              uuid [pk, default: `gen_random_uuid()`]
+  meal_plan_id    uuid [not null, ref: > meal_plans.id]
+  meal_type       meal_type [not null]
+  dish_name       jsonb [not null] // {ru, kz}
+  description     jsonb
+  allergens       text[]
+  photo_url       text
+  calories        int
+  position        int [not null, default: 0]
+
+  indexes {
+    meal_plan_id
+  }
+}
+
+// ─────────────────────────────────────────
+// SCHEDULE — помощник для недели
+// ─────────────────────────────────────────
+
+Table schedule_week_snapshots {
+  id              uuid [pk, default: `gen_random_uuid()`]
+  kindergarten_id uuid [not null, ref: > kindergartens.id]
+  group_id        uuid [not null, ref: > groups.id]
+  week_start_date date [not null] // понедельник
+  source          varchar [not null]
+  // 'manual' | 'auto_copied_from_previous_week'
+  copied_from     uuid [ref: > schedule_week_snapshots.id]
+  created_at      timestamptz [not null, default: `now()`]
+
+  indexes {
+    (group_id, week_start_date) [unique]
+  }
+}
+
+// ─────────────────────────────────────────
+// TRUSTED PEOPLE (переиспользуемый whitelist)
+// ─────────────────────────────────────────
+
+Table trusted_people {
+  id               uuid [pk, default: `gen_random_uuid()`]
+  kindergarten_id  uuid [not null, ref: > kindergartens.id]
+  child_id         uuid [not null, ref: > children.id]
+  added_by_user_id uuid [not null, ref: > users.id]
+  full_name        varchar [not null]
+  phone            varchar(20) [not null]
+  iin              char(12)
+  relation         varchar
+  photo_url        text
+  is_active        boolean [not null, default: true]
+  is_one_time      boolean [not null, default: false]
+  // true = деактивируется автоматически после первого успешного pickup
+  used_at          timestamptz
+  created_at       timestamptz [not null, default: `now()`]
+  revoked_at       timestamptz
+
+  indexes {
+    (child_id, is_active)
+  }
+}
+
+// ─────────────────────────────────────────
+// PARENT REQUEST — треды ответов (не чат!)
+// ─────────────────────────────────────────
+
+Table parent_request_messages {
+  id                uuid [pk, default: `gen_random_uuid()`]
+  kindergarten_id   uuid [not null, ref: > kindergartens.id]
+  parent_request_id uuid [not null, ref: > parent_requests.id]
+  author_staff_id   uuid [ref: > staff_members.id]
+  body              text [not null]
+  attachments       text[]
+  created_at        timestamptz [not null, default: `now()`]
+
+  indexes {
+    parent_request_id
+  }
+}
+
+// ─────────────────────────────────────────
+// SAAS-LEVEL (SuperAdmin)
+// ─────────────────────────────────────────
+
+Table saas_users {
+  id            uuid [pk, default: `gen_random_uuid()`]
+  email         varchar [unique, not null]
+  phone         varchar(20) [unique]
+  full_name     varchar [not null]
+  password_hash varchar [not null]
+  role          saas_user_role [not null]
+  is_active     boolean [not null, default: true]
+  last_login_at timestamptz
+  created_at    timestamptz [not null, default: `now()`]
+}
+
+// Зеркало `refresh_tokens`, но FK на `saas_users` (не `users`).
+// Два identity-домена полностью разделены: Parent/Staff OTP-flow пишет в
+// `refresh_tokens`, SuperAdmin email+password-flow пишет сюда. Никакого
+// polymorphism. Токены opaque (sha256(raw)), TTL = REFRESH_TOKEN_TTL_DAYS.
+Table saas_refresh_tokens {
+  id            uuid        [pk, default: `gen_random_uuid()`]
+  saas_user_id  uuid        [not null, ref: > saas_users.id]
+  token_hash    varchar     [unique, not null]
+  device_id     varchar
+  ip_address    varchar
+  expires_at    timestamptz [not null]
+  revoked_at    timestamptz
+  created_at    timestamptz [not null, default: `now()`]
+
+  indexes {
+    saas_user_id
+  }
+}
+
+Table saas_subscriptions {
+  id              uuid [pk, default: `gen_random_uuid()`]
+  kindergarten_id uuid [not null, ref: > kindergartens.id]
+  plan_code       varchar [not null]
+  status          subscription_status [not null]
+  billing_period  varchar [not null] // 'monthly', 'yearly'
+  amount          decimal(12,2) [not null]
+  started_at      date [not null]
+  next_billing_at date
+  cancelled_at    timestamptz
+  created_at      timestamptz [not null, default: `now()`]
+  updated_at      timestamptz [not null, default: `now()`]
+}
+
+Table feature_flags {
+  id              uuid [pk, default: `gen_random_uuid()`]
+  kindergarten_id uuid [ref: > kindergartens.id] // null = глобальный
+  key             varchar [not null]
+  value           jsonb [not null]
+  created_at      timestamptz [not null, default: `now()`]
+
+  indexes {
+    (kindergarten_id, key) [unique]
+  }
+}
+
+// ─────────────────────────────────────────
+// USER QR TOKENS (identity QR, refreshable 24h)
+// ─────────────────────────────────────────
+
+Table user_qr_tokens {
+  id              uuid [pk, default: `gen_random_uuid()`]
+  user_id         uuid [not null, ref: > users.id]
+  kindergarten_id uuid [ref: > kindergartens.id]
+  // null для родителей с детьми в нескольких садиках — QR глобален
+  purpose         qr_purpose [not null, default: 'identity']
+  token           varchar [unique, not null] // 32-char hex
+  issued_at       timestamptz [not null, default: `now()`]
+  expires_at      timestamptz [not null]     // issued_at + 24h
+  revoked_at      timestamptz                // при refresh старый ревокируется
+  last_scanned_at timestamptz
+
+  indexes {
+    (user_id, purpose)
+    token [unique]
+    expires_at
+  }
+}
+
+// ─────────────────────────────────────────
+// CUSTOM DISCOUNTS (праздничные и спец. скидки)
+// ─────────────────────────────────────────
+
+Table custom_discounts {
+  id                     uuid [pk, default: `gen_random_uuid()`]
+  kindergarten_id        uuid [not null, ref: > kindergartens.id]
+  name                   jsonb [not null]  // {ru, kz}
+  description            jsonb
+  discount_type          custom_discount_type [not null]
+  amount                 decimal(10,2) [not null]
+  // discount_type='percentage' → 0..100
+  // discount_type='fixed_amount' → сумма в KZT
+
+  // Условия применения (композитный JSONB)
+  conditions             jsonb [not null, default: `{}`]
+  // Примеры:
+  // { type: "prepayment_months", min_months: 24 }
+  // { type: "siblings_count", min: 3 }
+  // { type: "age_range", min_months: 12, max_months: 36 }
+  // { type: "benefit_category", values: ["disability","single_parent"] }
+  // { type: "payment_method", providers: ["kaspi_pay"] }
+  // { type: "early_payment", before_day_of_month: 5 }
+  // { type: "birthday_month" }
+  // { type: "date_range", from: "2026-03-01", to: "2026-03-10" }
+  // { type: "first_invoice" }
+  // { type: "all_of", rules: [...] } / { type: "any_of", rules: [...] }
+
+  // Таргетинг
+  target_type            varchar [not null, default: 'all']
+  // 'all' | 'groups' | 'children' | 'tariff_types' | 'age_range'
+  target_ids             uuid[]
+  // для tariff_types: tariff_plan_id[]
+
+  // Период действия
+  valid_from             timestamptz [not null]
+  valid_until            timestamptz
+
+  // Лимиты использования
+  max_uses_per_child     int
+  total_max_uses         int
+  used_count             int [not null, default: 0]
+
+  // Приоритет (для пересекающихся скидок)
+  priority               int [not null, default: 100]
+  // чем выше число — тем выше приоритет применения
+  stackable              boolean [not null, default: false]
+  // можно ли применять вместе с другими скидками
+
+  // Уведомления родителям
+  notify_on_activation   boolean [not null, default: true]
+  notification_title     jsonb // {ru, kz}
+  notification_body      jsonb // {ru, kz}
+
+  status                 custom_discount_status [not null, default: 'draft']
+  created_by             uuid [ref: > staff_members.id]
+  created_at             timestamptz [not null, default: `now()`]
+  updated_at             timestamptz [not null, default: `now()`]
+
+  indexes {
+    (kindergarten_id, status)
+    (valid_from, valid_until)
+    (kindergarten_id, status, valid_from) [name: 'idx_custom_discounts_active']
+  }
+}
+
+Table custom_discount_applications {
+  id                   uuid [pk, default: `gen_random_uuid()`]
+  kindergarten_id      uuid [not null, ref: > kindergartens.id]
+  custom_discount_id   uuid [not null, ref: > custom_discounts.id]
+  invoice_id           uuid [not null, ref: > invoices.id]
+  invoice_line_item_id uuid [ref: > invoice_line_items.id]
+  child_id             uuid [not null, ref: > children.id]
+  amount_applied       decimal(12,2) [not null]
+  applied_at           timestamptz [not null, default: `now()`]
+
+  indexes {
+    custom_discount_id
+    invoice_id
+    (child_id, custom_discount_id)
+  }
+}
+
+// ─────────────────────────────────────────
+// SQL-patches (вне DBML):
+//   1. idx_child_guardians_approval_max2 — partial unique НЕ применима (WHERE has_approval_rights=TRUE
+//      даёт ≤1, не ≤2). Реализовано через PL/pgSQL триггер
+//      `trg_child_guardians_approval_max2` (BEFORE INSERT OR UPDATE):
+//        COUNT(has_approval_rights = TRUE AND revoked_at IS NULL) <= 2 per child.
+//      Migration: prisma/migrations/20260418022600_partial_indexes/migration.sql.
+//
+//   2. CREATE UNIQUE INDEX idx_children_iin_kindergarten
+//      ON children(kindergarten_id, iin) WHERE iin IS NOT NULL; (partial unique — IIN nullable)
+//      Prisma's @@unique генерит full unique, миграция дропает и пересоздаёт как partial.
+//
+//   3. CREATE INDEX idx_parent_requests_recipient
+//      ON parent_requests(kindergarten_id, recipient_type, recipient_staff_id)
+//      WHERE request_type = 'open_request';
+//
+//   4. pgvector расширение (для face_embeddings), либо Qdrant снаружи.
+//
+//   5. CREATE UNIQUE INDEX idx_group_mentors_one_active
+//      ON group_mentors(staff_member_id) WHERE unassigned_at IS NULL;
+//      — Правило: один mentor = ровно одна активная группа.
+//
+//   6. CREATE UNIQUE INDEX idx_group_mentors_one_primary_per_group
+//      ON group_mentors(group_id) WHERE is_primary = TRUE AND unassigned_at IS NULL;
+//      — Правило: у группы ровно один primary mentor.
+//
+//   7. CREATE INDEX idx_user_qr_tokens_active
+//      ON user_qr_tokens(user_id, purpose, expires_at)
+//      WHERE revoked_at IS NULL;
+// ─────────────────────────────────────────

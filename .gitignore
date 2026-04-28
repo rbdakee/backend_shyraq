@@ -39,3 +39,6 @@ lerna-debug.log*
 .env
 /ormconfig.json
 .codegpt
+
+# Claude Code session state
+.claude/
