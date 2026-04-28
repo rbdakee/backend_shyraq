@@ -15,7 +15,10 @@ import { SharedKernelModule } from './shared-kernel/shared-kernel.module';
 import { RedisModule } from './redis/redis.module';
 import { HealthModule } from './modules/health/health.module';
 import { AuthModule } from './modules/auth/auth.module';
+import { CameraModule } from './modules/camera/camera.module';
+import { GroupModule } from './modules/group/group.module';
 import { KindergartenModule } from './modules/kindergarten/kindergarten.module';
+import { LocationModule } from './modules/location/location.module';
 import { StaffModule } from './modules/staff/staff.module';
 import { UsersModule } from './modules/users/users.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
@@ -63,6 +66,9 @@ import { DomainErrorFilter } from './common/filters/domain-error.filter';
     AuthModule,
     StaffModule,
     KindergartenModule,
+    LocationModule,
+    GroupModule,
+    CameraModule,
   ],
   providers: [
     // The interceptor establishes a tenant-scoped TypeORM transaction (with

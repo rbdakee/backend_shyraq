@@ -1,18 +1,37 @@
 import { StaffMember, StaffRole } from './domain/entities/staff-member.entity';
+import { SpecialistType } from './domain/value-objects/specialist-type.vo';
 
 export interface CreateStaffMemberInput {
   kindergartenId: string;
   userId: string;
+  fullName?: string | null;
+  phone?: string | null;
   role: StaffRole;
-  specialistType?: string | null;
+  specialistType?: SpecialistType | null;
   hiredAt?: Date | null;
 }
 
+export interface UpdateStaffMemberInput {
+  fullName?: string | null;
+  role?: StaffRole;
+  specialistType?: SpecialistType | null;
+  hiredAt?: Date | null;
+  firedAt?: Date | null;
+}
+
+export interface ListStaffFilters {
+  role?: StaffRole;
+  isActive?: boolean;
+  specialistType?: SpecialistType;
+  archived?: boolean;
+  search?: string;
+}
+
 /**
- * Port over staff_members. P3 only exposes a minimum surface — enough for
- * createKindergarten to seed the first admin row and for archiveCascade to
- * deactivate every staff row of a soft-deleted kindergarten. The full
- * contract (list / update / assignToGroup / etc.) is deferred to P4.
+ * Port over the staff_members table. Implementations are tenant-aware via
+ * `tenantStorage` — readers transparently use the request's transactional
+ * EntityManager so RLS GUCs apply, while SuperAdmin paths set
+ * `bypass_rls=true` upstream.
  */
 export abstract class StaffMemberRepository {
   /**
@@ -22,14 +41,32 @@ export abstract class StaffMemberRepository {
    */
   abstract create(input: CreateStaffMemberInput): Promise<StaffMember>;
 
-  abstract findById(id: string): Promise<StaffMember | null>;
+  abstract findById(
+    kindergartenId: string,
+    id: string,
+  ): Promise<StaffMember | null>;
 
   abstract findActiveByUserAndKindergarten(
     userId: string,
     kindergartenId: string,
   ): Promise<StaffMember | null>;
 
-  abstract listByKindergarten(kindergartenId: string): Promise<StaffMember[]>;
+  abstract listByKindergarten(
+    kindergartenId: string,
+    filters?: ListStaffFilters,
+  ): Promise<StaffMember[]>;
+
+  abstract update(
+    kindergartenId: string,
+    id: string,
+    changes: UpdateStaffMemberInput,
+  ): Promise<StaffMember | null>;
+
+  /**
+   * Replace the persisted state of a hydrated StaffMember (used by the
+   * service after applying domain mutations: archive/restore/transfer).
+   */
+  abstract save(staffMember: StaffMember): Promise<StaffMember>;
 
   /**
    * Bulk deactivate every active row of a kindergarten. Used by

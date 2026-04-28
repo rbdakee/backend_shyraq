@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { forwardRef, Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { UsersModule } from '@/modules/users/users.module';
 import { StaffModule } from '@/modules/staff/staff.module';
@@ -13,7 +13,7 @@ import { SuperAdminKindergartenController } from './super-admin-kindergarten.con
   imports: [
     TypeOrmModule.forFeature([KindergartenEntity]),
     UsersModule,
-    StaffModule,
+    forwardRef(() => StaffModule),
   ],
   controllers: [KindergartenController, SuperAdminKindergartenController],
   providers: [

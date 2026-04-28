@@ -144,11 +144,14 @@ class FakeStaffRepo extends StaffMemberRepository {
       id: `staff-${this.rows.length + 1}`,
       kindergartenId: input.kindergartenId,
       userId: input.userId,
+      fullName: input.fullName ?? null,
+      phone: input.phone ?? null,
       role: input.role,
       specialistType: input.specialistType ?? null,
       isActive: true,
       hiredAt: input.hiredAt ?? null,
       firedAt: null,
+      archivedAt: null,
       createdAt: new Date('2026-04-28T10:00:00.000Z'),
       updatedAt: new Date('2026-04-28T10:00:00.000Z'),
     });
@@ -156,8 +159,12 @@ class FakeStaffRepo extends StaffMemberRepository {
     return Promise.resolve(sm);
   }
 
-  findById(id: string): Promise<StaffMember | null> {
-    return Promise.resolve(this.rows.find((r) => r.id === id) ?? null);
+  findById(kindergartenId: string, id: string): Promise<StaffMember | null> {
+    return Promise.resolve(
+      this.rows.find(
+        (r) => r.id === id && r.kindergartenId === kindergartenId,
+      ) ?? null,
+    );
   }
 
   findActiveByUserAndKindergarten(
@@ -178,6 +185,14 @@ class FakeStaffRepo extends StaffMemberRepository {
     return Promise.resolve(
       this.rows.filter((r) => r.kindergartenId === kindergartenId),
     );
+  }
+
+  update(): Promise<StaffMember | null> {
+    return Promise.resolve(null);
+  }
+
+  save(staffMember: StaffMember): Promise<StaffMember> {
+    return Promise.resolve(staffMember);
   }
 
   deactivateAllByKindergarten(

@@ -26,6 +26,9 @@ export type StaffMemberRoleColumn =
  * Composite uniqueness `(kindergarten_id, user_id)` is enforced by the
  * migration's UNIQUE INDEX (the @@unique here only documents intent — TypeORM
  * does not auto-create it because we drive schema via raw SQL migrations).
+ *
+ * P4 added the `full_name`, `phone`, `archived_at` columns — they are kept
+ * snake_case here to mirror the SQL column names exactly.
  */
 @Entity({ name: 'staff_members' })
 @Index('idx_staff_members_kg_role', ['kindergarten_id', 'role'])
@@ -48,6 +51,12 @@ export class StaffMemberEntity {
   @JoinColumn({ name: 'user_id', referencedColumnName: 'id' })
   user?: UserEntity;
 
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  full_name!: string | null;
+
+  @Column({ type: 'varchar', length: 32, nullable: true })
+  phone!: string | null;
+
   @Column({ type: 'varchar', length: 32 })
   role!: StaffMemberRoleColumn;
 
@@ -62,6 +71,9 @@ export class StaffMemberEntity {
 
   @Column({ type: 'date', nullable: true })
   fired_at!: string | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  archived_at!: Date | null;
 
   @CreateDateColumn({ type: 'timestamptz' })
   created_at!: Date;
