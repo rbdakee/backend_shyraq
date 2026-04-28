@@ -70,9 +70,16 @@ export async function createTestApp(): Promise<TestApp> {
 }
 
 export async function truncateAll(dataSource: DataSource): Promise<void> {
-  await dataSource.query(
-    `TRUNCATE TABLE saas_refresh_tokens, saas_users, refresh_tokens, users, kindergartens RESTART IDENTITY CASCADE`,
-  );
+  // Tenant-scoped tables (staff_members, refresh_tokens) FORCE row-level
+  // security on the runtime role, so a plain TRUNCATE issued without
+  // app.bypass_rls fails. Wrap in a tx with the GUC set so cleanup runs as
+  // an "operator" regardless of the connecting role.
+  await dataSource.transaction(async (m) => {
+    await m.query(`SET LOCAL app.bypass_rls = 'true'`);
+    await m.query(
+      `TRUNCATE TABLE saas_refresh_tokens, saas_users, staff_members, refresh_tokens, users, kindergartens RESTART IDENTITY CASCADE`,
+    );
+  });
 }
 
 export async function flushRedis(redis: RedisService): Promise<void> {

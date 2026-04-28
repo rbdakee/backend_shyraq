@@ -32,6 +32,15 @@ export class KindergartenEntity {
   @Column({ type: 'boolean', default: true })
   is_active!: boolean;
 
+  /**
+   * Soft-delete timestamp. Set by `archiveKindergarten`, cleared by
+   * `restoreKindergarten`. Coexists with `is_active` (kept in sync) so
+   * existing P2 code that filters on `is_active=true` keeps working while
+   * P3+ migrates to the timestamp.
+   */
+  @Column({ type: 'timestamptz', nullable: true })
+  archived_at!: Date | null;
+
   @CreateDateColumn({ type: 'timestamptz' })
   created_at!: Date;
 
