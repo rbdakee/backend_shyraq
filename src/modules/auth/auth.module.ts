@@ -6,7 +6,6 @@ import { AllConfigType } from '@/config/config.type';
 import { RedisModule } from '@/redis/redis.module';
 import { UsersModule } from '@/modules/users/users.module';
 import { StaffModule } from '@/modules/staff/staff.module';
-import { StaffMemberRepository } from '@/modules/staff/staff-member.repository';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { BcryptPasswordHasherAdapter } from './infrastructure/adapters/bcrypt-password-hasher.adapter';
@@ -78,13 +77,6 @@ import { TokenBlocklistPort } from './token-blocklist.port';
       useClass: SaasUserRelationalRepository,
     },
   ],
-  exports: [
-    AuthService,
-    JwtTokenPort,
-    TokenBlocklistPort,
-    JwtModule,
-    SmsPort,
-    StaffMemberRepository,
-  ],
+  exports: [AuthService, JwtTokenPort, TokenBlocklistPort, JwtModule, SmsPort],
 })
 export class AuthModule {}
