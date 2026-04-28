@@ -42,7 +42,14 @@ export default [
       '@typescript-eslint/explicit-module-boundary-types': 'off',
       '@typescript-eslint/no-explicit-any': 'off',
       'no-unused-vars': 'off',
-      '@typescript-eslint/no-unused-vars': ['error'],
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        {
+          argsIgnorePattern: '^_',
+          varsIgnorePattern: '^_',
+          caughtErrorsIgnorePattern: '^_',
+        },
+      ],
       'require-await': 'off',
       '@typescript-eslint/require-await': 'error',
       '@typescript-eslint/no-floating-promises': 'error',
@@ -53,11 +60,6 @@ export default [
             'CallExpression[callee.object.name=configService][callee.property.name=/^(get|getOrThrow)$/]:not(:has([arguments.1] Property[key.name=infer][value.value=true])), CallExpression[callee.object.property.name=configService][callee.property.name=/^(get|getOrThrow)$/]:not(:has([arguments.1] Property[key.name=infer][value.value=true]))',
           message:
             'Add "{ infer: true }" to configService.get() for correct typechecking. Example: configService.get("database.port", { infer: true })',
-        },
-        {
-          selector:
-            'CallExpression[callee.name=it][arguments.0.value!=/^should/]',
-          message: '"it" should start with "should"',
         },
       ],
     },

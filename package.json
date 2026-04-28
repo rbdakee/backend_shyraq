@@ -13,7 +13,6 @@
     "migration:run": "npm run typeorm -- --dataSource=src/database/data-source.ts migration:run",
     "migration:revert": "npm run typeorm -- --dataSource=src/database/data-source.ts migration:revert",
     "schema:drop": "npm run typeorm -- --dataSource=src/database/data-source.ts schema:drop",
-    "seed:run:relational": "ts-node -r tsconfig-paths/register ./src/database/seeds/relational/run-seed.ts",
     "prebuild": "rimraf dist",
     "build": "nest build",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
@@ -99,6 +98,9 @@
     "testRegex": ".*\\.spec\\.ts$",
     "transform": {
       "^.+\\.(t|j)s$": "ts-jest"
+    },
+    "moduleNameMapper": {
+      "^@/(.*)$": "<rootDir>/$1"
     },
     "collectCoverageFrom": ["**/*.(t|j)s"],
     "coverageDirectory": "../coverage",

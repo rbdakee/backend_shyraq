@@ -37,9 +37,9 @@ async function bootstrap() {
   );
 
   const options = new DocumentBuilder()
-    .setTitle('API')
-    .setDescription('API docs')
-    .setVersion('1.0')
+    .setTitle('Shyraq API v2')
+    .setDescription('Multi-tenant kindergarten SaaS — REST + WS')
+    .setVersion('0.0.1')
     .addBearerAuth()
     .addGlobalParameters({
       in: 'header',

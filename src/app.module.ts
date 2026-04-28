@@ -8,6 +8,8 @@ import databaseConfig from './database/config/database.config';
 import appConfig from './config/app.config';
 import { TypeOrmConfigService } from './database/typeorm-config.service';
 import { AllConfigType } from './config/config.type';
+import { SharedKernelModule } from './shared-kernel/shared-kernel.module';
+import { HealthModule } from './modules/health/health.module';
 
 @Module({
   imports: [
@@ -41,6 +43,8 @@ import { AllConfigType } from './config/config.type';
       imports: [ConfigModule],
       inject: [ConfigService],
     }),
+    SharedKernelModule,
+    HealthModule,
   ],
 })
 export class AppModule {}
