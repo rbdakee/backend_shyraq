@@ -77,4 +77,11 @@ export abstract class StaffMemberRepository {
     kindergartenId: string,
     now: Date,
   ): Promise<number>;
+
+  /**
+   * Returns all active staff_members for a user across ALL kindergartens.
+   * Cross-tenant lookup — caller must ensure it runs under bypass_rls or
+   * provides its own EntityManager with the GUC already set.
+   */
+  abstract findAllActiveByUserId(userId: string): Promise<StaffMember[]>;
 }

@@ -20,20 +20,35 @@ export class RefreshTokenRelationalRepository extends RefreshTokenRepository {
   }
 
   async create(input: CreateRefreshInput): Promise<void> {
-    const manager = this.manager();
-    await manager.insert(RefreshTokenEntity, {
-      user_id: input.userId,
-      kindergarten_id: input.kindergartenId,
-      token_hash: input.tokenHash,
-      device_id: input.deviceId,
-      ip_address: input.ipAddress,
-      expires_at: input.expiresAt,
-    });
+    const ctx = tenantStorage.getStore();
+    if (ctx?.entityManager) {
+      await ctx.entityManager.insert(RefreshTokenEntity, {
+        user_id: input.userId,
+        kindergarten_id: input.kindergartenId,
+        token_hash: input.tokenHash,
+        device_id: input.deviceId,
+        ip_address: input.ipAddress,
+        expires_at: input.expiresAt,
+      });
+    } else {
+      await this.repo.manager.transaction(async (tx) => {
+        await tx.query(`SET LOCAL app.bypass_rls = 'true'`);
+        await tx.insert(RefreshTokenEntity, {
+          user_id: input.userId,
+          kindergarten_id: input.kindergartenId,
+          token_hash: input.tokenHash,
+          device_id: input.deviceId,
+          ip_address: input.ipAddress,
+          expires_at: input.expiresAt,
+        });
+      });
+    }
   }
 
   async rotate(opts: RotateOpts): Promise<RotateResult | null> {
     const outerManager = this.manager();
     return outerManager.transaction(async (tx) => {
+      await tx.query(`SET LOCAL app.bypass_rls = 'true'`);
       const existing = await tx
         .createQueryBuilder(RefreshTokenEntity, 'rt')
         .setLock('pessimistic_write')

@@ -202,6 +202,18 @@ export class StaffMemberRelationalRepository extends StaffMemberRepository {
     return result.affected ?? 0;
   }
 
+  async findAllActiveByUserId(userId: string): Promise<StaffMember[]> {
+    // Cross-tenant — bypass RLS so no kindergarten GUC is needed.
+    const rows = await this.repo.manager.transaction(async (tx) => {
+      await tx.query(`SET LOCAL app.bypass_rls = 'true'`);
+      return tx.getRepository(StaffMemberEntity).find({
+        where: { user_id: userId, is_active: true },
+        order: { created_at: 'ASC' },
+      });
+    });
+    return rows.map((r) => StaffMemberMapper.toDomain(r));
+  }
+
   private manager(): EntityManager {
     const ctx = tenantStorage.getStore();
     return ctx?.entityManager ?? this.repo.manager;

@@ -33,6 +33,7 @@ import { SaasRefreshTokenRepository } from './saas-refresh-token.repository';
 import { SaasUserRepository } from './saas-user.repository';
 import { SmsPort } from './sms.port';
 import { TokenBlocklistPort } from './token-blocklist.port';
+import { StaffMemberRepository } from '@/modules/staff/staff-member.repository';
 
 const OTP_LOCKED_TTL_SEC = 900;
 const OTP_RESEND_AFTER_SEC = 60;
@@ -99,12 +100,13 @@ export interface SuperAdminLogoutInput {
  * AuthService — orchestrates OTP, JWT issuance/rotation, and SaaS-admin
  * password auth. Pure application layer: takes domain repositories + ports
  * via DI, never touches TypeORM/Redis directly. Each public method maps 1:1
- * to a controller endpoint and was a separate use-case in B1.
+ * to a controller endpoint.
  *
- * Role assembly is intentionally minimal in P2.4 — until P3 introduces the
- * StaffMember table, every user has the implicit `parent` role only. The
- * activeStaff branch of the decision tree therefore never fires; once
- * StaffMemberRepository lands, `assembleRolesForUser()` should query it.
+ * Role assembly queries StaffMemberRepository for all active staff entries
+ * across kindergartens. Users with no staff rows get the implicit `parent`
+ * role; staff users receive per-kg roles. `selectRole` validates the
+ * requested (userId, kindergartenId, role) triple against the same table
+ * and issues a scoped access token on success.
  */
 @Injectable()
 export class AuthService implements OnModuleInit {
@@ -123,6 +125,7 @@ export class AuthService implements OnModuleInit {
     private readonly blocklist: TokenBlocklistPort,
     @Inject(ClockPort) private readonly clock: ClockPort,
     private readonly configService: ConfigService<AllConfigType>,
+    private readonly staff: StaffMemberRepository,
   ) {}
 
   onModuleInit(): void {
@@ -220,7 +223,7 @@ export class AuthService implements OnModuleInit {
       throw new RefreshInvalidError();
     }
 
-    const { roles, kindergartens } = this.assembleRoles(user);
+    const { roles, kindergartens } = await this.assembleRoles(user);
     if (roles.length === 0) {
       throw new NoActiveRolesError();
     }
@@ -261,13 +264,63 @@ export class AuthService implements OnModuleInit {
 
   // ---------------------------------------------------------------- Role-select
 
-  selectRole(input: SelectRoleInput): Promise<AuthResult> {
-    // TODO(P3): validate the (userId, kindergartenId, role) triple against
-    // the staff_members table once it lands. Until then, only the implicit
-    // `parent` role exists (not bound to a kindergarten) so selecting a
-    // kg-scoped role is impossible — every attempt rejects.
-    void input;
-    return Promise.reject(new RoleNotAvailableError());
+  async selectRole(input: SelectRoleInput): Promise<AuthResult> {
+    const staffEntries = await this.staff.findAllActiveByUserId(input.userId);
+    const match = staffEntries.find(
+      (s) =>
+        s.kindergartenId === input.kindergartenId &&
+        (input.role === undefined || s.role === input.role),
+    );
+    if (!match) {
+      throw new RoleNotAvailableError();
+    }
+
+    if (input.oldAccessJti && typeof input.oldAccessExpUnix === 'number') {
+      await this.blocklist.blocklist(
+        input.oldAccessJti,
+        input.oldAccessExpUnix,
+      );
+    }
+
+    const access = await this.jwt.issueAccessToken({
+      sub: input.userId,
+      role: match.role,
+      kindergarten_id: match.kindergartenId,
+    });
+    const raw = generateRefreshToken();
+    const ttlDays = this.configService.getOrThrow('auth.refreshTokenTtlDays', {
+      infer: true,
+    });
+    const expiresAt = computeRefreshExpiresAt(this.clock.now(), ttlDays);
+    await this.refreshTokens.create({
+      userId: input.userId,
+      kindergartenId: match.kindergartenId,
+      tokenHash: hashRefreshToken(raw),
+      deviceId: input.deviceId ?? null,
+      ipAddress: input.ipAddress ?? null,
+      expiresAt,
+    });
+
+    const user = await this.users.findById(input.userId);
+    if (!user) {
+      throw new RefreshInvalidError();
+    }
+    return {
+      accessToken: access.token,
+      refreshToken: raw,
+      tokenType: 'Bearer',
+      expiresIn: access.expiresIn,
+      pendingRoleSelect: false,
+      roles: [
+        {
+          role: match.role,
+          kindergartenId: match.kindergartenId,
+          groupId: null,
+        },
+      ],
+      kindergartens: [{ id: match.kindergartenId, name: '', slug: '' }],
+      user: this.toUserSummary(user),
+    };
   }
 
   // --------------------------------------------------------------- SuperAdmin
@@ -420,7 +473,7 @@ export class AuthService implements OnModuleInit {
     user: User,
     meta: { deviceId: string | null; ipAddress: string | null },
   ): Promise<AuthResult> {
-    const { roles, kindergartens } = this.assembleRoles(user);
+    const { roles, kindergartens } = await this.assembleRoles(user);
     if (roles.length === 0) {
       throw new NoActiveRolesError();
     }
@@ -479,18 +532,40 @@ export class AuthService implements OnModuleInit {
   }
 
   /**
-   * Returns the role+kg list visible to a given user. Stub for P2.4 — every
-   * authenticated user has the implicit `parent` role only. P3 will replace
-   * this with a real StaffMemberRepository lookup that yields per-kg roles.
+   * Returns the role+kg list visible to a given user. Queries StaffMemberRepository
+   * for all active staff entries across kindergartens. Users with no staff entries
+   * get the implicit `parent` role. Staff users get per-kg roles from the DB.
    */
-  private assembleRoles(_user: User): {
+  private async assembleRoles(user: User): Promise<{
     roles: RoleView[];
     kindergartens: { id: string; name: string; slug: string }[];
-  } {
-    const roles: RoleView[] = [
-      { role: 'parent', kindergartenId: null, groupId: null },
-    ];
-    return { roles, kindergartens: [] };
+  }> {
+    const staffEntries = await this.staff.findAllActiveByUserId(user.id);
+
+    if (staffEntries.length === 0) {
+      return {
+        roles: [{ role: 'parent', kindergartenId: null, groupId: null }],
+        kindergartens: [],
+      };
+    }
+
+    const roles: RoleView[] = staffEntries.map((s) => ({
+      role: s.role,
+      kindergartenId: s.kindergartenId,
+      groupId: null,
+    }));
+
+    // Deduplicate kindergarten ids; names/slugs fetched by client separately.
+    const seen = new Set<string>();
+    const kindergartens: { id: string; name: string; slug: string }[] = [];
+    for (const s of staffEntries) {
+      if (!seen.has(s.kindergartenId)) {
+        seen.add(s.kindergartenId);
+        kindergartens.push({ id: s.kindergartenId, name: '', slug: '' });
+      }
+    }
+
+    return { roles, kindergartens };
   }
 
   private toUserSummary(user: User): UserSummaryView {

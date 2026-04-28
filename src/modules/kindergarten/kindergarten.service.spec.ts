@@ -209,6 +209,12 @@ class FakeStaffRepo extends StaffMemberRepository {
     this.deactivatedKgs.push({ kg: kindergartenId, affected: n });
     return Promise.resolve(n);
   }
+
+  findAllActiveByUserId(userId: string): Promise<StaffMember[]> {
+    return Promise.resolve(
+      this.rows.filter((r) => r.userId === userId && r.isActive),
+    );
+  }
 }
 
 class FakeUserRepo extends UserRepository {

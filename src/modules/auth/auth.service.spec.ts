@@ -47,6 +47,13 @@ import {
   generateRefreshToken,
   hashRefreshToken,
 } from './application/refresh-token.helper';
+import { StaffMember } from '@/modules/staff/domain/entities/staff-member.entity';
+import {
+  CreateStaffMemberInput,
+  ListStaffFilters,
+  StaffMemberRepository,
+  UpdateStaffMemberInput,
+} from '@/modules/staff/staff-member.repository';
 
 class FixedClock implements ClockPort {
   constructor(private readonly fixed: Date) {}
@@ -295,6 +302,46 @@ class FakeBlocklist extends TokenBlocklistPort {
   }
 }
 
+class FakeStaffRepo extends StaffMemberRepository {
+  rows: StaffMember[] = [];
+  create(_input: CreateStaffMemberInput): Promise<StaffMember> {
+    return Promise.reject(new Error('not implemented'));
+  }
+  findById(_kg: string, _id: string): Promise<StaffMember | null> {
+    return Promise.resolve(null);
+  }
+  findActiveByUserAndKindergarten(
+    _userId: string,
+    _kgId: string,
+  ): Promise<StaffMember | null> {
+    return Promise.resolve(null);
+  }
+  listByKindergarten(
+    _kg: string,
+    _filters?: ListStaffFilters,
+  ): Promise<StaffMember[]> {
+    return Promise.resolve([]);
+  }
+  update(
+    _kg: string,
+    _id: string,
+    _changes: UpdateStaffMemberInput,
+  ): Promise<StaffMember | null> {
+    return Promise.resolve(null);
+  }
+  save(_sm: StaffMember): Promise<StaffMember> {
+    return Promise.reject(new Error('not implemented'));
+  }
+  deactivateAllByKindergarten(_kg: string, _now: Date): Promise<number> {
+    return Promise.resolve(0);
+  }
+  findAllActiveByUserId(userId: string): Promise<StaffMember[]> {
+    return Promise.resolve(
+      this.rows.filter((r) => r.toState().userId === userId),
+    );
+  }
+}
+
 interface AuthDeps {
   service: AuthService;
   users: FakeUserRepo;
@@ -306,6 +353,7 @@ interface AuthDeps {
   jwt: FakeJwt;
   passwords: FakePasswordHasher;
   blocklist: FakeBlocklist;
+  staffRepo: FakeStaffRepo;
 }
 
 function build(): AuthDeps {
@@ -318,6 +366,7 @@ function build(): AuthDeps {
   const jwt = new FakeJwt();
   const passwords = new FakePasswordHasher();
   const blocklist = new FakeBlocklist();
+  const staffRepo = new FakeStaffRepo();
   const config = new ConfigService<Record<string, unknown>>({
     auth: {
       jwtAccessSecret: 'test-secret-test-secret-test',
@@ -346,6 +395,7 @@ function build(): AuthDeps {
     blocklist,
     new FixedClock(new Date('2025-01-01T00:00:00Z')),
     config as unknown as ConfigService,
+    staffRepo,
   );
   service.onModuleInit();
   return {
@@ -359,6 +409,7 @@ function build(): AuthDeps {
     jwt,
     passwords,
     blocklist,
+    staffRepo,
   };
 }
 
