@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import path from 'path';
 import { ConfigModule, ConfigService } from '@nestjs/config';
+import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { HeaderResolver, I18nModule } from 'nestjs-i18n';
 import { DataSource, DataSourceOptions } from 'typeorm';
@@ -13,6 +14,13 @@ import { AllConfigType } from './config/config.type';
 import { SharedKernelModule } from './shared-kernel/shared-kernel.module';
 import { RedisModule } from './redis/redis.module';
 import { HealthModule } from './modules/health/health.module';
+import { AuthModule } from './modules/auth/auth.module';
+import { UsersModule } from './modules/users/users.module';
+import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
+import { KindergartenScopeGuard } from './common/guards/kindergarten-scope.guard';
+import { PendingRoleSelectGuard } from './common/guards/pending-role-select.guard';
+import { TenantContextInterceptor } from './common/interceptors/tenant-context.interceptor';
+import { DomainErrorFilter } from './common/filters/domain-error.filter';
 
 @Module({
   imports: [
@@ -49,6 +57,26 @@ import { HealthModule } from './modules/health/health.module';
     SharedKernelModule,
     RedisModule,
     HealthModule,
+    UsersModule,
+    AuthModule,
+  ],
+  providers: [
+    // The interceptor establishes a tenant-scoped TypeORM transaction (with
+    // SET LOCAL app.kindergarten_id / app.bypass_rls) for every request that
+    // a guard has populated `req.tenant` on. Order matters: guards run before
+    // interceptors, so JwtAuthGuard fills user, KindergartenScopeGuard fills
+    // tenant, and finally TenantContextInterceptor wraps the handler.
+    { provide: APP_INTERCEPTOR, useClass: TenantContextInterceptor },
+    // Global filter that maps domain errors -> HTTP. Per-controller filters
+    // are not needed because every error carries its own `code`.
+    { provide: APP_FILTER, useClass: DomainErrorFilter },
+    // Global guards. JwtAuthGuard short-circuits on @Public() handlers.
+    // KindergartenScopeGuard derives tenant scope from req.user.
+    // PendingRoleSelectGuard rejects pending sessions on non-allowlisted
+    // handlers (the AllowPendingRoleSelect decorator opts in).
+    { provide: APP_GUARD, useClass: JwtAuthGuard },
+    { provide: APP_GUARD, useClass: KindergartenScopeGuard },
+    { provide: APP_GUARD, useClass: PendingRoleSelectGuard },
   ],
 })
 export class AppModule {}

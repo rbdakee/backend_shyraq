@@ -1,0 +1,708 @@
+/**
+ * AuthService unit tests — in-memory fakes for repositories + ports, no
+ * jest.mock. The fakes mirror the abstract port shape so type errors surface
+ * the moment a port signature changes.
+ */
+import { ConfigService } from '@nestjs/config';
+import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { User } from '@/modules/users/domain/entities/user.entity';
+import {
+  UserRepository,
+  UserUpdateInput,
+} from '@/modules/users/user.repository';
+import { AuthService } from './auth.service';
+import { SaasUser } from './domain/entities/saas-user.entity';
+import { InvalidCredentialsError } from './domain/errors/invalid-credentials.error';
+import { OtpExpiredError } from './domain/errors/otp-expired.error';
+import { OtpInvalidError } from './domain/errors/otp-invalid.error';
+import { OtpLockedError } from './domain/errors/otp-locked.error';
+import { OtpRateLimitedError } from './domain/errors/otp-rate-limited.error';
+import { RefreshInvalidError } from './domain/errors/refresh-invalid.error';
+import { RoleNotAvailableError } from './domain/errors/role-not-available.error';
+import {
+  IssueAccessPayload,
+  JwtTokenPort,
+  IssueAccessResult,
+  DecodedAccessClaims,
+} from './jwt-token.port';
+import { OtpStorePort, StoredOtp } from './otp-store.port';
+import { PasswordHasherPort } from './password-hasher.port';
+import {
+  CreateRefreshInput,
+  RefreshTokenRepository,
+  RotateOpts,
+  RotateResult,
+} from './refresh-token.repository';
+import {
+  CreateSaasRefreshInput,
+  RotateSaasOpts,
+  RotateSaasResult,
+  SaasRefreshTokenRepository,
+} from './saas-refresh-token.repository';
+import { SaasUserRepository } from './saas-user.repository';
+import { SmsPort, SmsSendResult } from './sms.port';
+import { TokenBlocklistPort } from './token-blocklist.port';
+import {
+  computeRefreshExpiresAt,
+  generateRefreshToken,
+  hashRefreshToken,
+} from './application/refresh-token.helper';
+
+class FixedClock implements ClockPort {
+  constructor(private readonly fixed: Date) {}
+  now(): Date {
+    return this.fixed;
+  }
+}
+
+class FakeUserRepo extends UserRepository {
+  byId = new Map<string, User>();
+  byPhone = new Map<string, User>();
+
+  put(user: User): void {
+    this.byId.set(user.id, user);
+    this.byPhone.set(user.phone, user);
+  }
+
+  findById(id: string): Promise<User | null> {
+    return Promise.resolve(this.byId.get(id) ?? null);
+  }
+  findByPhone(phone: string): Promise<User | null> {
+    return Promise.resolve(this.byPhone.get(phone) ?? null);
+  }
+  upsertByPhone(phone: string): Promise<User> {
+    const existing = this.byPhone.get(phone);
+    if (existing) return Promise.resolve(existing);
+    const user = User.hydrate({
+      id: `user-${phone}`,
+      phone,
+      fullName: phone,
+      avatarUrl: null,
+      iin: null,
+      dateOfBirth: null,
+      locale: 'ru',
+    });
+    this.put(user);
+    return Promise.resolve(user);
+  }
+  update(id: string, _changes: UserUpdateInput): Promise<User> {
+    const u = this.byId.get(id);
+    if (!u) throw new Error('not found');
+    return Promise.resolve(u);
+  }
+}
+
+class FakeSaasUserRepo extends SaasUserRepository {
+  byId = new Map<string, SaasUser>();
+  byEmail = new Map<string, SaasUser>();
+  put(u: SaasUser): void {
+    this.byId.set(u.id, u);
+    this.byEmail.set(u.email, u);
+  }
+  findById(id: string): Promise<SaasUser | null> {
+    return Promise.resolve(this.byId.get(id) ?? null);
+  }
+  findByEmail(email: string): Promise<SaasUser | null> {
+    return Promise.resolve(this.byEmail.get(email) ?? null);
+  }
+  updateLastLogin(_id: string, _at: Date): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
+interface InMemoryRow {
+  userId: string;
+  kindergartenId: string | null;
+  tokenHash: string;
+  expiresAt: Date;
+  revokedAt: Date | null;
+}
+class FakeRefreshRepo extends RefreshTokenRepository {
+  rows: InMemoryRow[] = [];
+  create(input: CreateRefreshInput): Promise<void> {
+    this.rows.push({
+      userId: input.userId,
+      kindergartenId: input.kindergartenId,
+      tokenHash: input.tokenHash,
+      expiresAt: input.expiresAt,
+      revokedAt: null,
+    });
+    return Promise.resolve();
+  }
+  rotate(opts: RotateOpts): Promise<RotateResult | null> {
+    const row = this.rows.find((r) => r.tokenHash === opts.tokenHash);
+    if (!row || row.revokedAt !== null || row.expiresAt <= opts.now) {
+      return Promise.resolve(null);
+    }
+    row.revokedAt = opts.now;
+    this.rows.push({
+      userId: row.userId,
+      kindergartenId: row.kindergartenId,
+      tokenHash: opts.newTokenHash,
+      expiresAt: opts.newExpiresAt,
+      revokedAt: null,
+    });
+    return Promise.resolve({
+      userId: row.userId,
+      kindergartenId: row.kindergartenId,
+    });
+  }
+  revokeByHash(tokenHash: string, now: Date): Promise<void> {
+    for (const r of this.rows) {
+      if (r.tokenHash === tokenHash && r.revokedAt === null) r.revokedAt = now;
+    }
+    return Promise.resolve();
+  }
+  revokeAllByUserId(userId: string, now: Date): Promise<void> {
+    for (const r of this.rows) {
+      if (r.userId === userId && r.revokedAt === null) r.revokedAt = now;
+    }
+    return Promise.resolve();
+  }
+}
+
+interface SaasRow {
+  saasUserId: string;
+  tokenHash: string;
+  expiresAt: Date;
+  revokedAt: Date | null;
+}
+class FakeSaasRefreshRepo extends SaasRefreshTokenRepository {
+  rows: SaasRow[] = [];
+  create(input: CreateSaasRefreshInput): Promise<void> {
+    this.rows.push({
+      saasUserId: input.saasUserId,
+      tokenHash: input.tokenHash,
+      expiresAt: input.expiresAt,
+      revokedAt: null,
+    });
+    return Promise.resolve();
+  }
+  rotate(opts: RotateSaasOpts): Promise<RotateSaasResult | null> {
+    const row = this.rows.find((r) => r.tokenHash === opts.tokenHash);
+    if (!row || row.revokedAt !== null || row.expiresAt <= opts.now) {
+      return Promise.resolve(null);
+    }
+    row.revokedAt = opts.now;
+    this.rows.push({
+      saasUserId: row.saasUserId,
+      tokenHash: opts.newTokenHash,
+      expiresAt: opts.newExpiresAt,
+      revokedAt: null,
+    });
+    return Promise.resolve({ saasUserId: row.saasUserId });
+  }
+  revokeByHash(tokenHash: string, now: Date): Promise<void> {
+    for (const r of this.rows) {
+      if (r.tokenHash === tokenHash && r.revokedAt === null) r.revokedAt = now;
+    }
+    return Promise.resolve();
+  }
+  revokeAllBySaasUserId(saasUserId: string, now: Date): Promise<void> {
+    for (const r of this.rows) {
+      if (r.saasUserId === saasUserId && r.revokedAt === null)
+        r.revokedAt = now;
+    }
+    return Promise.resolve();
+  }
+}
+
+interface OtpStored {
+  code: string;
+  attempts: number;
+}
+class FakeOtpStore extends OtpStorePort {
+  rateCounts = new Map<string, number>();
+  rateLimit = 5;
+  lockedPhones = new Set<string>();
+  codes = new Map<string, OtpStored>();
+  checkRateLimit(
+    phone: string,
+    maxPerWindow: number,
+    _windowSec: number,
+  ): Promise<'ok' | 'exceeded'> {
+    const next = (this.rateCounts.get(phone) ?? 0) + 1;
+    this.rateCounts.set(phone, next);
+    return Promise.resolve(next > maxPerWindow ? 'exceeded' : 'ok');
+  }
+  isLocked(phone: string): Promise<boolean> {
+    return Promise.resolve(this.lockedPhones.has(phone));
+  }
+  storeCode(phone: string, code: string, _ttlSec: number): Promise<void> {
+    this.codes.set(phone, { code, attempts: 0 });
+    return Promise.resolve();
+  }
+  readCode(phone: string): Promise<StoredOtp | null> {
+    const entry = this.codes.get(phone);
+    return Promise.resolve(entry ? { ...entry } : null);
+  }
+  incrementAttempts(phone: string): Promise<number> {
+    const entry = this.codes.get(phone);
+    if (!entry) return Promise.resolve(0);
+    entry.attempts += 1;
+    return Promise.resolve(entry.attempts);
+  }
+  lockPhone(phone: string, _ttlSec: number): Promise<void> {
+    this.lockedPhones.add(phone);
+    return Promise.resolve();
+  }
+  clearCode(phone: string): Promise<void> {
+    this.codes.delete(phone);
+    return Promise.resolve();
+  }
+}
+
+class FakeSms extends SmsPort {
+  sent: { phone: string; message: string }[] = [];
+  send(phone: string, message: string): Promise<SmsSendResult> {
+    this.sent.push({ phone, message });
+    return Promise.resolve({ txnId: `txn-${this.sent.length}` });
+  }
+}
+
+class FakeJwt extends JwtTokenPort {
+  counter = 0;
+  issueAccessToken(payload: IssueAccessPayload): Promise<IssueAccessResult> {
+    this.counter += 1;
+    return Promise.resolve({
+      token: `access.${payload.sub}.${this.counter}`,
+      jti: `jti-${this.counter}`,
+      expiresIn: 900,
+    });
+  }
+  decodeWithoutVerify(_token: string): DecodedAccessClaims | null {
+    return null;
+  }
+}
+
+class FakePasswordHasher extends PasswordHasherPort {
+  hash(plain: string): Promise<string> {
+    return Promise.resolve(`hash:${plain}`);
+  }
+  compare(plain: string, hash: string): Promise<boolean> {
+    return Promise.resolve(hash === `hash:${plain}`);
+  }
+}
+
+class FakeBlocklist extends TokenBlocklistPort {
+  blocked = new Set<string>();
+  isBlocked(jti: string): Promise<boolean> {
+    return Promise.resolve(this.blocked.has(jti));
+  }
+  blocklist(jti: string, _expUnix: number): Promise<void> {
+    this.blocked.add(jti);
+    return Promise.resolve();
+  }
+}
+
+interface AuthDeps {
+  service: AuthService;
+  users: FakeUserRepo;
+  saasUsers: FakeSaasUserRepo;
+  refresh: FakeRefreshRepo;
+  saasRefresh: FakeSaasRefreshRepo;
+  otpStore: FakeOtpStore;
+  sms: FakeSms;
+  jwt: FakeJwt;
+  passwords: FakePasswordHasher;
+  blocklist: FakeBlocklist;
+}
+
+function build(): AuthDeps {
+  const users = new FakeUserRepo();
+  const saasUsers = new FakeSaasUserRepo();
+  const refresh = new FakeRefreshRepo();
+  const saasRefresh = new FakeSaasRefreshRepo();
+  const otpStore = new FakeOtpStore();
+  const sms = new FakeSms();
+  const jwt = new FakeJwt();
+  const passwords = new FakePasswordHasher();
+  const blocklist = new FakeBlocklist();
+  const config = new ConfigService<Record<string, unknown>>({
+    auth: {
+      jwtAccessSecret: 'test-secret-test-secret-test',
+      jwtAccessTtl: '15m',
+      refreshTokenTtlDays: 30,
+      bcryptCost: 4,
+      otpLength: 6,
+      otpTtlSeconds: 300,
+      rateLimitOtpRequestLimit: 5,
+      rateLimitOtpRequestWindowSec: 3600,
+      rateLimitSuperAdminLoginLimit: 10,
+      rateLimitSuperAdminLoginWindowSec: 3600,
+      otpTestPhones: '',
+      otpTestCode: '000000',
+    },
+  });
+  const service = new AuthService(
+    users,
+    saasUsers,
+    refresh,
+    saasRefresh,
+    otpStore,
+    sms,
+    jwt,
+    passwords,
+    blocklist,
+    new FixedClock(new Date('2025-01-01T00:00:00Z')),
+    config as unknown as ConfigService,
+  );
+  service.onModuleInit();
+  return {
+    service,
+    users,
+    saasUsers,
+    refresh,
+    saasRefresh,
+    otpStore,
+    sms,
+    jwt,
+    passwords,
+    blocklist,
+  };
+}
+
+describe('AuthService', () => {
+  describe('requestOtp', () => {
+    it('stores a 6-digit code and dispatches SMS', async () => {
+      const { service, otpStore, sms } = build();
+      const result = await service.requestOtp('+77012345678');
+      expect(result.resendAfterSec).toBe(60);
+      const stored = await otpStore.readCode('+77012345678');
+      expect(stored?.code).toMatch(/^\d{6}$/);
+      expect(sms.sent).toHaveLength(1);
+      expect(sms.sent[0].phone).toBe('+77012345678');
+    });
+
+    it('throws OtpRateLimitedError when 6th call within window', async () => {
+      const { service } = build();
+      for (let i = 0; i < 5; i++) {
+        await service.requestOtp('+77012345678');
+      }
+      await expect(service.requestOtp('+77012345678')).rejects.toBeInstanceOf(
+        OtpRateLimitedError,
+      );
+    });
+
+    it('throws OtpLockedError when phone is locked', async () => {
+      const { service, otpStore } = build();
+      otpStore.lockedPhones.add('+77012345678');
+      await expect(service.requestOtp('+77012345678')).rejects.toBeInstanceOf(
+        OtpLockedError,
+      );
+    });
+  });
+
+  describe('verifyOtp', () => {
+    it('happy path issues access + refresh + parent role', async () => {
+      const { service, otpStore } = build();
+      await otpStore.storeCode('+77012345678', '123456', 300);
+      const res = await service.verifyOtp({
+        phone: '+77012345678',
+        code: '123456',
+      });
+      expect(res.accessToken).toMatch(/^access\./);
+      expect(res.refreshToken).not.toBeNull();
+      expect(res.refreshToken!.length).toBe(64);
+      expect(res.pendingRoleSelect).toBe(false);
+      expect(res.roles).toEqual([
+        { role: 'parent', kindergartenId: null, groupId: null },
+      ]);
+    });
+
+    it('throws OtpExpiredError when no code stored', async () => {
+      const { service } = build();
+      await expect(
+        service.verifyOtp({ phone: '+77012345678', code: '123456' }),
+      ).rejects.toBeInstanceOf(OtpExpiredError);
+    });
+
+    it('throws OtpInvalidError on first wrong code', async () => {
+      const { service, otpStore } = build();
+      await otpStore.storeCode('+77012345678', '123456', 300);
+      await expect(
+        service.verifyOtp({ phone: '+77012345678', code: '000000' }),
+      ).rejects.toBeInstanceOf(OtpInvalidError);
+    });
+
+    it('locks phone after 3 wrong codes', async () => {
+      const { service, otpStore } = build();
+      await otpStore.storeCode('+77012345678', '123456', 300);
+      await expect(
+        service.verifyOtp({ phone: '+77012345678', code: '000000' }),
+      ).rejects.toBeInstanceOf(OtpInvalidError);
+      await expect(
+        service.verifyOtp({ phone: '+77012345678', code: '111111' }),
+      ).rejects.toBeInstanceOf(OtpInvalidError);
+      await expect(
+        service.verifyOtp({ phone: '+77012345678', code: '222222' }),
+      ).rejects.toBeInstanceOf(OtpLockedError);
+      expect(otpStore.lockedPhones.has('+77012345678')).toBe(true);
+    });
+
+    it('consumes the OTP — replay rejects with OtpExpiredError', async () => {
+      const { service, otpStore } = build();
+      await otpStore.storeCode('+77012345678', '123456', 300);
+      await service.verifyOtp({ phone: '+77012345678', code: '123456' });
+      await expect(
+        service.verifyOtp({ phone: '+77012345678', code: '123456' }),
+      ).rejects.toBeInstanceOf(OtpExpiredError);
+    });
+  });
+
+  describe('refreshToken', () => {
+    it('rotates a valid refresh and issues a new access', async () => {
+      const { service, refresh, users } = build();
+      const raw = generateRefreshToken();
+      await refresh.create({
+        userId: 'user-1',
+        kindergartenId: null,
+        tokenHash: hashRefreshToken(raw),
+        deviceId: null,
+        ipAddress: null,
+        expiresAt: computeRefreshExpiresAt(new Date('2025-01-01'), 30),
+      });
+      users.put(
+        User.hydrate({
+          id: 'user-1',
+          phone: '+77000000000',
+          fullName: 'X',
+          avatarUrl: null,
+          iin: null,
+          dateOfBirth: null,
+          locale: 'ru',
+        }),
+      );
+      const res = await service.refreshToken({ rawRefreshToken: raw });
+      expect(res.refreshToken).not.toBeNull();
+      expect(res.refreshToken).not.toBe(raw);
+      // old row revoked
+      const old = refresh.rows.find(
+        (r) => r.tokenHash === hashRefreshToken(raw),
+      );
+      expect(old?.revokedAt).not.toBeNull();
+    });
+
+    it('rejects an unknown refresh token with RefreshInvalidError', async () => {
+      const { service } = build();
+      await expect(
+        service.refreshToken({ rawRefreshToken: 'no-such-token' }),
+      ).rejects.toBeInstanceOf(RefreshInvalidError);
+    });
+
+    it('rejects an expired refresh with RefreshInvalidError', async () => {
+      const { service, refresh } = build();
+      const raw = generateRefreshToken();
+      await refresh.create({
+        userId: 'user-1',
+        kindergartenId: null,
+        tokenHash: hashRefreshToken(raw),
+        deviceId: null,
+        ipAddress: null,
+        expiresAt: new Date('2024-01-01'), // before fixed clock 2025-01-01
+      });
+      await expect(
+        service.refreshToken({ rawRefreshToken: raw }),
+      ).rejects.toBeInstanceOf(RefreshInvalidError);
+    });
+
+    it('rejects a revoked refresh with RefreshInvalidError', async () => {
+      const { service, refresh } = build();
+      const raw = generateRefreshToken();
+      await refresh.create({
+        userId: 'user-1',
+        kindergartenId: null,
+        tokenHash: hashRefreshToken(raw),
+        deviceId: null,
+        ipAddress: null,
+        expiresAt: computeRefreshExpiresAt(new Date('2025-01-01'), 30),
+      });
+      refresh.rows[0].revokedAt = new Date('2025-01-01');
+      await expect(
+        service.refreshToken({ rawRefreshToken: raw }),
+      ).rejects.toBeInstanceOf(RefreshInvalidError);
+    });
+  });
+
+  describe('logout', () => {
+    it('revokes a specific refresh and blocklists the access JTI', async () => {
+      const { service, refresh, blocklist } = build();
+      const raw = generateRefreshToken();
+      await refresh.create({
+        userId: 'user-1',
+        kindergartenId: null,
+        tokenHash: hashRefreshToken(raw),
+        deviceId: null,
+        ipAddress: null,
+        expiresAt: computeRefreshExpiresAt(new Date('2025-01-01'), 30),
+      });
+      await service.logout({
+        userId: 'user-1',
+        rawRefreshToken: raw,
+        accessJti: 'jti-acc',
+        accessExpUnix: Math.floor(Date.now() / 1000) + 900,
+      });
+      expect(refresh.rows[0].revokedAt).not.toBeNull();
+      expect(blocklist.blocked.has('jti-acc')).toBe(true);
+    });
+
+    it('revokes ALL the user’s refresh tokens when no specific token given', async () => {
+      const { service, refresh } = build();
+      for (let i = 0; i < 3; i++) {
+        await refresh.create({
+          userId: 'user-1',
+          kindergartenId: null,
+          tokenHash: `hash-${i}`,
+          deviceId: null,
+          ipAddress: null,
+          expiresAt: computeRefreshExpiresAt(new Date('2025-01-01'), 30),
+        });
+      }
+      await service.logout({ userId: 'user-1' });
+      expect(refresh.rows.every((r) => r.revokedAt !== null)).toBe(true);
+    });
+  });
+
+  describe('selectRole', () => {
+    it('throws RoleNotAvailableError (P2.4 stub — no staff_members yet)', async () => {
+      const { service } = build();
+      await expect(
+        service.selectRole({
+          userId: 'user-1',
+          kindergartenId: '5b3d3b8a-7f4f-4d2a-9c84-9a7c1c1c1c1c',
+          role: 'teacher',
+        }),
+      ).rejects.toBeInstanceOf(RoleNotAvailableError);
+    });
+  });
+
+  describe('superAdminLogin', () => {
+    function seedSaasUser(deps: AuthDeps): void {
+      deps.saasUsers.put(
+        SaasUser.hydrate({
+          id: 'sa-1',
+          email: 'admin@shyraq.local',
+          phone: null,
+          fullName: 'Admin',
+          passwordHash: 'hash:admin123',
+          role: 'super_admin',
+          isActive: true,
+          lastLoginAt: null,
+        }),
+      );
+    }
+
+    it('issues tokens on valid credentials', async () => {
+      const deps = build();
+      seedSaasUser(deps);
+      const res = await deps.service.superAdminLogin({
+        email: 'admin@shyraq.local',
+        password: 'admin123',
+      });
+      expect(res.refreshToken).toBeTruthy();
+      expect(res.roles[0].role).toBe('super_admin');
+    });
+
+    it('rejects bad email with InvalidCredentialsError', async () => {
+      const { service } = build();
+      await expect(
+        service.superAdminLogin({
+          email: 'nobody@nowhere.test',
+          password: 'whatever1',
+        }),
+      ).rejects.toBeInstanceOf(InvalidCredentialsError);
+    });
+
+    it('rejects wrong password with InvalidCredentialsError', async () => {
+      const deps = build();
+      seedSaasUser(deps);
+      await expect(
+        deps.service.superAdminLogin({
+          email: 'admin@shyraq.local',
+          password: 'wrong-pass',
+        }),
+      ).rejects.toBeInstanceOf(InvalidCredentialsError);
+    });
+
+    it('rejects inactive user with InvalidCredentialsError', async () => {
+      const deps = build();
+      deps.saasUsers.put(
+        SaasUser.hydrate({
+          id: 'sa-2',
+          email: 'inactive@shyraq.local',
+          phone: null,
+          fullName: 'X',
+          passwordHash: 'hash:admin123',
+          role: 'super_admin',
+          isActive: false,
+          lastLoginAt: null,
+        }),
+      );
+      await expect(
+        deps.service.superAdminLogin({
+          email: 'inactive@shyraq.local',
+          password: 'admin123',
+        }),
+      ).rejects.toBeInstanceOf(InvalidCredentialsError);
+    });
+  });
+
+  describe('superAdminRefresh', () => {
+    it('rotates a SaaS refresh token', async () => {
+      const deps = build();
+      deps.saasUsers.put(
+        SaasUser.hydrate({
+          id: 'sa-1',
+          email: 'a@b',
+          phone: null,
+          fullName: 'X',
+          passwordHash: 'hash:p',
+          role: 'support',
+          isActive: true,
+          lastLoginAt: null,
+        }),
+      );
+      const raw = generateRefreshToken();
+      await deps.saasRefresh.create({
+        saasUserId: 'sa-1',
+        tokenHash: hashRefreshToken(raw),
+        deviceId: null,
+        ipAddress: null,
+        expiresAt: computeRefreshExpiresAt(new Date('2025-01-01'), 30),
+      });
+      const res = await deps.service.superAdminRefresh({
+        rawRefreshToken: raw,
+      });
+      expect(res.refreshToken).not.toBe(raw);
+    });
+
+    it('rejects unknown SaaS refresh with RefreshInvalidError', async () => {
+      const { service } = build();
+      await expect(
+        service.superAdminRefresh({ rawRefreshToken: 'unknown' }),
+      ).rejects.toBeInstanceOf(RefreshInvalidError);
+    });
+  });
+
+  describe('superAdminLogout', () => {
+    it('revokes the refresh and blocklists the access JTI', async () => {
+      const { service, saasRefresh, blocklist } = build();
+      const raw = generateRefreshToken();
+      await saasRefresh.create({
+        saasUserId: 'sa-1',
+        tokenHash: hashRefreshToken(raw),
+        deviceId: null,
+        ipAddress: null,
+        expiresAt: computeRefreshExpiresAt(new Date('2025-01-01'), 30),
+      });
+      await service.superAdminLogout({
+        saasUserId: 'sa-1',
+        rawRefreshToken: raw,
+        accessJti: 'jti-acc',
+        accessExpUnix: Math.floor(Date.now() / 1000) + 900,
+      });
+      expect(saasRefresh.rows[0].revokedAt).not.toBeNull();
+      expect(blocklist.blocked.has('jti-acc')).toBe(true);
+    });
+  });
+});

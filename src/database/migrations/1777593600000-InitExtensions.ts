@@ -37,14 +37,14 @@ export class InitExtensions1777593600000 implements MigrationInterface {
     // migration (the table owner).
     await queryRunner.query(`GRANT USAGE ON SCHEMA public TO shyraq_app`);
     await queryRunner.query(
-      `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO shyraq_app`,
+      `GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA public TO shyraq_app`,
     );
     await queryRunner.query(
       `GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO shyraq_app`,
     );
     await queryRunner.query(`
       ALTER DEFAULT PRIVILEGES IN SCHEMA public
-        GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO shyraq_app
+        GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON TABLES TO shyraq_app
     `);
     await queryRunner.query(`
       ALTER DEFAULT PRIVILEGES IN SCHEMA public
@@ -57,14 +57,14 @@ export class InitExtensions1777593600000 implements MigrationInterface {
     // come first because Postgres refuses to drop a role that owns ACLs.
     await queryRunner.query(`
       ALTER DEFAULT PRIVILEGES IN SCHEMA public
-        REVOKE SELECT, INSERT, UPDATE, DELETE ON TABLES FROM shyraq_app
+        REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON TABLES FROM shyraq_app
     `);
     await queryRunner.query(`
       ALTER DEFAULT PRIVILEGES IN SCHEMA public
         REVOKE USAGE, SELECT ON SEQUENCES FROM shyraq_app
     `);
     await queryRunner.query(
-      `REVOKE SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public FROM shyraq_app`,
+      `REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA public FROM shyraq_app`,
     );
     await queryRunner.query(
       `REVOKE USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public FROM shyraq_app`,
