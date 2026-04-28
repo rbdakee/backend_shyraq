@@ -45,6 +45,11 @@ REFRESH_TOKEN_TTL_DAYS=30
 # bcrypt cost: 12 in prod/dev (~250ms), 4 in test (~5ms).
 BCRYPT_COST=12
 
+# --- OTP ---
+# 6-digit numeric code, 5-minute TTL by default.
+OTP_LENGTH=6
+OTP_TTL_SECONDS=300
+
 # --- SuperAdmin seed user ---
 # Used by seed scripts to upsert bootstrap super_admin row.
 # CHANGE BEFORE FIRST PRODUCTION DEPLOY.

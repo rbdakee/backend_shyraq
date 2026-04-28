@@ -6,16 +6,19 @@ import { HeaderResolver, I18nModule } from 'nestjs-i18n';
 import { DataSource, DataSourceOptions } from 'typeorm';
 import databaseConfig from './database/config/database.config';
 import appConfig from './config/app.config';
+import redisConfig from './redis/config/redis.config';
+import authConfig from './modules/auth/config/auth.config';
 import { TypeOrmConfigService } from './database/typeorm-config.service';
 import { AllConfigType } from './config/config.type';
 import { SharedKernelModule } from './shared-kernel/shared-kernel.module';
+import { RedisModule } from './redis/redis.module';
 import { HealthModule } from './modules/health/health.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      load: [databaseConfig, appConfig],
+      load: [databaseConfig, appConfig, redisConfig, authConfig],
       envFilePath: ['.env'],
     }),
     TypeOrmModule.forRootAsync({
@@ -44,6 +47,7 @@ import { HealthModule } from './modules/health/health.module';
       inject: [ConfigService],
     }),
     SharedKernelModule,
+    RedisModule,
     HealthModule,
   ],
 })
