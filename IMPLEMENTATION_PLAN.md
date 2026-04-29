@@ -101,7 +101,7 @@
 
 ### BP-батчи (v2 продолжает с B5)
 
-- [ ] **B5** — Enrollment ✓ **demo-ready: BP §1**
+- [x] **B5** — Enrollment ✓ **demo-ready: BP §1**
 - [ ] **B6** — Parent Onboarding ✓ **demo-ready: BP §2**
 - [ ] **B7** — Schedule & Meal *(часть BP §9)*
 - [ ] **B8** — Attendance & Timeline (manual) ✓ **demo-ready: BP §5 manual**
@@ -123,7 +123,7 @@
 
 ### Demo-able BP
 
-- [~] **BP §1** Enrollment & Onboarding *(часть — бутстрап tenant'а + первого admin'а закрыта в P3; enrollment детей — P5/B5)*
+- [x] **BP §1** Enrollment & Onboarding *(часть — бутстрап tenant'а + первого admin'а закрыта в P3; enrollment детей — закрыта в B5: leads, state machine transition→card_created)*
 - [ ] **BP §2** Parent App Onboarding
 - [x] **BP §3** Staff & Admin Provisioning *(P3 + P4: первый admin — атомарный POST /super-admin/kindergartens; остальные staff — POST /admin/staff с role×specialist_type matrix, TX-атомарность create+mentor-assign, deactivate/activate symmetric, mentor assign/change-primary с partial-idx invariants)*
 - [ ] **BP §4** Payments
@@ -151,6 +151,8 @@
 - **Parent JWT не содержит `kindergarten_id` для одиночного парента** — обнаружено на P5 e2e. `auth.service.verifyOtp` ставит `kgId` только когда `activeStaff.length === 1`; для родителя с привязкой к одному садику — kgId=null. Решается в B6 Parent Onboarding (либо auto-assign, либо `/auth/role/select` для parent аналогично multi-role staff).
 
 ### Resolved (исторические — full log в memory)
+
+- **2026-04-30 · B5 · Enrollment** — invoice generation на `card_created` — defer на B13. Hook-point: `EnrollmentService.transition()` где помечен `// TODO(B13)` маркер. Auto-approve primary guardian по phone — defer на B6 (parent linking flow).
 
 - **2026-04-26 · D14 · Process split по execution profile (api / worker / ws)** — на B9 разделяем cloud-процессы. До B9 — single-process. Не разделяем по user-role (admin/parent/super-admin same code).
 - **2026-04-26 · D15 · Cloud + Edge topology** — Face/CCTV stack on-premise per kindergarten (mini-PC ~$400 docker-compose). Cloud-БД никогда не содержит face embeddings. Outbound-only WSS edge→cloud, mTLS, command/event pattern. На B18.5 — `edge_commands` / `edge_health` / `kindergarten_edge_credentials`. На B19 — `face_consents` (только согласие, не биометрия).

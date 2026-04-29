@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 import {
+  ConflictError,
   DomainError,
   InvariantViolationError,
   NotFoundError,
@@ -100,6 +101,7 @@ export class DomainErrorFilter implements ExceptionFilter {
       return HttpStatus.UNPROCESSABLE_ENTITY;
     if (err instanceof KindergartenNotFoundError) return HttpStatus.NOT_FOUND;
     if (err instanceof NotFoundError) return HttpStatus.NOT_FOUND;
+    if (err instanceof ConflictError) return HttpStatus.CONFLICT;
     if (err instanceof InvariantViolationError) return HttpStatus.BAD_REQUEST;
     if (err instanceof DomainError) return HttpStatus.UNPROCESSABLE_ENTITY;
     return null;

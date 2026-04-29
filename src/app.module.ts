@@ -18,6 +18,7 @@ import { HealthModule } from './modules/health/health.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { CameraModule } from './modules/camera/camera.module';
 import { ChildModule } from './modules/child/child.module';
+import { EnrollmentModule } from './modules/enrollment/enrollment.module';
 import { GroupModule } from './modules/group/group.module';
 import { KindergartenModule } from './modules/kindergarten/kindergarten.module';
 import { LocationModule } from './modules/location/location.module';
@@ -79,6 +80,7 @@ const resolveI18nPath = (): string => {
     GroupModule,
     CameraModule,
     ChildModule,
+    EnrollmentModule,
   ],
   providers: [
     // The interceptor establishes a tenant-scoped TypeORM transaction (with
