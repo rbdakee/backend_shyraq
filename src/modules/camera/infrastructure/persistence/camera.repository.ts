@@ -1,4 +1,4 @@
-import { Camera } from './domain/entities/camera.entity';
+import { Camera } from '../../domain/entities/camera.entity';
 
 export interface CreateCameraInput {
   locationId: string;

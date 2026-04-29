@@ -1,5 +1,8 @@
-import { StaffMember, StaffRole } from './domain/entities/staff-member.entity';
-import { SpecialistType } from './domain/value-objects/specialist-type.vo';
+import {
+  StaffMember,
+  StaffRole,
+} from '../../domain/entities/staff-member.entity';
+import { SpecialistType } from '../../domain/value-objects/specialist-type.vo';
 
 export interface CreateStaffMemberInput {
   kindergartenId: string;

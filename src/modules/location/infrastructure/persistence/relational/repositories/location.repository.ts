@@ -8,7 +8,7 @@ import {
   ListLocationsFilters,
   LocationRepository,
   UpdateLocationInput,
-} from '../../../../location.repository';
+} from '../../location.repository';
 import { LocationEntity } from '../entities/location.entity';
 import { LocationMapper } from '../mappers/location.mapper';
 

@@ -5,7 +5,7 @@ import { User } from '@/modules/users/domain/entities/user.entity';
 import {
   UserRepository,
   UserUpdateInput,
-} from '@/modules/users/user.repository';
+} from '@/modules/users/infrastructure/persistence/user.repository';
 import {
   StaffMember,
   StaffRole,
@@ -13,7 +13,7 @@ import {
 import {
   CreateStaffMemberInput,
   StaffMemberRepository,
-} from '@/modules/staff/staff-member.repository';
+} from '@/modules/staff/infrastructure/persistence/staff-member.repository';
 import { Kindergarten } from './domain/entities/kindergarten.entity';
 import { FiscalSettingsForbiddenError } from './domain/errors/fiscal-settings-forbidden.error';
 import { KindergartenNotFoundError } from './domain/errors/kindergarten-not-found.error';
@@ -23,7 +23,7 @@ import {
   KindergartenListResult,
   KindergartenRepository,
   KindergartenUpdateInput,
-} from './kindergarten.repository';
+} from './infrastructure/persistence/kindergarten.repository';
 import { KindergartenService } from './kindergarten.service';
 
 // ── In-memory fakes ────────────────────────────────────────────────────────

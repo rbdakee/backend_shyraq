@@ -3,7 +3,7 @@ import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Repository } from 'typeorm';
 import { tenantStorage } from '@/database/tenant-storage';
 import { ChildGuardian } from '../../../../domain/entities/child-guardian.entity';
-import { ChildGuardianRepository } from '../../../../child-guardian.repository';
+import { ChildGuardianRepository } from '../../child-guardian.repository';
 import { ChildGuardianEntity } from '../entities/child-guardian.entity';
 import { ChildGuardianMapper } from '../mappers/child-guardian.mapper';
 

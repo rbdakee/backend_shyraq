@@ -9,7 +9,7 @@ import {
   ListStaffFilters,
   StaffMemberRepository,
   UpdateStaffMemberInput,
-} from '../../../../staff-member.repository';
+} from '../../staff-member.repository';
 import { StaffMemberEntity } from '../entities/staff-member.entity';
 import { StaffMemberMapper } from '../mappers/staff-member.mapper';
 

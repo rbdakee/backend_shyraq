@@ -10,7 +10,7 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  *    FK→users.id. ENABLE + FORCE ROW LEVEL SECURITY plus a `tenant_isolation`
  *    policy that mirrors the one on refresh_tokens (matches
  *    `app.kindergarten_id`, allows `app.bypass_rls` for SuperAdmin).
- * 3. Adds the partial unique index documented in plans/schema.dbml — only
+ * 3. Adds the partial unique index documented in docs/schema.dbml — only
  *    one *active* staff row per (kindergarten, user). Inactive duplicates
  *    are allowed so deactivate→reactivate cycles do not collide.
  *

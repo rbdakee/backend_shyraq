@@ -1,7 +1,7 @@
 import {
   Kindergarten,
   KindergartenSettings,
-} from './domain/entities/kindergarten.entity';
+} from '../../domain/entities/kindergarten.entity';
 
 export interface KindergartenCreateInput {
   name: string;

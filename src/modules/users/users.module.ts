@@ -2,7 +2,7 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { UserEntity } from './infrastructure/persistence/relational/entities/user.entity';
 import { UserRelationalRepository } from './infrastructure/persistence/relational/repositories/user.repository';
-import { UserRepository } from './user.repository';
+import { UserRepository } from './infrastructure/persistence/user.repository';
 import { UsersController } from './users.controller';
 import { UsersService } from './users.service';
 

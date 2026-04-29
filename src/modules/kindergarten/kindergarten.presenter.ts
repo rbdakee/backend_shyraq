@@ -1,7 +1,7 @@
 import { Kindergarten } from './domain/entities/kindergarten.entity';
 import { StaffMember } from '@/modules/staff/domain/entities/staff-member.entity';
 import { CreatedKindergartenWithAdmin } from './kindergarten.service';
-import { KindergartenListResult } from './kindergarten.repository';
+import { KindergartenListResult } from './infrastructure/persistence/kindergarten.repository';
 import {
   CreateKindergartenResponseDto,
   CreatedKindergartenStaffDto,

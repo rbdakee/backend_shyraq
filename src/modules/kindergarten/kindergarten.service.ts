@@ -2,10 +2,10 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { Locale } from '@/shared-kernel/domain/value-objects/locale.vo';
 import { Phone } from '@/shared-kernel/domain/value-objects/phone.vo';
-import { UserRepository } from '@/modules/users/user.repository';
+import { UserRepository } from '@/modules/users/infrastructure/persistence/user.repository';
 import { SmsPort } from '@/modules/auth/sms.port';
 import { StaffMember } from '@/modules/staff/domain/entities/staff-member.entity';
-import { StaffMemberRepository } from '@/modules/staff/staff-member.repository';
+import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
 import {
   Kindergarten,
   KindergartenSettings,
@@ -18,11 +18,8 @@ import {
   KindergartenFilters,
   KindergartenListResult,
   KindergartenRepository,
-} from './kindergarten.repository';
-import {
-  buildAdminInviteSms,
-  buildWelcomeSms,
-} from './application/welcome-sms.templates';
+} from './infrastructure/persistence/kindergarten.repository';
+import { buildAdminInviteSms, buildWelcomeSms } from './welcome-sms.templates';
 
 export interface CreateKindergartenInput {
   name: string;

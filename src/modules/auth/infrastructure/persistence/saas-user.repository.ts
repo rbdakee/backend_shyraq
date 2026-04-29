@@ -1,4 +1,4 @@
-import { SaasUser } from './domain/entities/saas-user.entity';
+import { SaasUser } from '../../domain/entities/saas-user.entity';
 
 export abstract class SaasUserRepository {
   abstract findById(id: string): Promise<SaasUser | null>;

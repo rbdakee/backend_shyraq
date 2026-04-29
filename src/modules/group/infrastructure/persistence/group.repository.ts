@@ -1,5 +1,5 @@
-import { Group } from './domain/entities/group.entity';
-import { GroupMentor } from './domain/entities/group-mentor.entity';
+import { Group } from '../../domain/entities/group.entity';
+import { GroupMentor } from '../../domain/entities/group-mentor.entity';
 
 export interface CreateGroupInput {
   name: string;

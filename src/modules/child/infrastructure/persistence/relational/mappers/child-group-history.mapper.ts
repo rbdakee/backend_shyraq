@@ -1,4 +1,4 @@
-import { ChildGroupHistoryRecord } from '../../../../child.repository';
+import { ChildGroupHistoryRecord } from '../../child.repository';
 import { ChildGroupHistoryEntity } from '../entities/child-group-history.entity';
 
 export class ChildGroupHistoryMapper {

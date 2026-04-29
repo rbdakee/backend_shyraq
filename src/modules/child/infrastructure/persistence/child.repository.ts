@@ -1,4 +1,4 @@
-import { Child } from './domain/entities/child.entity';
+import { Child } from '../../domain/entities/child.entity';
 
 export type ChildStatusFilter = 'card_created' | 'active' | 'archived';
 

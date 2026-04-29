@@ -8,7 +8,7 @@ import {
   CreateCameraInput,
   ListCamerasFilters,
   UpdateCameraInput,
-} from '../../../../camera.repository';
+} from '../../camera.repository';
 import { CameraEntity } from '../entities/camera.entity';
 import { CameraMapper } from '../mappers/camera.mapper';
 

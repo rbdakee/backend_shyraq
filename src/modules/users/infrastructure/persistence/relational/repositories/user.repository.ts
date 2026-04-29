@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, QueryFailedError, Repository } from 'typeorm';
 import { tenantStorage } from '@/database/tenant-storage';
-import { UserRepository, UserUpdateInput } from '../../../../user.repository';
+import { UserRepository, UserUpdateInput } from '../../user.repository';
 import { User } from '../../../../domain/entities/user.entity';
 import { UserNotFoundError } from '../../../../domain/errors/user-not-found.error';
 import { IinAlreadyTakenError } from '../../../../domain/errors/iin-already-taken.error';

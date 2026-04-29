@@ -21,11 +21,11 @@ Repo `backend_shyraq_v2` — TypeORM + service.ts brocoders pattern. Стары�
 
 | Aspect | File |
 |---|---|
-| DB schema (human-readable) | [`plans/schema.dbml`](plans/schema.dbml) |
+| DB schema (human-readable) | [`docs/schema.dbml`](docs/schema.dbml) |
 | DB schema (code SoT) | TypeORM миграции в `src/database/migrations/` |
-| REST/WS endpoints | [`plans/endpoints.md`](plans/endpoints.md) |
-| Business processes | [`plans/Shyraq BP.md`](plans/Shyraq%20BP.md) |
-| Architecture | [`plans/architecture.md`](plans/architecture.md) |
+| REST/WS endpoints | [`docs/endpoints.md`](docs/endpoints.md) |
+| Business processes | [`docs/Shyraq BP.md`](docs/Shyraq%20BP.md) |
+| Architecture | [`docs/architecture.md`](docs/architecture.md) |
 | Implementation tracker | [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) |
 
 Docs-first: меняем feature/fix/refactor → сначала правим owning doc, потом код. Doc + code в одном PR/commit.
@@ -42,11 +42,12 @@ src/modules/<x>/
 │   └── errors/                      # доменные ошибки модуля
 ├── dto/                             # @ApiProperty + class-validator
 ├── infrastructure/
-│   └── persistence/relational/
-│       ├── entities/                # TypeORM @Entity()
-│       ├── mappers/                 # domain ↔ TypeORM-entity
-│       └── repositories/            # реализации port'а (TypeORM-only)
-├── <x>.repository.ts                # abstract class (port уровня модуля)
+│   └── persistence/
+│       ├── <x>.repository.ts        # abstract class (port уровня модуля)
+│       └── relational/
+│           ├── entities/            # TypeORM @Entity()
+│           ├── mappers/             # domain ↔ TypeORM-entity
+│           └── repositories/        # реализации port'а (TypeORM-only)
 ├── <x>.controller.ts                # thin: validate → service → present
 ├── <x>.service.ts                   # вся бизнес-логика
 ├── <x>.module.ts                    # DI wiring
@@ -154,7 +155,7 @@ Unit-тесты используют **рукописные in-memory fakes** д
 
 ## 9. Adding a new module
 
-1. Update `plans/schema.dbml`, `plans/endpoints.md`, `plans/Shyraq BP.md` — что меняется.
+1. Update `docs/schema.dbml`, `docs/endpoints.md`, `docs/Shyraq BP.md` — что меняется.
 2. Создать миграцию: `npm run migration:create -- --name=<Name>`. Включить таблицы + RLS policy + `FORCE ROW LEVEL SECURITY` + indexes.
 3. Создать структуру `src/modules/<x>/` по template из §4.
 4. `domain/entities/<x>.entity.ts` — POJO с инвариантами + `toState()/fromState()`.
@@ -178,10 +179,10 @@ Unit-тесты используют **рукописные in-memory fakes** д
 
 ## 11. Pointers
 
-- [`plans/architecture.md`](plans/architecture.md) — техническая архитектура
-- [`plans/endpoints.md`](plans/endpoints.md) — REST/WS контракты
-- [`plans/schema.dbml`](plans/schema.dbml) — DB модель (human-readable)
-- [`plans/Shyraq BP.md`](plans/Shyraq%20BP.md) — бизнес-процессы
+- [`docs/architecture.md`](docs/architecture.md) — техническая архитектура
+- [`docs/endpoints.md`](docs/endpoints.md) — REST/WS контракты
+- [`docs/schema.dbml`](docs/schema.dbml) — DB модель (human-readable)
+- [`docs/Shyraq BP.md`](docs/Shyraq%20BP.md) — бизнес-процессы
 - [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) — батч-план + прогресс
 - `src/database/migrations/` — DB SoT (TypeORM миграции)
 - `env-example-relational` — все env-переменные с дефолтами и комментариями

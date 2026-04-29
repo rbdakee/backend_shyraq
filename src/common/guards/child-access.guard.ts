@@ -4,7 +4,7 @@ import {
   ForbiddenException,
   Injectable,
 } from '@nestjs/common';
-import { ChildGuardianRepository } from '@/modules/child/child-guardian.repository';
+import { ChildGuardianRepository } from '@/modules/child/infrastructure/persistence/child-guardian.repository';
 import type { AuthenticatedRequest } from '../types/authenticated-request';
 
 /**

@@ -7,7 +7,7 @@ import {
   RotateSaasOpts,
   RotateSaasResult,
   SaasRefreshTokenRepository,
-} from '../../../../saas-refresh-token.repository';
+} from '../../saas-refresh-token.repository';
 import { SaasRefreshTokenEntity } from '../entities/saas-refresh-token.entity';
 
 @Injectable()

@@ -4,18 +4,18 @@ import { randomInt } from 'node:crypto';
 import { AllConfigType } from '@/config/config.type';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { User } from '@/modules/users/domain/entities/user.entity';
-import { UserRepository } from '@/modules/users/user.repository';
+import { UserRepository } from '@/modules/users/infrastructure/persistence/user.repository';
 import {
   AuthResult,
   RoleView,
   SuperAdminAuthResult,
   UserSummaryView,
-} from './application/auth-result.view';
+} from './auth-result.view';
 import {
   computeRefreshExpiresAt,
   generateRefreshToken,
   hashRefreshToken,
-} from './application/refresh-token.helper';
+} from './refresh-token.helper';
 import { OtpAttempt } from './domain/entities/otp-attempt.entity';
 import { InvalidCredentialsError } from './domain/errors/invalid-credentials.error';
 import { NoActiveRolesError } from './domain/errors/no-active-roles.error';
@@ -28,12 +28,12 @@ import { RoleNotAvailableError } from './domain/errors/role-not-available.error'
 import { JwtTokenPort } from './jwt-token.port';
 import { OtpStorePort } from './otp-store.port';
 import { PasswordHasherPort } from './password-hasher.port';
-import { RefreshTokenRepository } from './refresh-token.repository';
-import { SaasRefreshTokenRepository } from './saas-refresh-token.repository';
-import { SaasUserRepository } from './saas-user.repository';
+import { RefreshTokenRepository } from './infrastructure/persistence/refresh-token.repository';
+import { SaasRefreshTokenRepository } from './infrastructure/persistence/saas-refresh-token.repository';
+import { SaasUserRepository } from './infrastructure/persistence/saas-user.repository';
 import { SmsPort } from './sms.port';
 import { TokenBlocklistPort } from './token-blocklist.port';
-import { StaffMemberRepository } from '@/modules/staff/staff-member.repository';
+import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
 
 const OTP_LOCKED_TTL_SEC = 900;
 const OTP_RESEND_AFTER_SEC = 60;

@@ -3,7 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, Repository } from 'typeorm';
 import { tenantStorage } from '@/database/tenant-storage';
 import { SaasUser } from '../../../../domain/entities/saas-user.entity';
-import { SaasUserRepository } from '../../../../saas-user.repository';
+import { SaasUserRepository } from '../../saas-user.repository';
 import { SaasUserEntity } from '../entities/saas-user.entity';
 import { SaasUserMapper } from '../mappers/saas-user.mapper';
 

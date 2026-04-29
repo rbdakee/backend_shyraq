@@ -23,7 +23,7 @@ import { PendingRoleSelectGuard } from '@/common/guards/pending-role-select.guar
 import { RolesGuard } from '@/common/guards/roles.guard';
 import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
 import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-context';
-import { KindergartenRepository } from '@/modules/kindergarten/kindergarten.repository';
+import { KindergartenRepository } from '@/modules/kindergarten/infrastructure/persistence/kindergarten.repository';
 import { CreateStaffDto } from './dto/create-staff.dto';
 import { ListStaffQueryDto } from './dto/list-staff-query.dto';
 import { StaffMemberDto } from './dto/staff-response.dto';

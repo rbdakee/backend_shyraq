@@ -1,11 +1,11 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { NotificationPort } from '@/common/notifications/notification.port';
-import { GroupRepository } from '@/modules/group/group.repository';
+import { GroupRepository } from '@/modules/group/infrastructure/persistence/group.repository';
 import { GroupNotFoundError } from '@/modules/group/domain/errors/group-not-found.error';
-import { StaffMemberRepository } from '@/modules/staff/staff-member.repository';
+import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
 import { StaffNotFoundError } from '@/modules/staff/domain/errors/staff-not-found.error';
-import { UserRepository } from '@/modules/users/user.repository';
+import { UserRepository } from '@/modules/users/infrastructure/persistence/user.repository';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { NotFoundError } from '@/shared-kernel/domain/errors';
 import { ChildId } from '@/shared-kernel/domain/value-objects/child-id.vo';
@@ -19,14 +19,14 @@ import { Iin } from '@/shared-kernel/domain/value-objects/iin.vo';
 import { KindergartenId } from '@/shared-kernel/domain/value-objects/kindergarten-id.vo';
 import { Phone } from '@/shared-kernel/domain/value-objects/phone.vo';
 import { UserId } from '@/shared-kernel/domain/value-objects/user-id.vo';
-import { ChildGuardianRepository } from './child-guardian.repository';
+import { ChildGuardianRepository } from './infrastructure/persistence/child-guardian.repository';
 import {
   ChildGroupHistoryRecord,
   ChildListFilters,
   ChildRepository,
   PageRequest,
   PageResult,
-} from './child.repository';
+} from './infrastructure/persistence/child.repository';
 import { Child, Gender } from './domain/entities/child.entity';
 import { ChildGuardian } from './domain/entities/child-guardian.entity';
 import { ChildIinAlreadyExistsError } from './domain/errors/child-iin-already-exists.error';

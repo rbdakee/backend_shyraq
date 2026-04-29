@@ -10,7 +10,7 @@ import {
   ChildRepository,
   PageRequest,
   PageResult,
-} from '../../../../child.repository';
+} from '../../child.repository';
 import { ChildEntity } from '../entities/child.entity';
 import { ChildGroupHistoryEntity } from '../entities/child-group-history.entity';
 import { ChildMapper } from '../mappers/child.mapper';

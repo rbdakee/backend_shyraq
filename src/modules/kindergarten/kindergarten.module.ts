@@ -5,7 +5,7 @@ import { StaffModule } from '@/modules/staff/staff.module';
 import { KindergartenEntity } from './infrastructure/persistence/relational/entities/kindergarten.entity';
 import { KindergartenRelationalRepository } from './infrastructure/persistence/relational/repositories/kindergarten.repository';
 import { KindergartenController } from './kindergarten.controller';
-import { KindergartenRepository } from './kindergarten.repository';
+import { KindergartenRepository } from './infrastructure/persistence/kindergarten.repository';
 import { KindergartenService } from './kindergarten.service';
 import { SuperAdminKindergartenController } from './super-admin-kindergarten.controller';
 

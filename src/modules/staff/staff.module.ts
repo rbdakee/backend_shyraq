@@ -5,7 +5,7 @@ import { UsersModule } from '@/modules/users/users.module';
 import { StaffMemberEntity } from './infrastructure/persistence/relational/entities/staff-member.entity';
 import { StaffMemberRelationalRepository } from './infrastructure/persistence/relational/repositories/staff-member.repository';
 import { StaffController } from './staff.controller';
-import { StaffMemberRepository } from './staff-member.repository';
+import { StaffMemberRepository } from './infrastructure/persistence/staff-member.repository';
 import { StaffService } from './staff.service';
 
 /**

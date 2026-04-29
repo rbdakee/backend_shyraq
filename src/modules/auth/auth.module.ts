@@ -22,9 +22,9 @@ import { RedisTokenBlocklistAdapter } from './infrastructure/redis/redis-token-b
 import { JwtTokenPort } from './jwt-token.port';
 import { OtpStorePort } from './otp-store.port';
 import { PasswordHasherPort } from './password-hasher.port';
-import { RefreshTokenRepository } from './refresh-token.repository';
-import { SaasRefreshTokenRepository } from './saas-refresh-token.repository';
-import { SaasUserRepository } from './saas-user.repository';
+import { RefreshTokenRepository } from './infrastructure/persistence/refresh-token.repository';
+import { SaasRefreshTokenRepository } from './infrastructure/persistence/saas-refresh-token.repository';
+import { SaasUserRepository } from './infrastructure/persistence/saas-user.repository';
 import { SmsPort } from './sms.port';
 import { SuperAdminAuthController } from './super-admin-auth.controller';
 import { TokenBlocklistPort } from './token-blocklist.port';

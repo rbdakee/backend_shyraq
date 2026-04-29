@@ -1,4 +1,4 @@
-import { ChildGuardian } from './domain/entities/child-guardian.entity';
+import { ChildGuardian } from '../../domain/entities/child-guardian.entity';
 
 /**
  * Port over the `child_guardians` table.

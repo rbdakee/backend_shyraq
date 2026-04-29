@@ -10,7 +10,7 @@ import {
   GroupRepository,
   ListGroupsFilters,
   UpdateGroupInput,
-} from '../../../../group.repository';
+} from '../../group.repository';
 import { GroupEntity } from '../entities/group.entity';
 import { GroupMentorEntity } from '../entities/group-mentor.entity';
 import { GroupMapper } from '../mappers/group.mapper';

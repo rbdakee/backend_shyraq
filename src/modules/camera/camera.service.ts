@@ -1,13 +1,13 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
-import { LocationRepository } from '@/modules/location/location.repository';
+import { LocationRepository } from '@/modules/location/infrastructure/persistence/location.repository';
 import { LocationNotFoundError } from '@/modules/location/domain/errors/location-not-found.error';
 import {
   CameraRepository,
   CreateCameraInput,
   ListCamerasFilters,
   UpdateCameraInput,
-} from './camera.repository';
+} from './infrastructure/persistence/camera.repository';
 import { Camera } from './domain/entities/camera.entity';
 import { CameraArchivedError } from './domain/errors/camera-archived.error';
 import { CameraNotFoundError } from './domain/errors/camera-not-found.error';

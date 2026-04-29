@@ -7,7 +7,7 @@ import {
   ListLocationsFilters,
   LocationRepository,
   UpdateLocationInput,
-} from '@/modules/location/location.repository';
+} from '@/modules/location/infrastructure/persistence/location.repository';
 import { StaffMember } from '@/modules/staff/domain/entities/staff-member.entity';
 import { StaffNotFoundError } from '@/modules/staff/domain/errors/staff-not-found.error';
 import {
@@ -15,7 +15,7 @@ import {
   ListStaffFilters,
   StaffMemberRepository,
   UpdateStaffMemberInput,
-} from '@/modules/staff/staff-member.repository';
+} from '@/modules/staff/infrastructure/persistence/staff-member.repository';
 import { Group } from './domain/entities/group.entity';
 import { GroupMentor } from './domain/entities/group-mentor.entity';
 import { GroupArchivedError } from './domain/errors/group-archived.error';
@@ -26,7 +26,7 @@ import {
   GroupRepository,
   ListGroupsFilters,
   UpdateGroupInput,
-} from './group.repository';
+} from './infrastructure/persistence/group.repository';
 import { GroupService } from './group.service';
 
 // ── fakes ──────────────────────────────────────────────────────────────────

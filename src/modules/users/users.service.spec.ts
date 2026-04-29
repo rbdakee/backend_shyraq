@@ -1,6 +1,9 @@
 import { User } from './domain/entities/user.entity';
 import { UserNotFoundError } from './domain/errors/user-not-found.error';
-import { UserRepository, UserUpdateInput } from './user.repository';
+import {
+  UserRepository,
+  UserUpdateInput,
+} from './infrastructure/persistence/user.repository';
 import { UsersService } from './users.service';
 
 class FakeUserRepo extends UserRepository {

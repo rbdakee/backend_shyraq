@@ -3,7 +3,7 @@ import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { Locale } from '@/shared-kernel/domain/value-objects/locale.vo';
 import { Phone } from '@/shared-kernel/domain/value-objects/phone.vo';
 import { SmsPort } from '@/modules/auth/sms.port';
-import { UserRepository } from '@/modules/users/user.repository';
+import { UserRepository } from '@/modules/users/infrastructure/persistence/user.repository';
 import { StaffMember, StaffRole } from './domain/entities/staff-member.entity';
 import { SpecialistType } from './domain/value-objects/specialist-type.vo';
 import { StaffNotFoundError } from './domain/errors/staff-not-found.error';
@@ -11,8 +11,8 @@ import { StaffArchivedError } from './domain/errors/staff-archived.error';
 import {
   ListStaffFilters,
   StaffMemberRepository,
-} from './staff-member.repository';
-import { buildStaffWelcomeSms } from './application/staff-welcome-sms.templates';
+} from './infrastructure/persistence/staff-member.repository';
+import { buildStaffWelcomeSms } from './staff-welcome-sms.templates';
 
 export interface CreateStaffInput {
   fullName: string;

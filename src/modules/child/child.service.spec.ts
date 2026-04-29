@@ -7,7 +7,7 @@ import {
   GroupRepository,
   ListGroupsFilters,
   UpdateGroupInput,
-} from '@/modules/group/group.repository';
+} from '@/modules/group/infrastructure/persistence/group.repository';
 import { GroupMentor } from '@/modules/group/domain/entities/group-mentor.entity';
 import { StaffMember } from '@/modules/staff/domain/entities/staff-member.entity';
 import {
@@ -15,21 +15,21 @@ import {
   ListStaffFilters,
   StaffMemberRepository,
   UpdateStaffMemberInput,
-} from '@/modules/staff/staff-member.repository';
+} from '@/modules/staff/infrastructure/persistence/staff-member.repository';
 import { User } from '@/modules/users/domain/entities/user.entity';
 import {
   UserRepository,
   UserUpdateInput,
-} from '@/modules/users/user.repository';
+} from '@/modules/users/infrastructure/persistence/user.repository';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
-import { ChildGuardianRepository } from './child-guardian.repository';
+import { ChildGuardianRepository } from './infrastructure/persistence/child-guardian.repository';
 import {
   ChildGroupHistoryRecord,
   ChildListFilters,
   ChildRepository,
   PageRequest,
   PageResult,
-} from './child.repository';
+} from './infrastructure/persistence/child.repository';
 import { ChildService } from './child.service';
 import { Child } from './domain/entities/child.entity';
 import { ChildGuardian } from './domain/entities/child-guardian.entity';

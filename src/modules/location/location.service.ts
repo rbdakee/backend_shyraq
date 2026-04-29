@@ -8,7 +8,7 @@ import {
   ListLocationsFilters,
   LocationRepository,
   UpdateLocationInput,
-} from './location.repository';
+} from './infrastructure/persistence/location.repository';
 
 /**
  * LocationService — admin-scoped CRUD over kindergarten locations.

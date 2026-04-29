@@ -11,7 +11,7 @@ import {
   KindergartenListResult,
   KindergartenRepository,
   KindergartenUpdateInput,
-} from '../../../../kindergarten.repository';
+} from '../../kindergarten.repository';
 import { KindergartenEntity } from '../entities/kindergarten.entity';
 import { KindergartenMapper } from '../mappers/kindergarten.mapper';
 

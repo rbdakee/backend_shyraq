@@ -3,7 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { LocationModule } from '@/modules/location/location.module';
 import { StaffModule } from '@/modules/staff/staff.module';
 import { GroupController } from './group.controller';
-import { GroupRepository } from './group.repository';
+import { GroupRepository } from './infrastructure/persistence/group.repository';
 import { GroupService } from './group.service';
 import { GroupEntity } from './infrastructure/persistence/relational/entities/group.entity';
 import { GroupMentorEntity } from './infrastructure/persistence/relational/entities/group-mentor.entity';

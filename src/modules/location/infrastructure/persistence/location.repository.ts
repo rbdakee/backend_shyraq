@@ -1,4 +1,4 @@
-import { Location } from './domain/entities/location.entity';
+import { Location } from '../../domain/entities/location.entity';
 
 export interface CreateLocationInput {
   name: string;

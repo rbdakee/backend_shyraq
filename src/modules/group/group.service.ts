@@ -1,8 +1,8 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
-import { LocationRepository } from '@/modules/location/location.repository';
+import { LocationRepository } from '@/modules/location/infrastructure/persistence/location.repository';
 import { LocationNotFoundError } from '@/modules/location/domain/errors/location-not-found.error';
-import { StaffMemberRepository } from '@/modules/staff/staff-member.repository';
+import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
 import { StaffNotFoundError } from '@/modules/staff/domain/errors/staff-not-found.error';
 import { Group } from './domain/entities/group.entity';
 import { GroupMentor } from './domain/entities/group-mentor.entity';
@@ -14,7 +14,7 @@ import {
   GroupRepository,
   ListGroupsFilters,
   UpdateGroupInput,
-} from './group.repository';
+} from './infrastructure/persistence/group.repository';
 
 /**
  * GroupService — admin-scoped CRUD over the groups + group_mentors aggregate.

@@ -9,7 +9,7 @@ import { User } from '@/modules/users/domain/entities/user.entity';
 import {
   UserRepository,
   UserUpdateInput,
-} from '@/modules/users/user.repository';
+} from '@/modules/users/infrastructure/persistence/user.repository';
 import { AuthService } from './auth.service';
 import { SaasUser } from './domain/entities/saas-user.entity';
 import { InvalidCredentialsError } from './domain/errors/invalid-credentials.error';
@@ -32,28 +32,28 @@ import {
   RefreshTokenRepository,
   RotateOpts,
   RotateResult,
-} from './refresh-token.repository';
+} from './infrastructure/persistence/refresh-token.repository';
 import {
   CreateSaasRefreshInput,
   RotateSaasOpts,
   RotateSaasResult,
   SaasRefreshTokenRepository,
-} from './saas-refresh-token.repository';
-import { SaasUserRepository } from './saas-user.repository';
+} from './infrastructure/persistence/saas-refresh-token.repository';
+import { SaasUserRepository } from './infrastructure/persistence/saas-user.repository';
 import { SmsPort, SmsSendResult } from './sms.port';
 import { TokenBlocklistPort } from './token-blocklist.port';
 import {
   computeRefreshExpiresAt,
   generateRefreshToken,
   hashRefreshToken,
-} from './application/refresh-token.helper';
+} from './refresh-token.helper';
 import { StaffMember } from '@/modules/staff/domain/entities/staff-member.entity';
 import {
   CreateStaffMemberInput,
   ListStaffFilters,
   StaffMemberRepository,
   UpdateStaffMemberInput,
-} from '@/modules/staff/staff-member.repository';
+} from '@/modules/staff/infrastructure/persistence/staff-member.repository';
 
 class FixedClock implements ClockPort {
   constructor(private readonly fixed: Date) {}

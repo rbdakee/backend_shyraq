@@ -7,7 +7,7 @@ import {
   RefreshTokenRepository,
   RotateOpts,
   RotateResult,
-} from '../../../../refresh-token.repository';
+} from '../../refresh-token.repository';
 import { RefreshTokenEntity } from '../entities/refresh-token.entity';
 
 @Injectable()

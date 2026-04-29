@@ -2,7 +2,7 @@ import {
   LOCKED_PERMISSION_KEYS,
   PermissionKey,
 } from '@/shared-kernel/domain/value-objects/guardian-permissions.vo';
-import { ChildGroupHistoryRecord } from './child.repository';
+import { ChildGroupHistoryRecord } from './infrastructure/persistence/child.repository';
 import { Child } from './domain/entities/child.entity';
 import { ChildGuardian } from './domain/entities/child-guardian.entity';
 import {

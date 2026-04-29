@@ -3,7 +3,7 @@ import {
   RoleView,
   SuperAdminAuthResult,
   UserSummaryView,
-} from './application/auth-result.view';
+} from './auth-result.view';
 import {
   AuthResponseDto,
   AuthUserResponseDto,

@@ -1,7 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { User } from './domain/entities/user.entity';
 import { UserNotFoundError } from './domain/errors/user-not-found.error';
-import { UserRepository, UserUpdateInput } from './user.repository';
+import {
+  UserRepository,
+  UserUpdateInput,
+} from './infrastructure/persistence/user.repository';
 
 export interface UpdateMeInput {
   fullName?: string;
