@@ -224,6 +224,26 @@ CREATE POLICY tenant_isolation ON <name>
 
 `users`, `refresh_tokens` (с nullable `kindergarten_id`), `saas_users`, `saas_refresh_tokens` — глобальные. RLS не накладывается. Изоляция обеспечивается на уровне сервиса (например, refresh-token revocation scoped по `kindergarten_id` + `user_id`).
 
+### 3.6 B8 manual attendance flow
+
+**Atomic 3-table TX (check-in / check-out):**
+Один check-in или check-out записывает три строки внутри одной транзакции: `attendance_events` (основная запись события) + `timeline_entries` (human-readable запись в дневнике ребёнка) + upsert `child_daily_status` (агрегированный статус за день). Транзакция опирается на ambient EntityManager из `TenantContextInterceptor` (паттерн B5/B7 — без ручного `dataSource.transaction`). Сбой любой из трёх операций откатывает всё.
+
+**`NotificationPort` расширение (B8):**
+Добавлены 4 новых метода: `notifyAttendanceCheckIn`, `notifyAttendanceCheckOut`, `notifyDailyStatusChanged`, `notifyTimelineEntryCreated`. `LoggingNotificationAdapter` логирует все 4. Реальный WS/push-fanout — B9 (каждый метод адаптера помечен `// TODO(B9): WS fanout`).
+
+**Pickup validation policy (B8 manual):**
+`pickup_user_id` на check-out должен ссылаться на одобренного guardian'а ребёнка с `can_pickup=true` И `revoked_at IS NULL` (lookup в `child_guardians WHERE child_id=$ AND user_id=$ AND status='approved' AND revoked_at IS NULL AND can_pickup=true`). OTP-based pickup-by-trusted-person — B11; колонка `pickup_request_id` остаётся nullable и не пишется в B8.
+
+**Edit window (non-admin staff):**
+`PATCH /staff/attendance/:eventId` разрешён только если `recorded_at::date == NOW()::date` в `Asia/Almaty`. Admin endpoint `/admin/attendance-events/:id` не имеет ограничения по окну. `// TODO(B22): make window configurable per kindergarten`.
+
+**Daily status enum и defaults:**
+`present | absent | sick | late | early_pickup | on_vacation` (default `absent`). Check-in делает upsert `child_daily_status.status='present'` только если текущий статус `absent` или `late` (либо строка отсутствует) — это сохраняет вручную установленные `sick` / `on_vacation`. Check-out не меняет `child_daily_status`.
+
+**Out-of-scope для B8:**
+WS/BullMQ (B9), QR-scan (B10), Pickup OTP (B11), Face ID (B19).
+
 ---
 
 ## 4. Auth & Identity

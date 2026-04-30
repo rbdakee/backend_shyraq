@@ -295,7 +295,7 @@ Email + password (не OTP). Access-токен — тот же JWT HS256 (`JWT_A
 | PATCH | `/admin/children/:id/guardians/:guardianId` | Изменить `role`, `can_pickup`. Изменение `has_approval_rights` — только через Primary Guardian's approval flow (см. Parent API). |
 | POST | `/admin/children/:id/guardians/:guardianId/revoke` | Отозвать доступ (`revoked_at`, `revoked_by`). |
 | GET | `/admin/children/:id/group-history` | История переводов. |
-| GET | `/admin/children/:id/timeline` | Вся timeline ребёнка. **[Deferred to B8 — timeline появляется в Attendance batch]** |
+| GET | `/admin/children/:id/timeline` | Вся timeline ребёнка. |
 
 ### 2.8 Schedule (Templates + Activity Events)
 

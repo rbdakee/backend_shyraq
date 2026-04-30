@@ -444,12 +444,13 @@ Table enrollment_status_log {
 Table attendance_events {
   id                uuid                  [pk, default: `gen_random_uuid()`]
   kindergarten_id   uuid                  [not null, ref: > kindergartens.id]
+  // FORCE ROW LEVEL SECURITY — defense-in-depth, applies even to table owner; DDL in migration B8AttendanceAndTimeline
   child_id          uuid                  [not null, ref: > children.id]
   event_type        attendance_event_type [not null]
   method            attendance_method     [not null]
   recorded_by       uuid                  [ref: > staff_members.id]
   pickup_user_id    uuid                  [ref: > users.id]
-  pickup_request_id uuid                  // ref: > pickup_requests.id
+  pickup_request_id uuid                  // ref: > pickup_requests.id — B11 will add FK to pickup_requests
   notes             text
   recorded_at       timestamptz           [not null, default: `now()`]
   created_at        timestamptz           [not null, default: `now()`]
@@ -463,6 +464,7 @@ Table attendance_events {
 Table child_daily_status {
   id              uuid                  [pk, default: `gen_random_uuid()`]
   kindergarten_id uuid                  [not null, ref: > kindergartens.id]
+  // FORCE ROW LEVEL SECURITY — defense-in-depth, applies even to table owner; DDL in migration B8AttendanceAndTimeline
   child_id        uuid                  [not null, ref: > children.id]
   date            date                  [not null]
   status          child_intraday_status [not null, default: 'absent']
@@ -479,6 +481,7 @@ Table child_daily_status {
 Table timeline_entries {
   id              uuid               [pk, default: `gen_random_uuid()`]
   kindergarten_id uuid               [not null, ref: > kindergartens.id]
+  // FORCE ROW LEVEL SECURITY — defense-in-depth, applies even to table owner; DDL in migration B8AttendanceAndTimeline
   child_id        uuid               [not null, ref: > children.id]
   entry_type      timeline_entry_type [not null]
   title           varchar
