@@ -16,6 +16,7 @@ import { AllConfigType } from './config/config.type';
 import { SharedKernelModule } from './shared-kernel/shared-kernel.module';
 import { RedisModule } from './redis/redis.module';
 import { HealthModule } from './modules/health/health.module';
+import { AttendanceModule } from './modules/attendance/attendance.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { CameraModule } from './modules/camera/camera.module';
 import { ChildModule } from './modules/child/child.module';
@@ -93,6 +94,7 @@ const resolveI18nPath = (): string => {
     MealModule,
     ScheduleModule,
     ScheduleRolloutModule,
+    AttendanceModule,
   ],
   providers: [
     // The interceptor establishes a tenant-scoped TypeORM transaction (with

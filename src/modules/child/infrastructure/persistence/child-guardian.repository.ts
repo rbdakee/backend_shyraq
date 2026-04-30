@@ -81,4 +81,21 @@ export abstract class ChildGuardianRepository {
   abstract findPendingPrimaryByUserIdCrossTenant(
     userId: string,
   ): Promise<ChildGuardian[]>;
+
+  /**
+   * Used by the B8 check-out flow to validate the picking-up parent. Returns
+   * a guardian row only when ALL of these hold:
+   *   - kindergarten_id = kg AND child_id = childId AND user_id = userId
+   *   - status = 'approved'
+   *   - revoked_at IS NULL
+   *   - can_pickup = true
+   *
+   * Any failure → returns null (no leak about which condition failed; the
+   * service collapses everything into PickupUserNotAllowedError).
+   */
+  abstract findApprovedActivePickupGuardian(
+    kindergartenId: string,
+    childId: string,
+    userId: string,
+  ): Promise<ChildGuardian | null>;
 }

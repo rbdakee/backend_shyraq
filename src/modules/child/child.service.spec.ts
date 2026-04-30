@@ -323,6 +323,13 @@ class FakeGuardianRepo extends ChildGuardianRepository {
       ),
     );
   }
+  findApprovedActivePickupGuardian(
+    _kg: string,
+    _childId: string,
+    _userId: string,
+  ): Promise<ChildGuardian | null> {
+    return Promise.resolve(null);
+  }
 }
 
 class FakeGroupRepo extends GroupRepository {
@@ -495,6 +502,18 @@ class FakeNotification extends NotificationPort {
   }
   notifyPermissionsUpdated(e: unknown): Promise<void> {
     return this.push('permissions_updated', e);
+  }
+  notifyAttendanceCheckIn(e: unknown): Promise<void> {
+    return this.push('attendance_check_in', e);
+  }
+  notifyAttendanceCheckOut(e: unknown): Promise<void> {
+    return this.push('attendance_check_out', e);
+  }
+  notifyDailyStatusChanged(e: unknown): Promise<void> {
+    return this.push('daily_status_changed', e);
+  }
+  notifyTimelineEntryCreated(e: unknown): Promise<void> {
+    return this.push('timeline_entry_created', e);
   }
 }
 

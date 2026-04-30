@@ -58,6 +58,42 @@ export interface PermissionsUpdatedEvent {
   effectivePermissions: Record<string, boolean>;
 }
 
+// ── B8 Attendance & Timeline events ────────────────────────────────────────
+
+export interface AttendanceCheckInEvent {
+  kindergartenId: string;
+  childId: string;
+  eventId: string;
+  recordedAt: Date;
+  recordedByStaffMemberId: string | null;
+}
+
+export interface AttendanceCheckOutEvent extends AttendanceCheckInEvent {
+  pickupUserId: string;
+  /** Always null in B8 — set by B11 OTP-pickup flow. */
+  pickupRequestId: string | null;
+}
+
+export interface DailyStatusChangedEvent {
+  kindergartenId: string;
+  childId: string;
+  /** ISO date string (YYYY-MM-DD). */
+  date: string;
+  /** child_intraday_status enum value. */
+  status: string;
+  setByStaffMemberId: string | null;
+}
+
+export interface TimelineEntryCreatedEvent {
+  kindergartenId: string;
+  childId: string;
+  entryId: string;
+  /** timeline_entry_type enum value. */
+  entryType: string;
+  entryTime: Date;
+  recordedByStaffMemberId: string | null;
+}
+
 export abstract class NotificationPort {
   abstract notifyGuardianPendingApproval(
     event: GuardianPendingApprovalEvent,
@@ -68,5 +104,20 @@ export abstract class NotificationPort {
   abstract notifyChildTransferred(event: ChildTransferredEvent): Promise<void>;
   abstract notifyPermissionsUpdated(
     event: PermissionsUpdatedEvent,
+  ): Promise<void>;
+
+  // ── B8 Attendance & Timeline ─────────────────────────────────────────────
+
+  abstract notifyAttendanceCheckIn(
+    event: AttendanceCheckInEvent,
+  ): Promise<void>;
+  abstract notifyAttendanceCheckOut(
+    event: AttendanceCheckOutEvent,
+  ): Promise<void>;
+  abstract notifyDailyStatusChanged(
+    event: DailyStatusChangedEvent,
+  ): Promise<void>;
+  abstract notifyTimelineEntryCreated(
+    event: TimelineEntryCreatedEvent,
   ): Promise<void>;
 }

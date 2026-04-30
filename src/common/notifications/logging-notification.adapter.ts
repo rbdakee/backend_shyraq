@@ -1,12 +1,16 @@
 import { Injectable, Logger } from '@nestjs/common';
 import {
+  AttendanceCheckInEvent,
+  AttendanceCheckOutEvent,
   ChildTransferredEvent,
+  DailyStatusChangedEvent,
   GuardianApprovedEvent,
   GuardianPendingApprovalEvent,
   GuardianRejectedEvent,
   GuardianRevokedEvent,
   NotificationPort,
   PermissionsUpdatedEvent,
+  TimelineEntryCreatedEvent,
 } from './notification.port';
 
 /**
@@ -48,6 +52,40 @@ export class LoggingNotificationAdapter extends NotificationPort {
 
   notifyPermissionsUpdated(event: PermissionsUpdatedEvent): Promise<void> {
     this.logger.log({ type: 'permissions_updated', ...event });
+    return Promise.resolve();
+  }
+
+  // ── B8 Attendance & Timeline ───────────────────────────────────────────
+
+  notifyAttendanceCheckIn(event: AttendanceCheckInEvent): Promise<void> {
+    this.logger.log({ type: 'attendance_check_in', ...event });
+    // TODO(B9): WS fanout — resolve recipients via
+    // ChildGuardianRepository.findApprovedGuardians +
+    // NotificationPreferenceRepository.filterByChannel.
+    return Promise.resolve();
+  }
+
+  notifyAttendanceCheckOut(event: AttendanceCheckOutEvent): Promise<void> {
+    this.logger.log({ type: 'attendance_check_out', ...event });
+    // TODO(B9): WS fanout — resolve recipients via
+    // ChildGuardianRepository.findApprovedGuardians +
+    // NotificationPreferenceRepository.filterByChannel.
+    return Promise.resolve();
+  }
+
+  notifyDailyStatusChanged(event: DailyStatusChangedEvent): Promise<void> {
+    this.logger.log({ type: 'daily_status_changed', ...event });
+    // TODO(B9): WS fanout — resolve recipients via
+    // ChildGuardianRepository.findApprovedGuardians +
+    // NotificationPreferenceRepository.filterByChannel.
+    return Promise.resolve();
+  }
+
+  notifyTimelineEntryCreated(event: TimelineEntryCreatedEvent): Promise<void> {
+    this.logger.log({ type: 'timeline_entry_created', ...event });
+    // TODO(B9): WS fanout — resolve recipients via
+    // ChildGuardianRepository.findApprovedGuardians +
+    // NotificationPreferenceRepository.filterByChannel.
     return Promise.resolve();
   }
 }

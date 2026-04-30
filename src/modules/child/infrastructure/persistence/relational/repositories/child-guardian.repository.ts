@@ -225,6 +225,24 @@ export class ChildGuardianRelationalRepository extends ChildGuardianRepository {
     });
   }
 
+  async findApprovedActivePickupGuardian(
+    kindergartenId: string,
+    childId: string,
+    userId: string,
+  ): Promise<ChildGuardian | null> {
+    const row = await this.manager()
+      .getRepository(ChildGuardianEntity)
+      .createQueryBuilder('g')
+      .where('g.kindergarten_id = :kg', { kg: kindergartenId })
+      .andWhere('g.child_id = :cid', { cid: childId })
+      .andWhere('g.user_id = :uid', { uid: userId })
+      .andWhere("g.status = 'approved'")
+      .andWhere('g.revoked_at IS NULL')
+      .andWhere('g.can_pickup = true')
+      .getOne();
+    return row ? ChildGuardianMapper.toDomain(row) : null;
+  }
+
   private manager(): EntityManager {
     const ctx = tenantStorage.getStore();
     return ctx?.entityManager ?? this.repo.manager;

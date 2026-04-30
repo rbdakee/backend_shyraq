@@ -415,6 +415,13 @@ class FakeGuardianRepo extends ChildGuardianRepository {
       ),
     );
   }
+  findApprovedActivePickupGuardian(
+    _kg: string,
+    _childId: string,
+    _userId: string,
+  ): Promise<ChildGuardian | null> {
+    return Promise.resolve(null);
+  }
 }
 
 /**
