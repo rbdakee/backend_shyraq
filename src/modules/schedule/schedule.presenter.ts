@@ -1,0 +1,82 @@
+import { ActivityEvent } from './domain/entities/activity-event.entity';
+import { ScheduleTemplate } from './domain/entities/schedule-template.entity';
+import { ScheduleTemplateSlot } from './domain/entities/schedule-template-slot.entity';
+import { ScheduleWeekSnapshot } from './domain/entities/schedule-week-snapshot.entity';
+import { ActivityEventResponseDto } from './dto/activity-event.response.dto';
+import {
+  ScheduleTemplateResponseDto,
+  ScheduleTemplateSlotResponseDto,
+} from './dto/schedule-template.response.dto';
+import { ScheduleWeekSnapshotResponseDto } from './dto/week-snapshot.response.dto';
+
+function toIsoDate(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+export class SchedulePresenter {
+  static slot(s: ScheduleTemplateSlot): ScheduleTemplateSlotResponseDto {
+    const state = s.toState();
+    return {
+      id: state.id,
+      dayOfWeek: state.dayOfWeek,
+      startTime: state.startTime,
+      endTime: state.endTime,
+      activityName: state.activityName,
+      locationId: state.locationId,
+      description: state.description,
+    };
+  }
+
+  static template(t: ScheduleTemplate): ScheduleTemplateResponseDto {
+    const state = t.toState();
+    return {
+      id: state.id,
+      kindergartenId: state.kindergartenId,
+      groupId: state.groupId,
+      name: state.name,
+      recurrence: state.recurrence,
+      isActive: state.isActive,
+      validFrom: toIsoDate(state.validFrom),
+      validUntil:
+        state.validUntil === null ? null : toIsoDate(state.validUntil),
+      createdAt: state.createdAt.toISOString(),
+      slots: state.slots.map((slotState) =>
+        SchedulePresenter.slot(ScheduleTemplateSlot.hydrate(slotState)),
+      ),
+    };
+  }
+
+  static event(e: ActivityEvent): ActivityEventResponseDto {
+    const s = e.toState();
+    return {
+      id: s.id,
+      kindergartenId: s.kindergartenId,
+      groupId: s.groupId,
+      templateSlotId: s.templateSlotId,
+      activityName: s.activityName,
+      locationId: s.locationId,
+      startsAt: s.startsAt.toISOString(),
+      endsAt: s.endsAt === null ? null : s.endsAt.toISOString(),
+      status: s.status,
+      createdBy: s.createdBy,
+      notes: s.notes,
+      createdAt: s.createdAt.toISOString(),
+      updatedAt: s.updatedAt.toISOString(),
+    };
+  }
+
+  static weekSnapshot(
+    s: ScheduleWeekSnapshot,
+  ): ScheduleWeekSnapshotResponseDto {
+    const state = s.toState();
+    return {
+      id: state.id,
+      kindergartenId: state.kindergartenId,
+      groupId: state.groupId,
+      weekStartDate: toIsoDate(state.weekStartDate),
+      source: state.source,
+      copiedFrom: state.copiedFrom,
+      createdAt: state.createdAt.toISOString(),
+    };
+  }
+}

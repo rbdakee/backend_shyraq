@@ -19,9 +19,11 @@ import { AuthModule } from './modules/auth/auth.module';
 import { CameraModule } from './modules/camera/camera.module';
 import { ChildModule } from './modules/child/child.module';
 import { EnrollmentModule } from './modules/enrollment/enrollment.module';
+import { MealModule } from './modules/meal/meal.module';
 import { GroupModule } from './modules/group/group.module';
 import { KindergartenModule } from './modules/kindergarten/kindergarten.module';
 import { LocationModule } from './modules/location/location.module';
+import { ScheduleModule } from './modules/schedule/schedule.module';
 import { StaffModule } from './modules/staff/staff.module';
 import { UsersModule } from './modules/users/users.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
@@ -81,6 +83,8 @@ const resolveI18nPath = (): string => {
     CameraModule,
     ChildModule,
     EnrollmentModule,
+    MealModule,
+    ScheduleModule,
   ],
   providers: [
     // The interceptor establishes a tenant-scoped TypeORM transaction (with
