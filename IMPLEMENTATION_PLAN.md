@@ -150,6 +150,8 @@
 - **TipTopPay vs FreedomPay** — выбрать один. Блокирует расширение B14.
 - **Qdrant vs pgvector** для face embeddings — блокирует начало B19. (D15 фиксирует Qdrant локально на edge; pgvector вариант снят с рассмотрения.)
 - **IIN Luhn checksum validation** — валидируется только формат `^\d{12}$`. Контрольная цифра по алгоритму ИИН РК (Luhn-mod-вариант) откладывается до v2-polish.
+- **child.service.ts split (B6 leftover)** — после B6 файл вырос до ~880 строк (было ~700). CLAUDE.md §8 рекомендует разбить на role-specific (`child.service.ts` admin + `parent-child.service.ts` parent-flow). Не сделано в B6, чтобы не пересекаться с B5/P5 рефакторингом в одном PR. Маркер `// TODO(refactor): split child.service.ts on parent vs admin paths` стоит в `src/modules/child/child.service.ts` рядом с `linkChildByIin`. Отдельная задача после B7 или одной volna с B12 (когда parent-flow ещё расширится).
+- **`autoApprovePendingPrimaries` без notify (B6 leftover)** — план §3.3 step 4 предусматривал `notifyGuardianApproved` self-event при auto-approve. T4 решил не эмитить (self-event пока без подписчика на стороне UI). Когда в B9 заведём WebSocket-роутинг — добавить вызов `notificationPort.notifyGuardianApproved` внутри per-kg tx. Маркер `// TODO(B9): emit notifyGuardianApproved` стоит в `src/modules/auth/auth.service.ts` в `autoApprovePendingPrimaries`.
 
 ### Resolved (исторические — full log в memory)
 

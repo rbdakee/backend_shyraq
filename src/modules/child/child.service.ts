@@ -604,6 +604,10 @@ export class ChildService {
    *   - caller already has PENDING_APPROVAL row     → AlreadyPendingForChildError
    *   - caller has only a REVOKED row → fresh pending row is allowed (the
    *     partial-unique idx permits multiple revoked rows alongside one active)
+   *
+   * TODO(refactor): split child.service.ts on parent vs admin paths — file
+   * crossed ~880 lines after B6 (CLAUDE.md §8 threshold ~700). See
+   * IMPLEMENTATION_PLAN.md §5 Active.
    */
   async linkChildByIin(
     callerUserId: string,

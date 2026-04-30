@@ -645,6 +645,9 @@ export class AuthService implements OnModuleInit {
           async () => {
             guardian.autoApproveAsPrimary(now);
             await this.guardians.update(guardian);
+            // TODO(B9): emit notifyGuardianApproved self-event once WS routing
+            // lands so the parent UI updates without a manual refresh.
+            // See IMPLEMENTATION_PLAN.md §5 Active.
           },
         );
       });
