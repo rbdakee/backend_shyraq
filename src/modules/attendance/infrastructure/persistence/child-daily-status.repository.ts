@@ -34,4 +34,23 @@ export abstract class ChildDailyStatusRepository {
     kindergartenId: string,
     daily: ChildDailyStatus,
   ): Promise<ChildDailyStatus>;
+
+  /**
+   * Paged list of daily_status rows for a kindergarten with optional filters.
+   * Used by admin and T4 list endpoints.
+   */
+  abstract list(
+    kindergartenId: string,
+    filter: ListDailyStatusFilter,
+  ): Promise<ChildDailyStatus[]>;
+}
+
+export interface ListDailyStatusFilter {
+  childId?: string;
+  /** Inclusive lower bound (YYYY-MM-DD). */
+  from?: string;
+  /** Inclusive upper bound (YYYY-MM-DD). */
+  to?: string;
+  limit?: number;
+  offset?: number;
 }

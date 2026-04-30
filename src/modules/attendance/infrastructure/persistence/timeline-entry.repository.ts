@@ -1,12 +1,26 @@
 import { TimelineEntry } from '../../domain/entities/timeline-entry.entity';
 
+export interface ListTimelineEntriesFilter {
+  limit?: number;
+  /** Opaque cursor produced by the previous page (base64-encoded ISO|id). */
+  cursor?: string;
+  /** Inclusive lower bound on entry_time. */
+  from?: Date;
+  /** Exclusive upper bound on entry_time. */
+  to?: Date;
+}
+
+export interface PagedTimelineEntries {
+  items: TimelineEntry[];
+  /** null when there are no more pages. */
+  nextCursor: string | null;
+}
+
 /**
- * Port over `timeline_entries`. T3 only needs `create` (the check-in/out
- * timeline rows are written inside the atomic flow) and `findById` (for T4's
- * standalone TimelineService — declared here to keep one canonical port).
+ * Port over `timeline_entries`.
  *
- * Full CRUD (list/update/delete) is added in T4 alongside the standalone
- * timeline endpoints.
+ * T3 declared `create` + `findById`. T4 adds the full CRUD and paged list
+ * needed by the standalone timeline endpoints.
  */
 export abstract class TimelineEntryRepository {
   abstract create(
@@ -18,4 +32,17 @@ export abstract class TimelineEntryRepository {
     kindergartenId: string,
     entryId: string,
   ): Promise<TimelineEntry | null>;
+
+  abstract findByChild(
+    kindergartenId: string,
+    childId: string,
+    opts: ListTimelineEntriesFilter,
+  ): Promise<PagedTimelineEntries>;
+
+  abstract update(
+    kindergartenId: string,
+    entry: TimelineEntry,
+  ): Promise<TimelineEntry>;
+
+  abstract delete(kindergartenId: string, entryId: string): Promise<void>;
 }

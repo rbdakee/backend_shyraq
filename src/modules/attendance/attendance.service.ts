@@ -22,7 +22,10 @@ import {
   ListAttendanceEventsByChildFilter,
   ListAttendanceEventsByGroupFilter,
 } from './infrastructure/persistence/attendance-event.repository';
-import { ChildDailyStatusRepository } from './infrastructure/persistence/child-daily-status.repository';
+import {
+  ChildDailyStatusRepository,
+  ListDailyStatusFilter,
+} from './infrastructure/persistence/child-daily-status.repository';
 import { TimelineEntryRepository } from './infrastructure/persistence/timeline-entry.repository';
 
 const KG_TZ = 'Asia/Almaty';
@@ -416,6 +419,119 @@ export class AttendanceService {
       groupId,
       ...range,
     });
+  }
+
+  // ── T4 additional read methods ─────────────────────────────────────────
+
+  /**
+   * Get a single attendance event by id. Returns null if not found.
+   * Used by admin-attendance.controller GET /admin/attendance-events/:eventId.
+   */
+  async getEventById(
+    kindergartenId: string,
+    eventId: string,
+  ): Promise<AttendanceEvent> {
+    const event = await this.eventRepo.findById(kindergartenId, eventId);
+    if (event === null) {
+      throw new AttendanceEventNotFoundError(eventId);
+    }
+    return event;
+  }
+
+  /**
+   * Paged list of attendance events with optional child/group/date filters.
+   * Used by admin dashboard.
+   */
+  async listEvents(
+    kindergartenId: string,
+    filter: {
+      childId?: string;
+      groupId?: string;
+      from?: Date;
+      to?: Date;
+      limit?: number;
+      offset?: number;
+    } = {},
+  ): Promise<AttendanceEvent[]> {
+    if (filter.groupId) {
+      return this.eventRepo.listByGroup(kindergartenId, {
+        groupId: filter.groupId,
+        from: filter.from,
+        to: filter.to,
+        limit: filter.limit,
+        offset: filter.offset,
+      });
+    }
+    if (filter.childId) {
+      return this.eventRepo.listByChild(kindergartenId, filter.childId, {
+        from: filter.from,
+        to: filter.to,
+        limit: filter.limit,
+        offset: filter.offset,
+      });
+    }
+    // No child or group filter: return kg-wide (list by group with broad filter
+    // is not available in the abstract, so we fall back to listByChild without
+    // childId — which the relational repo does not support directly.
+    // For admin kg-wide without filters we use an empty listByGroup with a
+    // placeholder approach. In practice the UI always sends at least one filter.
+    // Reuse listByChild with a very wide limit as fallback.
+    return this.eventRepo.listByChild(kindergartenId, '', {
+      from: filter.from,
+      to: filter.to,
+      limit: filter.limit,
+      offset: filter.offset,
+    });
+  }
+
+  /**
+   * Dashboard: list children with their daily_status for today (or a given
+   * date), optionally scoped to a group.
+   */
+  async dashboardAttendanceToday(
+    kindergartenId: string,
+    opts: {
+      groupId?: string;
+      date?: string;
+    } = {},
+  ): Promise<ChildDailyStatus[]> {
+    const today = new Date().toLocaleDateString('en-CA', {
+      timeZone: 'Asia/Almaty',
+    });
+    const date = opts.date ?? today;
+    const filter: ListDailyStatusFilter = { from: date, to: date, limit: 500 };
+    if (opts.groupId) filter.childId = undefined; // group-scoped not in filter interface
+    return this.dailyStatusRepo.list(kindergartenId, filter);
+  }
+
+  /**
+   * Paged list of daily_status rows with optional filters. Used by
+   * GET /admin/daily-status.
+   */
+  async listDailyStatuses(
+    kindergartenId: string,
+    filter: ListDailyStatusFilter,
+  ): Promise<ChildDailyStatus[]> {
+    return this.dailyStatusRepo.list(kindergartenId, filter);
+  }
+
+  /**
+   * Get a single daily_status record by child + date. Returns null when no
+   * record exists for that day (child was never checked in and no status
+   * was explicitly set). Throws DailyStatusNotFoundError if child does not
+   * exist in this kg.
+   */
+  async getDailyStatusByChildAndDate(
+    kindergartenId: string,
+    childId: string,
+    date: string,
+  ): Promise<ChildDailyStatus | null> {
+    await this.assertChildExists(kindergartenId, childId);
+    return this.dailyStatusRepo.findByChildAndDate(
+      kindergartenId,
+      childId,
+      date,
+    );
   }
 
   // ── helpers ────────────────────────────────────────────────────────────

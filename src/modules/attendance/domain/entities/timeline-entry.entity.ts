@@ -56,7 +56,7 @@ export class TimelineEntry {
     private _mediaUrls: string[] | null,
     private _metadata: Record<string, unknown> | null,
     readonly recordedBy: string | null,
-    readonly entryTime: Date,
+    private _entryTime: Date,
     readonly createdAt: Date,
   ) {}
 
@@ -109,9 +109,12 @@ export class TimelineEntry {
   get metadata(): Record<string, unknown> | null {
     return this._metadata;
   }
+  get entryTime(): Date {
+    return this._entryTime;
+  }
 
   /**
-   * Edit-permission check used by T4's TimelineService.editEntry. Author of
+   * Edit-permission check used by T4's TimelineService.updateEntry. Author of
    * the row may edit; admins bypass via the `isAdmin` flag (passed by the
    * controller from JWT claims). T3 does not call this — it is here to keep
    * the entity self-contained for T4 wiring.
@@ -126,6 +129,25 @@ export class TimelineEntry {
     }
   }
 
+  /**
+   * Apply a partial update to mutable fields (title / body / mediaUrls /
+   * metadata / entryTime). entry_type is intentionally excluded — changing
+   * the type of an existing entry is not allowed.
+   */
+  applyPatch(patch: {
+    title?: string | null;
+    body?: string | null;
+    mediaUrls?: string[] | null;
+    metadata?: Record<string, unknown> | null;
+    entryTime?: Date;
+  }): void {
+    if (patch.title !== undefined) this._title = patch.title;
+    if (patch.body !== undefined) this._body = patch.body;
+    if (patch.mediaUrls !== undefined) this._mediaUrls = patch.mediaUrls;
+    if (patch.metadata !== undefined) this._metadata = patch.metadata;
+    if (patch.entryTime !== undefined) this._entryTime = patch.entryTime;
+  }
+
   toState(): TimelineEntryState {
     return {
       id: this.id,
@@ -137,7 +159,7 @@ export class TimelineEntry {
       mediaUrls: this._mediaUrls,
       metadata: this._metadata,
       recordedBy: this.recordedBy,
-      entryTime: this.entryTime,
+      entryTime: this._entryTime,
       createdAt: this.createdAt,
     };
   }

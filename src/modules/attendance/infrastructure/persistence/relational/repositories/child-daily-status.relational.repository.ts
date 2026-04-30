@@ -3,9 +3,15 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, Repository } from 'typeorm';
 import { tenantStorage } from '@/database/tenant-storage';
 import { ChildDailyStatus } from '../../../../domain/entities/child-daily-status.entity';
-import { ChildDailyStatusRepository } from '../../child-daily-status.repository';
+import {
+  ChildDailyStatusRepository,
+  ListDailyStatusFilter,
+} from '../../child-daily-status.repository';
 import { ChildDailyStatusTypeOrmEntity } from '../entities/child-daily-status.typeorm.entity';
 import { ChildDailyStatusMapper } from '../mappers/child-daily-status.mapper';
+
+const DEFAULT_LIMIT = 100;
+const MAX_LIMIT = 500;
 
 @Injectable()
 export class ChildDailyStatusRelationalRepository extends ChildDailyStatusRepository {
@@ -105,6 +111,33 @@ export class ChildDailyStatusRelationalRepository extends ChildDailyStatusReposi
       );
     }
     return ChildDailyStatusMapper.toDomain(row);
+  }
+
+  async list(
+    kindergartenId: string,
+    filter: ListDailyStatusFilter,
+  ): Promise<ChildDailyStatus[]> {
+    const qb = this.manager()
+      .getRepository(ChildDailyStatusTypeOrmEntity)
+      .createQueryBuilder('ds')
+      .where('ds.kindergarten_id = :kg', { kg: kindergartenId });
+    if (filter.childId) {
+      qb.andWhere('ds.child_id = :cid', { cid: filter.childId });
+    }
+    if (filter.from) {
+      qb.andWhere('ds.date >= :from', { from: filter.from });
+    }
+    if (filter.to) {
+      qb.andWhere('ds.date <= :to', { to: filter.to });
+    }
+    qb.orderBy('ds.date', 'DESC').addOrderBy('ds.child_id', 'ASC');
+    const limit =
+      filter.limit !== undefined
+        ? Math.min(Math.max(filter.limit, 1), MAX_LIMIT)
+        : DEFAULT_LIMIT;
+    qb.limit(limit).offset(filter.offset ?? 0);
+    const rows = await qb.getMany();
+    return rows.map((r) => ChildDailyStatusMapper.toDomain(r));
   }
 
   private manager(): EntityManager {

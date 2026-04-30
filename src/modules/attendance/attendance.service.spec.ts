@@ -65,8 +65,15 @@ import {
   ListAttendanceEventsByChildFilter,
   ListAttendanceEventsByGroupFilter,
 } from './infrastructure/persistence/attendance-event.repository';
-import { ChildDailyStatusRepository } from './infrastructure/persistence/child-daily-status.repository';
-import { TimelineEntryRepository } from './infrastructure/persistence/timeline-entry.repository';
+import {
+  ChildDailyStatusRepository,
+  ListDailyStatusFilter,
+} from './infrastructure/persistence/child-daily-status.repository';
+import {
+  ListTimelineEntriesFilter,
+  PagedTimelineEntries,
+  TimelineEntryRepository,
+} from './infrastructure/persistence/timeline-entry.repository';
 
 // ── Constants ────────────────────────────────────────────────────────────
 
@@ -171,6 +178,19 @@ class FakeChildDailyStatusRepo extends ChildDailyStatusRepository {
     this.rows[idx] = daily;
     return Promise.resolve(daily);
   }
+  list(kg: string, filter: ListDailyStatusFilter): Promise<ChildDailyStatus[]> {
+    let items = this.rows.filter((x) => x.kindergartenId === kg);
+    if (filter.childId) {
+      items = items.filter((x) => x.childId === filter.childId);
+    }
+    if (filter.from) {
+      items = items.filter((x) => x.date >= filter.from!);
+    }
+    if (filter.to) {
+      items = items.filter((x) => x.date <= filter.to!);
+    }
+    return Promise.resolve(items);
+  }
 }
 
 class FakeTimelineRepo extends TimelineEntryRepository {
@@ -184,6 +204,24 @@ class FakeTimelineRepo extends TimelineEntryRepository {
     const t = this.rows.get(id);
     if (!t || t.kindergartenId !== kg) return Promise.resolve(null);
     return Promise.resolve(t);
+  }
+  findByChild(
+    _kg: string,
+    _childId: string,
+    _opts: ListTimelineEntriesFilter,
+  ): Promise<PagedTimelineEntries> {
+    return Promise.resolve({
+      items: [...this.rows.values()],
+      nextCursor: null,
+    });
+  }
+  update(_kg: string, t: TimelineEntry): Promise<TimelineEntry> {
+    this.rows.set(t.id, t);
+    return Promise.resolve(t);
+  }
+  delete(_kg: string, id: string): Promise<void> {
+    this.rows.delete(id);
+    return Promise.resolve();
   }
 }
 

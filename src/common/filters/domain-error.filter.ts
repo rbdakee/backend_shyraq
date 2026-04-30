@@ -41,6 +41,14 @@ import { MealPlanNotFoundError } from '@/modules/meal/domain/errors/meal-plan-no
 import { MealItemNotFoundError } from '@/modules/meal/domain/errors/meal-item-not-found.error';
 import { MealPlanAlreadyExistsError } from '@/modules/meal/domain/errors/meal-plan-already-exists.error';
 import { InvalidDateRangeError } from '@/modules/meal/domain/errors/invalid-date-range.error';
+import { AttendanceEditWindowExpiredError } from '@/modules/attendance/domain/errors/attendance-edit-window-expired.error';
+import { AttendanceEventNotFoundError } from '@/modules/attendance/domain/errors/attendance-event-not-found.error';
+import { DailyStatusNotFoundError } from '@/modules/attendance/domain/errors/daily-status-not-found.error';
+import { InvalidAttendancePickupError } from '@/modules/attendance/domain/errors/invalid-attendance-pickup.error';
+import { InvalidTimelineEntryTypeError } from '@/modules/attendance/domain/errors/invalid-timeline-entry-type.error';
+import { PickupUserNotAllowedError } from '@/modules/attendance/domain/errors/pickup-user-not-allowed.error';
+import { TimelineEntryNotAuthorError } from '@/modules/attendance/domain/errors/timeline-entry-not-author.error';
+import { TimelineEntryNotFoundError } from '@/modules/attendance/domain/errors/timeline-entry-not-found.error';
 
 /**
  * Single source of truth for mapping AuthService / UsersService domain errors
@@ -120,6 +128,19 @@ export class DomainErrorFilter implements ExceptionFilter {
     if (err instanceof MealPlanNotFoundError) return HttpStatus.NOT_FOUND;
     if (err instanceof MealItemNotFoundError) return HttpStatus.NOT_FOUND;
     if (err instanceof InvalidDateRangeError) return HttpStatus.BAD_REQUEST;
+    // B8 Attendance & Timeline
+    if (err instanceof AttendanceEventNotFoundError)
+      return HttpStatus.NOT_FOUND;
+    if (err instanceof TimelineEntryNotFoundError) return HttpStatus.NOT_FOUND;
+    if (err instanceof DailyStatusNotFoundError) return HttpStatus.NOT_FOUND;
+    if (err instanceof AttendanceEditWindowExpiredError)
+      return HttpStatus.FORBIDDEN;
+    if (err instanceof PickupUserNotAllowedError) return HttpStatus.FORBIDDEN;
+    if (err instanceof TimelineEntryNotAuthorError) return HttpStatus.FORBIDDEN;
+    if (err instanceof InvalidAttendancePickupError)
+      return HttpStatus.UNPROCESSABLE_ENTITY;
+    if (err instanceof InvalidTimelineEntryTypeError)
+      return HttpStatus.UNPROCESSABLE_ENTITY;
     if (err instanceof KindergartenNotFoundError) return HttpStatus.NOT_FOUND;
     if (err instanceof NotFoundError) return HttpStatus.NOT_FOUND;
     if (err instanceof ConflictError) return HttpStatus.CONFLICT;
