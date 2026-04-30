@@ -37,6 +37,10 @@ import { InvalidChildStatusTransitionError } from '@/modules/child/domain/errors
 import { InvalidGuardianStatusTransitionError } from '@/modules/child/domain/errors/invalid-guardian-status-transition.error';
 import { MaxApprovalRightsExceededError } from '@/modules/child/domain/errors/max-approval-rights-exceeded.error';
 import { NotPrimaryGuardianError } from '@/modules/child/domain/errors/not-primary-guardian.error';
+import { MealPlanNotFoundError } from '@/modules/meal/domain/errors/meal-plan-not-found.error';
+import { MealItemNotFoundError } from '@/modules/meal/domain/errors/meal-item-not-found.error';
+import { MealPlanAlreadyExistsError } from '@/modules/meal/domain/errors/meal-plan-already-exists.error';
+import { InvalidDateRangeError } from '@/modules/meal/domain/errors/invalid-date-range.error';
 
 /**
  * Single source of truth for mapping AuthService / UsersService domain errors
@@ -111,6 +115,11 @@ export class DomainErrorFilter implements ExceptionFilter {
       return HttpStatus.UNPROCESSABLE_ENTITY;
     if (err instanceof GuardianNotApprovedError)
       return HttpStatus.UNPROCESSABLE_ENTITY;
+    // Meal plans
+    if (err instanceof MealPlanAlreadyExistsError) return HttpStatus.CONFLICT;
+    if (err instanceof MealPlanNotFoundError) return HttpStatus.NOT_FOUND;
+    if (err instanceof MealItemNotFoundError) return HttpStatus.NOT_FOUND;
+    if (err instanceof InvalidDateRangeError) return HttpStatus.BAD_REQUEST;
     if (err instanceof KindergartenNotFoundError) return HttpStatus.NOT_FOUND;
     if (err instanceof NotFoundError) return HttpStatus.NOT_FOUND;
     if (err instanceof ConflictError) return HttpStatus.CONFLICT;
