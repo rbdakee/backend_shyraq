@@ -106,6 +106,12 @@ class FakeKindergartenRepo extends KindergartenRepository {
     });
   }
 
+  listActive(): Promise<Kindergarten[]> {
+    return Promise.resolve(
+      [...this.byId.values()].filter((kg) => kg.isActive && !kg.isArchived),
+    );
+  }
+
   update(id: string, changes: KindergartenUpdateInput): Promise<Kindergarten> {
     const existing = this.byId.get(id);
     if (!existing) throw new KindergartenNotFoundError(id);

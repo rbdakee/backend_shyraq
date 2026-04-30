@@ -51,6 +51,14 @@ export abstract class KindergartenRepository {
   abstract findAll(
     filters: KindergartenFilters,
   ): Promise<KindergartenListResult>;
+  /**
+   * Returns every non-archived, active kindergarten in the system. Caller is
+   * expected to be running with `bypass_rls=true` (super-admin scope or a
+   * cron-process tx that explicitly sets the GUC) — RLS would otherwise hide
+   * every row that does not match the tenant scope. Used by T5 weekly
+   * auto-copy cron.
+   */
+  abstract listActive(): Promise<Kindergarten[]>;
   abstract update(
     id: string,
     changes: KindergartenUpdateInput,

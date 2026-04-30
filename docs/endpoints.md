@@ -316,6 +316,16 @@ Email + password (не OTP). Access-токен — тот же JWT HS256 (`JWT_A
 
 **Error codes (§2.8):** `schedule_template_not_found`(404), `slot_not_found`(404), `slot_time_conflict`(409), `source_week_snapshot_not_found`(404), `invalid_date_range`(400), `group_not_found`(404), `location_not_found`(404).
 
+#### 2.8.1 Weekly auto-copy rollout (super-admin)
+
+**Auth:** `super_admin` only — endpoint iterates EVERY active kindergarten. Per-kg admin path lives at `POST /admin/schedule/week-snapshots/copy` (§2.8) and `POST /admin/meal-plans/copy-week` (§2.9).
+
+**Cron `schedule:weekly-rollout`** (каждое воскресенье 23:00 Asia/Almaty, `@Cron('0 23 * * 0', { timeZone: 'Asia/Almaty' })`): для каждого активного `kindergartens` row — `ScheduleService.copyWeekToNext` + `MealService.copyWeekMenuToNext`. RLS-context устанавливается per-kg через `SET LOCAL app.kindergarten_id` внутри отдельной транзакции; список активных садиков читается под `bypass_rls=true`. Идемпотентен на уровне обоих сервисов.
+
+| Метод | Путь | Назначение |
+|---|---|---|
+| POST | `/admin/schedule/week-rollout/run` | Ручной запуск cron'а `schedule:weekly-rollout` (schedule + meal copy для всех активных садиков). Body: `{from_monday?: string}` — опционально; если не передан, сервер вычисляет понедельник текущей Almaty-недели. Response: `{from_monday, source: 'manual', kindergartens: [{kindergarten_id, name, schedule: {copied_groups, skipped_groups, total_events}, meal: {plans_created, plans_skipped}, error?}], totals: {kindergartens, copied_groups, skipped_groups, total_events, plans_created, plans_skipped, errors}}`. Идемпотентен. |
+
 ### 2.9 Meal Plans
 
 **Auth:** `admin` role, `kindergarten_id` в JWT.

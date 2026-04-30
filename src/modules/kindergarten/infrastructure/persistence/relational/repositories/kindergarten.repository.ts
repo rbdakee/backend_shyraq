@@ -108,6 +108,17 @@ export class KindergartenRelationalRepository extends KindergartenRepository {
     };
   }
 
+  async listActive(): Promise<Kindergarten[]> {
+    const repo = this.manager().getRepository(KindergartenEntity);
+    const rows = await repo
+      .createQueryBuilder('kg')
+      .where('kg.is_active = TRUE')
+      .andWhere('kg.archived_at IS NULL')
+      .orderBy('kg.created_at', 'ASC')
+      .getMany();
+    return rows.map((r) => KindergartenMapper.toDomain(r));
+  }
+
   async update(
     id: string,
     changes: KindergartenUpdateInput,

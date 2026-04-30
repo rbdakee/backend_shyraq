@@ -3,6 +3,7 @@ import { existsSync } from 'fs';
 import path from 'path';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
+import { ScheduleModule as NestScheduleModule } from '@nestjs/schedule';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { HeaderResolver, I18nModule } from 'nestjs-i18n';
 import { DataSource, DataSourceOptions } from 'typeorm';
@@ -24,6 +25,7 @@ import { GroupModule } from './modules/group/group.module';
 import { KindergartenModule } from './modules/kindergarten/kindergarten.module';
 import { LocationModule } from './modules/location/location.module';
 import { ScheduleModule } from './modules/schedule/schedule.module';
+import { ScheduleRolloutModule } from './modules/schedule-rollout/schedule-rollout.module';
 import { StaffModule } from './modules/staff/staff.module';
 import { UsersModule } from './modules/users/users.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
@@ -71,6 +73,11 @@ const resolveI18nPath = (): string => {
       imports: [ConfigModule],
       inject: [ConfigService],
     }),
+    // @nestjs/schedule enables the @Cron decorator pickup at app bootstrap.
+    // Required by `WeeklyRolloutCron` in `ScheduleRolloutModule`. Renamed
+    // import to NestScheduleModule because our business `ScheduleModule`
+    // already owns that name.
+    NestScheduleModule.forRoot(),
     SharedKernelModule,
     RedisModule,
     HealthModule,
@@ -85,6 +92,7 @@ const resolveI18nPath = (): string => {
     EnrollmentModule,
     MealModule,
     ScheduleModule,
+    ScheduleRolloutModule,
   ],
   providers: [
     // The interceptor establishes a tenant-scoped TypeORM transaction (with
