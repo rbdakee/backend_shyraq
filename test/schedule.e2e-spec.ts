@@ -217,10 +217,10 @@ describe('B7 schedule (e2e)', () => {
   ): Promise<void> {
     await ctx.dataSource.transaction(async (m) => {
       await m.query(`SET LOCAL app.bypass_rls = 'true'`);
-      await m.query(
-        `UPDATE children SET current_group_id = $1 WHERE id = $2`,
-        [groupId, childId],
-      );
+      await m.query(`UPDATE children SET current_group_id = $1 WHERE id = $2`, [
+        groupId,
+        childId,
+      ]);
     });
   }
 

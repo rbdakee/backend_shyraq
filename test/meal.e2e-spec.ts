@@ -128,7 +128,10 @@ describe('B7 meal plans (e2e)', () => {
     };
   }
 
-  async function createGroup(adminToken: string, name = 'Арлар'): Promise<string> {
+  async function createGroup(
+    adminToken: string,
+    name = 'Арлар',
+  ): Promise<string> {
     const res = await request(server)
       .post('/api/v1/groups')
       .set('Authorization', `Bearer ${adminToken}`)
@@ -183,10 +186,10 @@ describe('B7 meal plans (e2e)', () => {
   ): Promise<void> {
     await ctx.dataSource.transaction(async (m) => {
       await m.query(`SET LOCAL app.bypass_rls = 'true'`);
-      await m.query(
-        `UPDATE children SET current_group_id = $1 WHERE id = $2`,
-        [groupId, childId],
-      );
+      await m.query(`UPDATE children SET current_group_id = $1 WHERE id = $2`, [
+        groupId,
+        childId,
+      ]);
     });
   }
 
