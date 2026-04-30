@@ -297,33 +297,43 @@ Email + password (не OTP). Access-токен — тот же JWT HS256 (`JWT_A
 | GET | `/admin/children/:id/group-history` | История переводов. |
 | GET | `/admin/children/:id/timeline` | Вся timeline ребёнка. **[Deferred to B8 — timeline появляется в Attendance batch]** |
 
-### 2.8 Schedule (Templates)
+### 2.8 Schedule (Templates + Activity Events)
+
+**Auth:** `admin` role, `kindergarten_id` в JWT.
 
 | Метод | Путь | Назначение |
 |---|---|---|
-| GET | `/admin/schedule/templates` | Шаблоны расписания (фильтр по `group_id`, `is_active`). |
-| POST | `/admin/schedule/templates` | Создать: `group_id`, `name`, `recurrence='weekly'`, `valid_from`, `valid_until`. |
-| PATCH | `/admin/schedule/templates/:id` | Обновить/деактивировать. |
-| GET | `/admin/schedule/templates/:id/slots` | Слоты шаблона. |
-| POST | `/admin/schedule/templates/:id/slots` | Добавить слот (`day_of_week`, `start_time`, `end_time`, `activity_name`, `location_id`, `description`). |
-| PATCH | `/admin/schedule/templates/:id/slots/:slotId` | Обновить слот. |
-| DELETE | `/admin/schedule/templates/:id/slots/:slotId` | Удалить слот. |
-| GET | `/admin/schedule/week-snapshots` | Флаги `schedule_week_snapshots` (есть ли неделя). |
-| POST | `/admin/schedule/week-snapshots/copy` | Ручное копирование расписания с текущей недели на следующую (то, что делает cron `schedule:auto-copy`). |
-| GET | `/admin/schedule/activity-events` | `activity_events` по диапазону дат и группам (проекция из шаблонов). |
+| GET | `/admin/schedule/templates` | Список шаблонов. Query: `group_id?`, `is_active?`. Response: `[{id, name, group_id, recurrence, is_active, valid_from, valid_until, slots_count}]`. |
+| POST | `/admin/schedule/templates` | Создать шаблон. Body: `{group_id?, name, recurrence='weekly', valid_from, valid_until?}`. Response 201: полный объект шаблона. Errors: 400 `invalid_date_range`, 404 `group_not_found`. |
+| PATCH | `/admin/schedule/templates/:id` | Обновить `name?`, `is_active?`, `valid_until?`. Errors: 404 `schedule_template_not_found`. |
+| GET | `/admin/schedule/templates/:id/slots` | Слоты шаблона, отсортированные по `day_of_week`, `start_time`. Response: `[{id, day_of_week, start_time, end_time, activity_name, location_id, description}]`. Errors: 404 `schedule_template_not_found`. |
+| POST | `/admin/schedule/templates/:id/slots` | Добавить слот. Body: `{day_of_week, start_time, end_time, activity_name, location_id?, description?}`. `day_of_week` — enum `mon|tue|wed|thu|fri|sat|sun`. Response 201. Errors: 404 `schedule_template_not_found`, 404 `location_not_found`, 409 `slot_time_conflict` (partial-unique `(template_id, day_of_week, start_time)`). |
+| PATCH | `/admin/schedule/templates/:id/slots/:slotId` | Обновить поля слота. Errors: 404 `schedule_template_not_found`, 404 `slot_not_found`, 409 `slot_time_conflict`. |
+| DELETE | `/admin/schedule/templates/:id/slots/:slotId` | Удалить слот. Errors: 404 `schedule_template_not_found`, 404 `slot_not_found`. |
+| GET | `/admin/schedule/week-snapshots` | Флаги наличия расписания по неделям. Query: `group_id?`, `week_start_date_from?`, `week_start_date_to?`. Response: `[{id, group_id, week_start_date, source, copied_from?}]`. |
+| POST | `/admin/schedule/week-snapshots/copy` | Ручной запуск копирования расписания с указанной недели на следующую (то что делает cron `schedule:auto-copy`). Body: `{group_id, source_week_start_date}`. Идемпотентен: если снапшот уже существует — возвращает 200 с существующим. Response: `{snapshot, activity_events_created: N}`. Errors: 404 `group_not_found`, 404 `source_week_snapshot_not_found`. |
+| GET | `/admin/schedule/activity-events` | Список `activity_events`. Query: `group_id?`, `date_from`, `date_to`, `status?`. Response: `[{id, group_id, template_slot_id?, activity_name, location_id?, starts_at, ends_at?, status, created_by?, notes?}]`. |
+
+**Error codes (§2.8):** `schedule_template_not_found`(404), `slot_not_found`(404), `slot_time_conflict`(409), `source_week_snapshot_not_found`(404), `invalid_date_range`(400), `group_not_found`(404), `location_not_found`(404).
 
 ### 2.9 Meal Plans
 
+**Auth:** `admin` role, `kindergarten_id` в JWT.
+
+**Cron `meal:auto-copy`** (каждое воскресенье 23:00 Asia/Almaty, `@Cron('0 23 * * 0')`): для каждого садика — если на следующую ПН–ПТ нет `meal_plans` → копирует из текущей недели со сдвигом +7 дней (`source='auto_copied_from_previous_week'`, `copied_from` = id оригинала). Идемпотентен: если план уже существует на эту дату → пропускает.
+
 | Метод | Путь | Назначение |
 |---|---|---|
-| GET | `/admin/meal-plans` | Меню по диапазону дат, опционально `group_id`. |
-| POST | `/admin/meal-plans` | Создать `meal_plan` на дату (+ опц. `group_id`). |
-| PATCH | `/admin/meal-plans/:id` | Обновить. |
-| DELETE | `/admin/meal-plans/:id` | Удалить. |
-| POST | `/admin/meal-plans/:id/items` | Добавить блюдо: `meal_type`, `dish_name` {ru,kz}, `description`, `allergens[]`, `calories`, `photo_url`, `position`. |
-| PATCH | `/admin/meal-plans/:id/items/:itemId` | Обновить блюдо. |
-| DELETE | `/admin/meal-plans/:id/items/:itemId` | Удалить блюдо. |
-| POST | `/admin/meal-plans/copy-week` | Ручной запуск копирования меню на следующую неделю. |
+| GET | `/admin/meal-plans` | Меню по диапазону дат. Query: `date_from`, `date_to`, `group_id?`. Response: `[{id, date, group_id?, is_published, source, copied_from?, items: [...]}]` с `meal_items` вложенно. |
+| POST | `/admin/meal-plans` | Создать `meal_plan`. Body: `{date, group_id?}`. Response 201. Errors: 409 `meal_plan_already_exists` (unique `(kg, date, group_id)`), 404 `group_not_found`. |
+| PATCH | `/admin/meal-plans/:id` | Обновить `is_published?`, `notes?`. Errors: 404 `meal_plan_not_found`. |
+| DELETE | `/admin/meal-plans/:id` | Удалить (каскадно удаляет `meal_items`). Errors: 404 `meal_plan_not_found`. |
+| POST | `/admin/meal-plans/:id/items` | Добавить блюдо. Body: `{meal_type, dish_name: {ru, kz}, description?: {ru, kz}, allergens?: string[], calories?: int, photo_url?: string, position?: int}`. `meal_type` — enum `breakfast|snack_am|lunch|snack_pm|dinner`. Response 201. Errors: 404 `meal_plan_not_found`, 400 `invalid_meal_type`. |
+| PATCH | `/admin/meal-plans/:id/items/:itemId` | Обновить поля блюда. Errors: 404 `meal_plan_not_found`, 404 `meal_item_not_found`. |
+| DELETE | `/admin/meal-plans/:id/items/:itemId` | Удалить блюдо. Errors: 404 `meal_plan_not_found`, 404 `meal_item_not_found`. |
+| POST | `/admin/meal-plans/copy-week` | Ручной запуск copy-week (аналог cron). Body: `{source_week_start_date}` — понедельник источника; копирует ПН–ПТ на следующую неделю. Идемпотентен. Response: `{plans_created: N, plans_skipped: N}`. |
+
+**Error codes (§2.9):** `meal_plan_not_found`(404), `meal_plan_already_exists`(409), `meal_item_not_found`(404), `invalid_meal_type`(400), `group_not_found`(404).
 
 ### 2.10 Content
 
@@ -581,10 +591,12 @@ Email + password (не OTP). Access-токен — тот же JWT HS256 (`JWT_A
 
 ### 3.13 Content (read-only)
 
+**Auth:** `mentor`, `specialist`, or `reception` role.
+
 | Метод | Путь | Назначение |
 |---|---|---|
-| GET | `/staff/content/schedule` | Просмотр расписания садика/группы. |
-| GET | `/staff/content/menu` | Просмотр меню для ориентира (кто что ест). |
+| GET | `/staff/schedule/week` | Расписание моей группы на неделю. Query: `week_start_date?` (default: текущая неделя). Response: `[{day_of_week, events: [{id, activity_name, starts_at, ends_at, status, location_id?}]}]`. |
+| GET | `/staff/meal-plans` | Меню на период. Query: `date_from`, `date_to`, `group_id?`. Response: `[{date, group_id?, items: [{meal_type, dish_name, allergens?, calories?}]}]`. |
 | GET | `/staff/content/news` | Новости садика. |
 
 ### 3.14 Enrollments (Admin also acts here; reception)
@@ -713,8 +725,8 @@ Reception может работать с заявками — см. Admin API `/
 | GET | `/parent/feed` | Лента: news, qundylyq, birthdays, targeted posts (all / group / child). Локализовано по `users.locale`. |
 | GET | `/parent/content/news` | Только новости. |
 | GET | `/parent/content/qundylyq/current` | Текущий Qundylyq (тема месяца). |
-| GET | `/parent/children/:id/menu` | Меню на день/неделю/месяц (диапазон дат, общее или per-group). |
-| GET | `/parent/children/:id/schedule` | Расписание группы ребёнка. |
+| GET | `/parent/children/:id/menu` | Меню на период. Query: `date_from`, `date_to` (ISO date, обязательны). Возвращает `meal_plans` группы ребёнка (приоритет) или общего садика за период с вложенными `meal_items`. Response: `[{date, items: [{meal_type, dish_name: {ru,kz}, description?, allergens?, calories?, photo_url?}]}]`. Errors: 404 `child_not_found`, 403 `access_denied`. |
+| GET | `/parent/children/:id/schedule` | Расписание группы ребёнка. Query: `date_from`, `date_to` (ISO date, обязательны). Возвращает `activity_events` группы за период. Response: `[{id, activity_name, starts_at, ends_at, status, location_id?, notes?}]`. Errors: 404 `child_not_found`, 403 `access_denied`. |
 | GET | `/parent/children/:id/stories` | Активные stories группы (`expires_at > NOW()`). |
 | POST | `/parent/stories/:id/view` | Инкремент `group_stories.views`. |
 

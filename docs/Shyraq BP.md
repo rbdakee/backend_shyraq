@@ -693,16 +693,57 @@
 
 ### 9.2 Обновление меню
 
-1. Администратор редактирует меню на день, неделю или месяц.
-2. Система сохраняет новое меню.
-3. Родители видят актуальное меню.
+**Структура данных:** одна запись `meal_plans` = один день (`date`) для всего садика или конкретной группы (`group_id`, nullable). К каждому `meal_plan` привязаны `meal_items` по типу приёма пищи: `breakfast`, `snack_am`, `lunch`, `snack_pm`, `dinner`. Каждое блюдо имеет: `dish_name {ru, kz}`, `description {ru, kz}`, `allergens[]`, `calories`, `photo_url`.
+
+**Акторы и права:**
+
+- **Admin** — полный CRUD: создание, редактирование, удаление `meal_plans` и `meal_items`.
+- **Staff (Mentor/Specialist)** — read-only: просмотр меню своей группы или общесадикового.
+- **Родитель** — read-only: просмотр меню по дате/неделе/месяцу через кабинет ребёнка.
+
+**Main Flow:**
+
+1. Администратор открывает раздел меню в `Admin Web`.
+2. Администратор создаёт `meal_plan` на нужную дату (опционально — для конкретной группы).
+3. Администратор добавляет блюда по типам (`breakfast`, `lunch` и т.д.) с локализованными названиями.
+4. Система сохраняет меню (`source='manual'`, `is_published=true`).
+5. Родители видят актуальное меню в `Parent App` через `GET /parent/children/:id/menu?date_from=...&date_to=...`.
+
+**Идемпотентность создания:** уникальный индекс `(kindergarten_id, date, group_id)` (где `group_id IS NULL` означает общее меню садика) предотвращает дублирование. При конфликте → 409 `meal_plan_already_exists`.
 
 ### 9.3 Обновление расписания
 
-1. Администратор редактирует расписание групп.
-2. Система сохраняет изменения.
-3. Родители видят актуальное расписание.
-4. Mentor и Admin при необходимости ориентируются на те же данные.
+**Структура данных:**
+
+- `schedule_templates` — именованный шаблон недельного расписания для группы (`group_id`). Шаблон имеет `valid_from`, `valid_until` (опционально) и `recurrence='weekly'`. Один активный шаблон = недельный паттерн для группы.
+- `schedule_template_slots` — слоты шаблона: `day_of_week` (mon/tue/wed/thu/fri/sat/sun) × `start_time`/`end_time` × `activity_name`. Уникальность: `(template_id, day_of_week, start_time)` — нельзя создать два одинаковых слота в одно и то же время.
+- `activity_events` — конкретные dated-события (с `starts_at` timestamptz). Создаются проекцией из template-slots на конкретную дату при авто-копировании или вручную staff'ом.
+- `schedule_week_snapshots` — флаг-запись о наличии расписания на конкретную неделю для группы `(group_id, week_start_date)`.
+
+**State machine `activity_event.status`:**
+
+- `scheduled` — создано, ожидает начала (исходное состояние).
+- `in_progress` — mentor нажал "Начать" в Staff App. Обновляет `groups.current_location_id` → WS broadcast.
+- `completed` — событие завершено.
+- `cancelled` — событие отменено (например, болезнь группы, выезд).
+
+Допустимые переходы: `scheduled → in_progress → completed`, `scheduled → cancelled`, `in_progress → cancelled`.
+
+**Акторы и права:**
+
+- **Admin** — полный CRUD шаблонов (`schedule_templates`, `schedule_template_slots`); просмотр и ручное создание `activity_events`; ручной запуск copy-week.
+- **Staff (Mentor)** — read-only расписание своей группы; переключение статусов `activity_events` (`start`/`complete`/`cancel`) и создание внеплановых событий.
+- **Родитель** — read-only расписание группы своего ребёнка через `GET /parent/children/:id/schedule`.
+
+**Main Flow:**
+
+1. Администратор создаёт `schedule_template` для группы с `valid_from`.
+2. Администратор добавляет `schedule_template_slots` (например, Mon 09:00–09:45 "Утренний круг", Mon 10:00–11:00 "ИЗО").
+3. Cron (воскресенье 23:00 Asia/Almaty) или ручной `POST /admin/schedule/week-snapshots/copy` создаёт `schedule_week_snapshots` + `activity_events` на следующую неделю из актуального шаблона.
+4. В течение дня Mentor в Staff App видит события своей группы, переводит их через статусы.
+5. Родители видят актуальное расписание группы ребёнка в `Parent App`.
+
+**Видимость для родителя:** родитель видит `activity_events` группы, к которой принадлежит его ребёнок, на запрошенный диапазон дат. Показываются все статусы (scheduled/in_progress/completed/cancelled). Фильтрация по дате передаётся через query-параметры `date_from` / `date_to`.
 
 ### 9.4 Публикация нового Qundylyq
 
