@@ -17,6 +17,22 @@ export abstract class ScheduleWeekSnapshotRepository {
     snapshot: ScheduleWeekSnapshot,
   ): Promise<ScheduleWeekSnapshot>;
 
+  /**
+   * "Atomic claim" insert used by `copyWeekToNext` to take exclusive
+   * ownership of `(group_id, week_start_date)` before writing any events.
+   *
+   * Returns the saved snapshot when the row was new, or `null` when a
+   * conflicting row already exists (handled via `INSERT ... ON CONFLICT
+   * DO NOTHING` so the call NEVER raises 23505 — keeping the ambient
+   * transaction usable). This is what the service uses to avoid
+   * orphan-event corruption when a concurrent caller wrote the snapshot
+   * between our probe and our insert.
+   */
+  abstract tryCreate(
+    kindergartenId: string,
+    snapshot: ScheduleWeekSnapshot,
+  ): Promise<ScheduleWeekSnapshot | null>;
+
   abstract findByGroupAndWeek(
     kindergartenId: string,
     groupId: string,

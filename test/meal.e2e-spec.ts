@@ -437,13 +437,15 @@ describe('B7 meal plans (e2e)', () => {
     expect(deniedRes.status).toBe(403);
   });
 
-  // ── F. Manual copy-week (first call) ────────────────────────────────────
-  // NOTE: The idempotency re-run (second call same args → plans_skipped > 0)
-  // currently throws 500 due to an unhandled unique-constraint violation in
-  // MealService.copyWeekMenuToNext. Bug filed for T7. This test verifies the
-  // first-call happy path only.
+  // ── F. Manual copy-week (idempotent) ─────────────────────────────────────
+  // First call copies the source week into the target week (plans_created > 0).
+  // Second call with the same source-week start date probes the target range
+  // via existsAnyInRange and short-circuits before any insert, so it returns
+  // plans_created=0, plans_skipped = sourcePlans.length. This is the T7-C1
+  // fix: previously the second call inside the ambient TX hit a 23505 inside
+  // batchCreate and propagated as 500.
 
-  it('copies meal plans on first call and returns plans_created > 0 (Scenario F)', async () => {
+  it('copies meal plans on first call and short-circuits to all-skipped on re-run (Scenario F)', async () => {
     const a = await createKgWithAdmin('meal-f', '+77011120206');
     const grpId = await createGroup(a.adminToken);
 
@@ -469,8 +471,19 @@ describe('B7 meal plans (e2e)', () => {
       .set('Authorization', `Bearer ${a.adminToken}`)
       .send({ source_week_start_date: '2026-04-27' })
       .expect(200);
-    expect(firstCopy.body.plans_created).toBeGreaterThan(0);
-    expect(typeof firstCopy.body.plans_skipped).toBe('number');
+    expect(firstCopy.body.plans_created).toBe(sourceDates.length);
+    expect(firstCopy.body.plans_skipped).toBe(0);
+
+    // Second copy → idempotent skip. The service probes existsAnyInRange,
+    // sees the target range is non-empty, and returns plans_skipped =
+    // sourcePlans.length without entering batchCreate.
+    const secondCopy = await request(server)
+      .post('/api/v1/admin/meal-plans/copy-week')
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .send({ source_week_start_date: '2026-04-27' })
+      .expect(200);
+    expect(secondCopy.body.plans_created).toBe(0);
+    expect(secondCopy.body.plans_skipped).toBe(sourceDates.length);
   });
 
   // ── G. Cross-tenant isolation ─────────────────────────────────────────────

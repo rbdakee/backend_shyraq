@@ -1,5 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
+import { ChildNotFoundError } from '@/modules/child/domain/errors/child-not-found.error';
 import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { MealItem } from './domain/entities/meal-item.entity';
@@ -18,6 +19,23 @@ import {
 } from './dto/meal-plan.response.dto';
 import { GroupNotFoundError } from '@/modules/group/domain/errors/group-not-found.error';
 import { GroupRepository } from '@/modules/group/infrastructure/persistence/group.repository';
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Add `days` to the UTC midnight of `d` and return a new Date at UTC midnight. */
+function addDaysUtc(d: Date, days: number): Date {
+  return new Date(d.getTime() + days * DAY_MS);
+}
+
+/** Format a Date as ISO date (YYYY-MM-DD), interpreting the underlying UTC instant. */
+function toIsoDate(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+/** Parse an ISO date string (YYYY-MM-DD) as a Date at 00:00:00 UTC. */
+function parseIsoDateUtc(iso: string): Date {
+  return new Date(`${iso}T00:00:00.000Z`);
+}
 
 export interface CreateMealPlanInput {
   date: string;
@@ -247,7 +265,7 @@ export class MealService {
     weekStart: string,
   ): Promise<MealMenuWeekResponseDto> {
     const child = await this.childRepo.findById(kindergartenId, childId);
-    if (!child) throw new MealPlanNotFoundError(childId);
+    if (!child) throw new ChildNotFoundError(childId);
 
     const groupId = child.currentGroupId ?? null;
 
@@ -269,13 +287,13 @@ export class MealService {
       }
     }
 
-    // Build 7-day response
+    // Build 7-day response. UTC arithmetic — host TZ must not affect the
+    // mapping from ISO date string back into a date offset.
     const days: MealMenuDayDto[] = [];
-    const start = new Date(weekStart);
+    const start = parseIsoDateUtc(weekStart);
     for (let i = 0; i < 7; i++) {
-      const d = new Date(start);
-      d.setDate(d.getDate() + i);
-      const dateStr = d.toISOString().slice(0, 10);
+      const d = addDaysUtc(start, i);
+      const dateStr = toIsoDate(d);
       const plan = dayMap.get(dateStr) ?? null;
       days.push({
         date: dateStr,
@@ -312,7 +330,11 @@ export class MealService {
 
   /**
    * Copies all meal_plans in [fromMonday, fromMonday+7) to [nextMonday, nextMonday+7).
-   * Idempotent: if at least one target plan already exists → skip that day.
+   * Idempotent: probes the target week first via `existsAnyInRange`. If any
+   * target row already exists we short-circuit and report `plans_skipped =
+   * sourcePlans.length` — we never enter `batchCreate`, so a single 23505
+   * inside the ambient transaction can never poison it.
+   *
    * Called by T5 cron and by admin manual trigger.
    */
   async copyWeekMenuToNext(
@@ -320,10 +342,12 @@ export class MealService {
     fromMonday: Date,
     source: 'manual' | 'cron',
   ): Promise<CopyWeekSummaryDto> {
-    const fromStart = fromMonday.toISOString().slice(0, 10);
-    const fromEnd = new Date(fromMonday);
-    fromEnd.setDate(fromEnd.getDate() + 6);
-    const fromEndStr = fromEnd.toISOString().slice(0, 10);
+    // UTC arithmetic — host TZ must not influence the from→to range.
+    const fromStart = toIsoDate(fromMonday);
+    const fromEndStr = toIsoDate(addDaysUtc(fromMonday, 6));
+    const targetMonday = addDaysUtc(fromMonday, 7);
+    const targetSundayStr = toIsoDate(addDaysUtc(targetMonday, 6));
+    const targetMondayStr = toIsoDate(targetMonday);
 
     const sourcePlans = await this.mealPlanRepo.list(kindergartenId, {
       dateFrom: fromStart,
@@ -334,12 +358,25 @@ export class MealService {
       return { plans_created: 0, plans_skipped: 0 };
     }
 
+    // Idempotency probe — short-circuit BEFORE any insert. If we let
+    // `batchCreate` race and rely on its 23505 catch-and-continue, the first
+    // 23505 inside the ambient TX puts it into the failed (25P02) state and
+    // every subsequent statement raises InFailedSqlTransactionError, which
+    // would propagate as a 500.
+    const targetExists = await this.mealPlanRepo.existsAnyInRange(
+      kindergartenId,
+      targetMondayStr,
+      targetSundayStr,
+    );
+    if (targetExists) {
+      return { plans_created: 0, plans_skipped: sourcePlans.length };
+    }
+
     const now = this.clock.now();
     const newPlans: MealPlan[] = sourcePlans.map((src) => {
-      const srcDate = new Date(src.date);
-      const targetDate = new Date(srcDate);
-      targetDate.setDate(targetDate.getDate() + 7);
-      const targetDateStr = targetDate.toISOString().slice(0, 10);
+      // src.date is YYYY-MM-DD — parse as UTC and add exactly 7 UTC days.
+      const srcDate = parseIsoDateUtc(src.date);
+      const targetDateStr = toIsoDate(addDaysUtc(srcDate, 7));
       const newPlanId = randomUUID();
 
       return MealPlan.create({

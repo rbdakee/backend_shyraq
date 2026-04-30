@@ -134,12 +134,11 @@ class FakeMealPlanRepository extends MealPlanRepository {
     );
   }
 
-  existsAnyInRange(
-    _kgId: string,
-    _from: string,
-    _to: string,
-  ): Promise<boolean> {
-    return Promise.resolve(false);
+  existsAnyInRange(_kgId: string, from: string, to: string): Promise<boolean> {
+    const found = [...this.rows.values()].some(
+      (p) => p.kindergartenId === _kgId && p.date >= from && p.date <= to,
+    );
+    return Promise.resolve(found);
   }
 
   batchCreate(

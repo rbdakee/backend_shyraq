@@ -192,6 +192,21 @@ class FakeWeekSnapshotRepo extends ScheduleWeekSnapshotRepository {
     this.rows.push(snapshot);
     return Promise.resolve(snapshot);
   }
+  tryCreate(
+    kg: string,
+    snapshot: ScheduleWeekSnapshot,
+  ): Promise<ScheduleWeekSnapshot | null> {
+    if (snapshot.kindergartenId !== kg) throw new Error('kg mismatch');
+    const existing = this.rows.find(
+      (r) =>
+        r.kindergartenId === kg &&
+        r.groupId === snapshot.groupId &&
+        r.weekStartDate.getTime() === snapshot.weekStartDate.getTime(),
+    );
+    if (existing) return Promise.resolve(null);
+    this.rows.push(snapshot);
+    return Promise.resolve(snapshot);
+  }
   findByGroupAndWeek(
     kg: string,
     groupId: string,

@@ -15,7 +15,6 @@ import {
 import { ActivityEventNotFoundError } from './domain/errors/activity-event-not-found.error';
 import { EventNotDeletableError } from './domain/errors/event-not-deletable.error';
 import { ScheduleTemplateNotFoundError } from './domain/errors/schedule-template-not-found.error';
-import { WeekSnapshotAlreadyExistsError } from './domain/errors/week-snapshot-already-exists.error';
 import { isoWeekdayOf } from './domain/value-objects/day-of-week.vo';
 import {
   ActivityEventRepository,
@@ -425,6 +424,8 @@ export class ScheduleService {
     const snapshots: ScheduleWeekSnapshot[] = [];
 
     for (const group of groups) {
+      // Cheap pre-check — common case is "snapshot already exists" and we
+      // skip without bothering with template projection.
       const existing = await this.snapshotRepo.findByGroupAndWeek(
         kindergartenId,
         group.id,
@@ -468,9 +469,11 @@ export class ScheduleService {
         }
       }
 
-      if (events.length > 0) {
-        await this.eventRepo.createMany(kindergartenId, events);
-      }
+      // Atomic claim on (group, week) BEFORE we touch activity_events. If
+      // another caller raced us and wrote the snapshot in between, tryCreate
+      // returns null and we move on without writing orphan events. If
+      // tryCreate returns a saved row we now own this (group, week)
+      // exclusively and can safely insert events.
       const snapshot = ScheduleWeekSnapshot.createNew(
         {
           id: randomUUID(),
@@ -482,21 +485,20 @@ export class ScheduleService {
         },
         this.clock.now(),
       );
-      try {
-        const saved = await this.snapshotRepo.create(kindergartenId, snapshot);
-        snapshots.push(saved);
-        copiedGroups += 1;
-        totalEvents += events.length;
-      } catch (err) {
-        // Race: another caller wrote the snapshot between our probe and
-        // insert. Treat as skipped — events were already written though, so
-        // this corner is best-effort.
-        if (err instanceof WeekSnapshotAlreadyExistsError) {
-          skippedGroups += 1;
-          continue;
-        }
-        throw err;
+      const saved = await this.snapshotRepo.tryCreate(kindergartenId, snapshot);
+      if (saved === null) {
+        // Race: snapshot appeared between findByGroupAndWeek and tryCreate.
+        // No events written, no TX poison.
+        skippedGroups += 1;
+        continue;
       }
+
+      if (events.length > 0) {
+        await this.eventRepo.createMany(kindergartenId, events);
+      }
+      snapshots.push(saved);
+      copiedGroups += 1;
+      totalEvents += events.length;
     }
 
     return { copiedGroups, skippedGroups, totalEvents, snapshots };

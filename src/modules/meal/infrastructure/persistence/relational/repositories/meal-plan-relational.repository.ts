@@ -227,6 +227,21 @@ export class MealPlanRelationalRepository extends MealPlanRepository {
     return count > 0;
   }
 
+  /**
+   * Batch-insert plans for copy-week.
+   *
+   * Caller assumption: the target week range is empty BEFORE this call
+   * (verified via `existsAnyInRange` in `MealService.copyWeekMenuToNext`).
+   * The 23505 catch below is a defensive net for the "single isolated
+   * batchCreate inside its own TX" path used by integration tests and by
+   * narrow direct callers — under that contract a 23505 only happens at
+   * most once per call and the TX is not poisoned across the catch.
+   *
+   * Do NOT call this with conflicting plans inside an ambient HTTP-pipeline
+   * transaction: a single 23505 will set Postgres TX state to 25P02 and
+   * every subsequent statement raises InFailedSqlTransactionError, which
+   * `isUniqueViolation` does not match.
+   */
   async batchCreate(
     kindergartenId: string,
     plans: MealPlan[],

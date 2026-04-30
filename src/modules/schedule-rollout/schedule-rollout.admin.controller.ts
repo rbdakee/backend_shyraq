@@ -13,7 +13,9 @@ import {
   ApiOkResponse,
   ApiOperation,
   ApiTags,
+  ApiTooManyRequestsResponse,
   ApiUnauthorizedResponse,
+  ApiUnprocessableEntityResponse,
 } from '@nestjs/swagger';
 import { Roles } from '@/common/decorators/roles.decorator';
 import { SuperAdminScope } from '@/common/decorators/super-admin-scope.decorator';
@@ -58,6 +60,24 @@ export class ScheduleRolloutAdminController {
   @ApiBadRequestResponse({ description: 'Validation error.' })
   @ApiUnauthorizedResponse({ description: 'Bearer missing/invalid/revoked.' })
   @ApiForbiddenResponse({ description: 'Caller is not a super_admin.' })
+  @ApiUnprocessableEntityResponse({
+    description: 'Invalid date or unprocessable input.',
+    schema: {
+      example: {
+        error: 'invalid_date_range',
+        message: 'fromMonday must be a valid ISO date',
+      },
+    },
+  })
+  @ApiTooManyRequestsResponse({
+    description: 'Rate limited — too many manual rollout triggers.',
+    schema: {
+      example: {
+        error: 'too_many_requests',
+        message: 'Rate limit exceeded for weekly rollout trigger.',
+      },
+    },
+  })
   async run(
     @Body() dto: RunWeeklyRolloutDto,
   ): Promise<RolloutSummaryResponseDto> {

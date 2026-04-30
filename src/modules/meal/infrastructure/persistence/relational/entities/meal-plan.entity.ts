@@ -47,6 +47,14 @@ export class MealPlanEntity {
   @Column({ name: 'copied_from', type: 'uuid', nullable: true })
   copied_from: string | null;
 
+  // Self-referencing FK to the source plan when this plan was produced by
+  // copyWeekMenuToNext. Documentation-only on the read side — service code
+  // sets `copied_from` directly via the column above. Mirrors the
+  // `creator` ↔ `created_by` pattern below.
+  @ManyToOne(() => MealPlanEntity, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'copied_from', referencedColumnName: 'id' })
+  copiedFromPlan?: MealPlanEntity | null;
+
   @Column({ name: 'created_by', type: 'uuid', nullable: true })
   created_by: string | null;
 

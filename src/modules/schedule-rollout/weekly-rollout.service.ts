@@ -187,20 +187,28 @@ export class WeeklyRolloutService {
             },
           );
         });
+        // Only accumulate on success. If schedule succeeded but meal threw,
+        // the surrounding TX rolled back both — `item.schedule` was a local
+        // mutation that does NOT reflect what landed in PG, so adding it to
+        // totals would over-count rows that no longer exist.
+        totals.copiedGroups += item.schedule.copiedGroups;
+        totals.skippedGroups += item.schedule.skippedGroups;
+        totals.totalEvents += item.schedule.totalEvents;
+        totals.plansCreated += item.meal.plansCreated;
+        totals.plansSkipped += item.meal.plansSkipped;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         this.logger.warn(
           `weekly-rollout: kg=${kgId} failed (${msg}); continuing with the rest`,
         );
+        // Reset per-kg counters: the in-flight mutations of `item.schedule`
+        // / `item.meal` were rolled back with the TX.
+        item.schedule = { copiedGroups: 0, skippedGroups: 0, totalEvents: 0 };
+        item.meal = { plansCreated: 0, plansSkipped: 0 };
         item.error = msg;
         totals.errors += 1;
       }
 
-      totals.copiedGroups += item.schedule.copiedGroups;
-      totals.skippedGroups += item.schedule.skippedGroups;
-      totals.totalEvents += item.schedule.totalEvents;
-      totals.plansCreated += item.meal.plansCreated;
-      totals.plansSkipped += item.meal.plansSkipped;
       items.push(item);
     }
 

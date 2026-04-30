@@ -62,6 +62,46 @@ export class ScheduleWeekSnapshotRelationalRepository extends ScheduleWeekSnapsh
     return ScheduleWeekSnapshotMapper.toDomain(row);
   }
 
+  async tryCreate(
+    kindergartenId: string,
+    snapshot: ScheduleWeekSnapshot,
+  ): Promise<ScheduleWeekSnapshot | null> {
+    const m = this.manager();
+    const state = snapshot.toState();
+    // INSERT ... ON CONFLICT DO NOTHING RETURNING — atomic claim that never
+    // raises 23505 and therefore never poisons the ambient transaction. The
+    // partial unique index is `idx_schedule_week_snapshots_unique` on
+    // (group_id, week_start_date); the constraint name does not have to be
+    // referenced because ON CONFLICT without a target falls back to "any
+    // unique violation".
+    const result = (await m.query(
+      `INSERT INTO schedule_week_snapshots
+         (id, kindergarten_id, group_id, week_start_date, source, copied_from, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (group_id, week_start_date) DO NOTHING
+       RETURNING id`,
+      [
+        state.id,
+        kindergartenId,
+        state.groupId,
+        state.weekStartDate,
+        state.source,
+        state.copiedFrom,
+        state.createdAt,
+      ],
+    )) as Array<{ id: string }>;
+    if (result.length === 0) return null;
+    const row = await m.getRepository(ScheduleWeekSnapshotEntity).findOne({
+      where: { id: state.id, kindergarten_id: kindergartenId },
+    });
+    if (!row) {
+      throw new Error(
+        `schedule_week_snapshot_create_readback_failed:${state.id}@${kindergartenId}`,
+      );
+    }
+    return ScheduleWeekSnapshotMapper.toDomain(row);
+  }
+
   async findByGroupAndWeek(
     kindergartenId: string,
     groupId: string,
