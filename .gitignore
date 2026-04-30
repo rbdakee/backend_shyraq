@@ -42,3 +42,6 @@ lerna-debug.log*
 
 # Claude Code session state
 .claude/
+
+# Local Swagger sandbox notebooks (manual API exploration)
+/local_tests/

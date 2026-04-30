@@ -34,6 +34,7 @@ import { SaasUserRepository } from './infrastructure/persistence/saas-user.repos
 import { SmsPort } from './sms.port';
 import { TokenBlocklistPort } from './token-blocklist.port';
 import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
+import { ChildGuardianRepository } from '@/modules/child/infrastructure/persistence/child-guardian.repository';
 
 const OTP_LOCKED_TTL_SEC = 900;
 const OTP_RESEND_AFTER_SEC = 60;
@@ -126,6 +127,7 @@ export class AuthService implements OnModuleInit {
     @Inject(ClockPort) private readonly clock: ClockPort,
     private readonly configService: ConfigService<AllConfigType>,
     private readonly staff: StaffMemberRepository,
+    private readonly guardians: ChildGuardianRepository,
   ) {}
 
   onModuleInit(): void {
@@ -271,8 +273,23 @@ export class AuthService implements OnModuleInit {
         s.kindergartenId === input.kindergartenId &&
         (input.role === undefined || s.role === input.role),
     );
-    if (!match) {
-      throw new RoleNotAvailableError();
+    let selectedRole: string | null = null;
+    let selectedKindergartenId: string | null = null;
+    if (match) {
+      selectedRole = match.role;
+      selectedKindergartenId = match.kindergartenId;
+    } else {
+      const guardianKindergartenIds =
+        await this.guardians.listApprovedKindergartenIdsByUserId(input.userId);
+      const hasParentRole =
+        (input.role === undefined || input.role === 'parent') &&
+        guardianKindergartenIds.includes(input.kindergartenId);
+      if (hasParentRole) {
+        selectedRole = 'parent';
+        selectedKindergartenId = input.kindergartenId;
+      } else {
+        throw new RoleNotAvailableError();
+      }
     }
 
     if (input.oldAccessJti && typeof input.oldAccessExpUnix === 'number') {
@@ -284,8 +301,8 @@ export class AuthService implements OnModuleInit {
 
     const access = await this.jwt.issueAccessToken({
       sub: input.userId,
-      role: match.role,
-      kindergarten_id: match.kindergartenId,
+      role: selectedRole,
+      kindergarten_id: selectedKindergartenId,
     });
     const raw = generateRefreshToken();
     const ttlDays = this.configService.getOrThrow('auth.refreshTokenTtlDays', {
@@ -294,7 +311,7 @@ export class AuthService implements OnModuleInit {
     const expiresAt = computeRefreshExpiresAt(this.clock.now(), ttlDays);
     await this.refreshTokens.create({
       userId: input.userId,
-      kindergartenId: match.kindergartenId,
+      kindergartenId: selectedKindergartenId,
       tokenHash: hashRefreshToken(raw),
       deviceId: input.deviceId ?? null,
       ipAddress: input.ipAddress ?? null,
@@ -313,12 +330,12 @@ export class AuthService implements OnModuleInit {
       pendingRoleSelect: false,
       roles: [
         {
-          role: match.role,
-          kindergartenId: match.kindergartenId,
+          role: selectedRole,
+          kindergartenId: selectedKindergartenId,
           groupId: null,
         },
       ],
-      kindergartens: [{ id: match.kindergartenId, name: '', slug: '' }],
+      kindergartens: [{ id: selectedKindergartenId, name: '', slug: '' }],
       user: this.toUserSummary(user),
     };
   }
@@ -543,6 +560,22 @@ export class AuthService implements OnModuleInit {
     const staffEntries = await this.staff.findAllActiveByUserId(user.id);
 
     if (staffEntries.length === 0) {
+      const guardianKindergartenIds =
+        await this.guardians.listApprovedKindergartenIdsByUserId(user.id);
+      if (guardianKindergartenIds.length > 0) {
+        return {
+          roles: guardianKindergartenIds.map((kgId) => ({
+            role: 'parent',
+            kindergartenId: kgId,
+            groupId: null,
+          })),
+          kindergartens: guardianKindergartenIds.map((kgId) => ({
+            id: kgId,
+            name: '',
+            slug: '',
+          })),
+        };
+      }
       return {
         roles: [{ role: 'parent', kindergartenId: null, groupId: null }],
         kindergartens: [],

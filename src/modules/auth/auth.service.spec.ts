@@ -54,6 +54,8 @@ import {
   StaffMemberRepository,
   UpdateStaffMemberInput,
 } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
+import { ChildGuardian } from '@/modules/child/domain/entities/child-guardian.entity';
+import { ChildGuardianRepository } from '@/modules/child/infrastructure/persistence/child-guardian.repository';
 
 class FixedClock implements ClockPort {
   constructor(private readonly fixed: Date) {}
@@ -342,6 +344,59 @@ class FakeStaffRepo extends StaffMemberRepository {
   }
 }
 
+class FakeGuardianRepo extends ChildGuardianRepository {
+  approvedKindergartenIdsByUserId = new Map<string, string[]>();
+
+  create(_guardian: ChildGuardian): Promise<void> {
+    return Promise.resolve();
+  }
+  findById(_kg: string, _id: string): Promise<ChildGuardian | null> {
+    return Promise.resolve(null);
+  }
+  findByChildId(_kg: string, _childId: string): Promise<ChildGuardian[]> {
+    return Promise.resolve([]);
+  }
+  findActiveByChildAndUser(
+    _kg: string,
+    _childId: string,
+    _userId: string,
+  ): Promise<ChildGuardian | null> {
+    return Promise.resolve(null);
+  }
+  findApprovedByChildAndUserCrossTenant(
+    _childId: string,
+    _userId: string,
+  ): Promise<ChildGuardian | null> {
+    return Promise.resolve(null);
+  }
+  findByIdCrossTenant(_guardianId: string): Promise<ChildGuardian | null> {
+    return Promise.resolve(null);
+  }
+  findPendingForPrimary(
+    _kindergartenId: string,
+    _primaryUserId: string,
+  ): Promise<ChildGuardian[]> {
+    return Promise.resolve([]);
+  }
+  update(_guardian: ChildGuardian): Promise<void> {
+    return Promise.resolve();
+  }
+  countApprovalRights(_kg: string, _childId: string): Promise<number> {
+    return Promise.resolve(0);
+  }
+  listApprovedKindergartenIdsByUserId(userId: string): Promise<string[]> {
+    return Promise.resolve(
+      this.approvedKindergartenIdsByUserId.get(userId) ?? [],
+    );
+  }
+  findApprovedByUser(
+    _kindergartenId: string,
+    _userId: string,
+  ): Promise<ChildGuardian[]> {
+    return Promise.resolve([]);
+  }
+}
+
 interface AuthDeps {
   service: AuthService;
   users: FakeUserRepo;
@@ -354,6 +409,7 @@ interface AuthDeps {
   passwords: FakePasswordHasher;
   blocklist: FakeBlocklist;
   staffRepo: FakeStaffRepo;
+  guardianRepo: FakeGuardianRepo;
 }
 
 function build(): AuthDeps {
@@ -367,6 +423,7 @@ function build(): AuthDeps {
   const passwords = new FakePasswordHasher();
   const blocklist = new FakeBlocklist();
   const staffRepo = new FakeStaffRepo();
+  const guardianRepo = new FakeGuardianRepo();
   const config = new ConfigService<Record<string, unknown>>({
     auth: {
       jwtAccessSecret: 'test-secret-test-secret-test',
@@ -396,6 +453,7 @@ function build(): AuthDeps {
     new FixedClock(new Date('2025-01-01T00:00:00Z')),
     config as unknown as ConfigService,
     staffRepo,
+    guardianRepo,
   );
   service.onModuleInit();
   return {
@@ -410,6 +468,7 @@ function build(): AuthDeps {
     passwords,
     blocklist,
     staffRepo,
+    guardianRepo,
   };
 }
 
@@ -459,6 +518,25 @@ describe('AuthService', () => {
       expect(res.roles).toEqual([
         { role: 'parent', kindergartenId: null, groupId: null },
       ]);
+    });
+
+    it('scopes parent role when the user has an approved guardian row', async () => {
+      const { service, otpStore, guardianRepo } = build();
+      await otpStore.storeCode('+77012345678', '123456', 300);
+      guardianRepo.approvedKindergartenIdsByUserId.set('user-+77012345678', [
+        'kg-1',
+      ]);
+
+      const res = await service.verifyOtp({
+        phone: '+77012345678',
+        code: '123456',
+      });
+
+      expect(res.pendingRoleSelect).toBe(false);
+      expect(res.roles).toEqual([
+        { role: 'parent', kindergartenId: 'kg-1', groupId: null },
+      ]);
+      expect(res.kindergartens).toEqual([{ id: 'kg-1', name: '', slug: '' }]);
     });
 
     it('throws OtpExpiredError when no code stored', async () => {
@@ -624,6 +702,33 @@ describe('AuthService', () => {
           role: 'teacher',
         }),
       ).rejects.toBeInstanceOf(RoleNotAvailableError);
+    });
+
+    it('allows selecting a parent kindergarten from approved guardian rows', async () => {
+      const { service, users, guardianRepo } = build();
+      users.put(
+        User.hydrate({
+          id: 'user-1',
+          phone: '+77000000001',
+          fullName: 'Parent',
+          avatarUrl: null,
+          iin: null,
+          dateOfBirth: null,
+          locale: 'ru',
+        }),
+      );
+      guardianRepo.approvedKindergartenIdsByUserId.set('user-1', ['kg-1']);
+
+      const res = await service.selectRole({
+        userId: 'user-1',
+        kindergartenId: 'kg-1',
+        role: 'parent',
+      });
+
+      expect(res.roles).toEqual([
+        { role: 'parent', kindergartenId: 'kg-1', groupId: null },
+      ]);
+      expect(res.refreshToken).not.toBeNull();
     });
   });
 
