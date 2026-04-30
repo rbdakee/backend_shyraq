@@ -72,4 +72,14 @@ export abstract class ChildRepository {
     kindergartenId: string,
     childId: string,
   ): Promise<ChildGroupHistoryRecord[]>;
+
+  /**
+   * Cross-tenant lookup by IIN. Used by the parent-side onboarding flow
+   * (`/parent/children/link`) when the caller has no kindergarten context yet —
+   * resolves the matching child(ren) so the service can decide which tenant to
+   * scope into. Bypasses RLS via `app.bypass_rls=true` inside its own
+   * transaction. Excludes archived children. Returns rows ordered by
+   * `created_at DESC` (most recent first).
+   */
+  abstract findByIinCrossTenant(iin: string): Promise<Child[]>;
 }

@@ -201,6 +201,30 @@ export class ChildGuardianRelationalRepository extends ChildGuardianRepository {
     return rows.map((r) => ChildGuardianMapper.toDomain(r));
   }
 
+  /**
+   * Cross-tenant lookup of pending primary-guardian rows for a given user.
+   * Used by the auth pipeline (`verifyOtp` auto-approve hook) to flip
+   * primary rows pre-seeded by the enrollment flow into `approved` once the
+   * matching parent verifies their phone. Mirrors the bypass pattern of
+   * `listApprovedKindergartenIdsByUserId` above.
+   */
+  async findPendingPrimaryByUserIdCrossTenant(
+    userId: string,
+  ): Promise<ChildGuardian[]> {
+    return this.dataSource.transaction(async (manager) => {
+      await manager.query(`SET LOCAL app.bypass_rls = 'true'`);
+      const rows = await manager
+        .getRepository(ChildGuardianEntity)
+        .createQueryBuilder('g')
+        .where('g.user_id = :uid', { uid: userId })
+        .andWhere("g.role = 'primary'")
+        .andWhere("g.status = 'pending_approval'")
+        .orderBy('g.created_at', 'ASC')
+        .getMany();
+      return rows.map((r) => ChildGuardianMapper.toDomain(r));
+    });
+  }
+
   private manager(): EntityManager {
     const ctx = tenantStorage.getStore();
     return ctx?.entityManager ?? this.repo.manager;

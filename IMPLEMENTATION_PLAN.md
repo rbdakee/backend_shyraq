@@ -4,7 +4,7 @@
 
 ---
 
-## 0. v2 baseline (P0–P5 complete)
+## 0. v2 baseline (P0–P5 + B5–B6 complete)
 
 Репо `backend_shyraq_v2` — TypeORM + service.ts brocoders pattern. Достиг **B4-parity** на коммите `f1d6984` (P5 children & guardians).
 
@@ -16,8 +16,10 @@
 | **P3** Tenant Bootstrap | KindergartenModule (createKindergarten + first admin atomic TX, updateSettings, getMyKindergarten, inviteAdmin, listKindergartens, archive, restore). Минимальный StaffMember entity для admin seed. Миграция StaffAndKindergartenSettings. Cross-tenant phantom-row integration spec. |
 | **P4** Organization | StaffService extended, GroupModule (rich aggregate с `assignMentor` инвариантом — partial-unique idx `idx_group_mentors_one_active WHERE unassigned_at IS NULL`), LocationModule, CameraModule. Миграция OrganizationTables. E2E объединены в один `organization.e2e-spec.ts`. |
 | **P5** Children & Guardians | Child + ChildGuardian + child-group-history domain entities, 11 errors, миграция ChildrenAndGuardians (3 tables, FORCE RLS, partial-uniques `(child_id, user_id) WHERE status<>'revoked'` и `(kindergarten_id, iin) WHERE iin IS NOT NULL`, status/gender CHECK). ChildService ~700 строк (19 методов). ChildAccessGuard для admin/parent scope. NotificationPort + LoggingNotificationAdapter в SharedKernelModule. Контроллеры: child (admin), parent-child (read-only), parent-approval (state-machine + permissions). |
+| **B5** Enrollment | EnrollmentModule (domain + persistence + service + controller + DTO + presenter), migration EnrollmentTables (2 tables + ENUM + FORCE RLS). State machine: new→in_processing→{waitlist\|card_created\|cancelled}, waitlist→in_processing, card_created→archive, cancelled→archive. transition→card_created reuses ChildService.createChild + inviteGuardian atomically via ambient TX. `src/shared-kernel/domain/errors/conflict.error.ts` base + DomainErrorFilter `ConflictError → 409` ветка. Tests: unit 42/412, integration 50/439, e2e 8/65. Swagger `/api/v1/admin/enrollments`. |
+| **B6** Parent Onboarding | `POST /parent/children/link` (cross-tenant IIN search, creates pending guardian secondary\|nanny), `POST /parent/children/:id/unlink` (soft-revoke, 403 for primary). Auto-approve hook в `AuthService.verifyOtp` BEFORE assembleRoles via `ChildGuardianRepository.findPendingPrimaryByUserIdCrossTenant` (bypass_rls). 5 новых domain errors + shared-kernel `ForbiddenActionError` base (→ 403). DomainErrorFilter passes through `details` для `MultipleChildrenForIinError`. `ChildService` +155 строк (880 total). `parent-onboarding.e2e-spec.ts` 553 строки / 8 сценариев A–H. Нет новой миграции (схема P5 достаточна). Tests: unit 42/439, integration 52/473, e2e 9/73. |
 
-**Текущее состояние (`f1d6984`):** 39 unit suites + 5 skipped / 314 tests + 17 skipped green. E2E: 7 suites / 55 tests. Integration: 17 (gated `INTEGRATION_DB=1`). Endpoints под `/api/v1/...`. Swagger полный.
+**Текущее состояние (B6):** 42 unit suites / 439 tests green. Integration (INTEGRATION_DB=1): 52 suites / 473 tests. E2E: 9 suites / 73 tests. Endpoints под `/api/v1/...`. Swagger полный.
 
 **Отличия v2 от старого репо:** TypeORM (не Prisma), `<x>.service.ts` per module (не CQRS use-case-классы), brocoders module layout с `domain/` + `dto/` + `infrastructure/persistence/relational/{entities,mappers,repositories}/` (не 4-слойный hexagonal `domain/application/infrastructure/interface`), RLS + явная передача `kindergarten_id` (не `prisma.$extends` ALS-only), FORCE ROW LEVEL SECURITY + два DB-role'а (`shyraq` superuser для миграций / `shyraq_app` non-owner для runtime).
 
@@ -102,7 +104,7 @@
 ### BP-батчи (v2 продолжает с B5)
 
 - [x] **B5** — Enrollment ✓ **demo-ready: BP §1**
-- [ ] **B6** — Parent Onboarding ✓ **demo-ready: BP §2**
+- [x] **B6** — Parent Onboarding ✓ **demo-ready: BP §2**
 - [ ] **B7** — Schedule & Meal *(часть BP §9)*
 - [ ] **B8** — Attendance & Timeline (manual) ✓ **demo-ready: BP §5 manual**
 - [ ] **B9** — Notifications + WebSocket *(Shared §0.4 + process split api/worker/ws)*
@@ -124,7 +126,7 @@
 ### Demo-able BP
 
 - [x] **BP §1** Enrollment & Onboarding *(часть — бутстрап tenant'а + первого admin'а закрыта в P3; enrollment детей — закрыта в B5: leads, state machine transition→card_created)*
-- [ ] **BP §2** Parent App Onboarding
+- [x] **BP §2** Parent App Onboarding *(B6: link/unlink по ИИН + auto-approve primary на OTP verify — demo-ready)*
 - [x] **BP §3** Staff & Admin Provisioning *(P3 + P4: первый admin — атомарный POST /super-admin/kindergartens; остальные staff — POST /admin/staff с role×specialist_type matrix, TX-атомарность create+mentor-assign, deactivate/activate symmetric, mentor assign/change-primary с partial-idx invariants)*
 - [ ] **BP §4** Payments
 - [ ] **BP §5** Daily Operations & Attendance
@@ -148,9 +150,10 @@
 - **TipTopPay vs FreedomPay** — выбрать один. Блокирует расширение B14.
 - **Qdrant vs pgvector** для face embeddings — блокирует начало B19. (D15 фиксирует Qdrant локально на edge; pgvector вариант снят с рассмотрения.)
 - **IIN Luhn checksum validation** — валидируется только формат `^\d{12}$`. Контрольная цифра по алгоритму ИИН РК (Luhn-mod-вариант) откладывается до v2-polish.
-- **Parent JWT не содержит `kindergarten_id` для одиночного парента** — обнаружено на P5 e2e. `auth.service.verifyOtp` ставит `kgId` только когда `activeStaff.length === 1`; для родителя с привязкой к одному садику — kgId=null. Решается в B6 Parent Onboarding (либо auto-assign, либо `/auth/role/select` для parent аналогично multi-role staff).
 
 ### Resolved (исторические — full log в memory)
+
+- **2026-04-30 · B6 · Parent Onboarding** — link/unlink endpoints implemented (`POST /parent/children/link`, `POST /parent/children/:id/unlink`), auto-approve primary в `verifyOtp` (defer from B5 — closed). Parent JWT scope (P5 leftover) — closed via `6b0a929` и exercised by Scenario A e2e. ForbiddenActionError base введён в shared-kernel; DomainErrorFilter now passes through `details` for clients (used by `multiple_children_for_iin`). No DB migration needed.
 
 - **2026-04-30 · B5 · Enrollment** — invoice generation на `card_created` — defer на B13. Hook-point: `EnrollmentService.transition()` где помечен `// TODO(B13)` маркер. Auto-approve primary guardian по phone — defer на B6 (parent linking flow).
 

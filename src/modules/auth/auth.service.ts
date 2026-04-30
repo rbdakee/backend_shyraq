@@ -1,7 +1,10 @@
 import { Inject, Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { InjectDataSource } from '@nestjs/typeorm';
 import { randomInt } from 'node:crypto';
+import { DataSource } from 'typeorm';
 import { AllConfigType } from '@/config/config.type';
+import { tenantStorage } from '@/database/tenant-storage';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { User } from '@/modules/users/domain/entities/user.entity';
 import { UserRepository } from '@/modules/users/infrastructure/persistence/user.repository';
@@ -109,6 +112,9 @@ export interface SuperAdminLogoutInput {
  * requested (userId, kindergartenId, role) triple against the same table
  * and issues a scoped access token on success.
  */
+const KG_UUID_RE =
+  /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
 @Injectable()
 export class AuthService implements OnModuleInit {
   private readonly logger = new Logger(AuthService.name);
@@ -128,6 +134,7 @@ export class AuthService implements OnModuleInit {
     private readonly configService: ConfigService<AllConfigType>,
     private readonly staff: StaffMemberRepository,
     private readonly guardians: ChildGuardianRepository,
+    @InjectDataSource() private readonly dataSource: DataSource,
   ) {}
 
   onModuleInit(): void {
@@ -184,6 +191,7 @@ export class AuthService implements OnModuleInit {
     await this.consumeOtp(input.phone, input.code);
 
     const user = await this.users.upsertByPhone(input.phone);
+    await this.autoApprovePendingPrimaries(user.id, this.clock.now());
     return this.issueTokensForUser(user, {
       deviceId: input.deviceId ?? null,
       ipAddress: input.ipAddress ?? null,
@@ -599,6 +607,48 @@ export class AuthService implements OnModuleInit {
     }
 
     return { roles, kindergartens };
+  }
+
+  /**
+   * Auto-approve hook for the OTP-verify flow. Pending-primary rows are
+   * pre-seeded by the enrollment `card_created` transition (admin invites the
+   * parent by phone before the parent has logged in). Once the parent passes
+   * OTP for that phone, ownership is proven — flip every such row across
+   * tenants to `approved` so the parent app immediately sees their child(ren).
+   *
+   * Each row sits in its own tenant, so we open a tenant-scoped TX per row to
+   * satisfy the `kindergarten_id = current_setting('app.kindergarten_id')`
+   * RLS policy on UPDATE. Cross-tenant SELECT lives inside the repo (which
+   * sets `app.bypass_rls`).
+   */
+  private async autoApprovePendingPrimaries(
+    userId: string,
+    now: Date,
+  ): Promise<void> {
+    const pending =
+      await this.guardians.findPendingPrimaryByUserIdCrossTenant(userId);
+    if (pending.length === 0) return;
+    for (const guardian of pending) {
+      const kgId = guardian.kindergartenId as string;
+      if (!KG_UUID_RE.test(kgId)) {
+        // Defensive: a malformed kg id from DB shouldn't bring auth down —
+        // skip and log so an operator can investigate.
+        this.logger.warn(
+          `autoApprovePendingPrimaries: skipping guardian=${guardian.id} with malformed kindergarten_id=${kgId}`,
+        );
+        continue;
+      }
+      await this.dataSource.transaction(async (manager) => {
+        await manager.query(`SET LOCAL app.kindergarten_id = '${kgId}'`);
+        await tenantStorage.run(
+          { kgId, bypass: false, entityManager: manager },
+          async () => {
+            guardian.autoApproveAsPrimary(now);
+            await this.guardians.update(guardian);
+          },
+        );
+      });
+    }
   }
 
   private toUserSummary(user: User): UserSummaryView {

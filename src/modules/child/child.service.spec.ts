@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { DataSource, EntityManager } from 'typeorm';
 import { NotificationPort } from '@/common/notifications/notification.port';
 import { Group } from '@/modules/group/domain/entities/group.entity';
 import { GroupNotFoundError } from '@/modules/group/domain/errors/group-not-found.error';
@@ -33,15 +34,21 @@ import {
 import { ChildService } from './child.service';
 import { Child } from './domain/entities/child.entity';
 import { ChildGuardian } from './domain/entities/child-guardian.entity';
+import { AlreadyLinkedToChildError } from './domain/errors/already-linked-to-child.error';
+import { AlreadyPendingForChildError } from './domain/errors/already-pending-for-child.error';
+import { ChildAccessDeniedError } from './domain/errors/child-access-denied.error';
 import { ChildIinAlreadyExistsError } from './domain/errors/child-iin-already-exists.error';
 import { ChildNotFoundError } from './domain/errors/child-not-found.error';
+import { ChildNotFoundForIinError } from './domain/errors/child-not-found-for-iin.error';
 import { DuplicateGuardianError } from './domain/errors/duplicate-guardian.error';
 import { GroupTransferToSelfError } from './domain/errors/group-transfer-to-self.error';
 import { GuardianNotApprovedError } from './domain/errors/guardian-not-approved.error';
 import { GuardianNotFoundError } from './domain/errors/guardian-not-found.error';
 import { InvalidGuardianStatusTransitionError } from './domain/errors/invalid-guardian-status-transition.error';
 import { MaxApprovalRightsExceededError } from './domain/errors/max-approval-rights-exceeded.error';
+import { MultipleChildrenForIinError } from './domain/errors/multiple-children-for-iin.error';
 import { NotPrimaryGuardianError } from './domain/errors/not-primary-guardian.error';
+import { PrimaryCannotSelfUnlinkError } from './domain/errors/primary-cannot-self-unlink.error';
 
 // ── fakes ─────────────────────────────────────────────────────────────────
 
@@ -161,6 +168,14 @@ class FakeChildRepo extends ChildRepository {
   ): Promise<ChildGroupHistoryRecord[]> {
     void kindergartenId;
     return Promise.resolve(this.history.filter((h) => h.childId === childId));
+  }
+
+  findByIinCrossTenant(iin: string): Promise<Child[]> {
+    return Promise.resolve(
+      [...this.children.values()].filter(
+        (c) => c.toState().iin === iin && c.status.value !== 'archived',
+      ),
+    );
   }
 }
 
@@ -292,6 +307,19 @@ class FakeGuardianRepo extends ChildGuardianRepository {
           g.kindergartenId === kindergartenId &&
           g.userId === userId &&
           g.status.value === 'approved',
+      ),
+    );
+  }
+
+  findPendingPrimaryByUserIdCrossTenant(
+    userId: string,
+  ): Promise<ChildGuardian[]> {
+    return Promise.resolve(
+      [...this.guardians.values()].filter(
+        (g) =>
+          g.userId === userId &&
+          g.role.value === 'primary' &&
+          g.status.value === 'pending_approval',
       ),
     );
   }
@@ -428,6 +456,22 @@ class FakeUserRepo extends UserRepository {
   }
 }
 
+/**
+ * Minimal stub of TypeORM DataSource. ChildService.linkChildByIin uses
+ * `dataSource.transaction(cb)` to scope its write into a tenant-bound TX —
+ * the in-memory test only needs the lambda to run with a fake manager whose
+ * `query()` is a no-op (the `SET LOCAL app.kindergarten_id` statement is
+ * irrelevant to the fakes).
+ */
+const fakeManager = {
+  query: (_sql: string): Promise<unknown> => Promise.resolve(undefined),
+} as unknown as EntityManager;
+
+const fakeDataSource = {
+  transaction: <T>(cb: (m: EntityManager) => Promise<T>): Promise<T> =>
+    cb(fakeManager),
+} as unknown as DataSource;
+
 class FakeNotification extends NotificationPort {
   events: { type: string; payload: unknown }[] = [];
   push(type: string, payload: unknown): Promise<void> {
@@ -521,6 +565,7 @@ function setup() {
     users,
     notification,
     clock,
+    fakeDataSource,
   );
   return {
     clock,
@@ -933,5 +978,387 @@ describe('ChildService — guardian state machine', () => {
         { canPickup: false },
       ),
     ).rejects.toBeInstanceOf(GuardianNotFoundError);
+  });
+});
+
+// ── B6: parent-side cross-tenant link / self-unlink ──────────────────────
+
+describe('ChildService — linkChildByIin', () => {
+  /**
+   * Bootstraps a `KG` kindergarten with one child + one approved primary
+   * guardian. Returns the child id, child IIN, and the caller user id used
+   * across all happy-path link tests.
+   */
+  async function bootChildWithIinAndPrimary(): Promise<{
+    setup: ReturnType<typeof setup>;
+    childId: string;
+    childIin: string;
+    primaryUserId: string;
+    callerUserId: string;
+  }> {
+    const ctx = setup();
+    const primaryUser = makeUser(randomUUID(), '+77011110000');
+    ctx.users.put(primaryUser);
+    const callerUser = makeUser(randomUUID(), '+77011112222');
+    ctx.users.put(callerUser);
+    const childIin = '040315500123';
+    const child = await ctx.service.createChild(KG, {
+      fullName: 'A',
+      iin: childIin,
+      dateOfBirth: new Date('2021-09-15'),
+    });
+    const g = ChildGuardian.hydrate({
+      id: randomUUID(),
+      kindergartenId: KG,
+      childId: child.id,
+      userId: primaryUser.id,
+      role: 'primary',
+      status: 'approved',
+      hasApprovalRights: true,
+      approvedBy: primaryUser.id,
+      approvedAt: NOW,
+      revokedBy: null,
+      revokedAt: null,
+      canPickup: true,
+      permissions: {},
+      permissionsUpdatedBy: null,
+      permissionsUpdatedAt: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    ctx.guardians.put(g);
+    return {
+      setup: ctx,
+      childId: child.id,
+      childIin,
+      primaryUserId: primaryUser.id,
+      callerUserId: callerUser.id,
+    };
+  }
+
+  it('creates a pending secondary guardian for a found child', async () => {
+    const ctx = await bootChildWithIinAndPrimary();
+    const { service, notification, guardians } = ctx.setup;
+    const out = await service.linkChildByIin(ctx.callerUserId, {
+      iin: ctx.childIin,
+      role: 'secondary',
+    });
+    expect(out.child.id).toBe(ctx.childId);
+    expect(out.guardian.status.value).toBe('pending_approval');
+    expect(out.guardian.role.value).toBe('secondary');
+    expect(out.guardian.canPickup).toBe(false); // default when omitted
+    expect(out.guardian.userId).toBe(ctx.callerUserId);
+    // primary was notified once
+    const pending = notification.events.filter((e) => e.type === 'pending');
+    expect(pending.length).toBe(1);
+    expect(
+      (pending[0].payload as { primaryUserId: string }).primaryUserId,
+    ).toBe(ctx.primaryUserId);
+    // row landed in store
+    expect(guardians.guardians.get(out.guardian.id)).toBeDefined();
+  });
+
+  it('honours canPickup=true when explicitly set', async () => {
+    const ctx = await bootChildWithIinAndPrimary();
+    const { service } = ctx.setup;
+    const out = await service.linkChildByIin(ctx.callerUserId, {
+      iin: ctx.childIin,
+      role: 'nanny',
+      canPickup: true,
+    });
+    expect(out.guardian.role.value).toBe('nanny');
+    expect(out.guardian.canPickup).toBe(true);
+  });
+
+  it('throws ChildNotFoundForIinError when iin matches no child', async () => {
+    const ctx = setup();
+    await expect(
+      ctx.service.linkChildByIin('00000000-0000-0000-0000-000000000099', {
+        iin: '040315500999',
+        role: 'secondary',
+      }),
+    ).rejects.toBeInstanceOf(ChildNotFoundForIinError);
+  });
+
+  it('throws MultipleChildrenForIinError with kindergartenIds when iin matches multiple children', async () => {
+    const ctx = setup();
+    const callerUser = makeUser(randomUUID(), '+77011112222');
+    ctx.users.put(callerUser);
+    const sharedIin = '040315500444';
+    await ctx.service.createChild(KG, {
+      fullName: 'A1',
+      iin: sharedIin,
+      dateOfBirth: new Date('2021-09-15'),
+    });
+    await ctx.service.createChild(KG2, {
+      fullName: 'A2',
+      iin: sharedIin,
+      dateOfBirth: new Date('2021-09-15'),
+    });
+    let captured: MultipleChildrenForIinError | null = null;
+    try {
+      await ctx.service.linkChildByIin(callerUser.id, {
+        iin: sharedIin,
+        role: 'secondary',
+      });
+    } catch (err) {
+      captured = err as MultipleChildrenForIinError;
+    }
+    expect(captured).toBeInstanceOf(MultipleChildrenForIinError);
+    expect(captured!.kindergartenIds).toEqual(
+      expect.arrayContaining([KG, KG2]),
+    );
+    expect(captured!.kindergartenIds.length).toBe(2);
+  });
+
+  it('throws AlreadyLinkedToChildError when caller already approved on the child', async () => {
+    const ctx = await bootChildWithIinAndPrimary();
+    const { service, guardians } = ctx.setup;
+    const existing = ChildGuardian.hydrate({
+      id: randomUUID(),
+      kindergartenId: KG,
+      childId: ctx.childId,
+      userId: ctx.callerUserId,
+      role: 'secondary',
+      status: 'approved',
+      hasApprovalRights: false,
+      approvedBy: ctx.primaryUserId,
+      approvedAt: NOW,
+      revokedBy: null,
+      revokedAt: null,
+      canPickup: false,
+      permissions: {},
+      permissionsUpdatedBy: null,
+      permissionsUpdatedAt: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    guardians.put(existing);
+    await expect(
+      service.linkChildByIin(ctx.callerUserId, {
+        iin: ctx.childIin,
+        role: 'secondary',
+      }),
+    ).rejects.toBeInstanceOf(AlreadyLinkedToChildError);
+  });
+
+  it('throws AlreadyPendingForChildError when caller already pending on the child', async () => {
+    const ctx = await bootChildWithIinAndPrimary();
+    const { service, guardians } = ctx.setup;
+    const existing = ChildGuardian.hydrate({
+      id: randomUUID(),
+      kindergartenId: KG,
+      childId: ctx.childId,
+      userId: ctx.callerUserId,
+      role: 'secondary',
+      status: 'pending_approval',
+      hasApprovalRights: false,
+      approvedBy: null,
+      approvedAt: null,
+      revokedBy: null,
+      revokedAt: null,
+      canPickup: false,
+      permissions: {},
+      permissionsUpdatedBy: null,
+      permissionsUpdatedAt: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    guardians.put(existing);
+    await expect(
+      service.linkChildByIin(ctx.callerUserId, {
+        iin: ctx.childIin,
+        role: 'secondary',
+      }),
+    ).rejects.toBeInstanceOf(AlreadyPendingForChildError);
+  });
+
+  it('allows new pending row when prior row is revoked', async () => {
+    const ctx = await bootChildWithIinAndPrimary();
+    const { service, guardians } = ctx.setup;
+    const revoked = ChildGuardian.hydrate({
+      id: randomUUID(),
+      kindergartenId: KG,
+      childId: ctx.childId,
+      userId: ctx.callerUserId,
+      role: 'secondary',
+      status: 'revoked',
+      hasApprovalRights: false,
+      approvedBy: ctx.primaryUserId,
+      approvedAt: NOW,
+      revokedBy: ctx.callerUserId,
+      revokedAt: NOW,
+      canPickup: false,
+      permissions: {},
+      permissionsUpdatedBy: null,
+      permissionsUpdatedAt: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    guardians.put(revoked);
+    const out = await service.linkChildByIin(ctx.callerUserId, {
+      iin: ctx.childIin,
+      role: 'secondary',
+    });
+    expect(out.guardian.status.value).toBe('pending_approval');
+    expect(out.guardian.id).not.toBe(revoked.id);
+  });
+});
+
+describe('ChildService — selfUnlinkFromChild', () => {
+  async function bootApprovedSecondary(): Promise<{
+    setup: ReturnType<typeof setup>;
+    childId: string;
+    primaryUserId: string;
+    secondaryUserId: string;
+    secondaryGuardianId: string;
+  }> {
+    const ctx = setup();
+    const primaryUser = makeUser(randomUUID(), '+77011110000');
+    ctx.users.put(primaryUser);
+    const secondaryUser = makeUser(randomUUID(), '+77011112222');
+    ctx.users.put(secondaryUser);
+    const child = await ctx.service.createChild(KG, {
+      fullName: 'A',
+      dateOfBirth: new Date('2021-09-15'),
+    });
+    const primaryRow = ChildGuardian.hydrate({
+      id: randomUUID(),
+      kindergartenId: KG,
+      childId: child.id,
+      userId: primaryUser.id,
+      role: 'primary',
+      status: 'approved',
+      hasApprovalRights: true,
+      approvedBy: primaryUser.id,
+      approvedAt: NOW,
+      revokedBy: null,
+      revokedAt: null,
+      canPickup: true,
+      permissions: {},
+      permissionsUpdatedBy: null,
+      permissionsUpdatedAt: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    ctx.guardians.put(primaryRow);
+    const secondaryRow = ChildGuardian.hydrate({
+      id: randomUUID(),
+      kindergartenId: KG,
+      childId: child.id,
+      userId: secondaryUser.id,
+      role: 'secondary',
+      status: 'approved',
+      hasApprovalRights: false,
+      approvedBy: primaryUser.id,
+      approvedAt: NOW,
+      revokedBy: null,
+      revokedAt: null,
+      canPickup: true,
+      permissions: {},
+      permissionsUpdatedBy: null,
+      permissionsUpdatedAt: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    ctx.guardians.put(secondaryRow);
+    return {
+      setup: ctx,
+      childId: child.id,
+      primaryUserId: primaryUser.id,
+      secondaryUserId: secondaryUser.id,
+      secondaryGuardianId: secondaryRow.id,
+    };
+  }
+
+  it('revokes an approved secondary guardian', async () => {
+    const ctx = await bootApprovedSecondary();
+    const { service, guardians } = ctx.setup;
+    await service.selfUnlinkFromChild(KG, ctx.secondaryUserId, ctx.childId);
+    const after = guardians.guardians.get(ctx.secondaryGuardianId);
+    expect(after?.status.value).toBe('revoked');
+    expect(after?.revokedBy).toBe(ctx.secondaryUserId);
+    expect(after?.revokedAt).toEqual(NOW);
+  });
+
+  it('revokes an approved nanny guardian', async () => {
+    const ctx = await bootApprovedSecondary();
+    const { service, guardians } = ctx.setup;
+    const nannyUser = makeUser(randomUUID(), '+77011113333');
+    ctx.setup.users.put(nannyUser);
+    const nannyRow = ChildGuardian.hydrate({
+      id: randomUUID(),
+      kindergartenId: KG,
+      childId: ctx.childId,
+      userId: nannyUser.id,
+      role: 'nanny',
+      status: 'approved',
+      hasApprovalRights: false,
+      approvedBy: ctx.primaryUserId,
+      approvedAt: NOW,
+      revokedBy: null,
+      revokedAt: null,
+      canPickup: true,
+      permissions: {},
+      permissionsUpdatedBy: null,
+      permissionsUpdatedAt: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    guardians.put(nannyRow);
+    await service.selfUnlinkFromChild(KG, nannyUser.id, ctx.childId);
+    const after = guardians.guardians.get(nannyRow.id);
+    expect(after?.status.value).toBe('revoked');
+    expect(after?.revokedBy).toBe(nannyUser.id);
+  });
+
+  it('throws PrimaryCannotSelfUnlinkError for primary', async () => {
+    const ctx = await bootApprovedSecondary();
+    const { service } = ctx.setup;
+    await expect(
+      service.selfUnlinkFromChild(KG, ctx.primaryUserId, ctx.childId),
+    ).rejects.toBeInstanceOf(PrimaryCannotSelfUnlinkError);
+  });
+
+  it('throws ChildAccessDeniedError when caller has no guardian row', async () => {
+    const ctx = await bootApprovedSecondary();
+    const { service } = ctx.setup;
+    await expect(
+      service.selfUnlinkFromChild(
+        KG,
+        '00000000-0000-0000-0000-000000000099',
+        ctx.childId,
+      ),
+    ).rejects.toBeInstanceOf(ChildAccessDeniedError);
+  });
+
+  it('throws ChildAccessDeniedError when caller is only pending', async () => {
+    const ctx = await bootApprovedSecondary();
+    const { service, guardians } = ctx.setup;
+    const pendingUser = makeUser(randomUUID(), '+77011114444');
+    ctx.setup.users.put(pendingUser);
+    const pendingRow = ChildGuardian.hydrate({
+      id: randomUUID(),
+      kindergartenId: KG,
+      childId: ctx.childId,
+      userId: pendingUser.id,
+      role: 'secondary',
+      status: 'pending_approval',
+      hasApprovalRights: false,
+      approvedBy: null,
+      approvedAt: null,
+      revokedBy: null,
+      revokedAt: null,
+      canPickup: false,
+      permissions: {},
+      permissionsUpdatedBy: null,
+      permissionsUpdatedAt: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    guardians.put(pendingRow);
+    await expect(
+      service.selfUnlinkFromChild(KG, pendingUser.id, ctx.childId),
+    ).rejects.toBeInstanceOf(ChildAccessDeniedError);
   });
 });

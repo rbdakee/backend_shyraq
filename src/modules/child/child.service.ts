@@ -1,6 +1,9 @@
 import { Inject, Injectable } from '@nestjs/common';
+import { InjectDataSource } from '@nestjs/typeorm';
 import { randomUUID } from 'node:crypto';
+import { DataSource } from 'typeorm';
 import { NotificationPort } from '@/common/notifications/notification.port';
+import { tenantStorage } from '@/database/tenant-storage';
 import { GroupRepository } from '@/modules/group/infrastructure/persistence/group.repository';
 import { GroupNotFoundError } from '@/modules/group/domain/errors/group-not-found.error';
 import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
@@ -29,11 +32,16 @@ import {
 } from './infrastructure/persistence/child.repository';
 import { Child, Gender } from './domain/entities/child.entity';
 import { ChildGuardian } from './domain/entities/child-guardian.entity';
+import { AlreadyLinkedToChildError } from './domain/errors/already-linked-to-child.error';
+import { AlreadyPendingForChildError } from './domain/errors/already-pending-for-child.error';
+import { ChildAccessDeniedError } from './domain/errors/child-access-denied.error';
 import { ChildIinAlreadyExistsError } from './domain/errors/child-iin-already-exists.error';
 import { ChildNotFoundError } from './domain/errors/child-not-found.error';
+import { ChildNotFoundForIinError } from './domain/errors/child-not-found-for-iin.error';
 import { DuplicateGuardianError } from './domain/errors/duplicate-guardian.error';
 import { GuardianNotFoundError } from './domain/errors/guardian-not-found.error';
 import { MaxApprovalRightsExceededError } from './domain/errors/max-approval-rights-exceeded.error';
+import { MultipleChildrenForIinError } from './domain/errors/multiple-children-for-iin.error';
 import { NotPrimaryGuardianError } from './domain/errors/not-primary-guardian.error';
 
 export interface CreateChildInput {
@@ -71,6 +79,20 @@ export interface ChildWithGuardians {
   guardians: ChildGuardian[];
 }
 
+export interface LinkChildByIinInput {
+  iin: string;
+  role: 'secondary' | 'nanny';
+  canPickup?: boolean;
+}
+
+export interface LinkChildByIinResult {
+  guardian: ChildGuardian;
+  child: Child;
+}
+
+const KG_UUID_RE =
+  /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
 /**
  * ChildService — single entry point for the child + child_guardian aggregate.
  *
@@ -105,6 +127,7 @@ export class ChildService {
     private readonly users: UserRepository,
     @Inject(NotificationPort) private readonly notification: NotificationPort,
     @Inject(ClockPort) private readonly clock: ClockPort,
+    @InjectDataSource() private readonly dataSource: DataSource,
   ) {}
 
   // ── Children: admin reads / writes ──────────────────────────────────────
@@ -560,6 +583,139 @@ export class ChildService {
       revokedBy: primaryUserId,
     });
     return guardian;
+  }
+
+  /**
+   * Parent-side cross-tenant link by IIN. Called from
+   * `POST /parent/children/link` — the caller has only their JWT-derived
+   * user_id and no kindergarten context yet.
+   *
+   * Resolves the child via a cross-tenant IIN lookup, then opens its own
+   * tenant-scoped TX (the route is not behind KindergartenScopeGuard, so the
+   * ambient TenantContextInterceptor TX has no `app.kindergarten_id` set) and
+   * inserts a `pending_approval` row for the calling user. The approved
+   * primary, if any, gets a notification and decides via the regular
+   * approve/reject flow.
+   *
+   * Errors:
+   *   - 0 candidates  → ChildNotFoundForIinError
+   *   - >1 candidates → MultipleChildrenForIinError (with kindergartenIds)
+   *   - caller already has APPROVED row on the child → AlreadyLinkedToChildError
+   *   - caller already has PENDING_APPROVAL row     → AlreadyPendingForChildError
+   *   - caller has only a REVOKED row → fresh pending row is allowed (the
+   *     partial-unique idx permits multiple revoked rows alongside one active)
+   */
+  async linkChildByIin(
+    callerUserId: string,
+    input: LinkChildByIinInput,
+  ): Promise<LinkChildByIinResult> {
+    const callerId = UserId.parse(callerUserId);
+    const candidates = await this.children.findByIinCrossTenant(input.iin);
+    if (candidates.length === 0) {
+      throw new ChildNotFoundForIinError(input.iin);
+    }
+    if (candidates.length > 1) {
+      throw new MultipleChildrenForIinError(
+        input.iin,
+        candidates.map((c) => c.kindergartenId as string),
+      );
+    }
+    const child = candidates[0];
+    const targetKgId = child.kindergartenId as string;
+
+    return this.dataSource.transaction(async (manager) => {
+      // SET LOCAL does not accept parameter binds; defend against non-UUID
+      // tenant ids the same way TenantContextInterceptor does.
+      if (!KG_UUID_RE.test(targetKgId)) {
+        throw new Error(`invalid_kindergarten_id: ${targetKgId}`);
+      }
+      await manager.query(`SET LOCAL app.kindergarten_id = '${targetKgId}'`);
+      return tenantStorage.run(
+        { kgId: targetKgId, bypass: false, entityManager: manager },
+        async () => {
+          const existing = await this.guardians.findActiveByChildAndUser(
+            targetKgId,
+            child.id,
+            callerId,
+          );
+          if (existing) {
+            if (existing.status.equals(GuardianStatus.APPROVED)) {
+              throw new AlreadyLinkedToChildError(child.id, callerId);
+            }
+            if (existing.status.equals(GuardianStatus.PENDING_APPROVAL)) {
+              throw new AlreadyPendingForChildError(child.id, callerId);
+            }
+            // Other non-revoked statuses (rejected) – treat as conflict for
+            // hygiene; the partial-unique idx in DB also blocks two pendings.
+            throw new AlreadyPendingForChildError(child.id, callerId);
+          }
+
+          const role = GuardianRelation.fromString(input.role);
+          const guardian = ChildGuardian.createPending({
+            id: randomUUID(),
+            kindergartenId: KindergartenId.parse(targetKgId),
+            childId: ChildId.parse(child.id),
+            userId: callerId,
+            role,
+            canPickup: input.canPickup ?? false,
+            now: this.clock.now(),
+          });
+          await this.guardians.create(guardian);
+
+          // Find approved primary on this child for notification fan-out.
+          const allGuardians = await this.guardians.findByChildId(
+            targetKgId,
+            child.id,
+          );
+          const primary = allGuardians.find(
+            (g) =>
+              g.role.equals(GuardianRelation.PRIMARY) &&
+              g.status.equals(GuardianStatus.APPROVED),
+          );
+          if (primary) {
+            await this.notification.notifyGuardianPendingApproval({
+              kindergartenId: targetKgId,
+              childId: child.id,
+              childFullName: child.fullName,
+              primaryUserId: primary.userId,
+              requesterUserId: callerId,
+              role: input.role,
+            });
+          }
+          return { guardian, child };
+        },
+      );
+    });
+  }
+
+  /**
+   * Parent self-unlink: a SECONDARY/NANNY guardian drops their own approved
+   * row. Called from `POST /parent/children/:id/unlink`. The route is behind
+   * ChildAccessGuard, which already 403s callers without an approved guardian
+   * record — but we re-check here defensively.
+   *
+   * Domain error fan-out:
+   *   - role=primary  → PrimaryCannotSelfUnlinkError (403)
+   *   - non-approved  → ChildAccessDeniedError (403; defensive — the guard
+   *     should have caught this already)
+   */
+  async selfUnlinkFromChild(
+    kindergartenId: string,
+    callerUserId: string,
+    childId: string,
+  ): Promise<void> {
+    const guardian = await this.guardians.findActiveByChildAndUser(
+      kindergartenId,
+      childId,
+      callerUserId,
+    );
+    if (!guardian || !guardian.status.equals(GuardianStatus.APPROVED)) {
+      throw new ChildAccessDeniedError(callerUserId, childId);
+    }
+    guardian.revokeBySelf(this.clock.now());
+    await this.guardians.update(guardian);
+    // TODO(B9): emit guardian.self-revoked notification to the approved
+    //           primary so the parent app surfaces the change in real time.
   }
 
   async toggleGuardianApprovalRights(

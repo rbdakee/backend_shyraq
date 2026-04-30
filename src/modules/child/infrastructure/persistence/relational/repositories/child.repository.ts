@@ -1,6 +1,11 @@
 import { Injectable } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { EntityManager, QueryFailedError, Repository } from 'typeorm';
+import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
+import {
+  DataSource,
+  EntityManager,
+  QueryFailedError,
+  Repository,
+} from 'typeorm';
 import { tenantStorage } from '@/database/tenant-storage';
 import { Child } from '../../../../domain/entities/child.entity';
 import { ChildIinAlreadyExistsError } from '../../../../domain/errors/child-iin-already-exists.error';
@@ -27,6 +32,7 @@ export class ChildRelationalRepository extends ChildRepository {
   constructor(
     @InjectRepository(ChildEntity)
     private readonly repo: Repository<ChildEntity>,
+    @InjectDataSource() private readonly dataSource: DataSource,
   ) {
     super();
   }
@@ -195,6 +201,27 @@ export class ChildRelationalRepository extends ChildRepository {
       .orderBy('h.transferred_at', 'ASC')
       .getMany();
     return rows.map((r) => ChildGroupHistoryMapper.toRecord(r));
+  }
+
+  /**
+   * Cross-tenant IIN lookup. Opens a fresh transaction and toggles
+   * `app.bypass_rls=true` so RLS does not filter by the ambient
+   * `app.kindergarten_id` (which is typically absent on the public
+   * `/parent/children/link` route). Excludes archived children. Mirrors the
+   * pattern of `ChildGuardianRelationalRepository.listApprovedKindergartenIdsByUserId`.
+   */
+  async findByIinCrossTenant(iin: string): Promise<Child[]> {
+    return this.dataSource.transaction(async (manager) => {
+      await manager.query(`SET LOCAL app.bypass_rls = 'true'`);
+      const rows = await manager
+        .getRepository(ChildEntity)
+        .createQueryBuilder('c')
+        .where('c.iin = :iin', { iin })
+        .andWhere("c.status <> 'archived'")
+        .orderBy('c.created_at', 'DESC')
+        .getMany();
+      return rows.map((r) => ChildMapper.toDomain(r));
+    });
   }
 
   private manager(): EntityManager {

@@ -2,13 +2,18 @@ import {
   BadRequestException,
   Controller,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   ParseUUIDPipe,
+  Post,
   UseGuards,
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiForbiddenResponse,
+  ApiNoContentResponse,
+  ApiNotFoundResponse,
   ApiOkResponse,
   ApiOperation,
   ApiTags,
@@ -87,5 +92,29 @@ export class ParentChildController {
       child: ChildPresenter.child(out.child),
       guardians: out.guardians.map((g) => ChildPresenter.guardian(g)),
     };
+  }
+
+  @Post(':id/unlink')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({
+    summary: 'Отвязать себя от ребёнка (soft-revoke).',
+    description:
+      'Revokes the calling guardian own approved row (secondary or nanny). ' +
+      'Primary guardians cannot self-unlink (primary lifecycle is managed by admins). ' +
+      'ChildAccessGuard (class-level) ensures the caller is an approved guardian of this child.',
+  })
+  @ApiNoContentResponse({ description: 'Guardian row revoked.' })
+  @ApiUnauthorizedResponse({ description: 'invalid_token / token_revoked.' })
+  @ApiForbiddenResponse({
+    description: 'primary_cannot_self_unlink | not an approved guardian.',
+  })
+  @ApiNotFoundResponse({ description: 'child_not_found.' })
+  async unlink(
+    @Tenant() t: TenantContext,
+    @CurrentUser() user: JwtPayload,
+    @Param('id', new ParseUUIDPipe()) childId: string,
+  ): Promise<void> {
+    if (!t.kgId) throw new BadRequestException('tenant_required');
+    await this.service.selfUnlinkFromChild(t.kgId, user.sub, childId);
   }
 }

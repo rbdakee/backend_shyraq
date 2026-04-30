@@ -6,6 +6,7 @@ import { KindergartenId } from '@/shared-kernel/domain/value-objects/kindergarte
 import { UserId } from '@/shared-kernel/domain/value-objects/user-id.vo';
 import { GuardianNotApprovedError } from '../errors/guardian-not-approved.error';
 import { InvalidGuardianStatusTransitionError } from '../errors/invalid-guardian-status-transition.error';
+import { PrimaryCannotSelfUnlinkError } from '../errors/primary-cannot-self-unlink.error';
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -216,6 +217,61 @@ export class ChildGuardian {
     this.status = GuardianStatus.REVOKED;
     this.revokedAt = now;
     this.revokedBy = by;
+    this.updatedAt = now;
+  }
+
+  /**
+   * Self-approve a pending primary row. Triggered when a parent verifies OTP
+   * and a row was pre-created by enrollment with role=primary and
+   * status=pending_approval (admin-side). The user proves phone-ownership by
+   * passing OTP, so the primary row flips to approved without an external
+   * approver — `approvedBy` is set to the row's own user.
+   *
+   * Only valid on rows where role=primary AND status=pending_approval.
+   * Granting `hasApprovalRights=true` is part of the primary contract: every
+   * approved primary may approve secondary/nanny guardians.
+   */
+  autoApproveAsPrimary(now: Date): void {
+    if (!this.role.equals(GuardianRelation.PRIMARY)) {
+      throw new InvalidGuardianStatusTransitionError(
+        this.status.value,
+        'approved',
+      );
+    }
+    if (!this.status.equals(GuardianStatus.PENDING_APPROVAL)) {
+      throw new InvalidGuardianStatusTransitionError(
+        this.status.value,
+        'approved',
+      );
+    }
+    this.status = GuardianStatus.APPROVED;
+    this.approvedAt = now;
+    this.approvedBy = this.userId;
+    this.hasApprovalRights = true;
+    this.updatedAt = now;
+  }
+
+  /**
+   * Self-unlink (parent-initiated revoke). Used by secondary/nanny guardians
+   * who want to drop their access. Primary guardians cannot self-unlink —
+   * they live for the lifetime of the child profile (admin-only via the
+   * child-archive path). Only approved rows can be self-revoked; pending
+   * rows should be cancelled via the approval-flow (reject by primary), not
+   * here.
+   */
+  revokeBySelf(now: Date): void {
+    if (this.role.equals(GuardianRelation.PRIMARY)) {
+      throw new PrimaryCannotSelfUnlinkError(this.childId, this.userId);
+    }
+    if (!this.status.equals(GuardianStatus.APPROVED)) {
+      throw new InvalidGuardianStatusTransitionError(
+        this.status.value,
+        'revoked',
+      );
+    }
+    this.status = GuardianStatus.REVOKED;
+    this.revokedAt = now;
+    this.revokedBy = this.userId;
     this.updatedAt = now;
   }
 

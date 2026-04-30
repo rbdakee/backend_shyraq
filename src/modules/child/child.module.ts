@@ -15,6 +15,7 @@ import { ChildGuardianRelationalRepository } from './infrastructure/persistence/
 import { ChildRelationalRepository } from './infrastructure/persistence/relational/repositories/child.repository';
 import { ParentApprovalController } from './parent-approval.controller';
 import { ParentChildController } from './parent-child.controller';
+import { ParentLinkController } from './parent-link.controller';
 
 /**
  * ChildModule — wires the child + child_guardian + child_group_history
@@ -40,6 +41,7 @@ import { ParentChildController } from './parent-child.controller';
     ChildController,
     ParentChildController,
     ParentApprovalController,
+    ParentLinkController,
   ],
   providers: [
     ChildService,

@@ -8,6 +8,7 @@ import type { Response } from 'express';
 import {
   ConflictError,
   DomainError,
+  ForbiddenActionError,
   InvariantViolationError,
   NotFoundError,
 } from '@/shared-kernel/domain/errors';
@@ -59,11 +60,22 @@ export class DomainErrorFilter implements ExceptionFilter {
       throw exception;
     }
     const code = (exception as { code?: string }).code ?? 'domain_error';
-    res.status(status).json({
-      statusCode: status,
-      error: code,
-      message: code,
-    });
+    const body: {
+      statusCode: number;
+      error: string;
+      message: string;
+      details?: Record<string, unknown>;
+    } = { statusCode: status, error: code, message: code };
+    const details =
+      exception != null &&
+      typeof exception === 'object' &&
+      'details' in exception
+        ? (exception as { details: unknown }).details
+        : undefined;
+    if (details != null && typeof details === 'object') {
+      body.details = details as Record<string, unknown>;
+    }
+    res.status(status).json(body);
   }
 
   private statusFor(err: unknown): number | null {
@@ -103,6 +115,7 @@ export class DomainErrorFilter implements ExceptionFilter {
     if (err instanceof NotFoundError) return HttpStatus.NOT_FOUND;
     if (err instanceof ConflictError) return HttpStatus.CONFLICT;
     if (err instanceof InvariantViolationError) return HttpStatus.BAD_REQUEST;
+    if (err instanceof ForbiddenActionError) return HttpStatus.FORBIDDEN;
     if (err instanceof DomainError) return HttpStatus.UNPROCESSABLE_ENTITY;
     return null;
   }

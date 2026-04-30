@@ -183,6 +183,7 @@ describeIntegration('EnrollmentService — service-integration', () => {
   function makeChildService(): ChildService {
     const childRepo = new ChildRelationalRepository(
       dataSource.getRepository(ChildEntity),
+      dataSource,
     );
     const guardianRepo = new ChildGuardianRelationalRepository(
       dataSource.getRepository(ChildGuardianEntity),
@@ -207,6 +208,7 @@ describeIntegration('EnrollmentService — service-integration', () => {
       userRepo,
       notification,
       clock,
+      dataSource,
     );
   }
 

@@ -244,6 +244,8 @@ CREATE POLICY tenant_isolation ON <name>
 
 При успехе — issue access + refresh пары. Multi-role staff (≥2 active `staff_members`) получает временный access JWT с `pending_role_select: true` (без `kindergarten_id`); refresh не выдаётся до выбора. `POST /auth/role/select` принимает `kindergarten_id`, проверяет активную роль, выдаёт полную пару, добавляет временный JTI в blocklist.
 
+**Auto-approve primary guardian (B6):** до ролевого резолва `AuthService.autoApprovePendingPrimaries(userId, now)` делает cross-tenant lookup `ChildGuardianRepository.findPendingPrimaryByUserIdCrossTenant(userId)` с `bypass_rls=true` внутри `dataSource.transaction`. Для каждой найденной `child_guardians (role='primary', status='pending_approval')` открывает scoped tx с `SET LOCAL app.kindergarten_id = childKgId` и переводит строку в `approved` (`approved_by=self`, `has_approval_rights=true`). Это обеспечивает кейс enrollment → родитель входит по OTP → JWT уже содержит kg-scope без ручного approve.
+
 ### 4.3 SuperAdmin auth
 
 Email + password (`saas_users` table). `POST /super-admin/auth/login` → bcrypt verify → access + refresh (`saas_refresh_tokens`). Отдельная таблица — никакого полиморфизма с `users.refresh_tokens`.

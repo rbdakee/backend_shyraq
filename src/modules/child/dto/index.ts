@@ -24,3 +24,4 @@ export {
   EffectivePermissionsDto,
   ChildGroupHistoryDto,
 } from './guardian-response.dto';
+export { LinkChildDto } from './link-child.dto';

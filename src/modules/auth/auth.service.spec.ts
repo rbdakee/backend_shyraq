@@ -4,6 +4,7 @@
  * the moment a port signature changes.
  */
 import { ConfigService } from '@nestjs/config';
+import { DataSource, EntityManager } from 'typeorm';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { User } from '@/modules/users/domain/entities/user.entity';
 import {
@@ -346,8 +347,14 @@ class FakeStaffRepo extends StaffMemberRepository {
 
 class FakeGuardianRepo extends ChildGuardianRepository {
   approvedKindergartenIdsByUserId = new Map<string, string[]>();
+  guardians = new Map<string, ChildGuardian>();
 
-  create(_guardian: ChildGuardian): Promise<void> {
+  put(g: ChildGuardian): void {
+    this.guardians.set(g.id, g);
+  }
+
+  create(guardian: ChildGuardian): Promise<void> {
+    this.put(guardian);
     return Promise.resolve();
   }
   findById(_kg: string, _id: string): Promise<ChildGuardian | null> {
@@ -378,7 +385,8 @@ class FakeGuardianRepo extends ChildGuardianRepository {
   ): Promise<ChildGuardian[]> {
     return Promise.resolve([]);
   }
-  update(_guardian: ChildGuardian): Promise<void> {
+  update(guardian: ChildGuardian): Promise<void> {
+    this.put(guardian);
     return Promise.resolve();
   }
   countApprovalRights(_kg: string, _childId: string): Promise<number> {
@@ -395,7 +403,34 @@ class FakeGuardianRepo extends ChildGuardianRepository {
   ): Promise<ChildGuardian[]> {
     return Promise.resolve([]);
   }
+  findPendingPrimaryByUserIdCrossTenant(
+    userId: string,
+  ): Promise<ChildGuardian[]> {
+    return Promise.resolve(
+      [...this.guardians.values()].filter(
+        (g) =>
+          g.userId === userId &&
+          g.role.value === 'primary' &&
+          g.status.value === 'pending_approval',
+      ),
+    );
+  }
 }
+
+/**
+ * Minimal stub of TypeORM DataSource. AuthService.autoApprovePendingPrimaries
+ * uses `dataSource.transaction(cb)` to scope each pending-primary update
+ * inside its own tenant TX. The in-memory test only needs the lambda to run
+ * with a fake manager whose `query()` is a no-op.
+ */
+const fakeManager = {
+  query: (_sql: string): Promise<unknown> => Promise.resolve(undefined),
+} as unknown as EntityManager;
+
+const fakeDataSource = {
+  transaction: <T>(cb: (m: EntityManager) => Promise<T>): Promise<T> =>
+    cb(fakeManager),
+} as unknown as DataSource;
 
 interface AuthDeps {
   service: AuthService;
@@ -454,6 +489,7 @@ function build(): AuthDeps {
     config as unknown as ConfigService,
     staffRepo,
     guardianRepo,
+    fakeDataSource,
   );
   service.onModuleInit();
   return {
@@ -576,6 +612,168 @@ describe('AuthService', () => {
       await expect(
         service.verifyOtp({ phone: '+77012345678', code: '123456' }),
       ).rejects.toBeInstanceOf(OtpExpiredError);
+    });
+  });
+
+  describe('verifyOtp auto-approve hook', () => {
+    const KG_A = '11111111-1111-1111-1111-111111111111';
+    const KG_B = '22222222-2222-2222-2222-222222222222';
+    const CHILD_A = '33333333-3333-3333-3333-333333333333';
+    const CHILD_B = '44444444-4444-4444-4444-444444444444';
+    const USER_ID = '55555555-5555-5555-5555-555555555555';
+    const PHONE = '+77012345678';
+
+    /**
+     * The default FakeUserRepo.upsertByPhone hashes phone → `user-${phone}`,
+     * which is not a UUID and would fail UserId.parse inside
+     * `ChildGuardian.autoApproveAsPrimary`. Pre-seed a UUID-id user under the
+     * test phone so verifyOtp's upsertByPhone short-circuits to the seeded row.
+     */
+    function seedUuidUser(deps: AuthDeps): void {
+      deps.users.put(
+        User.hydrate({
+          id: USER_ID,
+          phone: PHONE,
+          fullName: '',
+          avatarUrl: null,
+          iin: null,
+          dateOfBirth: null,
+          locale: 'ru',
+        }),
+      );
+    }
+
+    function seedPendingPrimary(
+      repo: FakeGuardianRepo,
+      args: {
+        id?: string;
+        userId: string;
+        kindergartenId: string;
+        childId: string;
+        role?: 'primary' | 'secondary' | 'nanny';
+        status?: 'pending_approval' | 'approved' | 'rejected' | 'revoked';
+      },
+    ): ChildGuardian {
+      const g = ChildGuardian.hydrate({
+        id: args.id ?? '66666666-6666-6666-6666-666666666666',
+        kindergartenId: args.kindergartenId,
+        childId: args.childId,
+        userId: args.userId,
+        role: args.role ?? 'primary',
+        status: args.status ?? 'pending_approval',
+        hasApprovalRights: false,
+        approvedBy: null,
+        approvedAt: null,
+        revokedBy: null,
+        revokedAt: null,
+        canPickup: true,
+        permissions: {},
+        permissionsUpdatedBy: null,
+        permissionsUpdatedAt: null,
+        createdAt: new Date('2025-01-01T00:00:00Z'),
+        updatedAt: new Date('2025-01-01T00:00:00Z'),
+      });
+      repo.put(g);
+      return g;
+    }
+
+    it('auto-approves a single pending-primary on otp verify', async () => {
+      const deps = build();
+      seedUuidUser(deps);
+      const { service, otpStore, guardianRepo } = deps;
+      await otpStore.storeCode(PHONE, '123456', 300);
+      const seeded = seedPendingPrimary(guardianRepo, {
+        userId: USER_ID,
+        kindergartenId: KG_A,
+        childId: CHILD_A,
+      });
+
+      await service.verifyOtp({ phone: PHONE, code: '123456' });
+
+      const after = guardianRepo.guardians.get(seeded.id);
+      expect(after?.status.value).toBe('approved');
+      expect(after?.hasApprovalRights).toBe(true);
+      expect(after?.approvedBy).toBe(USER_ID);
+    });
+
+    it('auto-approves multiple pending-primaries across kindergartens', async () => {
+      const deps = build();
+      seedUuidUser(deps);
+      const { service, otpStore, guardianRepo } = deps;
+      await otpStore.storeCode(PHONE, '123456', 300);
+      const a = seedPendingPrimary(guardianRepo, {
+        id: '77777777-7777-7777-7777-777777777777',
+        userId: USER_ID,
+        kindergartenId: KG_A,
+        childId: CHILD_A,
+      });
+      const b = seedPendingPrimary(guardianRepo, {
+        id: '88888888-8888-8888-8888-888888888888',
+        userId: USER_ID,
+        kindergartenId: KG_B,
+        childId: CHILD_B,
+      });
+
+      await service.verifyOtp({ phone: PHONE, code: '123456' });
+
+      expect(guardianRepo.guardians.get(a.id)?.status.value).toBe('approved');
+      expect(guardianRepo.guardians.get(b.id)?.status.value).toBe('approved');
+      expect(guardianRepo.guardians.get(a.id)?.hasApprovalRights).toBe(true);
+      expect(guardianRepo.guardians.get(b.id)?.hasApprovalRights).toBe(true);
+    });
+
+    it('returns auth result unchanged when there are no pending-primaries', async () => {
+      const deps = build();
+      seedUuidUser(deps);
+      const { service, otpStore } = deps;
+      await otpStore.storeCode(PHONE, '123456', 300);
+
+      const res = await service.verifyOtp({
+        phone: PHONE,
+        code: '123456',
+      });
+
+      expect(res.accessToken).toMatch(/^access\./);
+      expect(res.refreshToken).not.toBeNull();
+      expect(res.pendingRoleSelect).toBe(false);
+    });
+
+    it('does not auto-approve a pending-secondary row', async () => {
+      const deps = build();
+      seedUuidUser(deps);
+      const { service, otpStore, guardianRepo } = deps;
+      await otpStore.storeCode(PHONE, '123456', 300);
+      const sec = seedPendingPrimary(guardianRepo, {
+        userId: USER_ID,
+        kindergartenId: KG_A,
+        childId: CHILD_A,
+        role: 'secondary',
+      });
+
+      await service.verifyOtp({ phone: PHONE, code: '123456' });
+
+      const after = guardianRepo.guardians.get(sec.id);
+      expect(after?.status.value).toBe('pending_approval');
+      expect(after?.hasApprovalRights).toBe(false);
+    });
+
+    it('does not auto-approve an already-approved primary row', async () => {
+      const deps = build();
+      seedUuidUser(deps);
+      const { service, otpStore, guardianRepo } = deps;
+      await otpStore.storeCode(PHONE, '123456', 300);
+      const approved = seedPendingPrimary(guardianRepo, {
+        userId: USER_ID,
+        kindergartenId: KG_A,
+        childId: CHILD_A,
+        status: 'approved',
+      });
+
+      await service.verifyOtp({ phone: '+77012345678', code: '123456' });
+
+      // Should remain in its original (approved) state — no idempotent retouch.
+      const after = guardianRepo.guardians.get(approved.id);
+      expect(after?.status.value).toBe('approved');
     });
   });
 

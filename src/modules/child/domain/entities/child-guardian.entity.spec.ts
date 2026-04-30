@@ -7,6 +7,7 @@ import { UserId } from '@/shared-kernel/domain/value-objects/user-id.vo';
 import { ChildGuardian } from './child-guardian.entity';
 import { GuardianNotApprovedError } from '../errors/guardian-not-approved.error';
 import { InvalidGuardianStatusTransitionError } from '../errors/invalid-guardian-status-transition.error';
+import { PrimaryCannotSelfUnlinkError } from '../errors/primary-cannot-self-unlink.error';
 
 const KG = KindergartenId.parse('11111111-1111-1111-1111-111111111111');
 const CHILD = ChildId.parse('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
@@ -21,6 +22,28 @@ function pending(): ChildGuardian {
     childId: CHILD,
     userId: USER,
     role: GuardianRelation.SECONDARY,
+    now: NOW,
+  });
+}
+
+function pendingPrimary(): ChildGuardian {
+  return ChildGuardian.createPending({
+    id: randomUUID(),
+    kindergartenId: KG,
+    childId: CHILD,
+    userId: USER,
+    role: GuardianRelation.PRIMARY,
+    now: NOW,
+  });
+}
+
+function pendingNanny(): ChildGuardian {
+  return ChildGuardian.createPending({
+    id: randomUUID(),
+    kindergartenId: KG,
+    childId: CHILD,
+    userId: USER,
+    role: GuardianRelation.NANNY,
     now: NOW,
   });
 }
@@ -101,5 +124,79 @@ describe('ChildGuardian state machine', () => {
     g.approve(PRIMARY, NOW, false);
     g.toggleApprovalRights(true, NOW);
     expect(g.hasApprovalRights).toBe(true);
+  });
+});
+
+describe('autoApproveAsPrimary', () => {
+  it('approves a pending primary and sets has_approval_rights=true', () => {
+    const g = pendingPrimary();
+    g.autoApproveAsPrimary(NOW);
+    expect(g.status.value).toBe('approved');
+    expect(g.approvedAt).toBe(NOW);
+    expect(g.approvedBy).toBe(USER);
+    expect(g.hasApprovalRights).toBe(true);
+    expect(g.updatedAt).toBe(NOW);
+  });
+
+  it('throws when role is not primary', () => {
+    const secondary = pending();
+    expect(() => secondary.autoApproveAsPrimary(NOW)).toThrow(
+      InvalidGuardianStatusTransitionError,
+    );
+    const nanny = pendingNanny();
+    expect(() => nanny.autoApproveAsPrimary(NOW)).toThrow(
+      InvalidGuardianStatusTransitionError,
+    );
+  });
+
+  it('throws when status is not pending_approval', () => {
+    const g = pendingPrimary();
+    g.autoApproveAsPrimary(NOW);
+    // already approved → second auto-approve must reject
+    expect(() => g.autoApproveAsPrimary(NOW)).toThrow(
+      InvalidGuardianStatusTransitionError,
+    );
+  });
+});
+
+describe('revokeBySelf', () => {
+  it('revokes an approved secondary guardian and stamps revoked_by=self', () => {
+    const g = pending();
+    g.approve(PRIMARY, NOW, false);
+    g.revokeBySelf(NOW);
+    expect(g.status.value).toBe('revoked');
+    expect(g.revokedAt).toBe(NOW);
+    expect(g.revokedBy).toBe(USER);
+    expect(g.updatedAt).toBe(NOW);
+  });
+
+  it('revokes an approved nanny guardian', () => {
+    const g = pendingNanny();
+    g.approve(PRIMARY, NOW, false);
+    g.revokeBySelf(NOW);
+    expect(g.status.value).toBe('revoked');
+    expect(g.revokedBy).toBe(USER);
+  });
+
+  it('throws PrimaryCannotSelfUnlinkError when role is primary', () => {
+    const g = pendingPrimary();
+    g.autoApproveAsPrimary(NOW);
+    expect(() => g.revokeBySelf(NOW)).toThrow(PrimaryCannotSelfUnlinkError);
+  });
+
+  it('throws when guardian is not approved (still pending)', () => {
+    const g = pending();
+    expect(() => g.revokeBySelf(NOW)).toThrow(
+      InvalidGuardianStatusTransitionError,
+    );
+  });
+
+  it('throws when guardian is already revoked', () => {
+    const g = pending();
+    g.approve(PRIMARY, NOW, false);
+    g.revokeBySelf(NOW);
+    expect(() => g.revokeBySelf(NOW)).toThrow(
+      InvalidGuardianStatusTransitionError,
+    );
   });
 });

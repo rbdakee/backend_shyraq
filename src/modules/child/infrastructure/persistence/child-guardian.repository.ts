@@ -70,4 +70,15 @@ export abstract class ChildGuardianRepository {
     kindergartenId: string,
     userId: string,
   ): Promise<ChildGuardian[]>;
+
+  /**
+   * Cross-tenant lookup of pending primary-guardian rows for a given user.
+   * Used by the auth pipeline (`verifyOtp` auto-approve hook) to flip
+   * primary rows pre-seeded by the enrollment flow into `approved` once the
+   * matching parent verifies their phone. Bypasses RLS via
+   * `app.bypass_rls=true` inside its own transaction.
+   */
+  abstract findPendingPrimaryByUserIdCrossTenant(
+    userId: string,
+  ): Promise<ChildGuardian[]>;
 }
