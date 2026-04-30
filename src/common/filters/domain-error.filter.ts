@@ -45,6 +45,7 @@ import { AttendanceEditWindowExpiredError } from '@/modules/attendance/domain/er
 import { AttendanceEventNotFoundError } from '@/modules/attendance/domain/errors/attendance-event-not-found.error';
 import { DailyStatusNotFoundError } from '@/modules/attendance/domain/errors/daily-status-not-found.error';
 import { InvalidAttendancePickupError } from '@/modules/attendance/domain/errors/invalid-attendance-pickup.error';
+import { InvalidAttendanceTimestampError } from '@/modules/attendance/domain/errors/invalid-attendance-timestamp.error';
 import { InvalidTimelineEntryTypeError } from '@/modules/attendance/domain/errors/invalid-timeline-entry-type.error';
 import { PickupUserNotAllowedError } from '@/modules/attendance/domain/errors/pickup-user-not-allowed.error';
 import { TimelineEntryNotAuthorError } from '@/modules/attendance/domain/errors/timeline-entry-not-author.error';
@@ -138,6 +139,8 @@ export class DomainErrorFilter implements ExceptionFilter {
     if (err instanceof PickupUserNotAllowedError) return HttpStatus.FORBIDDEN;
     if (err instanceof TimelineEntryNotAuthorError) return HttpStatus.FORBIDDEN;
     if (err instanceof InvalidAttendancePickupError)
+      return HttpStatus.UNPROCESSABLE_ENTITY;
+    if (err instanceof InvalidAttendanceTimestampError)
       return HttpStatus.UNPROCESSABLE_ENTITY;
     if (err instanceof InvalidTimelineEntryTypeError)
       return HttpStatus.UNPROCESSABLE_ENTITY;

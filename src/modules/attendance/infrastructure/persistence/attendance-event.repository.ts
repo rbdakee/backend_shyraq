@@ -22,6 +22,16 @@ export interface ListAttendanceEventsByGroupFilter {
   offset?: number;
 }
 
+export interface ListAttendanceEventsByKindergartenFilter {
+  /** Inclusive lower bound on `recorded_at` (UTC). */
+  from?: Date;
+  /** Exclusive upper bound on `recorded_at` (UTC). */
+  to?: Date;
+  eventType?: AttendanceEventTypeValue;
+  limit?: number;
+  offset?: number;
+}
+
 /**
  * Port over `attendance_events`. Append-only — no `delete` method exposed.
  * Updates are limited to recorded_at / notes / pickup_user_id via the
@@ -58,5 +68,17 @@ export abstract class AttendanceEventRepository {
   abstract listByGroup(
     kindergartenId: string,
     filter: ListAttendanceEventsByGroupFilter,
+  ): Promise<AttendanceEvent[]>;
+
+  /**
+   * Kindergarten-wide list (no child or group predicate). Used by the admin
+   * `GET /admin/attendance-events` endpoint when no child/group filter is
+   * supplied — previously the service degraded to `listByChild('')` which
+   * caused `invalid input syntax for type uuid` (T6 H1). Same ORDER BY +
+   * limit/offset semantics as `listByChild` / `listByGroup`.
+   */
+  abstract listByKindergarten(
+    kindergartenId: string,
+    filter: ListAttendanceEventsByKindergartenFilter,
   ): Promise<AttendanceEvent[]>;
 }

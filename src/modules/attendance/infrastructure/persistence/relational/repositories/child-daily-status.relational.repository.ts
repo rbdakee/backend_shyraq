@@ -124,6 +124,15 @@ export class ChildDailyStatusRelationalRepository extends ChildDailyStatusReposi
     if (filter.childId) {
       qb.andWhere('ds.child_id = :cid', { cid: filter.childId });
     }
+    if (filter.groupId) {
+      // INNER JOIN children to scope by current_group_id. Mirrors the
+      // group resolution in AttendanceEvent.listByGroup — children
+      // transferred mid-day are reported under their *current* group.
+      qb.innerJoin('children', 'c', 'c.id = ds.child_id').andWhere(
+        'c.current_group_id = :gid',
+        { gid: filter.groupId },
+      );
+    }
     if (filter.from) {
       qb.andWhere('ds.date >= :from', { from: filter.from });
     }

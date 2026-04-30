@@ -29,6 +29,7 @@ import { AttendanceEventResponseDto } from './dto/attendance-event.response';
 import { DailyStatusResponseDto } from './dto/daily-status.response';
 import { ListAttendanceEventsQuery } from './dto/list-attendance-events.query';
 import { ListTimelineQuery } from './dto/list-timeline.query';
+import { ParentDailyStatusQuery } from './dto/parent-daily-status.query';
 import { PagedTimelineResponseDto } from './dto/timeline-entry.response';
 import { TimelinePresenter } from './timeline.presenter';
 import { TimelineService } from './timeline.service';
@@ -139,11 +140,11 @@ export class ParentAttendanceController {
   async getDailyStatus(
     @Tenant() t: TenantContext,
     @Param('childId', new ParseUUIDPipe()) childId: string,
-    @Query('date') date?: string,
+    @Query() q: ParentDailyStatusQuery,
   ): Promise<DailyStatusResponseDto | null> {
     const kgId = requireTenant(t);
     const isoDate =
-      date ??
+      q.date ??
       new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Almaty' });
     const status = await this.attendanceService.getDailyStatusByChildAndDate(
       kgId,

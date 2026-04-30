@@ -58,12 +58,14 @@ import { TimelineEntry } from './domain/entities/timeline-entry.entity';
 import { AttendanceEditWindowExpiredError } from './domain/errors/attendance-edit-window-expired.error';
 import { AttendanceEventNotFoundError } from './domain/errors/attendance-event-not-found.error';
 import { InvalidAttendancePickupError } from './domain/errors/invalid-attendance-pickup.error';
+import { InvalidAttendanceTimestampError } from './domain/errors/invalid-attendance-timestamp.error';
 import { PickupUserNotAllowedError } from './domain/errors/pickup-user-not-allowed.error';
 import { ChildIntradayStatus } from './domain/value-objects/child-intraday-status.vo';
 import {
   AttendanceEventRepository,
   ListAttendanceEventsByChildFilter,
   ListAttendanceEventsByGroupFilter,
+  ListAttendanceEventsByKindergartenFilter,
 } from './infrastructure/persistence/attendance-event.repository';
 import {
   ChildDailyStatusRepository,
@@ -139,6 +141,14 @@ class FakeAttendanceEventRepo extends AttendanceEventRepository {
       [...this.rows.values()].filter((e) => e.kindergartenId === kg),
     );
   }
+  listByKindergarten(
+    kg: string,
+    _filter: ListAttendanceEventsByKindergartenFilter,
+  ): Promise<AttendanceEvent[]> {
+    return Promise.resolve(
+      [...this.rows.values()].filter((e) => e.kindergartenId === kg),
+    );
+  }
 }
 
 class FakeChildDailyStatusRepo extends ChildDailyStatusRepository {
@@ -178,10 +188,17 @@ class FakeChildDailyStatusRepo extends ChildDailyStatusRepository {
     this.rows[idx] = daily;
     return Promise.resolve(daily);
   }
+  /** Optional in-memory group lookup so tests can exercise groupId filtering. */
+  childGroup = new Map<string, string | null>();
   list(kg: string, filter: ListDailyStatusFilter): Promise<ChildDailyStatus[]> {
     let items = this.rows.filter((x) => x.kindergartenId === kg);
     if (filter.childId) {
       items = items.filter((x) => x.childId === filter.childId);
+    }
+    if (filter.groupId) {
+      items = items.filter(
+        (x) => this.childGroup.get(x.childId) === filter.groupId,
+      );
     }
     if (filter.from) {
       items = items.filter((x) => x.date >= filter.from!);
@@ -870,6 +887,123 @@ describe('AttendanceService — service-unit', () => {
       await w.service.checkIn(KG, CHILD, STAFF_USER);
       const events = await w.service.listEventsByGroup(KG, 'group-uuid');
       expect(events).toHaveLength(1);
+    });
+  });
+
+  // ── T7 fix-pass: H1 — kg-wide listEvents (no child / no group filter) ──
+
+  describe('listEvents — kg-wide (T6 H1)', () => {
+    it('returns events without crashing when neither childId nor groupId is supplied', async () => {
+      const w = wire();
+      await w.service.checkIn(KG, CHILD, STAFF_USER);
+      const events = await w.service.listEvents(KG, {});
+      expect(events).toHaveLength(1);
+      expect(events[0].childId).toBe(CHILD);
+    });
+  });
+
+  // ── T7 fix-pass: M3 — future-dated recordedAt rejection ────────────────
+
+  describe('M3 — assertNotFuture guard', () => {
+    it('rejects checkIn with recordedAt > now + 5min skew', async () => {
+      const w = wire();
+      const futureTime = new Date(NOW.getTime() + 60 * 60 * 1000); // +1h
+      await expect(
+        w.service.checkIn(KG, CHILD, STAFF_USER, { recordedAt: futureTime }),
+      ).rejects.toBeInstanceOf(InvalidAttendanceTimestampError);
+    });
+
+    it('rejects checkOut with recordedAt > now + 5min skew', async () => {
+      const w = wire();
+      w.guardianRepo.put(makeApprovedPickupGuardian());
+      const futureTime = new Date(NOW.getTime() + 60 * 60 * 1000);
+      await expect(
+        w.service.checkOut(KG, CHILD, STAFF_USER, PICKUP_USER, {
+          recordedAt: futureTime,
+        }),
+      ).rejects.toBeInstanceOf(InvalidAttendanceTimestampError);
+    });
+
+    it('accepts checkIn with recordedAt within 5min skew tolerance', async () => {
+      const w = wire();
+      const slightlyAhead = new Date(NOW.getTime() + 2 * 60 * 1000); // +2min
+      const result = await w.service.checkIn(KG, CHILD, STAFF_USER, {
+        recordedAt: slightlyAhead,
+      });
+      expect(result.event.recordedAt.getTime()).toBe(slightlyAhead.getTime());
+    });
+
+    it('rejects patchEvent when patch.recordedAt is in the future', async () => {
+      const w = wire();
+      const result = await w.service.checkIn(KG, CHILD, STAFF_USER);
+      const futureTime = new Date(NOW.getTime() + 60 * 60 * 1000);
+      await expect(
+        w.service.patchEvent(
+          KG,
+          result.event.id,
+          STAFF_USER,
+          { recordedAt: futureTime },
+          { isAdmin: true },
+        ),
+      ).rejects.toBeInstanceOf(InvalidAttendanceTimestampError);
+    });
+  });
+
+  // ── T7 fix-pass: H2 — dashboardAttendanceToday respects groupId ────────
+
+  describe('dashboardAttendanceToday — groupId filter (T6 H2)', () => {
+    it('returns only the children in the requested group', async () => {
+      const w = wire();
+      const isoDate = NOW.toLocaleDateString('en-CA', {
+        timeZone: 'Asia/Almaty',
+      });
+      const childA = CHILD;
+      const childB = 'cccccccc-bbbb-bbbb-bbbb-cccccccccccc';
+      const groupA = 'gggggggg-aaaa-aaaa-aaaa-gggggggggggg';
+      const groupB = 'gggggggg-bbbb-bbbb-bbbb-gggggggggggg';
+      // Seed both rows + a child→group lookup the fake honours.
+      w.dailyRepo.put(
+        ChildDailyStatus.createNew(
+          {
+            id: randomUUID(),
+            kindergartenId: KG,
+            childId: childA,
+            date: isoDate,
+            status: ChildIntradayStatus.PRESENT,
+            note: null,
+            setBy: STAFF_ID,
+          },
+          w.clock,
+        ),
+      );
+      w.dailyRepo.put(
+        ChildDailyStatus.createNew(
+          {
+            id: randomUUID(),
+            kindergartenId: KG,
+            childId: childB,
+            date: isoDate,
+            status: ChildIntradayStatus.PRESENT,
+            note: null,
+            setBy: STAFF_ID,
+          },
+          w.clock,
+        ),
+      );
+      w.dailyRepo.childGroup.set(childA, groupA);
+      w.dailyRepo.childGroup.set(childB, groupB);
+
+      const onlyA = await w.service.dashboardAttendanceToday(KG, {
+        groupId: groupA,
+      });
+      expect(onlyA).toHaveLength(1);
+      expect(onlyA[0].childId).toBe(childA);
+
+      const onlyB = await w.service.dashboardAttendanceToday(KG, {
+        groupId: groupB,
+      });
+      expect(onlyB).toHaveLength(1);
+      expect(onlyB[0].childId).toBe(childB);
     });
   });
 });

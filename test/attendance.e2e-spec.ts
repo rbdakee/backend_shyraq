@@ -516,6 +516,188 @@ describe('B8 attendance (e2e)', () => {
     expect(deniedRes.status).toBe(403);
   });
 
+  // ── K. Admin GET attendance-events without filters (T6 H1 fix) ──────────
+
+  it('returns 200 with kg-wide events when neither childId nor groupId filter is set (Scenario K)', async () => {
+    const a = await createKgWithAdmin('att-k', '+77011130013');
+    const childId = await createChild(a.adminToken, {
+      full_name: 'K-Child',
+      date_of_birth: '2022-11-10',
+    });
+    await request(server)
+      .post('/api/v1/staff/attendance/check-in')
+      .set('Authorization', `Bearer ${a.staffToken}`)
+      .send({ childId })
+      .expect(201);
+
+    const listRes = await request(server)
+      .get('/api/v1/admin/attendance-events')
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .expect(200);
+
+    expect(Array.isArray(listRes.body)).toBe(true);
+    expect(listRes.body.length).toBeGreaterThanOrEqual(1);
+    const ev = listRes.body[0] as { childId: string; eventType: string };
+    expect(ev.childId).toBe(childId);
+  });
+
+  // ── L. Dashboard groupId filter (T6 H2 fix) ──────────────────────────────
+
+  it('honours ?groupId on /admin/dashboard/attendance-today (Scenario L)', async () => {
+    const a = await createKgWithAdmin('att-l', '+77011130014');
+    // Two groups + two children, each in a different group.
+    const groupA = await request(server)
+      .post('/api/v1/groups')
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .send({ name: 'Group-A', capacity: 20 })
+      .expect(201);
+    const groupB = await request(server)
+      .post('/api/v1/groups')
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .send({ name: 'Group-B', capacity: 20 })
+      .expect(201);
+    const groupAId = groupA.body.id as string;
+    const groupBId = groupB.body.id as string;
+
+    const childA = await createChild(a.adminToken, {
+      full_name: 'L-Child-A',
+      date_of_birth: '2022-12-10',
+    });
+    const childB = await createChild(a.adminToken, {
+      full_name: 'L-Child-B',
+      date_of_birth: '2022-12-11',
+    });
+
+    // Assign children to groups via direct UPDATE (matches helper used by
+    // schedule.e2e-spec / meal.e2e-spec for the same scenario).
+    await ctx.dataSource.transaction(async (m) => {
+      await m.query(`SET LOCAL app.bypass_rls = 'true'`);
+      await m.query(`UPDATE children SET current_group_id = $1 WHERE id = $2`, [
+        groupAId,
+        childA,
+      ]);
+      await m.query(`UPDATE children SET current_group_id = $1 WHERE id = $2`, [
+        groupBId,
+        childB,
+      ]);
+    });
+
+    // Both children get a daily_status row (sick) for today.
+    const today = new Date().toLocaleDateString('en-CA', {
+      timeZone: 'Asia/Almaty',
+    });
+    await request(server)
+      .post('/api/v1/staff/daily-status')
+      .set('Authorization', `Bearer ${a.staffToken}`)
+      .send({ childId: childA, date: today, status: 'sick' })
+      .expect(200);
+    await request(server)
+      .post('/api/v1/staff/daily-status')
+      .set('Authorization', `Bearer ${a.staffToken}`)
+      .send({ childId: childB, date: today, status: 'sick' })
+      .expect(200);
+
+    // Dashboard with ?groupId=groupA → only childA.
+    const dashARes = await request(server)
+      .get('/api/v1/admin/dashboard/attendance-today')
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .query({ groupId: groupAId })
+      .expect(200);
+    const idsA = (dashARes.body as { childId: string }[]).map((r) => r.childId);
+    expect(idsA).toContain(childA);
+    expect(idsA).not.toContain(childB);
+
+    // Dashboard with ?groupId=groupB → only childB.
+    const dashBRes = await request(server)
+      .get('/api/v1/admin/dashboard/attendance-today')
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .query({ groupId: groupBId })
+      .expect(200);
+    const idsB = (dashBRes.body as { childId: string }[]).map((r) => r.childId);
+    expect(idsB).toContain(childB);
+    expect(idsB).not.toContain(childA);
+  });
+
+  // ── M. Parent daily-status garbage date validation (T6 M1 fix) ──────────
+
+  it('returns 400 for parent daily-status with malformed date (Scenario M)', async () => {
+    const a = await createKgWithAdmin('att-m', '+77011130015');
+    const childId = await createChild(a.adminToken, {
+      full_name: 'M-Child',
+      date_of_birth: '2022-12-12',
+    });
+    const parentUserId = await seedUser('+77011130150');
+    await seedApprovedGuardian(childId, parentUserId, a.kgId);
+    const parentToken = await mintParentAccess({
+      sub: parentUserId,
+      kindergartenId: a.kgId,
+    });
+
+    // Garbage date → 422 (global ValidationPipe config maps validation errors
+    // to UnprocessableEntity per src/utils/validation-options.ts). Previously
+    // the controller read a raw string which leaked all the way to PG and
+    // crashed with `invalid input syntax for type date` (T6 M1).
+    const badRes = await request(server)
+      .get(`/api/v1/parent/children/${childId}/daily-status`)
+      .set('Authorization', `Bearer ${parentToken}`)
+      .query({ date: 'garbage' });
+    expect(badRes.status).toBe(422);
+
+    // Valid date with no row → 200 with null/empty body (controller returns
+    // null which Express serialises as either `null` or `{}` depending on
+    // version; we accept both).
+    const okRes = await request(server)
+      .get(`/api/v1/parent/children/${childId}/daily-status`)
+      .set('Authorization', `Bearer ${parentToken}`)
+      .query({ date: '2099-01-01' })
+      .expect(200);
+    const isEmpty =
+      okRes.body === null ||
+      (typeof okRes.body === 'object' && Object.keys(okRes.body).length === 0);
+    expect(isEmpty).toBe(true);
+  });
+
+  // ── N. Cross-tenant daily_status RLS isolation (T6 M4 fix) ──────────────
+
+  it('hides KG-A daily_status row from KG-B admin via RLS (Scenario N)', async () => {
+    const a = await createKgWithAdmin('att-n-a', '+77011130016');
+    const b = await createKgWithAdmin('att-n-b', '+77011130017');
+    const childA = await createChild(a.adminToken, {
+      full_name: 'N-Child-A',
+      date_of_birth: '2022-12-13',
+    });
+    const today = new Date().toLocaleDateString('en-CA', {
+      timeZone: 'Asia/Almaty',
+    });
+    // KG-A staff sets a daily_status row for KG-A child.
+    await request(server)
+      .post('/api/v1/staff/daily-status')
+      .set('Authorization', `Bearer ${a.staffToken}`)
+      .send({ childId: childA, date: today, status: 'sick' })
+      .expect(200);
+
+    // KG-B admin lists daily statuses → must NOT see KG-A's row.
+    const listRes = await request(server)
+      .get('/api/v1/admin/daily-status')
+      .set('Authorization', `Bearer ${b.adminToken}`)
+      .query({ from: today, to: today })
+      .expect(200);
+    expect(Array.isArray(listRes.body)).toBe(true);
+    const ids = (listRes.body as { childId: string }[]).map((r) => r.childId);
+    expect(ids).not.toContain(childA);
+
+    // KG-B staff trying to set daily_status for KG-A child → 404 (RLS hides
+    // the child row from KG-B's tenant scope, so ChildNotFoundError fires).
+    // Note: ChildNotFoundError extends NotFoundError whose code is the
+    // generic `not_found` (see src/shared-kernel/domain/errors/not-found.error.ts).
+    const crossSetRes = await request(server)
+      .post('/api/v1/staff/daily-status')
+      .set('Authorization', `Bearer ${b.staffToken}`)
+      .send({ childId: childA, date: today, status: 'present' });
+    expect(crossSetRes.status).toBe(404);
+    expect(crossSetRes.body.error).toBe('not_found');
+  });
+
   // ── J. Admin daily-status list ────────────────────────────────────────────
 
   it('returns 200 with daily-status list on GET /admin/daily-status (Scenario J)', async () => {

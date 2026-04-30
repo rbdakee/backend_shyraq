@@ -47,6 +47,7 @@ import {
 } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { TimelineEntry } from './domain/entities/timeline-entry.entity';
+import { InvalidAttendanceTimestampError } from './domain/errors/invalid-attendance-timestamp.error';
 import { InvalidTimelineEntryTypeError } from './domain/errors/invalid-timeline-entry-type.error';
 import { TimelineEntryNotAuthorError } from './domain/errors/timeline-entry-not-author.error';
 import { TimelineEntryNotFoundError } from './domain/errors/timeline-entry-not-found.error';
@@ -462,9 +463,9 @@ describe('TimelineService — service-unit', () => {
   describe('listByChild', () => {
     it('returns entries ordered by entryTime DESC (most recent first)', async () => {
       const w = wire();
-      // Create two entries at different times.
-      const earlier = new Date('2026-05-01T08:00:00.000Z');
-      const later = new Date('2026-05-01T10:00:00.000Z');
+      // Both entries strictly in the past so assertNotFuture allows them.
+      const earlier = new Date('2026-05-01T07:00:00.000Z');
+      const later = new Date('2026-05-01T08:30:00.000Z');
 
       await w.service.createEntry(KG, CHILD, STAFF_USER, {
         entryType: 'activity',
@@ -487,6 +488,38 @@ describe('TimelineService — service-unit', () => {
       await expect(
         w.service.listByChild(KG, 'dddddddd-dddd-dddd-dddd-dddddddddddd', {}),
       ).rejects.toBeInstanceOf(ChildNotFoundError);
+    });
+  });
+
+  // ── T7 fix-pass: M3 — future-dated entryTime rejection ───────────────────
+
+  describe('M3 — assertNotFuture guard', () => {
+    it('rejects createEntry with entryTime > now + 5min skew', async () => {
+      const w = wire();
+      const futureTime = new Date(NOW.getTime() + 60 * 60 * 1000); // +1h
+      await expect(
+        w.service.createEntry(KG, CHILD, STAFF_USER, {
+          entryType: 'note',
+          entryTime: futureTime.toISOString(),
+        }),
+      ).rejects.toBeInstanceOf(InvalidAttendanceTimestampError);
+    });
+
+    it('rejects updateEntry with patched entryTime in the future', async () => {
+      const w = wire();
+      const entry = await w.service.createEntry(KG, CHILD, STAFF_USER, {
+        entryType: 'note',
+      });
+      const futureTime = new Date(NOW.getTime() + 60 * 60 * 1000);
+      await expect(
+        w.service.updateEntry(
+          KG,
+          entry.id,
+          STAFF_USER,
+          { entryTime: futureTime.toISOString() },
+          { isAdmin: false },
+        ),
+      ).rejects.toBeInstanceOf(InvalidAttendanceTimestampError);
     });
   });
 });

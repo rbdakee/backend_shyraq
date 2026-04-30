@@ -47,6 +47,13 @@ export abstract class ChildDailyStatusRepository {
 
 export interface ListDailyStatusFilter {
   childId?: string;
+  /**
+   * Filter by child's current group (children.current_group_id). Used by
+   * the admin dashboard endpoint `GET /admin/dashboard/attendance-today`.
+   * Children transferred between groups are reported under their *current*
+   * group, mirroring the listByGroup behaviour of attendance_events.
+   */
+  groupId?: string;
   /** Inclusive lower bound (YYYY-MM-DD). */
   from?: string;
   /** Inclusive upper bound (YYYY-MM-DD). */

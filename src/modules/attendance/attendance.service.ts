@@ -13,6 +13,7 @@ import { TimelineEntry } from './domain/entities/timeline-entry.entity';
 import { AttendanceEditWindowExpiredError } from './domain/errors/attendance-edit-window-expired.error';
 import { AttendanceEventNotFoundError } from './domain/errors/attendance-event-not-found.error';
 import { InvalidAttendancePickupError } from './domain/errors/invalid-attendance-pickup.error';
+import { InvalidAttendanceTimestampError } from './domain/errors/invalid-attendance-timestamp.error';
 import { PickupUserNotAllowedError } from './domain/errors/pickup-user-not-allowed.error';
 import { AttendanceMethod } from './domain/value-objects/attendance-method.vo';
 import { ChildIntradayStatus } from './domain/value-objects/child-intraday-status.vo';
@@ -125,6 +126,7 @@ export class AttendanceService {
     opts: CheckInOpts = {},
   ): Promise<AttendanceFlowResult> {
     const recordedAt = opts.recordedAt ?? this.clock.now();
+    this.assertNotFuture(recordedAt);
 
     const staff = await this.resolveCallerStaffMemberId(
       kindergartenId,
@@ -226,6 +228,7 @@ export class AttendanceService {
     opts: CheckOutOpts = {},
   ): Promise<AttendanceFlowResult> {
     const recordedAt = opts.recordedAt ?? this.clock.now();
+    this.assertNotFuture(recordedAt);
 
     const staff = await this.resolveCallerStaffMemberId(
       kindergartenId,
@@ -312,6 +315,10 @@ export class AttendanceService {
     // Resolve staff member to ensure the caller has a valid active record
     // in this tenant (defence-in-depth — RolesGuard already gate-keeps).
     await this.resolveCallerStaffMemberId(kindergartenId, callerUserId);
+
+    if (patch.recordedAt !== undefined) {
+      this.assertNotFuture(patch.recordedAt);
+    }
 
     const event = await this.eventRepo.findById(kindergartenId, eventId);
     if (event === null) {
@@ -470,13 +477,10 @@ export class AttendanceService {
         offset: filter.offset,
       });
     }
-    // No child or group filter: return kg-wide (list by group with broad filter
-    // is not available in the abstract, so we fall back to listByChild without
-    // childId — which the relational repo does not support directly.
-    // For admin kg-wide without filters we use an empty listByGroup with a
-    // placeholder approach. In practice the UI always sends at least one filter.
-    // Reuse listByChild with a very wide limit as fallback.
-    return this.eventRepo.listByChild(kindergartenId, '', {
+    // No child/group filter — kg-wide. Previously this fell through to
+    // listByChild('') and crashed with `invalid input syntax for type uuid`
+    // (T6 H1). Use the dedicated repo method which omits the child predicate.
+    return this.eventRepo.listByKindergarten(kindergartenId, {
       from: filter.from,
       to: filter.to,
       limit: filter.limit,
@@ -500,7 +504,7 @@ export class AttendanceService {
     });
     const date = opts.date ?? today;
     const filter: ListDailyStatusFilter = { from: date, to: date, limit: 500 };
-    if (opts.groupId) filter.childId = undefined; // group-scoped not in filter interface
+    if (opts.groupId) filter.groupId = opts.groupId;
     return this.dailyStatusRepo.list(kindergartenId, filter);
   }
 
@@ -574,11 +578,12 @@ export class AttendanceService {
   }
 
   /**
-   * Schedule a notification call onto a microtask so the ambient transaction
-   * is not held by an awaiting notify. Errors are caught and dropped — the
-   * caller never observes the notification's success/failure (logged inside
-   * the adapter). Mirrors the post-commit fire-and-forget pattern used by
-   * the B7 services after the T7 review (commit b27b5dc).
+   * Scheduled on a microtask. The dispatch may run before the TypeORM commit
+   * completes; the LoggingNotificationAdapter is sync-safe today. B9 will
+   * need a real post-commit hook (queryRunner.afterCommit / Outbox) before
+   * WS fanout. Errors are swallowed — notifications must never break the
+   * user-facing flow. Mirrors the pattern used by the B7 services after the
+   * T7 review (commit b27b5dc).
    */
   private fireAndForget(work: () => Promise<void>): void {
     Promise.resolve()
@@ -586,6 +591,20 @@ export class AttendanceService {
       .catch(() => {
         /* swallow — notifications must never break the user-facing flow */
       });
+  }
+
+  /**
+   * Reject `recorded_at` / `entry_time` values more than 5 minutes in the
+   * future. A small skew tolerance accounts for clients with mildly
+   * unsynchronised clocks. Throws InvalidAttendanceTimestampError → 422.
+   * Used by checkIn / checkOut / patchEvent (T6 M3 fix-pass).
+   */
+  private assertNotFuture(when: Date): void {
+    const now = this.clock.now();
+    const SKEW_MS = 5 * 60 * 1000;
+    if (when.getTime() > now.getTime() + SKEW_MS) {
+      throw new InvalidAttendanceTimestampError(when, now);
+    }
   }
 }
 

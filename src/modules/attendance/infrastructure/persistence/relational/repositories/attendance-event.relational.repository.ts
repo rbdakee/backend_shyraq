@@ -7,6 +7,7 @@ import {
   AttendanceEventRepository,
   ListAttendanceEventsByChildFilter,
   ListAttendanceEventsByGroupFilter,
+  ListAttendanceEventsByKindergartenFilter,
 } from '../../attendance-event.repository';
 import { AttendanceEventTypeOrmEntity } from '../entities/attendance-event.typeorm.entity';
 import { AttendanceEventMapper } from '../mappers/attendance-event.mapper';
@@ -108,6 +109,30 @@ export class AttendanceEventRelationalRepository extends AttendanceEventReposito
       qb.andWhere('e.event_type = :et', { et: filter.eventType });
     }
     qb.orderBy('e.recorded_at', 'DESC');
+    qb.limit(clampLimit(filter.limit));
+    qb.offset(filter.offset ?? 0);
+    const rows = await qb.getMany();
+    return rows.map((r) => AttendanceEventMapper.toDomain(r));
+  }
+
+  async listByKindergarten(
+    kindergartenId: string,
+    filter: ListAttendanceEventsByKindergartenFilter,
+  ): Promise<AttendanceEvent[]> {
+    const qb = this.manager()
+      .getRepository(AttendanceEventTypeOrmEntity)
+      .createQueryBuilder('e')
+      .where('e.kindergarten_id = :kg', { kg: kindergartenId });
+    if (filter.from !== undefined) {
+      qb.andWhere('e.recorded_at >= :from', { from: filter.from });
+    }
+    if (filter.to !== undefined) {
+      qb.andWhere('e.recorded_at < :to', { to: filter.to });
+    }
+    if (filter.eventType !== undefined) {
+      qb.andWhere('e.event_type = :et', { et: filter.eventType });
+    }
+    qb.orderBy('e.recorded_at', 'DESC').addOrderBy('e.id', 'DESC');
     qb.limit(clampLimit(filter.limit));
     qb.offset(filter.offset ?? 0);
     const rows = await qb.getMany();

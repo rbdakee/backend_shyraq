@@ -7,6 +7,7 @@ import { StaffNotFoundError } from '@/modules/staff/domain/errors/staff-not-foun
 import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { TimelineEntry } from './domain/entities/timeline-entry.entity';
+import { InvalidAttendanceTimestampError } from './domain/errors/invalid-attendance-timestamp.error';
 import { InvalidTimelineEntryTypeError } from './domain/errors/invalid-timeline-entry-type.error';
 import { TimelineEntryNotFoundError } from './domain/errors/timeline-entry-not-found.error';
 import { TimelineEntryType } from './domain/value-objects/timeline-entry-type.vo';
@@ -93,6 +94,7 @@ export class TimelineService {
     const entryTime = dto.entryTime
       ? new Date(dto.entryTime)
       : this.clock.now();
+    this.assertNotFuture(entryTime);
 
     const entry = await this.timelineRepo.create(
       kindergartenId,
@@ -146,12 +148,19 @@ export class TimelineService {
     // Throws TimelineEntryNotAuthorError (403) when non-admin non-author.
     entry.assertEditableBy(staffMemberId, opts.isAdmin);
 
+    const patchedEntryTime = dto.entryTime
+      ? new Date(dto.entryTime)
+      : undefined;
+    if (patchedEntryTime !== undefined) {
+      this.assertNotFuture(patchedEntryTime);
+    }
+
     entry.applyPatch({
       title: dto.title,
       body: dto.body,
       mediaUrls: dto.mediaUrls,
       metadata: dto.metadata,
-      entryTime: dto.entryTime ? new Date(dto.entryTime) : undefined,
+      entryTime: patchedEntryTime,
     });
 
     return this.timelineRepo.update(kindergartenId, entry);
@@ -225,11 +234,31 @@ export class TimelineService {
     return entry;
   }
 
+  /**
+   * Scheduled on a microtask. The dispatch may run before the TypeORM commit
+   * completes; the LoggingNotificationAdapter is sync-safe today. B9 will
+   * need a real post-commit hook (queryRunner.afterCommit / Outbox) before
+   * WS fanout. Errors are swallowed — notifications must never break the
+   * user-facing flow.
+   */
   private fireAndForget(work: () => Promise<void>): void {
     Promise.resolve()
       .then(() => work())
       .catch(() => {
         /* swallow — notifications must never break the user-facing flow */
       });
+  }
+
+  /**
+   * Reject `entry_time` values more than 5 minutes in the future. Same
+   * skew tolerance as AttendanceService.assertNotFuture. Throws
+   * InvalidAttendanceTimestampError → 422 (T6 M3 fix-pass).
+   */
+  private assertNotFuture(when: Date): void {
+    const now = this.clock.now();
+    const SKEW_MS = 5 * 60 * 1000;
+    if (when.getTime() > now.getTime() + SKEW_MS) {
+      throw new InvalidAttendanceTimestampError(when, now);
+    }
   }
 }
