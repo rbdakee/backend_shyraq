@@ -104,7 +104,7 @@
 ### BP-батчи (v2 продолжает с B5)
 
 - [x] **B5** — Enrollment ✓ **demo-ready: BP §1**
-- [x] **B6** — Parent Onboarding ✓ **demo-ready: BP §2**
+- [x] **B6** — Parent Onboarding ✓ **demo-ready: BP §2** (commit `c4bc35b`)
 - [ ] **B7** — Schedule & Meal *(часть BP §9)*
 - [ ] **B8** — Attendance & Timeline (manual) ✓ **demo-ready: BP §5 manual**
 - [ ] **B9** — Notifications + WebSocket *(Shared §0.4 + process split api/worker/ws)*
