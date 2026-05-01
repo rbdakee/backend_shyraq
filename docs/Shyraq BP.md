@@ -792,6 +792,8 @@
 
 Прозрачность для родителя и уведомления по событиям
 
+**Реализация B9 — Outbox + worker-процесс + WebSocket gateway.** Бизнес-транзакция записывает строку в `notification_outbox` (тот же TypeORM `EntityManager`, атомарно). Worker-процесс (`src/main.worker.ts`) опрашивает таблицу каждые 2с (`notification-outbox-poll` BullMQ repeatable job, `FOR UPDATE SKIP LOCKED`), fan-out'ит через `NotificationDispatcher`: resolve recipients → apply `notification_preferences` filter → `PushNotificationPort.send` (MockPushAdapter в B9, FcmPushAdapter в B22) + WS broadcast в соответствующую room. Запись появляется в `notifications` history. Per-event push/in-app preferences доступны через `GET/PATCH /notifications/preferences`. Текущая матрица событий (B9): `attendance.checkin`, `attendance.checkout`, `daily_status.changed`, `timeline.entry_created`, `guardian.approved`, `guardian.pending_approval`, `guardian.rejected`, `guardian.revoked`, `child.transferred`, `guardian.permissions_updated`. Полный per-actor matrix будет дополняться по мере добавления batches (B11 pickup-OTP, B14 payments, B17 stories).
+
 ### Goal
 
 Давать родителю своевременную информацию о ребенке и связанных событиях.

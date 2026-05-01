@@ -299,21 +299,100 @@ Naming convention — `it('returns ...')` / `it('throws ...')` / `it('rejects ..
 
 ## 6. Process topology
 
-До B9 — single-process. На B9 (Notifications + WebSocket) репо разделяется на три cloud-процесса split-entrypoints:
+**B9 (Notifications + WebSocket)** — реализован в двух процессах: `api` + `worker`. Standalone `ws`-процесс отложен до B22.
 
-| Процесс | Entry | Назначение |
-|---|---|---|
-| **api** | `src/main.api.ts` | REST endpoints, payment-webhook receivers (ack 200 + enqueue в BullMQ) |
-| **worker** | `src/main.worker.ts` | BullMQ consumers + repeatable jobs: billing-cron, FCM/APNS, OFD-fiscalization, schedule/menu auto-copy, story TTL cleanup, identity-QR rotation |
-| **ws** | `src/main.ws.ts` | WebSocket gateway, real-time events (BP §10), Redis Pub/Sub fan-out из api/worker |
+| Процесс | Entry | Статус | Назначение |
+|---|---|---|---|
+| **api** | `src/main.ts` | Существует с B1 | REST endpoints + **WS gateway collocated** (socket.io в том же event-loop). Payment-webhook receivers (ack 200 + enqueue в BullMQ). |
+| **worker** | `src/main.worker.ts` | Введён в B9 | BullMQ consumers + repeatable jobs: `notification-outbox-poll` (каждые 2с), `weekly-rollout` (мигрирует с `@nestjs/schedule` на BullMQ), billing-cron, FCM/APNS, OFD-fiscalization, schedule/menu auto-copy, story TTL cleanup, identity-QR rotation (future batches). |
+| **ws** | `src/main.ws.ts` | Deferred → B22 | Отдельный WebSocket процесс (нужен при ≥1000 concurrent sockets). До B22 — WS collocated в `api`. |
 
-Все три процесса делят один Postgres + один Redis. Communication: `api → worker` через BullMQ; `api/worker → ws` через Redis Pub/Sub.
+Все процессы делят один Postgres + один Redis. Communication: `api → worker` через BullMQ; `worker → api WS` через Redis Pub/Sub (`@socket.io/redis-adapter`) для broadcast'а.
+
+**Почему WS collocated в api (до B22):** один Redis Pub/Sub, один JWT-secret, один `ChildGuardianRepository`. Отдельный процесс даст 0 выигрыша до ~1000 concurrent sockets. `@socket.io/redis-adapter` уже обеспечивает fanout через Redis Pub/Sub между любым числом api-инстансов.
 
 Не разделяется в отдельные сервисы:
 - **admin/parent/super-admin** — same code, same DB. Network-сегментация делается на reverse proxy (`/super-admin/*` за IP-allowlist/VPN).
 - **auth** — JWT stateless, отдельный сервис плодит сетевой hop без выгоды при HS256.
 - **scheduler** — внутри `worker` как BullMQ repeatable jobs.
 - **payment-webhook receiver** — внутри `api`.
+
+### 6.2 BullMQ queue/job catalog
+
+| Queue / Job | Процесс | Интервал / Trigger | Назначение |
+|---|---|---|---|
+| `notification-outbox-poll` | worker (repeatable) | каждые 2с | Забирает `pending` строки из `notification_outbox`, fan-out'ит через `NotificationDispatcher`, помечает `dispatched`/`failed` |
+| `weekly-rollout` | worker (repeatable) | раз в неделю (Пн 00:00 kg-TZ) | Авто-копирование расписания/меню на следующую неделю |
+| (future) `billing-cron` | worker | ежесуточно | Биллинг, OFD-fiscalization — B14+ |
+
+`@nestjs/schedule` удаляется в B9 (заменён BullMQ). BullMQ даёт бесплатный distributed lock через Redis `BZPOPMIN` — только один worker-инстанс выполняет job в момент времени.
+
+### 6.3 Outbox event lifecycle
+
+Паттерн Transactional Outbox (D17) заменяет небезопасный `Promise.resolve().then(notify)` из B5–B8.
+
+```
+Business TX
+  ├─ INSERT/UPDATE бизнес-данные (attendance_events, timeline_entries, …)
+  └─ INSERT notification_outbox (status='pending', event_key, payload)
+       ← та же TypeORM transaction, тот же EntityManager
+
+Worker (каждые 2с)
+  └─ SELECT … FROM notification_outbox
+       WHERE status='pending' AND next_retry_at <= NOW()
+       FOR UPDATE SKIP LOCKED          ← конкурентная безопасность
+  └─ NotificationDispatcher.handle(event)
+       ├─ resolve recipients (ChildGuardianRepository / GroupMentorRepository)
+       ├─ apply notification_preferences filter
+       ├─ apply nanny-policy (nanny получает только attendance.* и pickup.*)
+       ├─ PushNotificationPort.send(…)  ← MockPushAdapter (B9), FcmPushAdapter (B22)
+       ├─ WS broadcast в room (через Redis Pub/Sub → api WS gateway)
+       └─ INSERT notifications (history row, status='sent')
+  └─ UPDATE notification_outbox SET status='dispatched'/'failed', attempts=attempts+1
+       ← exponential backoff на failed: next_retry_at = NOW() + 2^attempts * interval
+```
+
+Таблица `notification_outbox` описана в `schema.dbml`. RLS-scoped по `kindergarten_id`.
+
+### 6.4 WebSocket room catalog
+
+Подключение: `wss://host/ws`, JWT передаётся в `socket.handshake.auth.token` (не в query — query параметры попадают в access-логи).
+
+`WsJwtGuard` — обёртка над `JwtTokenPort` для handshake-фрейма. После успешной валидации `NotificationGateway` автоматически (без client-subscribe message) подписывает сокет на комнаты:
+
+| Комната | Триггер | DB-запрос |
+|---|---|---|
+| `user:{user_id}` | Всегда (каждый connected сокет) | — |
+| `child:{child_id}` | Для каждого ребёнка с approved guardian-связью | `SELECT child_id FROM child_guardians WHERE user_id=? AND status='approved' AND revoked_at IS NULL` |
+| `group:{group_id}` | Для каждой группы где пользователь — активный ментор | `SELECT group_id FROM group_mentors WHERE user_id=? AND is_active=true` |
+
+Комнаты определяются в момент handshake. Переподписка — при reconnect.
+
+**Event envelope** (одинаковый для всех событий):
+```json
+{ "type": "<event_key>", "kindergarten_id": "...", "emitted_at": "...", "payload": { ... } }
+```
+
+### 6.5 Notification event catalog
+
+Полный список `event_key`-ов, выводимых `NotificationPort` (методы в `src/common/notifications/notification.port.ts`):
+
+| event_key | NotificationPort метод | Комнаты | Адресаты |
+|---|---|---|---|
+| `attendance.checkin` | `notifyAttendanceCheckIn` | `child:{childId}` | approved guardians ребёнка |
+| `attendance.checkout` | `notifyAttendanceCheckOut` | `child:{childId}` | approved guardians ребёнка |
+| `daily_status.changed` | `notifyDailyStatusChanged` | `child:{childId}` | approved guardians ребёнка |
+| `timeline.entry_created` | `notifyTimelineEntryCreated` | `child:{childId}` | approved guardians ребёнка |
+| `guardian.pending_approval` | `notifyGuardianPendingApproval` | `user:{primaryUserId}` | primary guardian ребёнка |
+| `guardian.approved` | `notifyGuardianApproved` | `user:{guardianUserId}` | новый guardian |
+| `guardian.rejected` | `notifyGuardianRejected` | `user:{guardianUserId}` | отклонённый guardian |
+| `guardian.revoked` | `notifyGuardianRevoked` | `user:{guardianUserId}` | удалённый guardian |
+| `child.transferred` | `notifyChildTransferred` | `user:{recipientUserIds[]}` | все approved guardians (переданные явно) |
+| `guardian.permissions_updated` | `notifyPermissionsUpdated` | `user:{guardianUserId}` | затронутый guardian |
+
+Будущие event-ключи (добавляются по мере батчей): `pickup.otp_sent`, `pickup.validated` (B11), `payment.upcoming`, `payment.overdue`, `payment.receipt_issued` (B14), `content.story_new`, `content.news_published` (B17), `face.enrolled` (B19).
+
+**Nanny-policy:** guardian с `role='nanny'` получает только `attendance.*` и `pickup.*` — остальные ключи отбрасываются в `NotificationDispatcher` до send.
 
 ### 6.1 Edge stack (B18.5+)
 

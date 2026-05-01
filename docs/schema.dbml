@@ -870,6 +870,28 @@ Table notification_preferences {
   }
 }
 
+// Transactional Outbox — written inside the same business TX that produces the
+// domain event. Worker polls pending rows (FOR UPDATE SKIP LOCKED) and
+// fan-outs to push + WS. RLS-scoped: FORCE ROW LEVEL SECURITY, policy
+// kindergarten_id = current_setting('app.kindergarten_id')::uuid
+//   OR current_setting('app.bypass_rls')='true'.
+Table notification_outbox {
+  id              uuid        [pk, default: `gen_random_uuid()`]
+  kindergarten_id uuid        [not null, ref: > kindergartens.id]
+  event_key       varchar(64) [not null] // e.g. 'attendance.checkin'
+  payload         jsonb       [not null] // domain event payload: recipient hints + denormalized data
+  status          varchar(16) [not null, default: 'pending'] // 'pending' | 'dispatched' | 'failed'
+  attempts        int         [not null, default: 0]
+  next_retry_at   timestamptz [not null, default: `now()`]
+  created_at      timestamptz [not null, default: `now()`]
+  dispatched_at   timestamptz
+  failed_reason   text
+
+  indexes {
+    (status, next_retry_at) [name: 'idx_outbox_pending']
+  }
+}
+
 // ─────────────────────────────────────────
 // BILLING — TARIFFS, HOLIDAYS, REFUNDS, LINE ITEMS
 // ─────────────────────────────────────────
