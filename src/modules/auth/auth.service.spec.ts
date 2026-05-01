@@ -283,6 +283,9 @@ class FakeJwt extends JwtTokenPort {
   decodeWithoutVerify(_token: string): DecodedAccessClaims | null {
     return null;
   }
+  verifyAccessToken(_token: string): Promise<{ sub: string; role: string }> {
+    return Promise.reject(new Error('not_implemented'));
+  }
 }
 
 class FakePasswordHasher extends PasswordHasherPort {
@@ -421,6 +424,11 @@ class FakeGuardianRepo extends ChildGuardianRepository {
     _userId: string,
   ): Promise<ChildGuardian | null> {
     return Promise.resolve(null);
+  }
+  findApprovedActiveByUserIdCrossTenant(
+    _userId: string,
+  ): Promise<ChildGuardian[]> {
+    return Promise.resolve([]);
   }
 }
 

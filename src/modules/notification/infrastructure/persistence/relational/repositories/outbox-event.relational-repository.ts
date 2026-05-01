@@ -9,7 +9,7 @@ import {
   EnqueueOutboxEventInput,
   OutboxEventRepository,
 } from '../../../../outbox-event.repository';
-import { OutboxEventTypeOrmEntity } from '../entities/outbox-event.typeorm-entity';
+import { OutboxEventTypeOrmEntity } from '../entities/outbox-event.typeorm.entity';
 import { OutboxEventMapper } from '../mappers/outbox-event.mapper';
 
 /**

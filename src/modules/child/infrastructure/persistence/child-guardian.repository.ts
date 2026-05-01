@@ -98,4 +98,15 @@ export abstract class ChildGuardianRepository {
     childId: string,
     userId: string,
   ): Promise<ChildGuardian | null>;
+
+  /**
+   * Cross-tenant lookup of every approved + non-revoked guardian-child link
+   * for `userId`. Used by the WS auto-subscribe handler to enumerate the
+   * `child:{cid}` rooms a freshly-connected socket should join, regardless
+   * of how many kindergartens that user has children in. Bypasses RLS via
+   * `app.bypass_rls=true` inside its own transaction.
+   */
+  abstract findApprovedActiveByUserIdCrossTenant(
+    userId: string,
+  ): Promise<ChildGuardian[]>;
 }

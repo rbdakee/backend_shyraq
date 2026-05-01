@@ -11,6 +11,7 @@ import { Reflector } from '@nestjs/core';
 import { Test } from '@nestjs/testing';
 import { DataSource } from 'typeorm';
 import { AppModule } from '@/app.module';
+import { RedisIoAdapter } from '@/common/websocket/redis-io.adapter';
 import { SmsPort } from '@/modules/auth/sms.port';
 import { MockSmsAdapter } from '@/modules/auth/infrastructure/adapters/mock-sms.adapter';
 import { RedisService } from '@/redis/redis.service';
@@ -24,6 +25,15 @@ export interface TestApp {
   dataSource: DataSource;
   redis: RedisService;
   sms: TestSmsAdapter;
+}
+
+export interface CreateTestAppOptions {
+  /**
+   * Wire the socket.io Redis pub/sub adapter so WS-related e2e tests can
+   * assert end-to-end fan-out. Default `false` — leaving WS disabled keeps
+   * non-WS test suites lean (no extra Redis pub/sub clients to clean up).
+   */
+  withWebsockets?: boolean;
 }
 
 /**
@@ -41,7 +51,9 @@ export class TestSmsAdapter extends MockSmsAdapter {
   }
 }
 
-export async function createTestApp(): Promise<TestApp> {
+export async function createTestApp(
+  options: CreateTestAppOptions = {},
+): Promise<TestApp> {
   const moduleRef = await Test.createTestingModule({
     imports: [AppModule],
   })
@@ -61,6 +73,13 @@ export async function createTestApp(): Promise<TestApp> {
     new ResolvePromisesInterceptor(),
     new ClassSerializerInterceptor(app.get(Reflector)),
   );
+
+  if (options.withWebsockets) {
+    const wsAdapter = new RedisIoAdapter(app);
+    await wsAdapter.connectToRedis();
+    app.useWebSocketAdapter(wsAdapter);
+  }
+
   await app.init();
 
   const dataSource = app.get(DataSource);

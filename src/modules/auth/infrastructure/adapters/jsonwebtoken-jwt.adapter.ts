@@ -8,6 +8,7 @@ import {
   IssueAccessPayload,
   IssueAccessResult,
   JwtTokenPort,
+  VerifiedAccessClaims,
 } from '../../jwt-token.port';
 
 const TTL_PATTERN = /^(\d+)([smhd])$/;
@@ -54,6 +55,34 @@ export class JsonwebtokenJwtAdapter extends JwtTokenPort {
     const out: DecodedAccessClaims = {};
     if (typeof obj.jti === 'string') out.jti = obj.jti;
     if (typeof obj.exp === 'number') out.exp = obj.exp;
+    return out;
+  }
+
+  async verifyAccessToken(token: string): Promise<VerifiedAccessClaims> {
+    const payload = await this.jwt.verifyAsync<Record<string, unknown>>(token, {
+      secret: this.configService.getOrThrow('auth.jwtAccessSecret', {
+        infer: true,
+      }),
+    });
+    if (typeof payload.sub !== 'string' || payload.sub.length === 0) {
+      throw new Error('jwt_missing_sub');
+    }
+    if (typeof payload.role !== 'string') {
+      throw new Error('jwt_missing_role');
+    }
+    const out: VerifiedAccessClaims = {
+      sub: payload.sub,
+      role: payload.role,
+    };
+    if (typeof payload.kindergarten_id === 'string') {
+      out.kindergarten_id = payload.kindergarten_id;
+    }
+    if (typeof payload.pending_role_select === 'boolean') {
+      out.pending_role_select = payload.pending_role_select;
+    }
+    if (typeof payload.jti === 'string') out.jti = payload.jti;
+    if (typeof payload.iat === 'number') out.iat = payload.iat;
+    if (typeof payload.exp === 'number') out.exp = payload.exp;
     return out;
   }
 }

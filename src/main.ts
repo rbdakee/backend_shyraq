@@ -9,6 +9,7 @@ import { NestFactory, Reflector } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { useContainer } from 'class-validator';
 import { AppModule } from './app.module';
+import { RedisIoAdapter } from './common/websocket/redis-io.adapter';
 import validationOptions from './utils/validation-options';
 import { AllConfigType } from './config/config.type';
 import { ResolvePromisesInterceptor } from './utils/serializer.interceptor';
@@ -35,6 +36,12 @@ async function bootstrap() {
     new ResolvePromisesInterceptor(),
     new ClassSerializerInterceptor(app.get(Reflector)),
   );
+
+  // Wire socket.io with the Redis pub/sub adapter so events emitted from
+  // the worker process (B9 T6) reach api-process clients in any room.
+  const wsAdapter = new RedisIoAdapter(app);
+  await wsAdapter.connectToRedis();
+  app.useWebSocketAdapter(wsAdapter);
 
   const options = new DocumentBuilder()
     .setTitle('Shyraq API v2')

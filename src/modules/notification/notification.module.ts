@@ -5,11 +5,11 @@ import { ChildModule } from '@/modules/child/child.module';
 import { PushNotificationPort } from '@/shared-kernel/domain/push-notification.port';
 import { FcmPushAdapter } from '@/shared-kernel/infrastructure/adapters/fcm-push.adapter';
 import { MockPushAdapter } from '@/shared-kernel/infrastructure/adapters/mock-push.adapter';
-import { NotificationTypeOrmEntity } from './infrastructure/persistence/relational/entities/notification.typeorm-entity';
-import { NotificationPreferenceTypeOrmEntity } from './infrastructure/persistence/relational/entities/notification-preference.typeorm-entity';
-import { OutboxEventTypeOrmEntity } from './infrastructure/persistence/relational/entities/outbox-event.typeorm-entity';
-import { PushTokenTypeOrmEntity } from './infrastructure/persistence/relational/entities/push-token.typeorm-entity';
-import { NoopWsBroadcaster } from './infrastructure/noop-ws-broadcaster';
+import { WebsocketModule } from '@/websocket/websocket.module';
+import { NotificationTypeOrmEntity } from './infrastructure/persistence/relational/entities/notification.typeorm.entity';
+import { NotificationPreferenceTypeOrmEntity } from './infrastructure/persistence/relational/entities/notification-preference.typeorm.entity';
+import { OutboxEventTypeOrmEntity } from './infrastructure/persistence/relational/entities/outbox-event.typeorm.entity';
+import { PushTokenTypeOrmEntity } from './infrastructure/persistence/relational/entities/push-token.typeorm.entity';
 import { OutboxNotificationAdapter } from './infrastructure/outbox-notification.adapter';
 import { NotificationPreferenceRelationalRepository } from './infrastructure/persistence/relational/repositories/notification-preference.relational-repository';
 import { NotificationRelationalRepository } from './infrastructure/persistence/relational/repositories/notification.relational-repository';
@@ -20,7 +20,6 @@ import { NotificationPreferenceRepository } from './notification-preference.repo
 import { NotificationRepository } from './notification.repository';
 import { OutboxEventRepository } from './outbox-event.repository';
 import { PushTokenRepository } from './push-token.repository';
-import { WsBroadcaster } from './ws-broadcaster.port';
 
 /**
  * Picks the push adapter based on `process.env.PUSH_PROVIDER`. Defaults to
@@ -57,6 +56,10 @@ function pushPortProvider(): Provider {
       PushTokenTypeOrmEntity,
     ]),
     ChildModule,
+    // WebsocketModule provides + exports the production WsBroadcaster
+    // (SocketIoWsBroadcaster). T4's NoopWsBroadcaster has been retired;
+    // unit tests inject their own fake via Test.overrideProvider.
+    WebsocketModule,
   ],
   providers: [
     // Repositories.
@@ -79,7 +82,6 @@ function pushPortProvider(): Provider {
       useClass: OutboxNotificationAdapter,
     },
     pushPortProvider(),
-    { provide: WsBroadcaster, useClass: NoopWsBroadcaster },
     // Service.
     NotificationDispatcher,
   ],
@@ -90,7 +92,11 @@ function pushPortProvider(): Provider {
     PushTokenRepository,
     NotificationPort,
     PushNotificationPort,
-    WsBroadcaster,
+    // Re-export WebsocketModule so consumers that import NotificationModule
+    // (or pull NotificationDispatcher via the @Global() registration) also
+    // resolve `WsBroadcaster` and the gateway without having to import
+    // WebsocketModule explicitly.
+    WebsocketModule,
     NotificationDispatcher,
   ],
 })

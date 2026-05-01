@@ -243,6 +243,23 @@ export class ChildGuardianRelationalRepository extends ChildGuardianRepository {
     return row ? ChildGuardianMapper.toDomain(row) : null;
   }
 
+  async findApprovedActiveByUserIdCrossTenant(
+    userId: string,
+  ): Promise<ChildGuardian[]> {
+    return this.dataSource.transaction(async (manager) => {
+      await manager.query(`SET LOCAL app.bypass_rls = 'true'`);
+      const rows = await manager
+        .getRepository(ChildGuardianEntity)
+        .createQueryBuilder('g')
+        .where('g.user_id = :uid', { uid: userId })
+        .andWhere("g.status = 'approved'")
+        .andWhere('g.revoked_at IS NULL')
+        .orderBy('g.created_at', 'ASC')
+        .getMany();
+      return rows.map((r) => ChildGuardianMapper.toDomain(r));
+    });
+  }
+
   private manager(): EntityManager {
     const ctx = tenantStorage.getStore();
     return ctx?.entityManager ?? this.repo.manager;

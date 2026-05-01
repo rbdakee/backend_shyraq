@@ -36,7 +36,7 @@ import {
   MAX_OUTBOX_ATTEMPTS,
   OutboxEvent,
 } from '../../../../domain/entities/outbox-event.entity';
-import { OutboxEventTypeOrmEntity } from '../entities/outbox-event.typeorm-entity';
+import { OutboxEventTypeOrmEntity } from '../entities/outbox-event.typeorm.entity';
 import { OutboxEventRelationalRepository } from './outbox-event.relational-repository';
 
 const SHOULD_RUN = process.env.INTEGRATION_DB === '1';

@@ -330,6 +330,11 @@ class FakeGuardianRepo extends ChildGuardianRepository {
   ): Promise<ChildGuardian | null> {
     return Promise.resolve(null);
   }
+  findApprovedActiveByUserIdCrossTenant(
+    _userId: string,
+  ): Promise<ChildGuardian[]> {
+    return Promise.resolve([]);
+  }
 }
 
 class FakeGroupRepo extends GroupRepository {
@@ -371,6 +376,9 @@ class FakeGroupRepo extends GroupRepository {
     return Promise.resolve(null);
   }
   listMentorHistory(): Promise<GroupMentor[]> {
+    return Promise.resolve([]);
+  }
+  findActiveMentorAssignmentsByUserIdCrossTenant(): Promise<GroupMentor[]> {
     return Promise.resolve([]);
   }
 }

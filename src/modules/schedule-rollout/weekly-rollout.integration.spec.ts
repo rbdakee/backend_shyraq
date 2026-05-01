@@ -277,6 +277,7 @@ describeIntegration('WeeklyRolloutService — integration', () => {
     );
     const groupRepo: GroupRepository = new GroupRelationalRepository(
       dataSource.getRepository(GroupEntity),
+      dataSource,
     );
     const childRepo: ChildRepository = new ChildRelationalRepository(
       dataSource.getRepository(ChildEntity),

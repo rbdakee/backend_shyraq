@@ -202,6 +202,11 @@ class FakeGroupRepo extends GroupRepository {
       .sort((a, b) => b.assignedAt.getTime() - a.assignedAt.getTime());
     return Promise.resolve(items);
   }
+  findActiveMentorAssignmentsByUserIdCrossTenant(
+    _userId: string,
+  ): Promise<GroupMentor[]> {
+    return Promise.resolve([]);
+  }
 }
 
 class FakeLocationRepo extends LocationRepository {

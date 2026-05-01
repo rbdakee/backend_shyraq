@@ -260,6 +260,11 @@ class FakeGroupRepo extends GroupRepository {
   listMentorHistory(_kg: string, _gid: string): Promise<GroupMentor[]> {
     throw new Error('not used');
   }
+  findActiveMentorAssignmentsByUserIdCrossTenant(
+    _userId: string,
+  ): Promise<GroupMentor[]> {
+    throw new Error('not used');
+  }
 }
 
 interface CreateChildCall {

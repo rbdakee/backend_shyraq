@@ -342,6 +342,11 @@ class FakeGuardianRepo extends ChildGuardianRepository {
       }) ?? null;
     return Promise.resolve(r);
   }
+  findApprovedActiveByUserIdCrossTenant(
+    _userId: string,
+  ): Promise<ChildGuardian[]> {
+    return Promise.resolve([]);
+  }
 }
 
 class FakeStaffRepo extends StaffMemberRepository {

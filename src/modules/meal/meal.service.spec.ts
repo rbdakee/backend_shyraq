@@ -215,6 +215,11 @@ class FakeGroupRepository extends GroupRepository {
   listMentorHistory(_kgId: string, _gId: string): Promise<GroupMentor[]> {
     return Promise.resolve([]);
   }
+  findActiveMentorAssignmentsByUserIdCrossTenant(
+    _userId: string,
+  ): Promise<GroupMentor[]> {
+    return Promise.resolve([]);
+  }
 }
 
 class FakeChildRepository extends ChildRepository {

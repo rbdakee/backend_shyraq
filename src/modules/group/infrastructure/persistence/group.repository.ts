@@ -81,4 +81,17 @@ export abstract class GroupRepository {
     kindergartenId: string,
     groupId: string,
   ): Promise<GroupMentor[]>;
+
+  /**
+   * Cross-tenant lookup of every currently-active group_mentors row whose
+   * `staff_member_id` resolves to a `staff_members` row with the given
+   * `user_id`. Used by the WS auto-subscribe handler to enumerate the
+   * `group:{gid}` rooms a freshly-connected staff socket should join,
+   * regardless of which kindergarten(s) the user staffs.
+   *
+   * Bypasses RLS via `app.bypass_rls=true` inside its own transaction.
+   */
+  abstract findActiveMentorAssignmentsByUserIdCrossTenant(
+    userId: string,
+  ): Promise<GroupMentor[]>;
 }

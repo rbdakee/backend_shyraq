@@ -1,6 +1,11 @@
 import { Injectable } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { EntityManager, QueryFailedError, Repository } from 'typeorm';
+import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
+import {
+  DataSource,
+  EntityManager,
+  QueryFailedError,
+  Repository,
+} from 'typeorm';
 import { tenantStorage } from '@/database/tenant-storage';
 import { Group } from '../../../../domain/entities/group.entity';
 import { GroupMentor } from '../../../../domain/entities/group-mentor.entity';
@@ -27,6 +32,7 @@ export class GroupRelationalRepository extends GroupRepository {
   constructor(
     @InjectRepository(GroupEntity)
     private readonly repo: Repository<GroupEntity>,
+    @InjectDataSource() private readonly dataSource: DataSource,
   ) {
     super();
   }
@@ -218,6 +224,27 @@ export class GroupRelationalRepository extends GroupRepository {
       .orderBy('m.assigned_at', 'DESC')
       .getMany();
     return rows.map((r) => GroupMentorMapper.toDomain(r));
+  }
+
+  async findActiveMentorAssignmentsByUserIdCrossTenant(
+    userId: string,
+  ): Promise<GroupMentor[]> {
+    return this.dataSource.transaction(async (manager) => {
+      await manager.query(`SET LOCAL app.bypass_rls = 'true'`);
+      const rows = await manager
+        .getRepository(GroupMentorEntity)
+        .createQueryBuilder('m')
+        .innerJoin(
+          'staff_members',
+          's',
+          's.id = m.staff_member_id AND s.user_id = :uid',
+          { uid: userId },
+        )
+        .where('m.unassigned_at IS NULL')
+        .orderBy('m.assigned_at', 'ASC')
+        .getMany();
+      return rows.map((r) => GroupMentorMapper.toDomain(r));
+    });
   }
 
   private manager(): EntityManager {

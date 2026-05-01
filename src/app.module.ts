@@ -30,6 +30,7 @@ import { ScheduleModule } from './modules/schedule/schedule.module';
 import { ScheduleRolloutModule } from './modules/schedule-rollout/schedule-rollout.module';
 import { StaffModule } from './modules/staff/staff.module';
 import { UsersModule } from './modules/users/users.module';
+import { WebsocketModule } from './websocket/websocket.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { KindergartenScopeGuard } from './common/guards/kindergarten-scope.guard';
 import { PendingRoleSelectGuard } from './common/guards/pending-role-select.guard';
@@ -91,6 +92,7 @@ const resolveI18nPath = (): string => {
     GroupModule,
     CameraModule,
     ChildModule,
+    WebsocketModule,
     NotificationModule,
     EnrollmentModule,
     MealModule,

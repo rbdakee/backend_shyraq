@@ -6,7 +6,7 @@ import {
   NotificationCreateInput,
   NotificationRepository,
 } from '../../../../notification.repository';
-import { NotificationTypeOrmEntity } from '../entities/notification.typeorm-entity';
+import { NotificationTypeOrmEntity } from '../entities/notification.typeorm.entity';
 
 @Injectable()
 export class NotificationRelationalRepository extends NotificationRepository {

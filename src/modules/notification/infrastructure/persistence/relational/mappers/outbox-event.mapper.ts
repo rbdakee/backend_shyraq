@@ -1,5 +1,5 @@
 import { OutboxEvent } from '../../../../domain/entities/outbox-event.entity';
-import { OutboxEventTypeOrmEntity } from '../entities/outbox-event.typeorm-entity';
+import { OutboxEventTypeOrmEntity } from '../entities/outbox-event.typeorm.entity';
 
 export class OutboxEventMapper {
   static toDomain(row: OutboxEventTypeOrmEntity): OutboxEvent {

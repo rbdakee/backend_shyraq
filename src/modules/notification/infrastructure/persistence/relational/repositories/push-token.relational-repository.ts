@@ -5,7 +5,7 @@ import {
   PushTokenRepository,
   PushTokenSummary,
 } from '../../../../push-token.repository';
-import { PushTokenTypeOrmEntity } from '../entities/push-token.typeorm-entity';
+import { PushTokenTypeOrmEntity } from '../entities/push-token.typeorm.entity';
 
 @Injectable()
 export class PushTokenRelationalRepository extends PushTokenRepository {

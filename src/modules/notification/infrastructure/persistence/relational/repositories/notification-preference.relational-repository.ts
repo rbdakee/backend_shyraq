@@ -5,7 +5,7 @@ import {
   NotificationPreferenceFlags,
   NotificationPreferenceRepository,
 } from '../../../../notification-preference.repository';
-import { NotificationPreferenceTypeOrmEntity } from '../entities/notification-preference.typeorm-entity';
+import { NotificationPreferenceTypeOrmEntity } from '../entities/notification-preference.typeorm.entity';
 
 @Injectable()
 export class NotificationPreferenceRelationalRepository extends NotificationPreferenceRepository {

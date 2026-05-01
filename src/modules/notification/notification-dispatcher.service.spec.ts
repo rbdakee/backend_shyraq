@@ -90,6 +90,9 @@ class FakeGuardianRepo
   findApprovedActivePickupGuardian(): Promise<ChildGuardian | null> {
     return Promise.resolve(null);
   }
+  findApprovedActiveByUserIdCrossTenant(): Promise<ChildGuardian[]> {
+    return Promise.resolve([]);
+  }
 }
 
 class FakePreferenceRepo extends NotificationPreferenceRepository {

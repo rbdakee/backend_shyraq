@@ -191,6 +191,7 @@ describeIntegration('EnrollmentService — service-integration', () => {
     );
     const groupRepo = new GroupRelationalRepository(
       dataSource.getRepository(GroupEntity),
+      dataSource,
     );
     const staffRepo = new StaffMemberRelationalRepository(
       dataSource.getRepository(StaffMemberEntity),
@@ -221,6 +222,7 @@ describeIntegration('EnrollmentService — service-integration', () => {
     );
     const groupRepo = new GroupRelationalRepository(
       dataSource.getRepository(GroupEntity),
+      dataSource,
     );
     const staffRepo = new StaffMemberRelationalRepository(
       dataSource.getRepository(StaffMemberEntity),
