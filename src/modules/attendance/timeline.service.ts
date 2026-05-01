@@ -52,9 +52,10 @@ export interface TimelineEntryOpts {
  *     (`recorded_by = callerStaffMemberId`). Admins bypass. Enforced via
  *     `TimelineEntry.assertEditableBy()`.
  *
- * Post-commit notification (createEntry only):
- *   Fire-and-forget after the ambient TX commits. Mirror of AttendanceService
- *   pattern (Promise.resolve().then(notify).catch(swallow)).
+ * Outbox notification (createEntry only):
+ *   Awaited inside the ambient TX so the outbox row is committed atomically
+ *   with the timeline row. OutboxNotificationAdapter uses the request-level
+ *   EntityManager from tenantStorage.
  *
  * Ambient TX:
  *   Service does NOT open its own `dataSource.transaction()` — relies on the
@@ -115,17 +116,15 @@ export class TimelineService {
       ),
     );
 
-    // Post-commit notification — fire-and-forget.
-    this.fireAndForget(() =>
-      this.notifications.notifyTimelineEntryCreated({
-        kindergartenId,
-        childId,
-        entryId: entry.id,
-        entryType: entry.entryType.value,
-        entryTime: entry.entryTime,
-        recordedByStaffMemberId: entry.recordedBy,
-      }),
-    );
+    // Outbox notification — atomic with the timeline write (same TX).
+    await this.notifications.notifyTimelineEntryCreated({
+      kindergartenId,
+      childId,
+      entryId: entry.id,
+      entryType: entry.entryType.value,
+      entryTime: entry.entryTime,
+      recordedByStaffMemberId: entry.recordedBy,
+    });
 
     return entry;
   }
@@ -232,21 +231,6 @@ export class TimelineService {
       throw new TimelineEntryNotFoundError(entryId);
     }
     return entry;
-  }
-
-  /**
-   * Scheduled on a microtask. The dispatch may run before the TypeORM commit
-   * completes; the LoggingNotificationAdapter is sync-safe today. B9 will
-   * need a real post-commit hook (queryRunner.afterCommit / Outbox) before
-   * WS fanout. Errors are swallowed — notifications must never break the
-   * user-facing flow.
-   */
-  private fireAndForget(work: () => Promise<void>): void {
-    Promise.resolve()
-      .then(() => work())
-      .catch(() => {
-        /* swallow — notifications must never break the user-facing flow */
-      });
   }
 
   /**

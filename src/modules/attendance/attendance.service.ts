@@ -78,19 +78,14 @@ export interface PatchEventOpts {
  *   timeline_entries + UPSERT child_daily_status sequence is atomic without
  *   any wrapping here.
  *
- * Post-commit notifications:
- *   Each public method captures the event payload AFTER the repo writes
- *   complete and BEFORE returning. Because the ambient TX wraps the whole
- *   handler (interceptor commits on resolve, rolls back on throw), calling
- *   the NotificationPort from inside the service body still happens inside
- *   the TX. To keep notifications outside the TX (so a slow logger or a
- *   broken adapter cannot rollback the audit row), we defer the notify call
- *   onto a microtask via `Promise.resolve().then(...)` and swallow any
- *   error — fire-and-forget. Service.ts callers do not `await` the
- *   notification.
- *
- *   This pattern matches the post-commit dispatch in B7 ScheduleService and
- *   the B7 T7 review fixes (see commit b27b5dc).
+ * Post-commit notifications (B9 outbox):
+ *   Each public method awaits the NotificationPort call inside the same
+ *   ambient TX that wraps the handler. `OutboxNotificationAdapter` writes a
+ *   row to `notification_outbox` via the request-scoped EntityManager from
+ *   `tenantStorage`, so the outbox row is committed atomically with the
+ *   business mutation. If the mutation rolls back the outbox row rolls back
+ *   too — no phantom events. The worker process later fans the outbox row
+ *   out to WS + push.
  *
  * Per-method side-effects:
  *   checkIn         — INSERT event + timeline; UPSERT daily_status if
@@ -196,26 +191,22 @@ export class AttendanceService {
       dailyStatus = await this.dailyStatusRepo.save(kindergartenId, existing);
     }
 
-    // 4) post-commit notification (fire-and-forget, never awaited inside TX).
-    this.fireAndForget(() =>
-      this.notifications.notifyAttendanceCheckIn({
-        kindergartenId,
-        childId,
-        eventId: event.id,
-        recordedAt: event.recordedAt,
-        recordedByStaffMemberId: event.recordedBy,
-      }),
-    );
-    this.fireAndForget(() =>
-      this.notifications.notifyTimelineEntryCreated({
-        kindergartenId,
-        childId,
-        entryId: timeline.id,
-        entryType: timeline.entryType.value,
-        entryTime: timeline.entryTime,
-        recordedByStaffMemberId: timeline.recordedBy,
-      }),
-    );
+    // 4) outbox notification — atomic with the attendance write (same TX).
+    await this.notifications.notifyAttendanceCheckIn({
+      kindergartenId,
+      childId,
+      eventId: event.id,
+      recordedAt: event.recordedAt,
+      recordedByStaffMemberId: event.recordedBy,
+    });
+    await this.notifications.notifyTimelineEntryCreated({
+      kindergartenId,
+      childId,
+      entryId: timeline.id,
+      entryType: timeline.entryType.value,
+      entryTime: timeline.entryTime,
+      recordedByStaffMemberId: timeline.recordedBy,
+    });
 
     return { event, dailyStatus, timelineEntry: timeline };
   }
@@ -278,27 +269,23 @@ export class AttendanceService {
     // Per spec: check_out does NOT mutate child_daily_status. The intra-day
     // status only flips on check_in or via explicit setDailyStatus.
 
-    this.fireAndForget(() =>
-      this.notifications.notifyAttendanceCheckOut({
-        kindergartenId,
-        childId,
-        eventId: event.id,
-        recordedAt: event.recordedAt,
-        recordedByStaffMemberId: event.recordedBy,
-        pickupUserId,
-        pickupRequestId: null,
-      }),
-    );
-    this.fireAndForget(() =>
-      this.notifications.notifyTimelineEntryCreated({
-        kindergartenId,
-        childId,
-        entryId: timeline.id,
-        entryType: timeline.entryType.value,
-        entryTime: timeline.entryTime,
-        recordedByStaffMemberId: timeline.recordedBy,
-      }),
-    );
+    await this.notifications.notifyAttendanceCheckOut({
+      kindergartenId,
+      childId,
+      eventId: event.id,
+      recordedAt: event.recordedAt,
+      recordedByStaffMemberId: event.recordedBy,
+      pickupUserId,
+      pickupRequestId: null,
+    });
+    await this.notifications.notifyTimelineEntryCreated({
+      kindergartenId,
+      childId,
+      entryId: timeline.id,
+      entryType: timeline.entryType.value,
+      entryTime: timeline.entryTime,
+      recordedByStaffMemberId: timeline.recordedBy,
+    });
 
     return { event, dailyStatus: null, timelineEntry: timeline };
   }
@@ -394,15 +381,13 @@ export class AttendanceService {
       ),
     );
 
-    this.fireAndForget(() =>
-      this.notifications.notifyDailyStatusChanged({
-        kindergartenId,
-        childId: input.childId,
-        date: input.date,
-        status: status.value,
-        setByStaffMemberId: staff,
-      }),
-    );
+    await this.notifications.notifyDailyStatusChanged({
+      kindergartenId,
+      childId: input.childId,
+      date: input.date,
+      status: status.value,
+      setByStaffMemberId: staff,
+    });
 
     return upserted;
   }
@@ -575,22 +560,6 @@ export class AttendanceService {
     if (guardian === null) {
       throw new PickupUserNotAllowedError(childId, pickupUserId);
     }
-  }
-
-  /**
-   * Scheduled on a microtask. The dispatch may run before the TypeORM commit
-   * completes; the LoggingNotificationAdapter is sync-safe today. B9 will
-   * need a real post-commit hook (queryRunner.afterCommit / Outbox) before
-   * WS fanout. Errors are swallowed — notifications must never break the
-   * user-facing flow. Mirrors the pattern used by the B7 services after the
-   * T7 review (commit b27b5dc).
-   */
-  private fireAndForget(work: () => Promise<void>): void {
-    Promise.resolve()
-      .then(() => work())
-      .catch(() => {
-        /* swallow — notifications must never break the user-facing flow */
-      });
   }
 
   /**

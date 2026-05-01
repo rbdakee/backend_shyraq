@@ -57,6 +57,7 @@ import {
 } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
 import { ChildGuardian } from '@/modules/child/domain/entities/child-guardian.entity';
 import { ChildGuardianRepository } from '@/modules/child/infrastructure/persistence/child-guardian.repository';
+import { NotificationPort } from '@/common/notifications/notification.port';
 
 class FixedClock implements ClockPort {
   constructor(private readonly fixed: Date) {}
@@ -432,6 +433,59 @@ class FakeGuardianRepo extends ChildGuardianRepository {
   }
 }
 
+class FakeNotificationPort extends NotificationPort {
+  approved: {
+    kindergartenId: string;
+    childId: string;
+    guardianUserId: string;
+  }[] = [];
+
+  notifyGuardianApproved(e: {
+    kindergartenId: string;
+    childId: string;
+    guardianUserId: string;
+    approvedBy: string;
+    hasApprovalRights: boolean;
+  }): Promise<void> {
+    this.approved.push({
+      kindergartenId: e.kindergartenId,
+      childId: e.childId,
+      guardianUserId: e.guardianUserId,
+    });
+    return Promise.resolve();
+  }
+  notifyGuardianPendingApproval(): Promise<void> {
+    return Promise.resolve();
+  }
+  notifyGuardianRejected(): Promise<void> {
+    return Promise.resolve();
+  }
+  notifyGuardianRevoked(): Promise<void> {
+    return Promise.resolve();
+  }
+  notifyGuardianSelfRevoked(): Promise<void> {
+    return Promise.resolve();
+  }
+  notifyChildTransferred(): Promise<void> {
+    return Promise.resolve();
+  }
+  notifyPermissionsUpdated(): Promise<void> {
+    return Promise.resolve();
+  }
+  notifyAttendanceCheckIn(): Promise<void> {
+    return Promise.resolve();
+  }
+  notifyAttendanceCheckOut(): Promise<void> {
+    return Promise.resolve();
+  }
+  notifyDailyStatusChanged(): Promise<void> {
+    return Promise.resolve();
+  }
+  notifyTimelineEntryCreated(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
 /**
  * Minimal stub of TypeORM DataSource. AuthService.autoApprovePendingPrimaries
  * uses `dataSource.transaction(cb)` to scope each pending-primary update
@@ -460,6 +514,7 @@ interface AuthDeps {
   blocklist: FakeBlocklist;
   staffRepo: FakeStaffRepo;
   guardianRepo: FakeGuardianRepo;
+  notifications: FakeNotificationPort;
 }
 
 function build(): AuthDeps {
@@ -474,6 +529,7 @@ function build(): AuthDeps {
   const blocklist = new FakeBlocklist();
   const staffRepo = new FakeStaffRepo();
   const guardianRepo = new FakeGuardianRepo();
+  const notifications = new FakeNotificationPort();
   const config = new ConfigService<Record<string, unknown>>({
     auth: {
       jwtAccessSecret: 'test-secret-test-secret-test',
@@ -505,6 +561,7 @@ function build(): AuthDeps {
     staffRepo,
     guardianRepo,
     fakeDataSource,
+    notifications,
   );
   service.onModuleInit();
   return {
@@ -520,6 +577,7 @@ function build(): AuthDeps {
     blocklist,
     staffRepo,
     guardianRepo,
+    notifications,
   };
 }
 
@@ -789,6 +847,46 @@ describe('AuthService', () => {
       // Should remain in its original (approved) state — no idempotent retouch.
       const after = guardianRepo.guardians.get(approved.id);
       expect(after?.status.value).toBe('approved');
+    });
+
+    it('emits notifyGuardianApproved for each auto-approved primary', async () => {
+      const deps = build();
+      seedUuidUser(deps);
+      const { service, otpStore, guardianRepo, notifications } = deps;
+      await otpStore.storeCode(PHONE, '123456', 300);
+      seedPendingPrimary(guardianRepo, {
+        id: '77777777-7777-7777-7777-777777777777',
+        userId: USER_ID,
+        kindergartenId: KG_A,
+        childId: CHILD_A,
+      });
+      seedPendingPrimary(guardianRepo, {
+        id: '88888888-8888-8888-8888-888888888888',
+        userId: USER_ID,
+        kindergartenId: KG_B,
+        childId: CHILD_B,
+      });
+
+      await service.verifyOtp({ phone: PHONE, code: '123456' });
+
+      expect(notifications.approved).toHaveLength(2);
+      expect(notifications.approved.map((e) => e.kindergartenId)).toEqual(
+        expect.arrayContaining([KG_A, KG_B]),
+      );
+      expect(notifications.approved.map((e) => e.guardianUserId)).toEqual(
+        expect.arrayContaining([USER_ID, USER_ID]),
+      );
+    });
+
+    it('does not emit notifyGuardianApproved when there are no pending-primaries', async () => {
+      const deps = build();
+      seedUuidUser(deps);
+      const { service, otpStore, notifications } = deps;
+      await otpStore.storeCode(PHONE, '123456', 300);
+
+      await service.verifyOtp({ phone: PHONE, code: '123456' });
+
+      expect(notifications.approved).toHaveLength(0);
     });
   });
 

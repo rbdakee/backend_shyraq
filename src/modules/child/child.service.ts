@@ -716,10 +716,15 @@ export class ChildService {
     if (!guardian || !guardian.status.equals(GuardianStatus.APPROVED)) {
       throw new ChildAccessDeniedError(callerUserId, childId);
     }
-    guardian.revokeBySelf(this.clock.now());
+    const revokedAt = this.clock.now();
+    guardian.revokeBySelf(revokedAt);
     await this.guardians.update(guardian);
-    // TODO(B9): emit guardian.self-revoked notification to the approved
-    //           primary so the parent app surfaces the change in real time.
+    await this.notification.notifyGuardianSelfRevoked({
+      kindergartenId,
+      childId,
+      userId: callerUserId,
+      revokedAt,
+    });
   }
 
   async toggleGuardianApprovalRights(

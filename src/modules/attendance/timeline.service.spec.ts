@@ -306,10 +306,10 @@ function wire(): Wired {
   return { service, timelineRepo, childRepo, staffRepo, notifications, clock };
 }
 
-/** Wait for fire-and-forget microtasks to settle. */
+/** No-op helper kept for test readability — notifications are now synchronous
+ * awaits inside the service, so there is no microtask to flush. */
 async function flushMicrotasks(): Promise<void> {
-  await Promise.resolve();
-  await Promise.resolve();
+  // intentionally empty — notifications are synchronous outbox writes now
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────

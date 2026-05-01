@@ -36,6 +36,7 @@ import { SaasRefreshTokenRepository } from './infrastructure/persistence/saas-re
 import { SaasUserRepository } from './infrastructure/persistence/saas-user.repository';
 import { SmsPort } from './sms.port';
 import { TokenBlocklistPort } from './token-blocklist.port';
+import { NotificationPort } from '@/common/notifications/notification.port';
 import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
 import { ChildGuardianRepository } from '@/modules/child/infrastructure/persistence/child-guardian.repository';
 
@@ -135,6 +136,8 @@ export class AuthService implements OnModuleInit {
     private readonly staff: StaffMemberRepository,
     private readonly guardians: ChildGuardianRepository,
     @InjectDataSource() private readonly dataSource: DataSource,
+    @Inject(NotificationPort)
+    private readonly notifications: NotificationPort,
   ) {}
 
   onModuleInit(): void {
@@ -645,9 +648,13 @@ export class AuthService implements OnModuleInit {
           async () => {
             guardian.autoApproveAsPrimary(now);
             await this.guardians.update(guardian);
-            // TODO(B9): emit notifyGuardianApproved self-event once WS routing
-            // lands so the parent UI updates without a manual refresh.
-            // See IMPLEMENTATION_PLAN.md §5 Active.
+            await this.notifications.notifyGuardianApproved({
+              kindergartenId: kgId,
+              childId: guardian.childId,
+              guardianUserId: guardian.userId,
+              approvedBy: guardian.userId,
+              hasApprovalRights: guardian.hasApprovalRights,
+            });
           },
         );
       });

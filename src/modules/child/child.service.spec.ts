@@ -1311,6 +1311,26 @@ describe('ChildService — selfUnlinkFromChild', () => {
     expect(after?.revokedAt).toEqual(NOW);
   });
 
+  it('emits notifyGuardianSelfRevoked with correct payload', async () => {
+    const ctx = await bootApprovedSecondary();
+    const { service, notification } = ctx.setup;
+    await service.selfUnlinkFromChild(KG, ctx.secondaryUserId, ctx.childId);
+    const selfRevokedEvents = notification.events.filter(
+      (e) => e.type === 'guardian_self_revoked',
+    );
+    expect(selfRevokedEvents).toHaveLength(1);
+    const payload = selfRevokedEvents[0].payload as {
+      kindergartenId: string;
+      childId: string;
+      userId: string;
+      revokedAt: Date;
+    };
+    expect(payload.kindergartenId).toBe(KG);
+    expect(payload.childId).toBe(ctx.childId);
+    expect(payload.userId).toBe(ctx.secondaryUserId);
+    expect(payload.revokedAt).toEqual(NOW);
+  });
+
   it('revokes an approved nanny guardian', async () => {
     const ctx = await bootApprovedSecondary();
     const { service, guardians } = ctx.setup;

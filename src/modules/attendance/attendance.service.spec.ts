@@ -553,11 +553,11 @@ function wire(): Wired {
   };
 }
 
-/** Wait for fire-and-forget microtasks (Promise.resolve().then(notify))
- * to settle so test assertions on the FakeNotificationPort are stable. */
+/** No-op helper kept for test readability — notifications are now synchronous
+ * awaits inside the service, so there is no microtask to flush. Kept so that
+ * tests can still call it without changes (it resolves immediately). */
 async function flushMicrotasks(): Promise<void> {
-  await Promise.resolve();
-  await Promise.resolve();
+  // intentionally empty — notifications are synchronous outbox writes now
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────
