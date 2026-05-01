@@ -19,6 +19,10 @@ import { NotificationPreferenceRepository } from './notification-preference.repo
 import { NotificationRepository } from './notification.repository';
 import { OutboxEventRepository } from './outbox-event.repository';
 import { PushTokenRepository } from './push-token.repository';
+import { NotificationService } from './notification.service';
+import { PushTokenController } from './push-token.controller';
+import { NotificationController } from './notification.controller';
+import { NotificationPreferencesController } from './notification-preferences.controller';
 
 /**
  * Picks the push adapter based on `process.env.PUSH_PROVIDER`. Defaults to
@@ -64,6 +68,11 @@ function pushPortProvider(): Provider {
     // processes — only the underlying `SocketIoServerProvider` differs.
     // Unit tests inject their own fake via `Test.overrideProvider`.
   ],
+  controllers: [
+    PushTokenController,
+    NotificationController,
+    NotificationPreferencesController,
+  ],
   providers: [
     // Repositories.
     {
@@ -85,8 +94,9 @@ function pushPortProvider(): Provider {
       useClass: OutboxNotificationAdapter,
     },
     pushPortProvider(),
-    // Service.
+    // Services.
     NotificationDispatcher,
+    NotificationService,
   ],
   exports: [
     OutboxEventRepository,
@@ -96,6 +106,7 @@ function pushPortProvider(): Provider {
     NotificationPort,
     PushNotificationPort,
     NotificationDispatcher,
+    NotificationService,
   ],
 })
 export class NotificationModule {}

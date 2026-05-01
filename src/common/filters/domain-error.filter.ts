@@ -50,6 +50,9 @@ import { InvalidTimelineEntryTypeError } from '@/modules/attendance/domain/error
 import { PickupUserNotAllowedError } from '@/modules/attendance/domain/errors/pickup-user-not-allowed.error';
 import { TimelineEntryNotAuthorError } from '@/modules/attendance/domain/errors/timeline-entry-not-author.error';
 import { TimelineEntryNotFoundError } from '@/modules/attendance/domain/errors/timeline-entry-not-found.error';
+import { InvalidEventKeyError } from '@/modules/notification/domain/errors/invalid-event-key.error';
+import { NotificationNotFoundError } from '@/modules/notification/domain/errors/notification-not-found.error';
+import { PushTokenNotFoundError } from '@/modules/notification/domain/errors/push-token-not-found.error';
 
 /**
  * Single source of truth for mapping AuthService / UsersService domain errors
@@ -144,6 +147,10 @@ export class DomainErrorFilter implements ExceptionFilter {
       return HttpStatus.UNPROCESSABLE_ENTITY;
     if (err instanceof InvalidTimelineEntryTypeError)
       return HttpStatus.UNPROCESSABLE_ENTITY;
+    // B9 Notifications
+    if (err instanceof NotificationNotFoundError) return HttpStatus.NOT_FOUND;
+    if (err instanceof PushTokenNotFoundError) return HttpStatus.NOT_FOUND;
+    if (err instanceof InvalidEventKeyError) return HttpStatus.BAD_REQUEST;
     if (err instanceof KindergartenNotFoundError) return HttpStatus.NOT_FOUND;
     if (err instanceof NotFoundError) return HttpStatus.NOT_FOUND;
     if (err instanceof ConflictError) return HttpStatus.CONFLICT;

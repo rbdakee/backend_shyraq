@@ -13,14 +13,22 @@ import {
 import { OutboxEvent } from './domain/entities/outbox-event.entity';
 import { NotificationDispatcher } from './notification-dispatcher.service';
 import {
+  NotificationPreference,
   NotificationPreferenceFlags,
   NotificationPreferenceRepository,
+  UpsertPreferenceItem,
 } from './notification-preference.repository';
 import {
   NotificationCreateInput,
   NotificationRepository,
+  NotificationRow,
 } from './notification.repository';
-import { PushTokenRepository, PushTokenSummary } from './push-token.repository';
+import {
+  PushToken,
+  PushTokenRepository,
+  PushTokenSummary,
+  PushTokenUpsertInput,
+} from './push-token.repository';
 import { WsBroadcaster } from './ws-broadcaster.port';
 
 const KG = '11111111-1111-1111-1111-111111111111';
@@ -113,6 +121,18 @@ class FakePreferenceRepo extends NotificationPreferenceRepository {
     }
     return Promise.resolve(m);
   }
+
+  // Stubs for T7 methods — not exercised by dispatcher tests.
+  listForUser(): Promise<NotificationPreference[]> {
+    return Promise.resolve([]);
+  }
+
+  upsertMany(
+    _userId: string,
+    _items: UpsertPreferenceItem[],
+  ): Promise<NotificationPreference[]> {
+    return Promise.resolve([]);
+  }
 }
 
 class FakePushTokenRepo extends PushTokenRepository {
@@ -130,6 +150,15 @@ class FakePushTokenRepo extends PushTokenRepository {
     }
     return Promise.resolve(out);
   }
+
+  // Stubs for T7 methods — not exercised by dispatcher tests.
+  upsert(_input: PushTokenUpsertInput): Promise<PushToken> {
+    return Promise.reject(new Error('not implemented'));
+  }
+
+  deleteByIdAndUserId(_id: string, _userId: string): Promise<boolean> {
+    return Promise.resolve(false);
+  }
 }
 
 class FakeNotificationRepo extends NotificationRepository {
@@ -143,6 +172,19 @@ class FakeNotificationRepo extends NotificationRepository {
     }
     this.rows.push(...rows);
     return Promise.resolve();
+  }
+
+  // Stubs for T7 methods — not exercised by dispatcher tests.
+  listForUser(): Promise<NotificationRow[]> {
+    return Promise.resolve([]);
+  }
+
+  markRead(): Promise<NotificationRow | null> {
+    return Promise.resolve(null);
+  }
+
+  markAllRead(): Promise<number> {
+    return Promise.resolve(0);
   }
 }
 
