@@ -77,9 +77,11 @@ const resolveI18nPath = (): string => {
       inject: [ConfigService],
     }),
     // @nestjs/schedule enables the @Cron decorator pickup at app bootstrap.
-    // Required by `WeeklyRolloutCron` in `ScheduleRolloutModule`. Renamed
-    // import to NestScheduleModule because our business `ScheduleModule`
-    // already owns that name.
+    // After B9 T6, the weekly-rollout cron migrated to BullMQ (worker
+    // process); no api-side @Cron handlers remain. The module is kept as a
+    // placeholder so future api-resident timers can register without an
+    // app-level wiring change. Renamed import to NestScheduleModule because
+    // our business `ScheduleModule` already owns that name.
     NestScheduleModule.forRoot(),
     SharedKernelModule,
     RedisModule,

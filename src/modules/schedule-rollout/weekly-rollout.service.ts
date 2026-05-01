@@ -58,8 +58,9 @@ const UUID_RE =
  * WeeklyRolloutService — orchestrates the schedule + meal weekly auto-copy
  * for ALL active kindergartens (T5 in B7).
  *
- * Cron path lives in `WeeklyRolloutCron`; this service is the single
- * entrypoint shared by cron and the admin manual-trigger endpoint.
+ * Cron path lives in `WeeklyRolloutProcessor` (BullMQ, worker process); this
+ * service is the single entrypoint shared by the worker job and the admin
+ * manual-trigger endpoint.
  *
  * RLS context (Variant A from the T5 brief):
  *   The cron handler runs OUTSIDE the HTTP pipeline, so neither
@@ -84,10 +85,11 @@ const UUID_RE =
  *   pinned to that kg's summary entry, and the rollout proceeds to the
  *   next kg. The whole batch never aborts on a single-kg failure.
  *
- * TODO(B9): move cron to dedicated worker process when BullMQ split lands.
- *   When the api / worker / ws process split happens in B9, this service's
- *   cron driver should move into the worker process and likely sit behind
- *   a BullMQ "weekly-rollout" queue with a single scheduled producer.
+ * B9 T6: the recurring cron driver lives in the worker process now
+ * (`WeeklyRolloutProcessor` on the BullMQ `schedule-rollout` queue). The
+ * api process still calls this service directly from the manual-trigger
+ * admin endpoint — both paths converge on `runWeeklyRollout` so the
+ * orchestration logic exists in exactly one place.
  */
 @Injectable()
 export class WeeklyRolloutService {

@@ -5,7 +5,6 @@ import { ChildModule } from '@/modules/child/child.module';
 import { PushNotificationPort } from '@/shared-kernel/domain/push-notification.port';
 import { FcmPushAdapter } from '@/shared-kernel/infrastructure/adapters/fcm-push.adapter';
 import { MockPushAdapter } from '@/shared-kernel/infrastructure/adapters/mock-push.adapter';
-import { WebsocketModule } from '@/websocket/websocket.module';
 import { NotificationTypeOrmEntity } from './infrastructure/persistence/relational/entities/notification.typeorm.entity';
 import { NotificationPreferenceTypeOrmEntity } from './infrastructure/persistence/relational/entities/notification-preference.typeorm.entity';
 import { OutboxEventTypeOrmEntity } from './infrastructure/persistence/relational/entities/outbox-event.typeorm.entity';
@@ -56,10 +55,14 @@ function pushPortProvider(): Provider {
       PushTokenTypeOrmEntity,
     ]),
     ChildModule,
-    // WebsocketModule provides + exports the production WsBroadcaster
-    // (SocketIoWsBroadcaster). T4's NoopWsBroadcaster has been retired;
-    // unit tests inject their own fake via Test.overrideProvider.
-    WebsocketModule,
+    // `WsBroadcaster` is provided globally by the process-side websocket
+    // module: api uses `WebsocketModule` (imported by `AppModule`,
+    // `@Global()` so its `WsBroadcaster` export reaches the dispatcher);
+    // worker uses `WorkerWebsocketModule` (imported by `WorkerModule`,
+    // also `@Global()`). The dispatcher's `WsBroadcaster` injection
+    // resolves to the same `SocketIoWsBroadcaster` impl in both
+    // processes — only the underlying `SocketIoServerProvider` differs.
+    // Unit tests inject their own fake via `Test.overrideProvider`.
   ],
   providers: [
     // Repositories.
@@ -92,11 +95,6 @@ function pushPortProvider(): Provider {
     PushTokenRepository,
     NotificationPort,
     PushNotificationPort,
-    // Re-export WebsocketModule so consumers that import NotificationModule
-    // (or pull NotificationDispatcher via the @Global() registration) also
-    // resolve `WsBroadcaster` and the gateway without having to import
-    // WebsocketModule explicitly.
-    WebsocketModule,
     NotificationDispatcher,
   ],
 })
