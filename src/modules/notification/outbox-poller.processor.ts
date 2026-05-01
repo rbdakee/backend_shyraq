@@ -3,6 +3,7 @@ import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
 import { DataSource } from 'typeorm';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { tenantStorage } from '@/database/tenant-storage';
 import { defaultBackoff } from './domain/entities/outbox-event.entity';
 import { NotificationDispatcher } from './notification-dispatcher.service';
 import { OutboxEventRepository } from './outbox-event.repository';
@@ -55,6 +56,13 @@ export const OUTBOX_BATCH_SIZE = 50;
  * the rest of the batch. This is the only place in the worker where a
  * dispatcher exception is caught — anywhere upstream a throw will roll the
  * whole TX back.
+ *
+ * RLS isolation: all repositories called inside `dispatcher.dispatch(event)`
+ * must participate in the TX that already has `SET LOCAL app.bypass_rls =
+ * 'true'` applied. We propagate the TX manager via `tenantStorage.run()` so
+ * that the `manager()` helper in every relational repository resolves to the
+ * bypass-TX manager rather than pulling a fresh pool connection that has no
+ * GUC set.
  */
 @Processor(OUTBOX_POLLER_QUEUE)
 export class OutboxPollerProcessor extends WorkerHost {
@@ -82,44 +90,53 @@ export class OutboxPollerProcessor extends WorkerHost {
       );
       if (events.length === 0) return;
 
-      for (const event of events) {
-        try {
-          const result = await this.dispatcher.dispatch(event);
-          if (result.status === 'dispatched') {
-            await this.outboxRepo.markDispatched(manager, event.id!, now);
-            continue;
+      // Publish the TX manager via AsyncLocalStorage so that every
+      // repository that calls `this.manager()` (with no explicit manager
+      // arg) picks up the bypass-TX manager instead of a fresh pool
+      // connection that has no GUC in scope.
+      await tenantStorage.run(
+        { kgId: null, bypass: true, entityManager: manager },
+        async () => {
+          for (const event of events) {
+            try {
+              const result = await this.dispatcher.dispatch(event);
+              if (result.status === 'dispatched') {
+                await this.outboxRepo.markDispatched(manager, event.id!, now);
+                continue;
+              }
+              // result.status === 'failed' — fall through to the failure branch.
+              event.markFailed(now, result.reason, defaultBackoff);
+              await this.outboxRepo.markFailedWithRetry(
+                manager,
+                event.id!,
+                now,
+                event.failedReason ?? result.reason,
+                event.attempts,
+                event.nextRetryAt,
+                event.isTerminal(),
+              );
+            } catch (err) {
+              // Dispatcher contract says "never throw"; this branch is
+              // defense-in-depth so a regression in the dispatcher does not
+              // poison the whole batch.
+              const reason = err instanceof Error ? err.message : String(err);
+              this.logger.warn(
+                `outbox_dispatcher_threw event=${event.eventKey} id=${event.id ?? '<unknown>'}: ${reason}`,
+              );
+              event.markFailed(now, reason, defaultBackoff);
+              await this.outboxRepo.markFailedWithRetry(
+                manager,
+                event.id!,
+                now,
+                event.failedReason ?? reason,
+                event.attempts,
+                event.nextRetryAt,
+                event.isTerminal(),
+              );
+            }
           }
-          // result.status === 'failed' — fall through to the failure branch.
-          event.markFailed(now, result.reason, defaultBackoff);
-          await this.outboxRepo.markFailedWithRetry(
-            manager,
-            event.id!,
-            now,
-            event.failedReason ?? result.reason,
-            event.attempts,
-            event.nextRetryAt,
-            event.isTerminal(),
-          );
-        } catch (err) {
-          // Dispatcher contract says "never throw"; this branch is
-          // defense-in-depth so a regression in the dispatcher does not
-          // poison the whole batch.
-          const reason = err instanceof Error ? err.message : String(err);
-          this.logger.warn(
-            `outbox_dispatcher_threw event=${event.eventKey} id=${event.id ?? '<unknown>'}: ${reason}`,
-          );
-          event.markFailed(now, reason, defaultBackoff);
-          await this.outboxRepo.markFailedWithRetry(
-            manager,
-            event.id!,
-            now,
-            event.failedReason ?? reason,
-            event.attempts,
-            event.nextRetryAt,
-            event.isTerminal(),
-          );
-        }
-      }
+        },
+      );
     });
   }
 }
