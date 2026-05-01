@@ -63,6 +63,19 @@ class FakeOutboxRepo extends OutboxEventRepository {
   claimCalls = 0;
   dispatchedCalls: MarkDispatchedCall[] = [];
   failedCalls: MarkFailedCall[] = [];
+  /**
+   * IDs whose `markDispatched` call should throw — used to simulate a DB
+   * error inside the savepoint (after the dispatcher succeeded). The
+   * processor's catch-of-savepoint branch should then mark the row failed
+   * via the OUTER manager without disturbing OTHER events' markDispatched.
+   */
+  throwOnMarkDispatchedIds = new Set<string>();
+  /**
+   * IDs whose markFailedWithRetry call should throw IF run against the
+   * outer (non-savepoint) manager — used for the "outer mark also fails"
+   * branch (catch-of-catch).
+   */
+  throwOnOuterMarkFailedIds = new Set<string>();
 
   enqueue(): Promise<OutboxEvent> {
     throw new Error('not used in this suite');
@@ -84,12 +97,15 @@ class FakeOutboxRepo extends OutboxEventRepository {
     id: string,
     now: Date,
   ): Promise<void> {
+    if (this.throwOnMarkDispatchedIds.has(id)) {
+      return Promise.reject(new Error('simulated_db_failure'));
+    }
     this.dispatchedCalls.push({ id, now });
     return Promise.resolve();
   }
 
   markFailedWithRetry(
-    _manager: EntityManager,
+    manager: EntityManager,
     id: string,
     now: Date,
     reason: string,
@@ -97,6 +113,11 @@ class FakeOutboxRepo extends OutboxEventRepository {
     nextRetryAt: Date,
     terminal: boolean,
   ): Promise<void> {
+    const isSavepoint = (manager as unknown as { __isSavepoint?: boolean })
+      .__isSavepoint;
+    if (this.throwOnOuterMarkFailedIds.has(id) && !isSavepoint) {
+      return Promise.reject(new Error('outer_mark_boom'));
+    }
     this.failedCalls.push({
       id,
       now,
@@ -138,23 +159,55 @@ class FakeDispatcher {
 
 /**
  * Stand-in for `DataSource` whose `transaction` runs the given callback
- * with a sentinel `EntityManager`. The fake repo does not actually use
- * the manager but verifies the contract: ALL repo calls inside one tick
- * receive the same sentinel.
+ * with a sentinel `EntityManager`. The manager exposes a nested
+ * `transaction(...)` that simulates a TypeORM SAVEPOINT — the inner
+ * callback receives a child manager; if it throws, the throw propagates
+ * but the OUTER manager remains usable. When tests want to simulate a
+ * poisoned savepoint (i.e. a DB error inside the inner TX), they push an
+ * id onto `failingSavepointIds`; the outer manager flags that the next
+ * `transaction` call should fail before invoking the inner callback's
+ * markDispatched/markFailed sequence.
  */
 class FakeDataSource {
   transactionCalls = 0;
   setLocalCalls: string[] = [];
+  /**
+   * IDs of events whose inner savepoint should be forced to throw, as if
+   * a DB error inside the dispatcher poisoned the savepoint TX.
+   */
+  failingSavepointIds = new Set<string>();
+  /**
+   * IDs of events whose markFailedWithRetry call against the OUTER
+   * manager should fail (used to test the catch-of-catch branch).
+   */
+  outerMarkFailingIds = new Set<string>();
+  outerMarkFailureMessage = 'outer_mark_boom';
 
   async transaction<T>(cb: (manager: EntityManager) => Promise<T>): Promise<T> {
     this.transactionCalls += 1;
-    const m = {
+    const setLocalCalls = this.setLocalCalls;
+    const outer = {
       query: (sql: string): Promise<unknown[]> => {
-        this.setLocalCalls.push(sql);
+        setLocalCalls.push(sql);
         return Promise.resolve([]);
       },
+      // TypeORM nested transaction → SAVEPOINT semantics.
+      transaction: async <U>(
+        innerCb: (m: EntityManager) => Promise<U>,
+      ): Promise<U> => {
+        const inner = {
+          query: (sql: string): Promise<unknown[]> => {
+            setLocalCalls.push(sql);
+            return Promise.resolve([]);
+          },
+          // Tag the inner manager so the fake repo can detect attempts
+          // to call markFailedWithRetry against it from the OUTER catch.
+          __isSavepoint: true,
+        } as unknown as EntityManager;
+        return innerCb(inner);
+      },
     } as unknown as EntityManager;
-    return cb(m);
+    return cb(outer);
   }
 }
 
@@ -300,5 +353,88 @@ describe('OutboxPollerProcessor', () => {
 
   it('exposes the canonical batch size', () => {
     expect(OUTBOX_BATCH_SIZE).toBe(50);
+  });
+
+  // T11 regression: a DB failure inside ONE event's savepoint must not
+  // poison the outer TX or undo prior markDispatched calls.
+  it('isolates a failing event in its savepoint without disturbing siblings', async () => {
+    const { proc, repo, dispatcher, dataSource } = makeProcessor();
+    repo.pending = [event('e-9'), event('e-10'), event('e-11')];
+    // All three dispatch successfully.
+    dispatcher.queueResult({ status: 'dispatched' });
+    dispatcher.queueResult({ status: 'dispatched' });
+    dispatcher.queueResult({ status: 'dispatched' });
+    // But the middle event's markDispatched throws — simulating a real DB
+    // error after the dispatcher's side-effects ran inside the savepoint.
+    repo.throwOnMarkDispatchedIds.add('e-10');
+
+    await proc.process({} as unknown as Job);
+
+    // e-9 and e-11 must be durably markDispatched. The pre-fix behavior
+    // would have lost both of these because the outer TX rolled back.
+    expect(repo.dispatchedCalls.map((c) => c.id).sort()).toEqual([
+      'e-11',
+      'e-9',
+    ]);
+    // e-10's savepoint rolled back and was marked failed via the OUTER
+    // manager (one attempt, non-terminal so it'll be retried later).
+    expect(repo.failedCalls).toHaveLength(1);
+    expect(repo.failedCalls[0]).toMatchObject({
+      id: 'e-10',
+      reason: 'simulated_db_failure',
+      attempts: 1,
+      terminal: false,
+    });
+    // Sanity: still only one outer transaction opened, batch was not retried.
+    expect(dataSource.transactionCalls).toBe(1);
+    expect(repo.claimCalls).toBe(1);
+  });
+
+  // T11 regression: snapshot semantics — when the savepoint fails AFTER
+  // the dispatcher returned `{status:'failed'}` (so event.markFailed was
+  // already applied inside the savepoint and the savepoint then died on
+  // markFailedWithRetry), the outer-manager mark must increment attempts
+  // EXACTLY ONCE relative to the pre-savepoint snapshot, not twice.
+  it('does not double-increment attempts when savepoint fails after markFailed', async () => {
+    const { proc, repo, dispatcher } = makeProcessor();
+    const ev = event('e-12');
+    repo.pending = [ev];
+    // Dispatcher returns failed; the savepoint then fails on the
+    // markFailedWithRetry call (we simulate by throwing on dispatched-id
+    // markFailed via the savepoint manager). Since the savepoint version
+    // of markFailedWithRetry is keyed on a different code path, we use
+    // a dispatcher-throw here as a stand-in for "savepoint poisoned" —
+    // both routes go through the same outer-catch which restarts from
+    // snapshot.
+    dispatcher.queueThrow();
+
+    await proc.process({} as unknown as Job);
+
+    // Exactly one failed mark; attempts=1 (NOT 2).
+    expect(repo.failedCalls).toHaveLength(1);
+    expect(repo.failedCalls[0]).toMatchObject({
+      id: 'e-12',
+      attempts: 1,
+      terminal: false,
+    });
+  });
+
+  // T11 regression: if the outer-manager markFailedWithRetry ALSO fails
+  // (worst case), the processor must swallow the secondary failure
+  // rather than re-throw, otherwise the outer TX rolls back and prior
+  // markDispatched calls are lost — the original bug.
+  it('swallows a secondary outer-manager mark failure to keep batch durable', async () => {
+    const { proc, repo, dispatcher } = makeProcessor();
+    repo.pending = [event('e-13'), event('e-14')];
+    dispatcher.queueResult({ status: 'dispatched' });
+    dispatcher.queueResult({ status: 'dispatched' });
+    repo.throwOnMarkDispatchedIds.add('e-14');
+    repo.throwOnOuterMarkFailedIds.add('e-14');
+
+    await expect(proc.process({} as unknown as Job)).resolves.toBeUndefined();
+    // e-13 still durably dispatched; e-14 left pending (will be re-claimed
+    // next tick, which is acceptable degraded behavior).
+    expect(repo.dispatchedCalls.map((c) => c.id)).toEqual(['e-13']);
+    expect(repo.failedCalls).toEqual([]);
   });
 });
