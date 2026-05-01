@@ -18,7 +18,7 @@
 import 'reflect-metadata';
 import { randomUUID } from 'node:crypto';
 import { DataSource } from 'typeorm';
-import { LoggingNotificationAdapter } from '@/common/notifications/logging-notification.adapter';
+import { InMemoryNotificationAdapter } from '@/common/notifications/in-memory-notification.adapter';
 import { tenantStorage } from '@/database/tenant-storage';
 import { CameraEntity } from '@/modules/camera/infrastructure/persistence/relational/entities/camera.entity';
 import { ChildService } from '@/modules/child/child.service';
@@ -198,7 +198,7 @@ describeIntegration('EnrollmentService — service-integration', () => {
     const userRepo = new UserRelationalRepository(
       dataSource.getRepository(UserEntity),
     );
-    const notification = new LoggingNotificationAdapter();
+    const notification = new InMemoryNotificationAdapter();
     const clock = new FixedClock(new Date('2026-04-30T10:00:00.000Z'));
     return new ChildService(
       childRepo,

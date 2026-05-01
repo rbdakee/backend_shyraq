@@ -1,0 +1,98 @@
+import { Injectable, Logger } from '@nestjs/common';
+import {
+  AttendanceCheckInEvent,
+  AttendanceCheckOutEvent,
+  ChildTransferredEvent,
+  DailyStatusChangedEvent,
+  GuardianApprovedEvent,
+  GuardianPendingApprovalEvent,
+  GuardianRejectedEvent,
+  GuardianRevokedEvent,
+  GuardianSelfRevokedEvent,
+  NotificationPort,
+  PermissionsUpdatedEvent,
+  TimelineEntryCreatedEvent,
+} from './notification.port';
+
+/**
+ * In-memory `NotificationPort` implementation used by integration tests and
+ * service-unit tests that exercise modules whose call-graph hits a notify*
+ * method. Each invocation is logged AND captured in a typed-event list.
+ *
+ * NOT wired in production. The production adapter lives in
+ * `src/modules/notification/infrastructure/outbox-notification.adapter.ts`
+ * (`OutboxNotificationAdapter`) and enqueues to `notification_outbox` instead
+ * of logging. This file is the renamed successor of the old
+ * `LoggingNotificationAdapter` — kept around because integration suites that
+ * spin up service.ts modules without the full `NotificationModule` need a
+ * working port stub.
+ */
+@Injectable()
+export class InMemoryNotificationAdapter extends NotificationPort {
+  private readonly logger = new Logger('Notification');
+  readonly events: Array<{ type: string; event: unknown }> = [];
+
+  notifyGuardianPendingApproval(
+    event: GuardianPendingApprovalEvent,
+  ): Promise<void> {
+    this.record('guardian_pending_approval', event);
+    return Promise.resolve();
+  }
+
+  notifyGuardianApproved(event: GuardianApprovedEvent): Promise<void> {
+    this.record('guardian_approved', event);
+    return Promise.resolve();
+  }
+
+  notifyGuardianRejected(event: GuardianRejectedEvent): Promise<void> {
+    this.record('guardian_rejected', event);
+    return Promise.resolve();
+  }
+
+  notifyGuardianRevoked(event: GuardianRevokedEvent): Promise<void> {
+    this.record('guardian_revoked', event);
+    return Promise.resolve();
+  }
+
+  notifyChildTransferred(event: ChildTransferredEvent): Promise<void> {
+    this.record('child_transferred', event);
+    return Promise.resolve();
+  }
+
+  notifyPermissionsUpdated(event: PermissionsUpdatedEvent): Promise<void> {
+    this.record('permissions_updated', event);
+    return Promise.resolve();
+  }
+
+  notifyAttendanceCheckIn(event: AttendanceCheckInEvent): Promise<void> {
+    this.record('attendance_check_in', event);
+    return Promise.resolve();
+  }
+
+  notifyAttendanceCheckOut(event: AttendanceCheckOutEvent): Promise<void> {
+    this.record('attendance_check_out', event);
+    return Promise.resolve();
+  }
+
+  notifyDailyStatusChanged(event: DailyStatusChangedEvent): Promise<void> {
+    this.record('daily_status_changed', event);
+    return Promise.resolve();
+  }
+
+  notifyTimelineEntryCreated(event: TimelineEntryCreatedEvent): Promise<void> {
+    this.record('timeline_entry_created', event);
+    return Promise.resolve();
+  }
+
+  notifyGuardianSelfRevoked(event: GuardianSelfRevokedEvent): Promise<void> {
+    this.record('guardian_self_revoked', event);
+    return Promise.resolve();
+  }
+
+  // ── helpers ─────────────────────────────────────────────────────────────
+
+  private record(type: string, event: unknown): void {
+    this.logger.log({ type, ...(event as Record<string, unknown>) });
+    this.events.push({ type, event });
+  }
+}

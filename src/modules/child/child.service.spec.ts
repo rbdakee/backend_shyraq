@@ -515,6 +515,9 @@ class FakeNotification extends NotificationPort {
   notifyTimelineEntryCreated(e: unknown): Promise<void> {
     return this.push('timeline_entry_created', e);
   }
+  notifyGuardianSelfRevoked(e: unknown): Promise<void> {
+    return this.push('guardian_self_revoked', e);
+  }
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────

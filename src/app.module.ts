@@ -25,6 +25,7 @@ import { MealModule } from './modules/meal/meal.module';
 import { GroupModule } from './modules/group/group.module';
 import { KindergartenModule } from './modules/kindergarten/kindergarten.module';
 import { LocationModule } from './modules/location/location.module';
+import { NotificationModule } from './modules/notification/notification.module';
 import { ScheduleModule } from './modules/schedule/schedule.module';
 import { ScheduleRolloutModule } from './modules/schedule-rollout/schedule-rollout.module';
 import { StaffModule } from './modules/staff/staff.module';
@@ -90,6 +91,7 @@ const resolveI18nPath = (): string => {
     GroupModule,
     CameraModule,
     ChildModule,
+    NotificationModule,
     EnrollmentModule,
     MealModule,
     ScheduleModule,

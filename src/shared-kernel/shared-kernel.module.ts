@@ -1,6 +1,4 @@
 import { Global, Module } from '@nestjs/common';
-import { LoggingNotificationAdapter } from '@/common/notifications/logging-notification.adapter';
-import { NotificationPort } from '@/common/notifications/notification.port';
 import { ClockPort } from './application/ports/clock.port';
 import { SystemClockAdapter } from './infrastructure/adapters/system-clock.adapter';
 
@@ -8,14 +6,14 @@ import { SystemClockAdapter } from './infrastructure/adapters/system-clock.adapt
  * Shared kernel — providers that every other module can depend on without
  * importing this module explicitly. Currently:
  *   - ClockPort (system clock)
- *   - NotificationPort (logging-only adapter; real fan-out comes later)
+ *
+ * `NotificationPort` is now wired by `NotificationModule` (which is also
+ * `@Global()`) — it binds the real outbox-backed adapter and re-exports the
+ * port. SharedKernelModule no longer provides a default fallback.
  */
 @Global()
 @Module({
-  providers: [
-    { provide: ClockPort, useClass: SystemClockAdapter },
-    { provide: NotificationPort, useClass: LoggingNotificationAdapter },
-  ],
-  exports: [ClockPort, NotificationPort],
+  providers: [{ provide: ClockPort, useClass: SystemClockAdapter }],
+  exports: [ClockPort],
 })
 export class SharedKernelModule {}

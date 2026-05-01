@@ -94,6 +94,21 @@ export interface TimelineEntryCreatedEvent {
   recordedByStaffMemberId: string | null;
 }
 
+// ── B9 self-events (T8 call-sites) ─────────────────────────────────────────
+
+/**
+ * Self-event fired by a guardian who unlinks themselves (parent-app
+ * `DELETE /me/children/:cid`). The recipient is the guardian themselves —
+ * confirmation push + history row. T8 wires the actual emit site.
+ */
+export interface GuardianSelfRevokedEvent {
+  kindergartenId: string;
+  childId: string;
+  /** The user that unlinked themselves — also the recipient of the notification. */
+  userId: string;
+  revokedAt: Date;
+}
+
 export abstract class NotificationPort {
   abstract notifyGuardianPendingApproval(
     event: GuardianPendingApprovalEvent,
@@ -119,5 +134,17 @@ export abstract class NotificationPort {
   ): Promise<void>;
   abstract notifyTimelineEntryCreated(
     event: TimelineEntryCreatedEvent,
+  ): Promise<void>;
+
+  // ── B9 self-events ─────────────────────────────────────────────────────
+
+  /**
+   * Triggered when a non-primary guardian unlinks themselves. The recipient
+   * (`event.userId`) is the guardian themselves — a self-confirmation event,
+   * NOT a fan-out to the rest of the guardians on the child. T8 wires the
+   * call-site in `child.service.ts`.
+   */
+  abstract notifyGuardianSelfRevoked(
+    event: GuardianSelfRevokedEvent,
   ): Promise<void>;
 }

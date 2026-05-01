@@ -230,6 +230,9 @@ class FakeNotificationPort extends NotificationPort {
     this.timelines.push(e);
     return Promise.resolve();
   }
+  notifyGuardianSelfRevoked(): Promise<void> {
+    return Promise.resolve();
+  }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────
