@@ -96,7 +96,7 @@ export async function truncateAll(dataSource: DataSource): Promise<void> {
   await dataSource.transaction(async (m) => {
     await m.query(`SET LOCAL app.bypass_rls = 'true'`);
     await m.query(
-      `TRUNCATE TABLE user_qr_tokens, notification_outbox, notifications, notification_preferences, push_tokens, saas_refresh_tokens, saas_users, timeline_entries, attendance_events, child_daily_status, schedule_week_snapshots, activity_events, schedule_template_slots, schedule_templates, meal_items, meal_plans, child_group_history, child_guardians, children, group_mentors, groups, cameras, locations, staff_members, refresh_tokens, users, kindergartens RESTART IDENTITY CASCADE`,
+      `TRUNCATE TABLE pickup_requests, trusted_people, user_qr_tokens, notification_outbox, notifications, notification_preferences, push_tokens, saas_refresh_tokens, saas_users, timeline_entries, attendance_events, child_daily_status, schedule_week_snapshots, activity_events, schedule_template_slots, schedule_templates, meal_items, meal_plans, child_group_history, child_guardians, children, group_mentors, groups, cameras, locations, staff_members, refresh_tokens, users, kindergartens RESTART IDENTITY CASCADE`,
     );
   });
 }
