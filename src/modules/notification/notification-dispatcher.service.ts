@@ -92,9 +92,8 @@ type RecipientResolver = (
 const NANNY_ALLOWED_EVENT_KEYS = new Set<string>([
   'attendance.checkin',
   'attendance.checkout',
-  'pickup.requested',
-  'pickup.approved',
-  'pickup.completed',
+  'pickup.otp_sent',
+  'pickup.validated',
 ]);
 
 /**
@@ -332,6 +331,53 @@ const TEMPLATES: Record<string, EventTemplate> = {
       updatedBy: payload.updatedBy,
     }),
   }),
+
+  // ── B11 Pickup OTP ─────────────────────────────────────────────────────
+
+  'pickup.otp_sent': ({ payload, enrichment }) => {
+    const trustedName =
+      asNonEmptyString(payload.trustedPersonName) ?? 'доверенному лицу';
+    return {
+      titleI18n: {
+        ru: 'Код отправлен доверенному лицу',
+        kk: 'Сенімді тұлғаға код жіберілді',
+        en: 'Pickup code sent',
+      },
+      bodyI18n: {
+        ru: `Код для забора ребёнка ${enrichment.childName} отправлен ${trustedName}.`,
+        kk: `${enrichment.childName} баласын алу үшін код ${trustedName} тұлғасына жіберілді.`,
+        en: `Pickup code for ${enrichment.childName} sent to ${trustedName}.`,
+      },
+      data: stringMap({
+        childId: payload.childId,
+        pickupRequestId: payload.pickupRequestId,
+        requesterUserId: payload.requesterUserId,
+      }),
+    };
+  },
+
+  'pickup.validated': ({ payload, enrichment }) => {
+    const trustedName =
+      asNonEmptyString(payload.trustedPersonName) ?? 'доверенному лицу';
+    return {
+      titleI18n: {
+        ru: 'Ребёнок передан доверенному лицу',
+        kk: 'Бала сенімді тұлғаға берілді',
+        en: 'Child handed over',
+      },
+      bodyI18n: {
+        ru: `${enrichment.childName} передан(а) — ${trustedName}.`,
+        kk: `${enrichment.childName} ${trustedName} тұлғасына берілді.`,
+        en: `${enrichment.childName} handed over to ${trustedName}.`,
+      },
+      data: stringMap({
+        childId: payload.childId,
+        pickupRequestId: payload.pickupRequestId,
+        attendanceEventId: payload.attendanceEventId,
+        validatedAt: payload.validatedAt,
+      }),
+    };
+  },
 };
 
 const RECIPIENT_RESOLVERS: Record<string, RecipientResolver> = {
@@ -347,6 +393,9 @@ const RECIPIENT_RESOLVERS: Record<string, RecipientResolver> = {
   'guardian.revoked': resolveSelfFromField('guardianUserId'),
   'guardian.permissions_updated': resolveSelfFromField('guardianUserId'),
   'child.transferred': resolveByChildGuardians,
+  // ── B11 Pickup OTP ─────────────────────────────────────────────────────
+  'pickup.otp_sent': resolveSelfFromField('requesterUserId'),
+  'pickup.validated': resolvePickupValidatedRecipients,
 };
 
 async function resolveByChildGuardians(
@@ -373,6 +422,24 @@ async function resolveByChildGuardians(
     }
   }
   return { userIds, nannyUserIds, childId };
+}
+
+/**
+ * Recipient resolver for `pickup.validated` — fans out to the child's
+ * approved guardians AND includes the requester (the parent who started
+ * the flow). Deduplicates if the requester is already in the guardian
+ * list. Marks nanny guardians so the nanny-policy gate still applies.
+ */
+async function resolvePickupValidatedRecipients(
+  event: OutboxEvent,
+  deps: { guardianRepo: ChildGuardianRepository },
+): Promise<ResolvedRecipients> {
+  const guardiansResult = await resolveByChildGuardians(event, deps);
+  const requesterId = stringField(event.payload, 'requesterUserId');
+  if (!guardiansResult.userIds.includes(requesterId)) {
+    guardiansResult.userIds.push(requesterId);
+  }
+  return guardiansResult;
 }
 
 function resolveSelfFromField(fieldName: string): RecipientResolver {

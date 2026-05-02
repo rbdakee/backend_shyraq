@@ -11,6 +11,8 @@ import {
   GuardianSelfRevokedEvent,
   NotificationPort,
   PermissionsUpdatedEvent,
+  PickupOtpSentEvent,
+  PickupValidatedEvent,
   TimelineEntryCreatedEvent,
 } from './notification.port';
 
@@ -86,6 +88,16 @@ export class InMemoryNotificationAdapter extends NotificationPort {
 
   notifyGuardianSelfRevoked(event: GuardianSelfRevokedEvent): Promise<void> {
     this.record('guardian_self_revoked', event);
+    return Promise.resolve();
+  }
+
+  notifyPickupOtpSent(event: PickupOtpSentEvent): Promise<void> {
+    this.record('pickup_otp_sent', event);
+    return Promise.resolve();
+  }
+
+  notifyPickupValidated(event: PickupValidatedEvent): Promise<void> {
+    this.record('pickup_validated', event);
     return Promise.resolve();
   }
 

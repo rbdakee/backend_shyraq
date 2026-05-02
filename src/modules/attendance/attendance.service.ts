@@ -39,6 +39,19 @@ export interface CheckInOpts {
 export interface CheckOutOpts {
   recordedAt?: Date;
   notes?: string | null;
+  /**
+   * B11 OTP-pickup branch. When non-null, the caller (PickupRequestService)
+   * has already validated the OTP against the trusted-person row and is
+   * recording the attendance event as the side-effect. In that branch:
+   *   - `pickupUserId` is allowed to be null (the picker is a non-user
+   *     trusted person, only known by phone snapshot on the request),
+   *   - the pickup-guardian validation is SKIPPED — caller has already
+   *     gated the operation via the trusted-people whitelist + OTP.
+   * `method` defaults to `manual` for the existing staff-driven flow; B11
+   * passes `otp_pickup` so the audit trail records how the row was created.
+   */
+  pickupRequestId?: string | null;
+  method?: AttendanceMethod;
 }
 
 export interface PatchAttendanceEventInput {
@@ -215,7 +228,7 @@ export class AttendanceService {
     kindergartenId: string,
     childId: string,
     callerUserId: string,
-    pickupUserId: string,
+    pickupUserId: string | null,
     opts: CheckOutOpts = {},
   ): Promise<AttendanceFlowResult> {
     const recordedAt = opts.recordedAt ?? this.clock.now();
@@ -227,10 +240,24 @@ export class AttendanceService {
     );
     await this.assertChildExists(kindergartenId, childId);
 
-    // Validate pickup BEFORE writing — throws PickupUserNotAllowedError when
-    // the (child, pickupUser) is not an approved active pickup guardian.
-    // No rows have been written, so a thrown exception is safe.
-    await this.assertPickupAllowed(kindergartenId, childId, pickupUserId);
+    const pickupRequestId = opts.pickupRequestId ?? null;
+    const method = opts.method ?? AttendanceMethod.MANUAL;
+
+    // B11 OTP-pickup branch skips guardian validation — the caller
+    // (PickupRequestService) has already gated the operation through the
+    // trusted-person whitelist + OTP. The legacy staff-driven branch keeps
+    // the strict pickup-guardian assertion.
+    if (pickupRequestId === null) {
+      if (pickupUserId === null) {
+        throw new InvalidAttendancePickupError(
+          'pickupUserId is required when pickupRequestId is null',
+        );
+      }
+      // Validate pickup BEFORE writing — throws PickupUserNotAllowedError when
+      // the (child, pickupUser) is not an approved active pickup guardian.
+      // No rows have been written, so a thrown exception is safe.
+      await this.assertPickupAllowed(kindergartenId, childId, pickupUserId);
+    }
 
     const event = await this.eventRepo.create(
       kindergartenId,
@@ -239,10 +266,10 @@ export class AttendanceService {
           id: randomUUID(),
           kindergartenId,
           childId,
-          method: AttendanceMethod.MANUAL,
+          method,
           recordedBy: staff,
           pickupUserId,
-          pickupRequestId: null, // B11 will set this when OTP-pickup lands.
+          pickupRequestId,
           notes: opts.notes ?? null,
           recordedAt,
         },
@@ -276,7 +303,7 @@ export class AttendanceService {
       recordedAt: event.recordedAt,
       recordedByStaffMemberId: event.recordedBy,
       pickupUserId,
-      pickupRequestId: null,
+      pickupRequestId,
     });
     await this.notifications.notifyTimelineEntryCreated({
       kindergartenId,

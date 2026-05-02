@@ -236,6 +236,12 @@ class FakeNotificationPort extends NotificationPort {
   notifyGuardianSelfRevoked(): Promise<void> {
     return Promise.resolve();
   }
+  notifyPickupOtpSent(): Promise<void> {
+    return Promise.resolve();
+  }
+  notifyPickupValidated(): Promise<void> {
+    return Promise.resolve();
+  }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────

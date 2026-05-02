@@ -85,6 +85,7 @@ import { TokenBlocklistPort } from './token-blocklist.port';
     TokenBlocklistPort,
     JwtModule,
     SmsPort,
+    OtpStorePort,
     RefreshTokenRepository,
   ],
 })

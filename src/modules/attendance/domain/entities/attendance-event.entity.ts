@@ -36,7 +36,13 @@ export interface CreateAttendanceEventInput {
 }
 
 export interface CreateCheckOutInput extends CreateAttendanceEventInput {
-  pickupUserId: string;
+  /**
+   * Null only in the B11 OTP-pickup branch where the picker is a non-user
+   * trusted person known just by their phone snapshot on the
+   * pickup_request. The legacy staff-driven branch always passes a
+   * non-null userId (the picking-up guardian).
+   */
+  pickupUserId: string | null;
   pickupRequestId?: string | null;
 }
 

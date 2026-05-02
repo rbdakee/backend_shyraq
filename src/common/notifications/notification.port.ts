@@ -69,7 +69,13 @@ export interface AttendanceCheckInEvent {
 }
 
 export interface AttendanceCheckOutEvent extends AttendanceCheckInEvent {
-  pickupUserId: string;
+  /**
+   * Null only in the B11 OTP-pickup branch where the picker is a non-user
+   * trusted person known just by their phone snapshot on the
+   * pickup_request. The legacy staff-driven branch always sets a non-null
+   * userId (the picking-up guardian).
+   */
+  pickupUserId: string | null;
   /** Always null in B8 — set by B11 OTP-pickup flow. */
   pickupRequestId: string | null;
 }
@@ -92,6 +98,44 @@ export interface TimelineEntryCreatedEvent {
   entryType: string;
   entryTime: Date;
   recordedByStaffMemberId: string | null;
+}
+
+// ── B11 Pickup OTP events ──────────────────────────────────────────────────
+
+/**
+ * Event fired by `PickupRequestService.sendOtp` after the SMS has been
+ * dispatched to the trusted person. The recipient of the in-app/push
+ * notification is the requester (parent who initiated the pickup_request)
+ * — the SMS itself goes to the trusted-person phone via `SmsPort` and is
+ * NOT relayed by the dispatcher.
+ */
+export interface PickupOtpSentEvent {
+  kindergartenId: string;
+  childId: string;
+  pickupRequestId: string;
+  /** The user that initiated the pickup_request (typically the parent). */
+  requesterUserId: string;
+  /** Snapshot — used to render the notification body. */
+  trustedPersonName: string;
+}
+
+/**
+ * Event fired by `PickupRequestService.validateOtp` after the OTP has been
+ * accepted and the attendance check-out + pickup_request transition has
+ * committed. Recipients are the child's approved guardians AND the
+ * requester (parent who started the flow).
+ */
+export interface PickupValidatedEvent {
+  kindergartenId: string;
+  childId: string;
+  pickupRequestId: string;
+  /** The user that initiated the pickup_request (typically the parent). */
+  requesterUserId: string;
+  /** Snapshot — used to render the notification body. */
+  trustedPersonName: string;
+  /** The attendance_event row created as the side-effect of validation. */
+  attendanceEventId: string;
+  validatedAt: Date;
 }
 
 // ── B9 self-events (T8 call-sites) ─────────────────────────────────────────
@@ -147,4 +191,18 @@ export abstract class NotificationPort {
   abstract notifyGuardianSelfRevoked(
     event: GuardianSelfRevokedEvent,
   ): Promise<void>;
+
+  // ── B11 Pickup OTP ─────────────────────────────────────────────────────
+
+  /**
+   * Fired after `sendOtp` dispatched the SMS to the trusted person.
+   * Recipient: the requester user (typically the parent who initiated).
+   */
+  abstract notifyPickupOtpSent(event: PickupOtpSentEvent): Promise<void>;
+
+  /**
+   * Fired after `validateOtp` committed the check-out + pickup_request
+   * transition. Recipients: the child's approved guardians + the requester.
+   */
+  abstract notifyPickupValidated(event: PickupValidatedEvent): Promise<void>;
 }

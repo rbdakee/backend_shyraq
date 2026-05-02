@@ -60,6 +60,7 @@ import { AttendanceEventNotFoundError } from './domain/errors/attendance-event-n
 import { InvalidAttendancePickupError } from './domain/errors/invalid-attendance-pickup.error';
 import { InvalidAttendanceTimestampError } from './domain/errors/invalid-attendance-timestamp.error';
 import { PickupUserNotAllowedError } from './domain/errors/pickup-user-not-allowed.error';
+import { AttendanceMethod } from './domain/value-objects/attendance-method.vo';
 import { ChildIntradayStatus } from './domain/value-objects/child-intraday-status.vo';
 import {
   AttendanceEventRepository,
@@ -439,6 +440,12 @@ class FakeNotificationPort extends NotificationPort {
   notifyGuardianSelfRevoked(): Promise<void> {
     return Promise.resolve();
   }
+  notifyPickupOtpSent(): Promise<void> {
+    return Promise.resolve();
+  }
+  notifyPickupValidated(): Promise<void> {
+    return Promise.resolve();
+  }
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────
@@ -735,6 +742,33 @@ describe('AttendanceService — service-unit', () => {
       await expect(
         w.service.checkOut(KG, CHILD, STAFF_USER, PICKUP_USER),
       ).rejects.toBeInstanceOf(PickupUserNotAllowedError);
+    });
+
+    // ── B11 OTP-pickup branch ────────────────────────────────────────────
+
+    it('returns event with method=otp_pickup and skips guardian validation when pickupRequestId is set', async () => {
+      const w = wire();
+      // Crucially — NO guardian row is seeded. The OTP-pickup branch must
+      // not consult ChildGuardianRepository.findApprovedActivePickupGuardian
+      // because the trusted-person whitelist + OTP already gated this.
+      const result = await w.service.checkOut(KG, CHILD, STAFF_USER, null, {
+        method: AttendanceMethod.OTP_PICKUP,
+        pickupRequestId: 'pr-1',
+      });
+      expect(result.event.method.value).toBe('otp_pickup');
+      expect(result.event.pickupUserId).toBeNull();
+      expect(result.event.pickupRequestId).toBe('pr-1');
+      // Notification carried both fields verbatim.
+      expect(w.notifications.checkOuts).toHaveLength(1);
+      expect(w.notifications.checkOuts[0].pickupUserId).toBeNull();
+      expect(w.notifications.checkOuts[0].pickupRequestId).toBe('pr-1');
+    });
+
+    it('throws InvalidAttendancePickupError when pickupUserId AND pickupRequestId are both null (legacy path requires a userId)', async () => {
+      const w = wire();
+      await expect(
+        w.service.checkOut(KG, CHILD, STAFF_USER, null),
+      ).rejects.toBeInstanceOf(InvalidAttendancePickupError);
     });
   });
 

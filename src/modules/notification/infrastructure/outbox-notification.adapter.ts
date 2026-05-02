@@ -11,6 +11,8 @@ import {
   GuardianSelfRevokedEvent,
   NotificationPort,
   PermissionsUpdatedEvent,
+  PickupOtpSentEvent,
+  PickupValidatedEvent,
   TimelineEntryCreatedEvent,
 } from '@/common/notifications/notification.port';
 import { tenantStorage } from '@/database/tenant-storage';
@@ -151,6 +153,26 @@ export class OutboxNotificationAdapter extends NotificationPort {
       entryType: event.entryType,
       entryTime: event.entryTime.toISOString(),
       recordedByStaffMemberId: event.recordedByStaffMemberId,
+    });
+  }
+
+  notifyPickupOtpSent(event: PickupOtpSentEvent): Promise<void> {
+    return this.enqueue(event.kindergartenId, 'pickup.otp_sent', {
+      childId: event.childId,
+      pickupRequestId: event.pickupRequestId,
+      requesterUserId: event.requesterUserId,
+      trustedPersonName: event.trustedPersonName,
+    });
+  }
+
+  notifyPickupValidated(event: PickupValidatedEvent): Promise<void> {
+    return this.enqueue(event.kindergartenId, 'pickup.validated', {
+      childId: event.childId,
+      pickupRequestId: event.pickupRequestId,
+      requesterUserId: event.requesterUserId,
+      trustedPersonName: event.trustedPersonName,
+      attendanceEventId: event.attendanceEventId,
+      validatedAt: event.validatedAt.toISOString(),
     });
   }
 

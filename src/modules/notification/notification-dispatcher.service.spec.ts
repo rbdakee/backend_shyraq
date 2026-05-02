@@ -1042,6 +1042,9 @@ describe('NotificationDispatcher', () => {
       'guardian.revoked',
       'guardian.permissions_updated',
       'child.transferred',
+      // ── B11 Pickup OTP ─────────────────────────────────────────────────
+      'pickup.otp_sent',
+      'pickup.validated',
     ];
 
     it.each(COVERED_KEYS)(

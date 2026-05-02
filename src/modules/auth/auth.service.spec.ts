@@ -487,6 +487,12 @@ class FakeNotificationPort extends NotificationPort {
   notifyTimelineEntryCreated(): Promise<void> {
     return Promise.resolve();
   }
+  notifyPickupOtpSent(): Promise<void> {
+    return Promise.resolve();
+  }
+  notifyPickupValidated(): Promise<void> {
+    return Promise.resolve();
+  }
 }
 
 /**

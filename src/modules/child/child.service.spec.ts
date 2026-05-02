@@ -532,6 +532,12 @@ class FakeNotification extends NotificationPort {
   notifyGuardianSelfRevoked(e: unknown): Promise<void> {
     return this.push('guardian_self_revoked', e);
   }
+  notifyPickupOtpSent(e: unknown): Promise<void> {
+    return this.push('pickup_otp_sent', e);
+  }
+  notifyPickupValidated(e: unknown): Promise<void> {
+    return this.push('pickup_validated', e);
+  }
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────
