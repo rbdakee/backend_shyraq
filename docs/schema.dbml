@@ -450,7 +450,9 @@ Table attendance_events {
   method            attendance_method     [not null]
   recorded_by       uuid                  [ref: > staff_members.id]
   pickup_user_id    uuid                  [ref: > users.id]
-  pickup_request_id uuid                  // ref: > pickup_requests.id — B11 will add FK to pickup_requests
+  pickup_request_id uuid                  // ref: > pickup_requests.id — FK added in B11 migration; nullable, written when method='otp_pickup'
+  // NOTE: attendance_method enum includes 'otp_pickup' (added in B11 migration via ALTER TYPE attendance_method ADD VALUE 'otp_pickup')
+  // 'otp_pickup' is used when a trusted-person pickup is validated via OTP; pickup_request_id references the validated pickup_requests row
   notes             text
   recorded_at       timestamptz           [not null, default: `now()`]
   created_at        timestamptz           [not null, default: `now()`]
@@ -683,24 +685,35 @@ Table parent_requests {
   }
 }
 
+// B11 — FORCE ROW LEVEL SECURITY, tenant_isolation policy on kindergarten_id
+// ENUM pickup_request_status: otp_sent | validated | expired | cancelled
+// (represented as varchar in DBML; TypeORM migration creates PG ENUM pickup_request_status)
 Table pickup_requests {
   id                   uuid        [pk, default: `gen_random_uuid()`]
   kindergarten_id      uuid        [not null, ref: > kindergartens.id]
   child_id             uuid        [not null, ref: > children.id]
   requested_by_user_id uuid        [not null, ref: > users.id]
-  trusted_person_id    uuid        [ref: > trusted_people.id] // новая ссылка
-  trusted_person_phone varchar(20) [not null] // snapshot-копия (denormalization)
-  trusted_person_name  varchar     [not null] // snapshot-копия
-  trusted_person_iin   char(12)
-  otp_ref              varchar     [not null] // Redis key
+  trusted_person_id    uuid        [ref: > trusted_people.id] // nullable — для ad-hoc (без whitelist)
+  trusted_person_phone varchar(20) [not null] // snapshot-копия (denormalization; даже если trusted_person_id non-null)
+  trusted_person_name  text        [not null] // snapshot-копия
+  trusted_person_iin   char(12)               // snapshot-копия, nullable
+  otp_ref              varchar     [not null]  // Redis key: 'otp:pickup:{requestId}'
   status               varchar     [not null, default: 'otp_sent']
-  // 'otp_sent', 'validated', 'expired', 'cancelled'
-  validated_by         uuid        [ref: > staff_members.id]
-  validated_at         timestamptz
-  attendance_event_id  uuid        [ref: > attendance_events.id]
-  parent_request_id    uuid        [ref: > parent_requests.id]
-  expires_at           timestamptz [not null]
+  // pickup_request_status ENUM: 'otp_sent' → 'validated' | 'expired' | 'cancelled'
+  validated_by         uuid        [ref: > staff_members.id]   // nullable
+  validated_at         timestamptz                              // nullable
+  attendance_event_id  uuid        [ref: > attendance_events.id] // nullable; written after check-out created
+  parent_request_id    uuid        [ref: > parent_requests.id]   // nullable — B12 parent_requests link
+  expires_at           timestamptz [not null] // = created_at + 1800s (OTP TTL)
   created_at           timestamptz [not null, default: `now()`]
+
+  indexes {
+    (kindergarten_id, status)         // list by tenant+status (staff view)
+    (child_id, created_at DESC)       // per-child history
+  }
+  // RLS: FORCE ROW LEVEL SECURITY — tenant_isolation policy:
+  //   kindergarten_id = current_setting('app.kindergarten_id')::uuid
+  //   OR current_setting('app.bypass_rls') = 'true'
 }
 
 // ─────────────────────────────────────────
@@ -1159,28 +1172,33 @@ Table schedule_week_snapshots {
 
 // ─────────────────────────────────────────
 // TRUSTED PEOPLE (переиспользуемый whitelist)
+// B11 — FORCE ROW LEVEL SECURITY, tenant_isolation policy on kindergarten_id
 // ─────────────────────────────────────────
 
 Table trusted_people {
   id               uuid [pk, default: `gen_random_uuid()`]
-  kindergarten_id  uuid [not null, ref: > kindergartens.id]
-  child_id         uuid [not null, ref: > children.id]
+  kindergarten_id  uuid [not null, ref: > kindergartens.id, note: 'ON DELETE CASCADE']
+  child_id         uuid [not null, ref: > children.id, note: 'ON DELETE CASCADE']
   added_by_user_id uuid [not null, ref: > users.id]
-  full_name        varchar [not null]
+  full_name        text [not null]
   phone            varchar(20) [not null]
-  iin              char(12)
-  relation         varchar
+  iin              char(12)    // nullable
+  relation         text
   photo_url        text
   is_active        boolean [not null, default: true]
   is_one_time      boolean [not null, default: false]
   // true = деактивируется автоматически после первого успешного pickup
-  used_at          timestamptz
+  used_at          timestamptz // null → not used yet; set when is_one_time pickup completes
   created_at       timestamptz [not null, default: `now()`]
-  revoked_at       timestamptz
+  revoked_at       timestamptz // null → active; set on manual revoke
 
   indexes {
     (child_id, is_active)
+    (kindergarten_id, child_id)  // for per-tenant child whitelist listing
   }
+  // RLS: FORCE ROW LEVEL SECURITY — tenant_isolation policy:
+  //   kindergarten_id = current_setting('app.kindergarten_id')::uuid
+  //   OR current_setting('app.bypass_rls') = 'true'
 }
 
 // ─────────────────────────────────────────

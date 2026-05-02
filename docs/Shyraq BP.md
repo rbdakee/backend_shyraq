@@ -514,6 +514,8 @@
 
 ## 7. Pickup, Trusted Person and OTP Handoff
 
+<!-- B11 — in progress (T1 doc-sync complete) -->
+
 ## Process
 
 Передача ребенка доверенному лицу через OTP
@@ -538,30 +540,31 @@
 ### Main Flow
 
 1. Родитель заранее добавляет доверенное лицо.
-2. Система хранит доверенное лицо в истории заявок ребенка.
-3. В день забора доверенное лицо приходит за ребенком.
-4. Mentor или Reception открывает заявку доверенного лица в `Staff App`.
-5. Сотрудник запускает авторизацию гостя.
-6. Система отправляет OTP на номер доверенного лица.
-7. Доверенное лицо диктует код сотруднику.
-8. Сотрудник вводит OTP.
-9. Если OTP верный, система подтверждает право забора ребенка.
-10. Сотрудник завершает передачу ребенка.
-11. Система фиксирует `check-out` и факт передачи доверенному лицу.
-12. Родитель получает `push`.
+2. Система хранит доверенное лицо в истории заявок ребенка (`trusted_people`).
+3. Родитель опционально создаёт `pickup_request` через Parent App (`POST /parent/children/:id/pickup-requests`).
+4. В день забора доверенное лицо приходит за ребенком.
+5. Mentor или Reception открывает заявку доверенного лица в `Staff App` (или создаёт новый `pickup_request` напрямую через `POST /staff/pickup-requests` если родительской заявки нет).
+6. Сотрудник нажимает «Отправить OTP» (`POST /staff/pickup-requests/:id/send-otp`).
+7. Система генерирует 6-digit код, пишет `otp:pickup:{requestId}` в Redis TTL 1800с, отправляет SMS на телефон доверенного лица.
+8. Доверенное лицо диктует код сотруднику.
+9. Сотрудник вводит OTP (`POST /staff/pickup-requests/:id/validate-otp`).
+10. Если OTP верный, система атомарно: обновляет `pickup_requests.status='validated'`, создаёт `attendance_events (method='otp_pickup')` + `timeline_entries` + upsert `child_daily_status`, обновляет `attendance_event_id`.
+11. Сотрудник завершает передачу ребенка.
+12. Родитель получает push `pickup.validated` (recipients: все approved guardians + requester).
 13. Запись появляется в `timeline` ребенка.
 
 ### Alternative Flows
 
-- Если OTP неверный или истек, система отклоняет передачу ребенка.
-- Сотрудник не завершает выдачу.
-- Родитель должен обновить заявку или повторить авторизацию.
+- **Неверный OTP:** `attempts` инкрементируется; при 3 неверных — `otp:locked:{phone}` TTL 900с, ответ 429 `otp_locked`. Сотрудник не завершает выдачу.
+- **OTP истёк:** ключ в Redis отсутствует → 410 `otp_expired`. Сотрудник повторно вызывает `send-otp`.
+- **Отмена:** `POST /staff/pickup-requests/:id/cancel` → `status='cancelled'`, DEL Redis ключ.
+- **Concurrent validate-otp:** advisory lock `pg_advisory_xact_lock(hashtext('pickup:validate:'||requestId))` через port-метод (паттерн B10 `IdentityQrRepository.acquireUserAdvisoryLock`) — конкурентные validate сериализуются; второй увидит `status='validated'` и получит 409 `pickup_request_already_validated`.
 
 ### Separate Simple Flow
 
 ### Ребенка забирает сам родитель
 
-1. Сотрудник фиксирует стандартный `check-out`.
+1. Сотрудник фиксирует стандартный `check-out` (`POST /staff/attendance/check-out`).
 2. Система завершает день без OTP-сценария.
 3. Родитель видит факт выхода ребенка.
 
@@ -574,8 +577,12 @@
 - **Два режима доверенных лиц:**
   - **Одноразовые** (`trusted_people.is_one_time=true`): родитель добавляет "на один раз" → после успешного pickup `used_at=NOW()` + `is_active=false`. Запись остаётся в истории.
   - **Постоянные (whitelist)** (`is_one_time=false`): переиспользуемый список. Родитель управляет через Parent App (add/revoke).
+- **Staff-created pickup_request:** mentor/admin может создать `pickup_request` напрямую без предварительной родительской заявки (`POST /staff/pickup-requests`). Snapshot полей — из whitelist (`trusted_person_id`) или ad-hoc (inline name+phone).
+- **OTP инфраструктура:** `OtpStorePort` + `RedisOtpStore` переиспользуются из AuthModule. Namespace `otp:pickup:{requestId}` (не `otp:login:{phone}`). Rate-limit `rate:otp:{phone}` shared с `/auth/otp/request` — один phone = одна квота. OTP TTL = 1800с (= `expires_at - created_at`).
+- **Attendance integration:** `AttendanceService.checkOut` принимает опциональный `pickupRequestId` и `method='otp_pickup'`; при передаче validated `pickupRequestId` пропускает стандартную проверку `findApprovedActivePickupGuardian` (доверенное лицо не guardian).
+- **Notifications:** `pickup.otp_sent` — SMS на телефон доверенного напрямую через `SmsPort`; запись в `notification_outbox` для аудита и push-уведомления инициатору. `pickup.validated` — guardians + requester получают push.
 - **OTP vs QR как альтернативы:**
-  - **SMS OTP** (текущий флоу): родитель создаёт `pickup_request` → SMS на телефон доверенного → OTP диктуется сотруднику.
+  - **SMS OTP** (текущий флоу, B11): `pickup_request` → SMS на телефон доверенного → OTP диктуется сотруднику.
   - **QR (альтернатива):** родитель генерирует одноразовый QR в Parent App → пересылает доверенному → доверенный показывает на входе → Reception сканирует через Staff App → валидация → check-out. Удобно, если у доверенного плохая связь / нет SMS.
   - (QR для доверенных — вне MVP, но архитектурно заложен через тот же `user_qr_tokens` с расширением `purpose`.)
 - **Идентификация забирающего через Face ID:** если у trusted-person есть face_profile (был зарегистрирован ранее) — автоматическое распознавание на турникете заменяет OTP.

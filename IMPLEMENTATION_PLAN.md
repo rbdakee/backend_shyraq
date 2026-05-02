@@ -113,7 +113,7 @@
 - [x] **B8** — Attendance & Timeline (manual) ✓ **demo-ready: BP §5 manual** (commit `05cddc2`)
 - [x] **B9** — Notifications + WebSocket ✓ (commit `e704acd`)
 - [x] **B10** — Identity QR ✓ **demo-ready: BP §13** (commits `75c27b0` → `18281df`)
-- [ ] **B11** — Pickup OTP & Trusted ✓ **demo-ready: BP §7**
+- [~] **B11** — Pickup OTP & Trusted ✓ **demo-ready: BP §7**
 - [ ] **B12** — Parent Requests ✓ **demo-ready: BP §6**
 - [ ] **B13** — Billing & Invoices (mock provider)
 - [ ] **B14** — Halyk ePay (real)

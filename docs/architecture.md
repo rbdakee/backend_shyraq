@@ -233,7 +233,10 @@ CREATE POLICY tenant_isolation ON <name>
 Добавлены 4 новых метода: `notifyAttendanceCheckIn`, `notifyAttendanceCheckOut`, `notifyDailyStatusChanged`, `notifyTimelineEntryCreated`. `LoggingNotificationAdapter` логирует все 4. Реальный WS/push-fanout — B9 (каждый метод адаптера помечен `// TODO(B9): WS fanout`).
 
 **Pickup validation policy (B8 manual):**
-`pickup_user_id` на check-out должен ссылаться на одобренного guardian'а ребёнка с `can_pickup=true` И `revoked_at IS NULL` (lookup в `child_guardians WHERE child_id=$ AND user_id=$ AND status='approved' AND revoked_at IS NULL AND can_pickup=true`). OTP-based pickup-by-trusted-person — B11; колонка `pickup_request_id` остаётся nullable и не пишется в B8.
+`pickup_user_id` на check-out должен ссылаться на одобренного guardian'а ребёнка с `can_pickup=true` И `revoked_at IS NULL` (lookup в `child_guardians WHERE child_id=$ AND user_id=$ AND status='approved' AND revoked_at IS NULL AND can_pickup=true`). OTP-based pickup-by-trusted-person — B11; колонка `pickup_request_id` остаётся nullable в B8 и не пишется.
+
+**Pickup OTP extension (B11):**
+`attendance_method='otp_pickup'` (ENUM value добавлен в B11 миграции через `ALTER TYPE attendance_method ADD VALUE 'otp_pickup'`). При `method='otp_pickup'`: `pickup_user_id=null` (trusted person — не user-entity), `pickup_request_id` ссылается на validated `pickup_requests` row. `AttendanceService.checkOut` принимает опциональный `pickupRequestId`; при его наличии и `status='validated'` — пропускает стандартную `findApprovedActivePickupGuardian` проверку (trusted person не guardian). Атомарная TX: `attendance_events` + `timeline_entries` + `child_daily_status upsert` + update `pickup_requests.attendance_event_id`.
 
 **Edit window (non-admin staff):**
 `PATCH /staff/attendance/:eventId` разрешён только если `recorded_at::date == NOW()::date` в `Asia/Almaty`. Admin endpoint `/admin/attendance-events/:id` не имеет ограничения по окну. `// TODO(B22): make window configurable per kindergarten`.
@@ -404,8 +407,10 @@ Worker (каждые 2с)
 | `guardian.revoked` | `notifyGuardianRevoked` | `user:{guardianUserId}` | удалённый guardian |
 | `child.transferred` | `notifyChildTransferred` | `user:{recipientUserIds[]}` | все approved guardians (переданные явно) |
 | `guardian.permissions_updated` | `notifyPermissionsUpdated` | `user:{guardianUserId}` | затронутый guardian |
+| `pickup.otp_sent` | `notifyPickupOtpSent` | `user:{requesterId}` | инициатор pickup_request; SMS на `trusted_person_phone` отправляется напрямую через `SmsPort` (не через outbox-fanout на trusted person — у них нет user-записи); запись в `notification_outbox` для аудита и push инициатору. **B11 — implemented.** |
+| `pickup.validated` | `notifyPickupValidated` | `child:{childId}` | все approved guardians ребёнка + requester (`requested_by_user_id`). Nanny-policy: nanny получает `pickup.*`. **B11 — implemented.** |
 
-Будущие event-ключи (добавляются по мере батчей): `pickup.otp_sent`, `pickup.validated` (B11), `payment.upcoming`, `payment.overdue`, `payment.receipt_issued` (B14), `content.story_new`, `content.news_published` (B17), `face.enrolled` (B19).
+Будущие event-ключи (добавляются по мере батчей): `payment.upcoming`, `payment.overdue`, `payment.receipt_issued` (B14), `content.story_new`, `content.news_published` (B17), `face.enrolled` (B19).
 
 **Nanny-policy:** guardian с `role='nanny'` получает только `attendance.*` и `pickup.*` — остальные ключи отбрасываются в `NotificationDispatcher` до send.
 

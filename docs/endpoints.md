@@ -569,13 +569,57 @@ Email + password (не OTP). Access-токен — тот же JWT HS256 (`JWT_A
 
 ### 3.6 Pickup OTP (Trusted Person)
 
+<!-- B11 — in progress -->
+
+**Guards:** `JwtAuthGuard` + `KindergartenScopeGuard` + `@Roles('mentor','admin')`. Все запросы kg-bound: tenant из JWT.
+
 | Метод | Путь | Назначение |
 |---|---|---|
-| GET | `/staff/pickup-requests` | Активные `pickup_requests` по группе (status `otp_sent`). |
-| GET | `/staff/pickup-requests/:id` | Детали + `trusted_person_name/phone`, ребёнок. |
-| POST | `/staff/pickup-requests/:id/send-otp` | Генерирует 6-digit код, пишет Redis `otp:pickup:{pickup_request_id}` Hash `{code, attempts}` TTL 1800с, отправляет SMS на `trusted_person_phone`. Rate-limit через `rate:otp:{phone}`. |
-| POST | `/staff/pickup-requests/:id/verify-otp` | Сотрудник вводит код с устройства trusted-person'а. Читает `otp:pickup:{id}`; при совпадении — DEL, `pickup_requests.status='validated'`, `validated_by=staff_member_id`, `validated_at=NOW()`. Создаёт `attendance_events (method='otp_pickup')`, закрывает связанный `parent_requests` (если есть), если `trusted_people.is_one_time=true` — помечает `revoked_at=NOW()`, `used_at=NOW()`. При 3 неверных — `otp:locked:{phone}` TTL 900с, `status='expired'`. |
-| POST | `/staff/pickup-requests/:id/cancel` | Отказ выдачи: `status='cancelled'`, DEL Redis ключ. Push requester'у (`pickup.cancelled`, не в каталоге MVP — можно отложить). |
+| GET | `/staff/pickup-requests` | Список `pickup_requests`. Query params: `groupId` (optional UUID), `status` (optional: `otp_sent\|validated\|expired\|cancelled`). Без фильтра возвращает все активные по kg. Response: `[{id, child_id, child_full_name, trusted_person_name, trusted_person_phone, status, expires_at, created_at}]`. |
+| GET | `/staff/pickup-requests/:id` | Детали + `trusted_person_name/phone/iin`, ребёнок (`child_id`, `child_full_name`, `current_group_id`), `status`, `otp_ref`, `validated_by`, `validated_at`, `attendance_event_id`. Errors: 404 `pickup_request_not_found`. |
+| POST | `/staff/pickup-requests` | Создать pickup_request напрямую (trusted person пришёл без предварительной родительской заявки). Body: `{ child_id, trusted_person_id?, trusted_person_name?, trusted_person_phone?, trusted_person_iin? }`. Если `trusted_person_id` не null — snapshot полей копируется из `trusted_people` (проверяется `is_active=true` и `child_id` соответствие). Иначе — ad-hoc: `trusted_person_name` + `trusted_person_phone` обязательны. Создаёт `pickup_requests` со `status='otp_sent'`, `otp_ref='otp:pickup:{newId}'`, `expires_at=NOW()+1800s`. Response 201: `{id, status, trusted_person_phone, expires_at}`. Errors: 404 `trusted_person_not_found`, 403 `trusted_person_not_for_child`, 410 `trusted_person_revoked`. |
+| POST | `/staff/pickup-requests/:id/send-otp` | Генерирует 6-digit код. Rate-limit check `rate:otp:{trusted_person_phone}` (shared с `/auth/otp/request`, 5/hour). Lockout-check `otp:locked:{phone}` → 429 `otp_locked`. Генерит код, пишет Redis `otp:pickup:{requestId}` Hash `{code, attempts:0}` TTL 1800с. `SmsPort.send(trusted_person_phone, pickupOtpTemplate(code, childName, kindergartenName))`. Dispatch `pickup.otp_sent` event (audit outbox). Errors: 404 `pickup_request_not_found`, 410 `pickup_request_expired`, 409 `pickup_request_already_validated`, 409 `pickup_request_status_invalid` (статус не `otp_sent`), 429 `otp_rate_limited`, 429 `otp_locked`. |
+| POST | `/staff/pickup-requests/:id/validate-otp` | Сотрудник вводит код, продиктованный доверенным лицом. Advisory lock `pg_advisory_xact_lock(hashtext('pickup:validate:'||requestId))` — защита от concurrent validates. Читает `otp:pickup:{id}` (missing → 410 `otp_expired`); mismatch → `HINCRBY attempts`; при 3 — `SET otp:locked:{phone}` TTL 900с + DEL OTP key → 429 `otp_locked`. При совпадении: в одной TX — DEL OTP key, `pickup_requests.status='validated'`, `validated_by=staffMemberId`, `validated_at=NOW()`, вызывает `AttendanceService.checkOut(child_id, pickupRequestId, method='otp_pickup')` (создаёт `attendance_events` + `timeline_entries` + upsert `child_daily_status`), обновляет `pickup_requests.attendance_event_id`. Если `trusted_people.is_one_time=true` → `used_at=NOW()`, `is_active=false`. Dispatch `pickup.validated` event (recipients: approved guardians + requester). Response 200: `{pickup_request_id, attendance_event_id, validated_at}`. Errors: 404 `pickup_request_not_found`, 410 `pickup_request_expired`, 409 `pickup_request_already_validated`, 409 `pickup_request_status_invalid`, 410 `otp_expired`, 410 `otp_invalid`, 429 `otp_locked`. |
+| POST | `/staff/pickup-requests/:id/cancel` | Отмена: `status='cancelled'`, DEL Redis `otp:pickup:{requestId}`. Response 200: `{id, status}`. Errors: 404 `pickup_request_not_found`, 409 `pickup_request_already_validated`, 409 `pickup_request_status_invalid`. |
+
+**Request/response examples:**
+
+```jsonc
+// POST /staff/pickup-requests — ad-hoc (without whitelist)
+// Request:
+{ "child_id": "550e8400-e29b-41d4-a716-446655440001",
+  "trusted_person_name": "Асем Нурова",
+  "trusted_person_phone": "+77011234567" }
+// Response 201:
+{ "id": "550e8400-e29b-41d4-a716-446655440099",
+  "status": "otp_sent",
+  "trusted_person_phone": "+77011234567",
+  "expires_at": "2026-05-02T12:30:00.000Z" }
+
+// POST /staff/pickup-requests/:id/validate-otp
+// Request:
+{ "code": "482910" }
+// Response 200:
+{ "pickup_request_id": "550e8400-e29b-41d4-a716-446655440099",
+  "attendance_event_id": "550e8400-e29b-41d4-a716-446655440200",
+  "validated_at": "2026-05-02T12:05:00.000Z" }
+```
+
+**Error map (B11 additions):**
+
+| HTTP | `error` | Когда |
+|---|---|---|
+| 404 | `trusted_person_not_found` | `trusted_person_id` не найден в `trusted_people` |
+| 403 | `trusted_person_not_for_child` | `trusted_people.child_id ≠ body.child_id` |
+| 410 | `trusted_person_revoked` | `trusted_people.is_active=false` или `revoked_at IS NOT NULL` |
+| 404 | `pickup_request_not_found` | Запись не найдена в kg |
+| 410 | `pickup_request_expired` | `pickup_requests.status='expired'` или `expires_at < NOW()` |
+| 409 | `pickup_request_already_validated` | `pickup_requests.status='validated'` |
+| 409 | `pickup_request_status_invalid` | Неподходящий статус для операции (например, cancel при `validated`) |
+| 410 | `otp_expired` | Ключ `otp:pickup:{requestId}` в Redis истёк или не существует |
+| 410 | `otp_invalid` | Код не совпал (attempts < 3) |
+| 429 | `otp_rate_limited` | `rate:otp:{phone}` превышен (5/hour) |
+| 429 | `otp_locked` | `otp:locked:{phone}` активен (3 неверных попытки → 900с блокировка) |
 
 ### 3.7 Timeline & Intraday Status
 
@@ -735,14 +779,45 @@ Reception может работать с заявками — см. Admin API `/
 | POST | `/payments/webhook/tiptoppay` | Webhook TipTopPay. **Один из пары TipTopPay/FreedomPay** — финальный выбор до начала интеграции. |
 | POST | `/payments/webhook/freedom-pay` | Webhook Freedom Pay. **Один из пары TipTopPay/FreedomPay** — финальный выбор до начала интеграции. |
 
-### 4.6 Trusted People
+### 4.6 Trusted People & Parent Pickup Requests
+
+<!-- B11 — in progress -->
+
+**Guards:** `JwtAuthGuard` + `KindergartenScopeGuard` + `@Roles('parent')`. `ChildAccessGuard` применяется для `:id` в `/parent/children/:id/*`. Все записи kg-bound.
 
 | Метод | Путь | Назначение |
 |---|---|---|
-| GET | `/parent/children/:id/trusted-people` | Whitelist доверенных. |
-| POST | `/parent/children/:id/trusted-people` | Добавить: `full_name`, `phone`, `iin`, `relation`, `photo_url`, `is_one_time`. |
-| PATCH | `/parent/trusted-people/:id` | Обновить. |
-| POST | `/parent/trusted-people/:id/revoke` | Отозвать (`revoked_at`). |
+| GET | `/parent/children/:id/trusted-people` | Whitelist доверенных для ребёнка. Возвращает `is_active=true` записи (активные + одноразовые, у которых ещё не `used_at`). Response: `[{id, full_name, phone, iin?, relation, photo_url?, is_one_time, is_active, used_at?, created_at, revoked_at?}]`. Errors: 404 `child_not_found`, 403 `access_denied`. |
+| POST | `/parent/children/:id/trusted-people` | Добавить доверенное лицо. Body: `{ full_name, phone, iin?, relation, photo_url?, is_one_time? }`. Валидация: `phone` E.164 strict; `iin` `/^\d{12}$/` если передан. Требует `trusted_people_manage` permission (locked — только primary). Response 201: `{id, full_name, phone, is_one_time, created_at}`. Errors: 403 `permission_denied` (`not_primary_guardian` или нет `trusted_people_manage`), 422 `invalid_phone_format`. |
+| PATCH | `/parent/trusted-people/:id` | Обновить любые поля кроме `is_active` (для revoke — отдельный endpoint). Body: `{full_name?, phone?, iin?, relation?, photo_url?, is_one_time?}`. Только автор (`added_by_user_id = req.user.user_id`) или primary guardian того же ребёнка. Errors: 404 `trusted_person_not_found`, 403 `trusted_person_not_for_child`, 410 `trusted_person_revoked`. |
+| POST | `/parent/trusted-people/:id/revoke` | Отозвать: `revoked_at=NOW()`, `is_active=false`. Если есть открытые `pickup_requests` с этим `trusted_person_id` и `status='otp_sent'` — они не отменяются автоматически (staff cancel вручную). Response 200: `{id, revoked_at}`. Errors: 404 `trusted_person_not_found`, 403 `trusted_person_not_for_child`, 410 `trusted_person_revoked` (уже отозван). |
+| POST | `/parent/children/:id/pickup-requests` | Родитель инициирует pickup-request заранее. Body: `{ trusted_person_id }` (из whitelist) или ad-hoc `{ trusted_person_name, trusted_person_phone, trusted_person_iin? }`. Если `trusted_person_id` — snapshot копируется; `is_active=true` обязателен. Создаёт `pickup_requests` со `status='otp_sent'`. OTP **не отправляется** при создании — staff явно вызовет `send-otp` при появлении доверенного лица. Response 201: `{id, child_id, trusted_person_name, trusted_person_phone, status, expires_at}`. Errors: 404 `child_not_found`, 403 `access_denied`, 404 `trusted_person_not_found`, 403 `trusted_person_not_for_child`, 410 `trusted_person_revoked`, 422 `invalid_phone_format`. |
+
+**Request/response examples:**
+
+```jsonc
+// POST /parent/children/:id/trusted-people
+// Request:
+{ "full_name": "Асем Нурова", "phone": "+77011234567",
+  "iin": "890512300124", "relation": "тётя", "is_one_time": false }
+// Response 201:
+{ "id": "550e8400-e29b-41d4-a716-446655440010",
+  "full_name": "Асем Нурова", "phone": "+77011234567",
+  "is_one_time": false, "created_at": "2026-05-02T10:00:00.000Z" }
+
+// POST /parent/children/:id/pickup-requests — by whitelist
+// Request:
+{ "trusted_person_id": "550e8400-e29b-41d4-a716-446655440010" }
+// Response 201:
+{ "id": "550e8400-e29b-41d4-a716-446655440099",
+  "child_id": "550e8400-e29b-41d4-a716-446655440001",
+  "trusted_person_name": "Асем Нурова",
+  "trusted_person_phone": "+77011234567",
+  "status": "otp_sent",
+  "expires_at": "2026-05-02T10:30:00.000Z" }
+```
+
+**Error map (B11 — parent side):** те же `trusted_person_not_found`, `trusted_person_revoked`, `trusted_person_not_for_child` что и §3.6, плюс стандартные 401/403 по `ChildAccessGuard`.
 
 ### 4.7 Parent Requests
 
