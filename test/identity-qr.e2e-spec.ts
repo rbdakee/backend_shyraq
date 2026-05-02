@@ -1,18 +1,17 @@
 /**
- * B10 Identity QR - e2e scenarios A-J.
+ * B10 Identity QR - e2e scenarios A-K.
  *
  * Endpoints under test:
  *   GET  /api/v1/users/me/qr
  *   POST /api/v1/staff/qr/scan
  *   POST /api/v1/admin/qr/revoke-all/:userId
  *
- * Device-ID note:
- *   The OTP-verify controller does not accept X-Device-Id so
- *   refresh_tokens.device_id is NULL for OTP-issued sessions. The service
- *   scan() calls hasActiveSessionForDevice(userId, deviceId) with strict
- *   device_id = :did equality. NULL never equals a string, so after OTP-login
- *   we UPDATE the staff refresh_token row to bind device_id. This is
- *   test-setup only, not production code.
+ * Device-ID:
+ *   /auth/otp/verify reads `X-Device-Id` and persists it onto the issued
+ *   refresh_token row. The scan path calls hasActiveSessionForDevice() with
+ *   strict equality, so passing the header at OTP-verify is sufficient — no
+ *   post-hoc UPDATE is needed. (Pre-T7 the controller ignored the header,
+ *   forcing an UPDATE workaround; that has been removed.)
  */
 import { createHash, randomBytes } from 'node:crypto';
 import { randomUUID } from 'node:crypto';
@@ -29,7 +28,11 @@ interface AuthBody {
   access_token: string;
   refresh_token: string | null;
   pending_role_select: boolean;
-  roles: { role: string; kindergarten_id: string | null; group_id: string | null }[];
+  roles: {
+    role: string;
+    kindergarten_id: string | null;
+    group_id: string | null;
+  }[];
   user: { id: string; phone: string; full_name: string };
 }
 
@@ -92,20 +95,25 @@ describe('B10 Identity QR (e2e)', () => {
     return m[1];
   }
 
-  async function otpLogin(phone: string): Promise<AuthBody> {
+  async function otpLogin(phone: string, deviceId?: string): Promise<AuthBody> {
     ctx.sms.lastSent = null;
-    await request(server).post('/api/v1/auth/otp/request').send({ phone }).expect(202);
+    await request(server)
+      .post('/api/v1/auth/otp/request')
+      .send({ phone })
+      .expect(202);
     const code = extractCode();
-    const res = await request(server)
+    const req2 = request(server)
       .post('/api/v1/auth/otp/verify')
-      .send({ phone, code })
-      .expect(200);
+      .send({ phone, code });
+    if (deviceId) req2.set('X-Device-Id', deviceId);
+    const res = await req2.expect(200);
     return res.body as AuthBody;
   }
 
   async function createKgWithAdmin(
     slug: string,
     phone: string,
+    adminDeviceId?: string,
   ): Promise<{ kgId: string; adminUserId: string; adminToken: string }> {
     const res = await request(server)
       .post('/api/v1/saas/kindergartens')
@@ -117,7 +125,7 @@ describe('B10 Identity QR (e2e)', () => {
       })
       .expect(201);
     const body = res.body as CreatedKgResp;
-    const auth = await otpLogin(phone);
+    const auth = await otpLogin(phone, adminDeviceId);
     return {
       kgId: body.kindergarten.id,
       adminUserId: body.user.id,
@@ -164,29 +172,6 @@ describe('B10 Identity QR (e2e)', () => {
       .expect(200);
 
     return { childId: card.body.enrollment.childId as string };
-  }
-
-  /**
-   * Bind device_id on the staff user's active refresh token so the scan
-   * service's hasActiveSessionForDevice check passes.
-   *
-   * The OTP-verify controller does not pass X-Device-Id, so device_id is NULL
-   * by default. We UPDATE it directly here to simulate a real device-bound
-   * session (e.g. a mobile app that passes X-Device-Id on every OTP verify).
-   */
-  async function bindStaffDeviceId(
-    staffUserId: string,
-    deviceId: string,
-  ): Promise<void> {
-    await ctx.dataSource.transaction(async (m) => {
-      await m.query(`SET LOCAL app.bypass_rls = 'true'`);
-      await m.query(
-        `UPDATE refresh_tokens
-         SET device_id = $1
-         WHERE user_id = $2 AND revoked_at IS NULL`,
-        [deviceId, staffUserId],
-      );
-    });
   }
 
   // ── A. First GET issues a fresh 32-hex token ──────────────────────────────
@@ -276,8 +261,7 @@ describe('B10 Identity QR (e2e)', () => {
       .set('Authorization', `Bearer ${parentAuth.access_token}`)
       .expect(200);
 
-    const staffAuth = await otpLogin('+77021120001');
-    await bindStaffDeviceId(staffAuth.user.id, STAFF_DEVICE_ID);
+    const staffAuth = await otpLogin('+77021120001', STAFF_DEVICE_ID);
 
     const scanRes = await request(server)
       .post('/api/v1/staff/qr/scan')
@@ -300,7 +284,8 @@ describe('B10 Identity QR (e2e)', () => {
   // ── E. Staff scans expired token → 410 qr_token_expired ──────────────────
 
   it('returns 410 qr_token_expired on expired token (Scenario E)', async () => {
-    const a = await createKgWithAdmin('qr-e', '+77021120002');
+    // KG creation seeds the staff user (admin role) used as the scanner below.
+    await createKgWithAdmin('qr-e', '+77021120002');
     const parentAuth = await otpLogin('+77021110005');
 
     const qrRes = await request(server)
@@ -322,8 +307,7 @@ describe('B10 Identity QR (e2e)', () => {
       );
     });
 
-    const staffAuth = await otpLogin('+77021120002');
-    await bindStaffDeviceId(staffAuth.user.id, STAFF_DEVICE_ID);
+    const staffAuth = await otpLogin('+77021120002', STAFF_DEVICE_ID);
 
     const scanRes = await request(server)
       .post('/api/v1/staff/qr/scan')
@@ -355,8 +339,7 @@ describe('B10 Identity QR (e2e)', () => {
       .set('Authorization', `Bearer ${a.adminToken}`)
       .expect(200);
 
-    const staffAuth = await otpLogin('+77021120003');
-    await bindStaffDeviceId(staffAuth.user.id, STAFF_DEVICE_ID);
+    const staffAuth = await otpLogin('+77021120003', STAFF_DEVICE_ID);
 
     const scanRes = await request(server)
       .post('/api/v1/staff/qr/scan')
@@ -371,9 +354,9 @@ describe('B10 Identity QR (e2e)', () => {
   // ── G. Staff scans non-existent token → 404 ──────────────────────────────
 
   it('returns 404 qr_token_not_found for an unknown token (Scenario G)', async () => {
-    const a = await createKgWithAdmin('qr-g', '+77021120004');
-    const staffAuth = await otpLogin('+77021120004');
-    await bindStaffDeviceId(staffAuth.user.id, STAFF_DEVICE_ID);
+    // KG creation seeds the staff user (admin role) used as the scanner below.
+    await createKgWithAdmin('qr-g', '+77021120004');
+    const staffAuth = await otpLogin('+77021120004', STAFF_DEVICE_ID);
 
     const unknownToken = randomBytes(16).toString('hex');
 
@@ -389,43 +372,39 @@ describe('B10 Identity QR (e2e)', () => {
 
   // ── H. Rate-limit 60+1 → 429 ─────────────────────────────────────────────
 
-  it(
-    'allows 60 scans then 429 qr_rate_limit_exceeded with Retry-After (Scenario H)',
-    async () => {
-      const a = await createKgWithAdmin('qr-h', '+77021120005');
-      const staffAuth = await otpLogin('+77021120005');
-      await bindStaffDeviceId(staffAuth.user.id, STAFF_DEVICE_ID);
+  it('allows 60 scans then 429 qr_rate_limit_exceeded with Retry-After (Scenario H)', async () => {
+    // KG creation seeds the staff user (admin role) used as the scanner below.
+    await createKgWithAdmin('qr-h', '+77021120005');
+    const staffAuth = await otpLogin('+77021120005', STAFF_DEVICE_ID);
 
-      // The rate-limit check runs before token lookup, so any 32-hex string
-      // triggers it. All 60 calls will return 404 (token not found) but that
-      // is fine — they increment the counter.
-      const anyToken = randomBytes(16).toString('hex');
+    // The rate-limit check runs before token lookup, so any 32-hex string
+    // triggers it. All 60 calls will return 404 (token not found) but that
+    // is fine — they increment the counter.
+    const anyToken = randomBytes(16).toString('hex');
 
-      for (let i = 0; i < 60; i++) {
-        const res = await request(server)
-          .post('/api/v1/staff/qr/scan')
-          .set('Authorization', `Bearer ${staffAuth.access_token}`)
-          .set('X-Device-Id', STAFF_DEVICE_ID)
-          .send({ token: anyToken });
-        expect(res.status).not.toBe(429);
-      }
-
-      const exceeded = await request(server)
+    for (let i = 0; i < 60; i++) {
+      const res = await request(server)
         .post('/api/v1/staff/qr/scan')
         .set('Authorization', `Bearer ${staffAuth.access_token}`)
         .set('X-Device-Id', STAFF_DEVICE_ID)
         .send({ token: anyToken });
+      expect(res.status).not.toBe(429);
+    }
 
-      expect(exceeded.status).toBe(429);
-      expect(exceeded.body.error).toBe('qr_rate_limit_exceeded');
-      expect(typeof exceeded.body.details?.retryAfterSeconds).toBe('number');
-      expect(exceeded.body.details.retryAfterSeconds).toBeGreaterThan(0);
-      // Standard Retry-After HTTP header must be present (set by StaffQrController).
-      expect(exceeded.headers['retry-after']).toBeDefined();
-      expect(Number(exceeded.headers['retry-after'])).toBeGreaterThan(0);
-    },
-    30_000,
-  );
+    const exceeded = await request(server)
+      .post('/api/v1/staff/qr/scan')
+      .set('Authorization', `Bearer ${staffAuth.access_token}`)
+      .set('X-Device-Id', STAFF_DEVICE_ID)
+      .send({ token: anyToken });
+
+    expect(exceeded.status).toBe(429);
+    expect(exceeded.body.error).toBe('qr_rate_limit_exceeded');
+    expect(typeof exceeded.body.details?.retryAfterSeconds).toBe('number');
+    expect(exceeded.body.details.retryAfterSeconds).toBeGreaterThan(0);
+    // Standard Retry-After HTTP header must be present (set by StaffQrController).
+    expect(exceeded.headers['retry-after']).toBeDefined();
+    expect(Number(exceeded.headers['retry-after'])).toBeGreaterThan(0);
+  }, 30_000);
 
   // ── I. Admin revoke-all → revokedCount + 0 on repeat ─────────────────────
 
@@ -455,8 +434,8 @@ describe('B10 Identity QR (e2e)', () => {
   // ── J. Cross-kg: kg-A staff scans kg-B parent token ──────────────────────
 
   it('kg-A staff scans kg-B parent token and gets kg-B child in linkedChildren (Scenario J)', async () => {
-    // kg-A: the scanning staff belongs here.
-    const a = await createKgWithAdmin('qr-j-a', '+77021120007');
+    // kg-A: the scanning staff belongs here. Creation seeds the staff user.
+    await createKgWithAdmin('qr-j-a', '+77021120007');
     // kg-B: the parent and child belong here.
     const b = await createKgWithAdmin('qr-j-b', '+77021120008');
     const parentPhone = '+77021110008';
@@ -478,8 +457,7 @@ describe('B10 Identity QR (e2e)', () => {
       .expect(200);
 
     // kg-A staff scans the kg-B parent's token.
-    const staffAAuth = await otpLogin('+77021120007');
-    await bindStaffDeviceId(staffAAuth.user.id, STAFF_DEVICE_ID);
+    const staffAAuth = await otpLogin('+77021120007', STAFF_DEVICE_ID);
 
     const scanRes = await request(server)
       .post('/api/v1/staff/qr/scan')

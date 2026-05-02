@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Headers,
   HttpCode,
   HttpStatus,
   Post,
@@ -12,6 +13,7 @@ import {
   ApiBearerAuth,
   ApiBody,
   ApiForbiddenResponse,
+  ApiHeader,
   ApiNoContentResponse,
   ApiOkResponse,
   ApiOperation,
@@ -82,6 +84,12 @@ export class AuthController {
       default: { value: { phone: '+77012345678', code: '123456' } },
     },
   })
+  @ApiHeader({
+    name: 'X-Device-Id',
+    required: false,
+    description:
+      'Stable per-install device identifier (UUID/opaque string). Persisted on the issued refresh-token row so device-bound endpoints (B10 Identity-QR scan rate-limit, future session listings) can resolve the caller. Legacy clients that do not send it keep working — `device_id` stored as NULL.',
+  })
   @ApiOkResponse({
     type: AuthResponseDto,
     description: 'Token pair issued (or pending_role_select if multi-role)',
@@ -94,11 +102,13 @@ export class AuthController {
   })
   async verifyOtp(
     @Body() dto: VerifyOtpDto,
+    @Headers('x-device-id') deviceId: string | undefined,
     @Req() req: Request,
   ): Promise<AuthResponseDto> {
     const result = await this.auth.verifyOtp({
       phone: dto.phone,
       code: dto.code,
+      deviceId: deviceId && deviceId.length > 0 ? deviceId : undefined,
       ipAddress: req.ip,
     });
     return AuthPresenter.authResult(result);
@@ -123,16 +133,24 @@ export class AuthController {
       },
     },
   })
+  @ApiHeader({
+    name: 'X-Device-Id',
+    required: false,
+    description:
+      'Stable per-install device identifier. Overwrites `device_id` on the freshly-rotated refresh-token row when supplied (legacy clients pass nothing; the previous row carries forward whatever device_id it had).',
+  })
   @ApiOkResponse({ type: AuthResponseDto })
   @ApiUnauthorizedResponse({
     description: 'Refresh token unknown, expired, or already revoked',
   })
   async refresh(
     @Body() dto: RefreshTokenDto,
+    @Headers('x-device-id') deviceId: string | undefined,
     @Req() req: Request,
   ): Promise<AuthResponseDto> {
     const result = await this.auth.refreshToken({
       rawRefreshToken: dto.refreshToken,
+      deviceId: deviceId && deviceId.length > 0 ? deviceId : undefined,
       ipAddress: req.ip,
     });
     return AuthPresenter.authResult(result);
@@ -195,6 +213,12 @@ export class AuthController {
       },
     },
   })
+  @ApiHeader({
+    name: 'X-Device-Id',
+    required: false,
+    description:
+      'Stable per-install device identifier. Persisted on the freshly-issued refresh-token row so device-bound endpoints (B10 Identity-QR scan rate-limit, future session listings) can resolve the caller. Legacy clients that do not send it keep working — `device_id` stored as NULL.',
+  })
   @ApiOkResponse({ type: AuthResponseDto })
   @ApiUnauthorizedResponse()
   @ApiForbiddenResponse({
@@ -203,6 +227,7 @@ export class AuthController {
   async selectRole(
     @CurrentUser() user: JwtPayload,
     @Body() dto: SelectRoleDto,
+    @Headers('x-device-id') deviceId: string | undefined,
     @Req() req: Request,
   ): Promise<AuthResponseDto> {
     const result = await this.auth.selectRole({
@@ -211,6 +236,7 @@ export class AuthController {
       role: dto.role,
       oldAccessJti: user.jti,
       oldAccessExpUnix: user.exp,
+      deviceId: deviceId && deviceId.length > 0 ? deviceId : undefined,
       ipAddress: req.ip,
     });
     return AuthPresenter.authResult(result);
