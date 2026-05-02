@@ -177,6 +177,12 @@ class FakeChildRepo extends ChildRepository {
       ),
     );
   }
+
+  findByIdsCrossTenant(ids: string[]): Promise<Child[]> {
+    return Promise.resolve(
+      [...this.children.values()].filter((c) => ids.includes(c.id)),
+    );
+  }
 }
 
 class FakeGuardianRepo extends ChildGuardianRepository {

@@ -79,6 +79,13 @@ import { TokenBlocklistPort } from './token-blocklist.port';
       useClass: SaasUserRelationalRepository,
     },
   ],
-  exports: [AuthService, JwtTokenPort, TokenBlocklistPort, JwtModule, SmsPort],
+  exports: [
+    AuthService,
+    JwtTokenPort,
+    TokenBlocklistPort,
+    JwtModule,
+    SmsPort,
+    RefreshTokenRepository,
+  ],
 })
 export class AuthModule {}

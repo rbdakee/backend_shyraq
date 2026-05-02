@@ -102,6 +102,38 @@ export class RefreshTokenRelationalRepository extends RefreshTokenRepository {
   }
 
   /**
+   * EXISTS-style check for an active refresh-token row owned by `userId` and
+   * stamped with `deviceId`. Used by IdentityQrService.scan to confirm that
+   * the staff caller really owns the device-id they're submitting in the
+   * X-Device-Id header (otherwise a malicious caller could rotate header
+   * values to dodge the 60/min rate-limit).
+   *
+   * Runs under `app.bypass_rls=true` because refresh_tokens is RLS-scoped on
+   * `kindergarten_id` but the active tenant for /staff/qr/scan is the
+   * SCANNING staff's kg — which is fine for refresh-token reads on that
+   * same staff user. We bypass anyway so this method is callable from
+   * cross-tenant pipelines (consistency with `findApproved...CrossTenant`).
+   */
+  async hasActiveSessionForDevice(
+    userId: string,
+    deviceId: string,
+    now: Date,
+  ): Promise<boolean> {
+    const outerManager = this.manager();
+    return outerManager.transaction(async (tx) => {
+      await tx.query(`SET LOCAL app.bypass_rls = 'true'`);
+      const count = await tx
+        .createQueryBuilder(RefreshTokenEntity, 'rt')
+        .where('rt.user_id = :uid', { uid: userId })
+        .andWhere('rt.device_id = :did', { did: deviceId })
+        .andWhere('rt.revoked_at IS NULL')
+        .andWhere('rt.expires_at > :now', { now })
+        .getCount();
+      return count > 0;
+    });
+  }
+
+  /**
    * Selects the EntityManager bound to the active tenant transaction (set by
    * TenantContextInterceptor) when present, otherwise falls back to the
    * repository's default manager. Falling back is safe for paths that don't

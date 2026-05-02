@@ -271,6 +271,9 @@ class FakeChildRepository extends ChildRepository {
   findByIinCrossTenant(_iin: string): Promise<Child[]> {
     return Promise.resolve([]);
   }
+  findByIdsCrossTenant(_ids: string[]): Promise<Child[]> {
+    return Promise.resolve([]);
+  }
 }
 
 // ── constants ─────────────────────────────────────────────────────────────

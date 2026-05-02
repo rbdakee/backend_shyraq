@@ -170,6 +170,9 @@ class FakeRefreshRepo extends RefreshTokenRepository {
     }
     return Promise.resolve();
   }
+  hasActiveSessionForDevice(): Promise<boolean> {
+    return Promise.resolve(false);
+  }
 }
 
 interface SaasRow {

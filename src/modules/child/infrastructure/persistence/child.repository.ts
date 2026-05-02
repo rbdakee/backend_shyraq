@@ -82,4 +82,13 @@ export abstract class ChildRepository {
    * `created_at DESC` (most recent first).
    */
   abstract findByIinCrossTenant(iin: string): Promise<Child[]>;
+
+  /**
+   * Cross-tenant batch lookup by id. Used by `IdentityQrService.scan` to
+   * hydrate the snapshot list of children a parent is approved for —
+   * the child rows may live in different kindergartens than the staff
+   * doing the scan, so RLS is bypassed for this read. Empty `ids` returns
+   * an empty array without opening a transaction.
+   */
+  abstract findByIdsCrossTenant(ids: string[]): Promise<Child[]>;
 }

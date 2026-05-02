@@ -3,6 +3,7 @@ import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import {
   DataSource,
   EntityManager,
+  In,
   QueryFailedError,
   Repository,
 } from 'typeorm';
@@ -220,6 +221,28 @@ export class ChildRelationalRepository extends ChildRepository {
         .andWhere("c.status <> 'archived'")
         .orderBy('c.created_at', 'DESC')
         .getMany();
+      return rows.map((r) => ChildMapper.toDomain(r));
+    });
+  }
+
+  /**
+   * Cross-tenant batch hydrate by id. Used by IdentityQrService.scan when
+   * resolving `linked_children` for a scanned parent — the children may be
+   * enrolled in different kindergartens than the scanning staff's tenant,
+   * so we bypass RLS for the read. The bypass GUC is set inside a fresh
+   * transaction so it does not leak to the caller's request scope.
+   *
+   * Returns rows in the order PG decides; service callers reorder if needed.
+   * No archived-status filter — caller decides whether to surface archived
+   * children. Empty input short-circuits without opening a transaction.
+   */
+  async findByIdsCrossTenant(ids: string[]): Promise<Child[]> {
+    if (ids.length === 0) return [];
+    return this.dataSource.transaction(async (manager) => {
+      await manager.query(`SET LOCAL app.bypass_rls = 'true'`);
+      const rows = await manager.getRepository(ChildEntity).find({
+        where: { id: In(ids) },
+      });
       return rows.map((r) => ChildMapper.toDomain(r));
     });
   }

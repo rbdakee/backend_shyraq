@@ -280,6 +280,9 @@ class FakeChildRepo extends ChildRepository {
   findByIinCrossTenant(): Promise<Child[]> {
     return Promise.resolve([]);
   }
+  findByIdsCrossTenant(): Promise<Child[]> {
+    return Promise.resolve([]);
+  }
 }
 
 class FakeGuardianRepo extends ChildGuardianRepository {
