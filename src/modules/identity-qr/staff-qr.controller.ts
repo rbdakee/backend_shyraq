@@ -106,7 +106,17 @@ export class StaffQrController {
       throw new BadRequestException('X-Device-Id header required');
     }
     try {
-      const result = await this.service.scan(user.sub, deviceId, dto.token);
+      // Pass the caller's kg from the JWT so the service can scope
+      // `linkedChildren` to it. Token identity is cross-tenant; the kid
+      // list is per-kg. super_admin (no kg claim) falls back to
+      // cross-tenant inside the service — the staff-roles guard above
+      // already prevents that path in normal operation.
+      const result = await this.service.scan(
+        user.sub,
+        deviceId,
+        dto.token,
+        user.kindergarten_id ?? null,
+      );
       return IdentityQrPresenter.scan(result);
     } catch (err) {
       if (err instanceof QrScanRateLimitExceededError) {

@@ -1023,16 +1023,18 @@
 |---|---|---|
 | **Fallback check-in/check-out** | Reception | Face ID не сработал → сканирует QR ребёнка (из Parent App родителя, если ребёнок слишком мал для своего QR) |
 | **Подтверждение забора родителем** | Reception | Родитель показывает свой QR → `attendance_events.method='qr'`, `pickup_user_id=user.id` |
+| **Несколько детей в одном саду** | Reception / Mentor | Если у родителя несколько детей в том же саду — `linkedChildren` массив со всеми; Staff App отображает все карточки и check-out по одному (B8 per-child API). |
+| **Cross-kg родитель** | Reception / Mentor | Если у родителя дети в разных садиках — `linkedChildren` содержит только детей из сада сканирующего сотрудника. Идентификация (имя/телефон/avatar) показывается всегда (token cross-tenant), но дети из другого сада никогда не утекают. |
 | **Staff авторизация у турникета** | Турникет с камерой+сканером | Сотрудник без face_profile использует QR |
 | **Доверенное лицо (future)** | Reception | QR вместо SMS OTP |
 
 ### Security
 
-- TTL 24h; автоматический серверный refresh (на GET, если <1ч до истечения).
-- **Admin revoke-all:** `POST /admin/qr/revoke-all/:userId` — bulk-revoke всех активных токенов пользователя (DB `revoked_at = NOW()` + Redis DEL). Возвращает `{revoked_count}`. Security-recourse при подозрении на компрометацию. Включён в MVP.
-- Rate-limit на `POST /staff/qr/scan`: 60/мин per `device_id` (берётся из активной `refresh_tokens` сессии вызывающего staff). Redis: `rl:qr:scan:{device_id}` INCR+EXPIRE 60.
+- TTL 24h; автоматический серверный refresh (на каждом GET — токен всегда mints заново). Каждое issueOrRefresh использует `pg_advisory_xact_lock(hashtext('qr:identity:'||user_id))` чтобы две одновременные `GET /users/me/qr` сериализовались на уровне TX и не упирались в `idx_user_qr_tokens_one_active`.
+- **Admin revoke-all:** `POST /admin/qr/revoke-all/:userId` — bulk-revoke всех активных токенов пользователя: DB `revoked_at = NOW()` для всех активных строк; Redis-записи **не удаляются** (admin не имеет plaintext-токенов, только их хэши); cache-TTL ≤24h задаёт верхнюю границу stale-cache exposure; следующий скан попадает в DB-recheck и возвращает 410 `qr_token_revoked`. Возвращает `{revoked_count}`. Security-recourse при подозрении на компрометацию. Включён в MVP.
+- Rate-limit на `POST /staff/qr/scan`: 60/мин per `device_id` (берётся из заголовка `X-Device-Id` + проверяется через `hasActiveSessionForDevice(userId, deviceId)` против активной `refresh_tokens` сессии вызывающего staff — без этой связки header можно было бы крутить и обходить лимит). Redis: `rl:qr:scan:{device_id}` INCR+EXPIRE 60. `X-Device-Id` персистится на `refresh_tokens.device_id` при OTP-verify / refresh / role-select.
 - Логирование всех сканов с IP и device_id (в будущем — `audit_log`).
-- `kindergarten_id` nullable — cross-tenant по дизайну (один QR для родителя с детьми в нескольких садиках), RLS не применяется к `user_qr_tokens`.
+- **Token cross-tenant; `linkedChildren` per-kg.** `user_qr_tokens.kindergarten_id` nullable — токен идентифицирует пользователя глобально (один QR для родителя с детьми в нескольких садиках), RLS не применяется к таблице. Но в ответе `POST /staff/qr/scan` массив `linkedChildren` фильтруется по `kindergarten_id` сканирующего сотрудника: staff в kg-A, сканирующий родителя с детьми в kg-A и kg-B, видит только kg-A ребёнка(детей); kg-B ребёнок в его ответе никогда не появляется. `allowedActions` тоже считается по guardian-связям только в kg-A (нет `can_pickup` в kg-A → `[]`).
 
 ### Result
 

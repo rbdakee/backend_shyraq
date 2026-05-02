@@ -291,8 +291,13 @@ class FakeGuardianRepo extends ChildGuardianRepository {
   }
   findApprovedActiveByUserIdCrossTenant(
     userId: string,
+    kindergartenId?: string,
   ): Promise<ChildGuardian[]> {
-    return Promise.resolve(this.approvedActiveByUser.get(userId) ?? []);
+    const all = this.approvedActiveByUser.get(userId) ?? [];
+    if (!kindergartenId) return Promise.resolve(all);
+    return Promise.resolve(
+      all.filter((g) => g.toState().kindergartenId === kindergartenId),
+    );
   }
 }
 
@@ -593,7 +598,7 @@ describe('IdentityQrService.issueOrRefresh', () => {
 // ── scan ─────────────────────────────────────────────────────────────────
 
 describe('IdentityQrService.scan — happy paths', () => {
-  it('returns user + linked_children + check_in/check_out for parent with can_pickup=true', async () => {
+  it('returns only the scanning-kg child in linkedChildren (parent has children in KG and KG2)', async () => {
     const sut = buildSut();
     sut.refresh.allow(STAFF_USER, DEVICE_ID);
     sut.users.put(makeUser(PARENT_USER, 'Parent Sample'));
@@ -605,14 +610,45 @@ describe('IdentityQrService.scan — happy paths', () => {
     ]);
 
     const issued = await sut.service.issueOrRefresh(PARENT_USER);
-    const result = await sut.service.scan(STAFF_USER, DEVICE_ID, issued.token);
+    // Staff in KG scans the parent's QR → only the KG child is returned.
+    // KG2 child is NOT visible to KG staff even though the QR identity is
+    // cross-tenant (one parent → one QR across kindergartens).
+    const result = await sut.service.scan(
+      STAFF_USER,
+      DEVICE_ID,
+      issued.token,
+      KG,
+    );
 
     expect(result.user.id).toBe(PARENT_USER);
     expect(result.role).toBe('parent');
-    expect(result.linkedChildren?.map((c) => c.id).sort()).toEqual(
-      [CHILD_1, CHILD_2].sort(),
-    );
+    expect(result.linkedChildren?.map((c) => c.id)).toEqual([CHILD_1]);
     expect(result.allowedActions).toEqual(['check_in', 'check_out']);
+  });
+
+  it('returns empty linkedChildren when parent has no children in scanning kg', async () => {
+    const sut = buildSut();
+    sut.refresh.allow(STAFF_USER, DEVICE_ID);
+    sut.users.put(makeUser(PARENT_USER, 'Parent Sample'));
+    sut.children.put(makeChild(CHILD_2, KG2, 'Child B'));
+    sut.guardians.setApprovedActive(PARENT_USER, [
+      makeApprovedGuardian(CHILD_2, PARENT_USER, KG2, true),
+    ]);
+
+    const issued = await sut.service.issueOrRefresh(PARENT_USER);
+    // Staff in KG scans a parent whose only child lives in KG2.
+    const result = await sut.service.scan(
+      STAFF_USER,
+      DEVICE_ID,
+      issued.token,
+      KG,
+    );
+
+    expect(result.user.id).toBe(PARENT_USER);
+    expect(result.role).toBe('parent');
+    expect(result.linkedChildren).toEqual([]);
+    // No can_pickup guardian in KG → no actions in the scanning kg.
+    expect(result.allowedActions).toEqual([]);
   });
 
   it('returns gate_entry for staff scan (no linked_children)', async () => {
@@ -624,7 +660,12 @@ describe('IdentityQrService.scan — happy paths', () => {
     ]);
 
     const issued = await sut.service.issueOrRefresh(STAFF_USER);
-    const result = await sut.service.scan(ADMIN_USER, DEVICE_ID, issued.token);
+    const result = await sut.service.scan(
+      ADMIN_USER,
+      DEVICE_ID,
+      issued.token,
+      KG,
+    );
 
     expect(result.role).toBe('mentor');
     expect(result.allowedActions).toEqual(['gate_entry']);
@@ -637,7 +678,12 @@ describe('IdentityQrService.scan — happy paths', () => {
     sut.users.put(makeUser(SUPER_ADMIN_USER, 'SA'));
     // No staff entries, no guardians → role collapses to 'parent', no pickup → []
     const issued = await sut.service.issueOrRefresh(SUPER_ADMIN_USER);
-    const result = await sut.service.scan(STAFF_USER, DEVICE_ID, issued.token);
+    const result = await sut.service.scan(
+      STAFF_USER,
+      DEVICE_ID,
+      issued.token,
+      KG,
+    );
     expect(result.role).toBe('parent');
     expect(result.allowedActions).toEqual([]);
   });
@@ -649,7 +695,7 @@ describe('IdentityQrService.scan — happy paths', () => {
 
     const issued = await sut.service.issueOrRefresh(PARENT_USER);
     sut.clock.set(new Date(NOW.getTime() + 5 * 60_000));
-    await sut.service.scan(STAFF_USER, DEVICE_ID, issued.token);
+    await sut.service.scan(STAFF_USER, DEVICE_ID, issued.token, KG);
 
     const row = sut.qrRepo.rows[0].toState();
     expect(row.lastScannedAt).toEqual(new Date(NOW.getTime() + 5 * 60_000));
@@ -665,7 +711,12 @@ describe('IdentityQrService.scan — happy paths', () => {
     ]);
 
     const issued = await sut.service.issueOrRefresh(PARENT_USER);
-    const result = await sut.service.scan(STAFF_USER, DEVICE_ID, issued.token);
+    const result = await sut.service.scan(
+      STAFF_USER,
+      DEVICE_ID,
+      issued.token,
+      KG,
+    );
 
     expect(result.role).toBe('parent');
     expect(result.allowedActions).toEqual([]);
@@ -679,7 +730,7 @@ describe('IdentityQrService.scan — errors', () => {
     // do NOT call sut.refresh.allow(...)
     const issued = await sut.service.issueOrRefresh(PARENT_USER);
     await expect(
-      sut.service.scan(STAFF_USER, DEVICE_ID, issued.token),
+      sut.service.scan(STAFF_USER, DEVICE_ID, issued.token, KG),
     ).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
@@ -690,10 +741,10 @@ describe('IdentityQrService.scan — errors', () => {
     const issued = await sut.service.issueOrRefresh(PARENT_USER);
 
     for (let i = 0; i < 60; i++) {
-      await sut.service.scan(STAFF_USER, DEVICE_ID, issued.token);
+      await sut.service.scan(STAFF_USER, DEVICE_ID, issued.token, KG);
     }
     await expect(
-      sut.service.scan(STAFF_USER, DEVICE_ID, issued.token),
+      sut.service.scan(STAFF_USER, DEVICE_ID, issued.token, KG),
     ).rejects.toBeInstanceOf(QrScanRateLimitExceededError);
   });
 
@@ -701,7 +752,7 @@ describe('IdentityQrService.scan — errors', () => {
     const sut = buildSut();
     sut.refresh.allow(STAFF_USER, DEVICE_ID);
     await expect(
-      sut.service.scan(STAFF_USER, DEVICE_ID, 'a'.repeat(32)),
+      sut.service.scan(STAFF_USER, DEVICE_ID, 'a'.repeat(32), KG),
     ).rejects.toBeInstanceOf(QrTokenNotFoundError);
   });
 
@@ -714,7 +765,7 @@ describe('IdentityQrService.scan — errors', () => {
     await sut.service.issueOrRefresh(PARENT_USER);
 
     await expect(
-      sut.service.scan(STAFF_USER, DEVICE_ID, issued.token),
+      sut.service.scan(STAFF_USER, DEVICE_ID, issued.token, KG),
     ).rejects.toBeInstanceOf(QrTokenRevokedError);
   });
 
@@ -727,7 +778,7 @@ describe('IdentityQrService.scan — errors', () => {
     sut.clock.set(new Date(NOW.getTime() + 25 * 60 * 60 * 1000));
 
     await expect(
-      sut.service.scan(STAFF_USER, DEVICE_ID, issued.token),
+      sut.service.scan(STAFF_USER, DEVICE_ID, issued.token, KG),
     ).rejects.toBeInstanceOf(QrTokenExpiredError);
   });
 
@@ -737,7 +788,7 @@ describe('IdentityQrService.scan — errors', () => {
     // Issue token but do NOT seed users repo → simulates user soft-deleted
     const issued = await sut.service.issueOrRefresh(PARENT_USER);
     await expect(
-      sut.service.scan(STAFF_USER, DEVICE_ID, issued.token),
+      sut.service.scan(STAFF_USER, DEVICE_ID, issued.token, KG),
     ).rejects.toBeInstanceOf(QrTokenNotFoundError);
   });
 
@@ -750,7 +801,7 @@ describe('IdentityQrService.scan — errors', () => {
     await sut.cache.setToken(issued.token, ADMIN_USER, 60);
 
     await expect(
-      sut.service.scan(STAFF_USER, DEVICE_ID, issued.token),
+      sut.service.scan(STAFF_USER, DEVICE_ID, issued.token, KG),
     ).rejects.toBeInstanceOf(QrTokenNotFoundError);
   });
 });
@@ -778,7 +829,7 @@ describe('IdentityQrService.revokeAllByUser', () => {
     const issued = await sut.service.issueOrRefresh(PARENT_USER);
     await sut.service.revokeAllByUser(ADMIN_USER, PARENT_USER);
     await expect(
-      sut.service.scan(STAFF_USER, DEVICE_ID, issued.token),
+      sut.service.scan(STAFF_USER, DEVICE_ID, issued.token, KG),
     ).rejects.toBeInstanceOf(QrTokenRevokedError);
   });
 });

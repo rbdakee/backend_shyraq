@@ -18,7 +18,8 @@ export class ScannedUserDto {
   @ApiPropertyOptional({
     example: '+77001112233',
     nullable: true,
-    description: 'E.164. Returned only to staff users for identification.',
+    description:
+      'E.164. Endpoint is staff-only (guard-enforced); phone is always present on the scanned user identification card.',
   })
   phone!: string | null;
 }
@@ -31,11 +32,17 @@ export class ScannedUserDto {
  * so the operator can confirm the right kid is leaving with the right
  * adult. For non-parent roles the field is omitted.
  *
+ * **Scope:** the user identity is cross-tenant (one parent → one QR across
+ * kindergartens), but `linkedChildren` is filtered to the scanning-staff's
+ * `kindergarten_id`. Staff in kg-A scanning a parent who has children in
+ * kg-A and kg-B sees only the kg-A child(ren). When the parent has no
+ * children in the scanning-staff's kg, `linkedChildren` is `[]`.
+ *
  * `allowedActions` enumerates the gate operations the staff client may
  * trigger after scanning:
- *   - parent (with at least one approved guardian where can_pickup=true)
- *       → ['check_in', 'check_out']
- *   - parent (no can_pickup rights)            → []
+ *   - parent (with at least one approved guardian where can_pickup=true
+ *     in the scanning-staff's kg) → ['check_in', 'check_out']
+ *   - parent (no can_pickup rights in the scanning kg) → []
  *   - any staff role (mentor/specialist/...)   → ['gate_entry']
  *   - super_admin / support                    → []
  */
@@ -46,7 +53,7 @@ export class ScanQrResponseDto {
   @ApiPropertyOptional({
     type: [LinkedChildDto],
     description:
-      'Cross-tenant list of children the scanned parent is an approved guardian of. Omitted for non-parent users.',
+      'Children the scanned parent is an approved guardian of, scoped to the scanning-staff `kindergarten_id`. Omitted for non-parent users; empty array for parents with no children in the scanning kg.',
   })
   linkedChildren?: LinkedChildDto[];
 

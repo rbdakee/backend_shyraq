@@ -187,6 +187,7 @@ export class IdentityQrService {
     callerUserId: string,
     deviceId: string,
     plaintextToken: string,
+    scanningKgId: string | null,
   ): Promise<ScanResult> {
     const now = this.clock.now();
 
@@ -243,10 +244,16 @@ export class IdentityQrService {
 
     const { role, staffMembers, guardians } = await this.resolveRoleContext(
       state.userId,
+      scanningKgId,
     );
 
     let linkedChildren: Child[] | undefined;
     if (role === 'parent') {
+      // Children list is scoped to the scanning-staff's kg. The token
+      // itself is cross-tenant (one parent → one QR across kindergartens),
+      // but staff in kg-A must NOT see the parent's kg-B children. The
+      // guardians array is already filtered by scanningKgId in
+      // resolveRoleContext; here we just hydrate the corresponding kids.
       const childIds = guardians.map((g) => g.toState().childId);
       linkedChildren = await this.childRepo.findByIdsCrossTenant(childIds);
     }
@@ -257,8 +264,8 @@ export class IdentityQrService {
     // acceptable but await keeps the integration test deterministic.
     await this.qrRepo.updateLastScannedAt(state.id, now);
 
-    // Acknowledge `staffMembers` to keep TS happy; the var is here for
-    // future per-action authorization (e.g. only-mentor can do gate_entry).
+    // TODO(B-future): use staffMembers for per-role action authorization
+    // (e.g. mentor-only gate_entry).
     void staffMembers;
 
     return { user, role, linkedChildren, allowedActions };
@@ -303,8 +310,18 @@ export class IdentityQrService {
    * The auth role-assembly is NOT used here because it returns multi-role
    * branches; for QR we collapse to a single label suitable for the staff
    * app's UI.
+   *
+   * `scanningKgId` is the caller's `kindergarten_id` from the JWT (or null
+   * for super_admin). When non-null, the parent guardian list is scoped to
+   * that kg — staff in kg-A scanning a parent who has children in both kg-A
+   * and kg-B sees only the kg-A children. The `findApprovedActiveBy` repo
+   * method already accepts an optional kg-id and applies the scope inside
+   * the bypass-RLS lookup, so we delegate directly.
    */
-  private async resolveRoleContext(userId: string): Promise<{
+  private async resolveRoleContext(
+    userId: string,
+    scanningKgId: string | null,
+  ): Promise<{
     role: string;
     staffMembers: StaffMember[];
     guardians: ChildGuardian[];
@@ -317,9 +334,13 @@ export class IdentityQrService {
       // simultaneously. Skip guardian load to keep the scan response lean.
       return { role: staffMembers[0].role, staffMembers, guardians: [] };
     }
+    // scanningKgId === null when super_admin scans (no kg claim) — fall
+    // back to cross-tenant in that narrow case; the staff-only gate at the
+    // controller already prevents this in production.
     const guardians =
       await this.childGuardianRepo.findApprovedActiveByUserIdCrossTenant(
         userId,
+        scanningKgId ?? undefined,
       );
     return { role: 'parent', staffMembers, guardians };
   }

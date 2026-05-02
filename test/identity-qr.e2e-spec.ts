@@ -431,16 +431,16 @@ describe('B10 Identity QR (e2e)', () => {
     expect(r2.body.revokedCount).toBe(0);
   });
 
-  // ── J. Cross-kg: kg-A staff scans kg-B parent token ──────────────────────
+  // ── J. Cross-kg: kg-A staff scans kg-B-only parent → empty linkedChildren ─
 
-  it('kg-A staff scans kg-B parent token and gets kg-B child in linkedChildren (Scenario J)', async () => {
+  it('kg-A staff scanning a parent whose only child is in kg-B sees no children (Scenario J)', async () => {
     // kg-A: the scanning staff belongs here. Creation seeds the staff user.
     await createKgWithAdmin('qr-j-a', '+77021120007');
     // kg-B: the parent and child belong here.
     const b = await createKgWithAdmin('qr-j-b', '+77021120008');
     const parentPhone = '+77021110008';
 
-    const enrollment = await runEnrollmentCardCreated(b.adminToken, {
+    await runEnrollmentCardCreated(b.adminToken, {
       contactName: 'Parent J',
       contactPhone: parentPhone,
       childName: 'Child J',
@@ -466,15 +466,98 @@ describe('B10 Identity QR (e2e)', () => {
       .send({ token: qrRes.body.token })
       .expect(200);
 
+    // User identity is cross-tenant — kg-A staff sees the parent's name.
     expect(scanRes.body.user.id).toBe(parentAuth.user.id);
     expect(scanRes.body.user.role).toBe('parent');
 
-    // Cross-tenant: kg-B child appears in linkedChildren (bypass-RLS lookup).
+    // But linkedChildren is scoped to the scanning kg (kg-A). The parent's
+    // only child lives in kg-B, so linkedChildren is empty.
+    expect(Array.isArray(scanRes.body.linkedChildren)).toBe(true);
+    expect(scanRes.body.linkedChildren).toHaveLength(0);
+
+    // No can_pickup guardian in kg-A → no actions in the scanning kg.
+    expect(scanRes.body.allowedActions).toEqual([]);
+  });
+
+  // ── K. Cross-kg: parent has children in BOTH kgs; kg-A staff sees only kg-A
+
+  it('kg-A staff scanning a parent with children in BOTH kgs sees only the kg-A child (Scenario K)', async () => {
+    // kg-A: scanning staff + first parent's child.
+    const a = await createKgWithAdmin('qr-k-a', '+77021120009');
+    // kg-B: same parent's second child.
+    const b = await createKgWithAdmin('qr-k-b', '+77021120010');
+    const parentPhone = '+77021110009';
+
+    // Enroll the parent into kg-A only at this point — parent will OTP-verify
+    // with a single kg → single role → no pending_role_select. We add the
+    // kg-B child (and the parent's kg-B guardian row) AFTER the parent's
+    // QR is issued, so that the QR-issue path itself runs without
+    // pending_role_select. The QR is cross-tenant by design — adding the
+    // kg-B link after issuance still exercises the kg-scope filter when
+    // the staff scans.
+    const enrollA = await runEnrollmentCardCreated(a.adminToken, {
+      contactName: 'Parent K',
+      contactPhone: parentPhone,
+      childName: 'Child K-A',
+      childDob: '2021-07-01',
+    });
+
+    // Parent OTP login auto-approves the kg-A primary guardian only.
+    const parentAuth = await otpLogin(parentPhone);
+    expect(parentAuth.pending_role_select).toBe(false);
+
+    // Issue the QR while parent is still single-role.
+    const qrRes = await request(server)
+      .get('/api/v1/users/me/qr')
+      .set('Authorization', `Bearer ${parentAuth.access_token}`)
+      .expect(200);
+
+    // Now add the kg-B enrollment + cross-tenant approved guardian row.
+    // We seed via direct SQL (bypass-RLS) because routing through OTP-login
+    // again would flip the parent into multi-role pending_role_select state
+    // and complicate the test without adding coverage — the scan path is
+    // what we're verifying, not the role-select branch.
+    const enrollB = await runEnrollmentCardCreated(b.adminToken, {
+      contactName: 'Parent K',
+      contactPhone: parentPhone,
+      childName: 'Child K-B',
+      childDob: '2021-08-01',
+    });
+    await ctx.dataSource.transaction(async (m) => {
+      await m.query(`SET LOCAL app.bypass_rls = 'true'`);
+      await m.query(
+        `UPDATE child_guardians
+           SET status = 'approved',
+               approved_at = NOW(),
+               approved_by = $1,
+               has_approval_rights = true,
+               can_pickup = true
+         WHERE kindergarten_id = $2 AND child_id = $3 AND user_id = $1`,
+        [parentAuth.user.id, b.kgId, enrollB.childId],
+      );
+    });
+
+    // kg-A staff scans the parent's QR.
+    const staffAAuth = await otpLogin('+77021120009', STAFF_DEVICE_ID);
+
+    const scanRes = await request(server)
+      .post('/api/v1/staff/qr/scan')
+      .set('Authorization', `Bearer ${staffAAuth.access_token}`)
+      .set('X-Device-Id', STAFF_DEVICE_ID)
+      .send({ token: qrRes.body.token })
+      .expect(200);
+
+    expect(scanRes.body.user.id).toBe(parentAuth.user.id);
+    expect(scanRes.body.user.role).toBe('parent');
+
+    // Only the kg-A child appears — kg-B child must NOT leak into the
+    // scanning-staff's response, even though the parent has approved
+    // guardian rows in BOTH kindergartens.
     expect(Array.isArray(scanRes.body.linkedChildren)).toBe(true);
     expect(scanRes.body.linkedChildren).toHaveLength(1);
-    expect(scanRes.body.linkedChildren[0].id).toBe(enrollment.childId);
+    expect(scanRes.body.linkedChildren[0].id).toBe(enrollA.childId);
 
-    // Primary guardian with can_pickup = true (enrollment default).
+    // Primary guardian in kg-A with can_pickup=true → check_in/check_out.
     expect(scanRes.body.allowedActions).toEqual(
       expect.arrayContaining(['check_in', 'check_out']),
     );
