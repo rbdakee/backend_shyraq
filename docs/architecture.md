@@ -254,7 +254,19 @@ WS/BullMQ (B9), QR-scan (B10), Pickup OTP (B11), Face ID (B19).
 - **Refresh token** — opaque random hex (32 байта = 64 hex), TTL 30 дней (`REFRESH_TOKEN_TTL_DAYS`). В клиенте — сырой токен; в БД (`refresh_tokens` / `saas_refresh_tokens`) — только `token_hash = SHA-256(raw)`. Ревокация — `UPDATE ... SET revoked_at = NOW()`.
 - **Logout** — добавляет `jti` access-токена в `TokenBlocklistPort` (Redis с TTL до истечения JWT) + revoke текущего refresh-токена.
 
-### 4.2 OTP flow
+### 4.2 Identity QR
+
+- **Token format** — 32-char opaque hex (`crypto.randomBytes(16).toString('hex')`). Не JWT, не UUID.
+- **Storage** — SHA-256 hash в `user_qr_tokens.token_hash` (varchar 64, unique). Plaintext хранится только в Redis: ключ `qr:token:{plaintext}` → `user_id`, TTL = remaining lifetime.
+- **Lifetime** — 24h. Auto-refresh на `GET /users/me/qr` если активного нет ИЛИ `expires_at - now < 1h` → атомарная TX: revoke old (`revoked_at = NOW()`) + insert new + sync Redis (`DEL` старого ключа + `SET` нового с TTL). Ручного refresh-endpoint'а нет.
+- **Lazy-issue** — токен не создаётся при login; первый `GET /users/me/qr` trigger'ит issue.
+- **Cross-tenant** — `kindergarten_id` nullable, RLS не применяется к `user_qr_tokens`. Один QR на пользователя независимо от числа садиков.
+- **Rate-limit на `/staff/qr/scan`** — 60/мин per `device_id` (берётся из активной `refresh_tokens` сессии вызывающего staff). Redis: `rl:qr:scan:{device_id}` через `INCR` + `EXPIRE 60`.
+- **Admin revoke-all** — `POST /admin/qr/revoke-all/:userId`: bulk `UPDATE user_qr_tokens SET revoked_at = NOW() WHERE user_id = :userId AND revoked_at IS NULL` + Redis `DEL` для каждого токена. Response `{revoked_count}`.
+
+Паттерн хранения (`token_hash` в БД + plaintext только в Redis) аналогичен `refresh_tokens` (см. §4.1).
+
+### 4.3 OTP flow
 
 `POST /auth/otp/request` → `OtpStorePort.create(phone, code, ttl)` (Redis-hash с attempts=0). SMS-отправка через `SmsPort` (mock логирует код). `OTP_TEST_PHONES` whitelist — bypass real SMS, возвращает `OTP_TEST_CODE` для test-сценариев.
 
@@ -266,11 +278,11 @@ WS/BullMQ (B9), QR-scan (B10), Pickup OTP (B11), Face ID (B19).
 
 **Auto-approve primary guardian (B6):** до ролевого резолва `AuthService.autoApprovePendingPrimaries(userId, now)` делает cross-tenant lookup `ChildGuardianRepository.findPendingPrimaryByUserIdCrossTenant(userId)` с `bypass_rls=true` внутри `dataSource.transaction`. Для каждой найденной `child_guardians (role='primary', status='pending_approval')` открывает scoped tx с `SET LOCAL app.kindergarten_id = childKgId` и переводит строку в `approved` (`approved_by=self`, `has_approval_rights=true`). Это обеспечивает кейс enrollment → родитель входит по OTP → JWT уже содержит kg-scope без ручного approve.
 
-### 4.3 SuperAdmin auth
+### 4.4 SuperAdmin auth
 
 Email + password (`saas_users` table). `POST /super-admin/auth/login` → bcrypt verify → access + refresh (`saas_refresh_tokens`). Отдельная таблица — никакого полиморфизма с `users.refresh_tokens`.
 
-### 4.4 Guards summary
+### 4.5 Guards summary
 
 | Guard | Роль |
 |---|---|

@@ -1264,24 +1264,33 @@ Table feature_flags {
 
 // ─────────────────────────────────────────
 // USER QR TOKENS (identity QR, refreshable 24h)
+// NO RLS — cross-tenant by design: one QR per user
+// regardless of how many kindergartens their children
+// are enrolled in. kindergarten_id is nullable.
 // ─────────────────────────────────────────
 
 Table user_qr_tokens {
   id              uuid [pk, default: `gen_random_uuid()`]
   user_id         uuid [not null, ref: > users.id]
-  kindergarten_id uuid [ref: > kindergartens.id]
+  kindergarten_id uuid [null, ref: > kindergartens.id]
   // null для родителей с детьми в нескольких садиках — QR глобален
   purpose         qr_purpose [not null, default: 'identity']
-  token           varchar [unique, not null] // 32-char hex
+  token_hash      varchar(64) [unique, not null] // SHA-256 hex of opaque token; plaintext lives only in Redis qr:token:{plaintext}
   issued_at       timestamptz [not null, default: `now()`]
-  expires_at      timestamptz [not null]     // issued_at + 24h
-  revoked_at      timestamptz                // при refresh старый ревокируется
+  expires_at      timestamptz [not null]         // issued_at + 24h
+  revoked_at      timestamptz                    // при refresh старый ревокируется
   last_scanned_at timestamptz
+
+  // Инварианты:
+  //  1. Один активный токен на (user_id, purpose)
+  //     idx_user_qr_tokens_one_active: UNIQUE(user_id, purpose) WHERE revoked_at IS NULL
+  //     Без NOW() predicate (PG отвергает non-IMMUTABLE). Active-uniqueness
+  //     enforced в коде via revoke-old-then-insert-new TX.
 
   indexes {
     (user_id, purpose)
-    token [unique]
-    expires_at
+    (expires_at)
+    token_hash [unique]
   }
 }
 
@@ -1394,7 +1403,10 @@ Table custom_discount_applications {
 //      ON group_mentors(group_id) WHERE is_primary = TRUE AND unassigned_at IS NULL;
 //      — Правило: у группы ровно один primary mentor.
 //
-//   7. CREATE INDEX idx_user_qr_tokens_active
-//      ON user_qr_tokens(user_id, purpose, expires_at)
+//   7. CREATE UNIQUE INDEX idx_user_qr_tokens_one_active
+//      ON user_qr_tokens(user_id, purpose)
 //      WHERE revoked_at IS NULL;
+//      — Правило: один активный токен на (user_id, purpose).
+//        Без NOW() predicate (PG отвергает non-IMMUTABLE);
+//        активность enforced в коде (revoke + insert TX).
 // ─────────────────────────────────────────

@@ -1011,12 +1011,11 @@
 
 ### Main Flow
 
-1. При первом логине юзера → автоматически генерируется `user_qr_tokens (purpose='identity', TTL=24h)`. Токен = 32-char opaque hex.
-2. Redis кэш: `qr:token:{token}` = `user_id`, TTL 86400s — для O(1) валидации.
-3. Приложение (Parent/Staff) показывает QR. При открытии экрана QR — если до истечения <1 час → автоматически `POST /users/me/qr/refresh` (новый токен, старый ревокируется).
-4. Юзер может вручную нажать "Обновить" в любое время.
-5. Reception/Mentor в Staff App сканирует QR → `POST /qr/scan` → Redis GET → вернуть user info + разрешённые действия.
-6. Каждый скан логируется: `user_qr_tokens.last_scanned_at`.
+1. При первом `GET /users/me/qr` → сервер lazy-генерирует `user_qr_tokens (purpose='identity', TTL=24h)`. Токен = 32-char opaque hex (`crypto.randomBytes(16).toString('hex')`). SHA-256 hash сохраняется в `user_qr_tokens.token_hash`; plaintext только в Redis `qr:token:{plaintext}` TTL=24h.
+2. Redis кэш: `qr:token:{plaintext}` = `user_id`, TTL = expires_at - now — для O(1) валидации.
+3. Приложение (Parent/Staff) получает `{token, issued_at, expires_at}` и рендерит QR-картинку нативно (сервер не генерирует SVG и не возвращает `qr_svg_url`). При открытии экрана QR — если активного нет или до `expires_at` осталось <1 час → сервер на следующем GET авто-ревокирует старый и создаёт новый в одной транзакции (revoke + insert + Redis sync). Ручного refresh-endpoint'а нет.
+4. Reception/Mentor в Staff App сканирует QR → `POST /staff/qr/scan` → Redis GET → вернуть user info + разрешённые действия.
+5. Каждый скан логируется: `user_qr_tokens.last_scanned_at`.
 
 ### Use Cases
 
@@ -1029,10 +1028,11 @@
 
 ### Security
 
-- TTL 24h; автоматический refresh.
-- Ревокация всех токенов юзера по запросу админа (при подозрении на компрометацию).
-- Rate-limit на `/qr/scan`: 60 сканов/мин per staff-device.
+- TTL 24h; автоматический серверный refresh (на GET, если <1ч до истечения).
+- **Admin revoke-all:** `POST /admin/qr/revoke-all/:userId` — bulk-revoke всех активных токенов пользователя (DB `revoked_at = NOW()` + Redis DEL). Возвращает `{revoked_count}`. Security-recourse при подозрении на компрометацию. Включён в MVP.
+- Rate-limit на `POST /staff/qr/scan`: 60/мин per `device_id` (берётся из активной `refresh_tokens` сессии вызывающего staff). Redis: `rl:qr:scan:{device_id}` INCR+EXPIRE 60.
 - Логирование всех сканов с IP и device_id (в будущем — `audit_log`).
+- `kindergarten_id` nullable — cross-tenant по дизайну (один QR для родителя с детьми в нескольких садиках), RLS не применяется к `user_qr_tokens`.
 
 ### Result
 
