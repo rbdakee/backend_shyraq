@@ -320,13 +320,25 @@ export class AuthService implements OnModuleInit {
       infer: true,
     });
     const expiresAt = computeRefreshExpiresAt(this.clock.now(), ttlDays);
-    await this.refreshTokens.create({
-      userId: input.userId,
-      kindergartenId: selectedKindergartenId,
-      tokenHash: hashRefreshToken(raw),
-      deviceId: input.deviceId ?? null,
-      ipAddress: input.ipAddress ?? null,
-      expiresAt,
+    // selectRole runs without KindergartenScopeGuard, so the ambient
+    // TenantContextInterceptor TX has no GUC set (kgId=null, bypass=false).
+    // RefreshTokenRelationalRepository.create would pick up that ambient
+    // manager and fail the RLS WITH CHECK. Open a fresh TX with bypass_rls
+    // and override tenantStorage so create() uses it.
+    await this.dataSource.transaction(async (manager) => {
+      await manager.query(`SET LOCAL app.bypass_rls = 'true'`);
+      await tenantStorage.run(
+        { kgId: selectedKindergartenId, bypass: true, entityManager: manager },
+        () =>
+          this.refreshTokens.create({
+            userId: input.userId,
+            kindergartenId: selectedKindergartenId,
+            tokenHash: hashRefreshToken(raw),
+            deviceId: input.deviceId ?? null,
+            ipAddress: input.ipAddress ?? null,
+            expiresAt,
+          }),
+      );
     });
 
     const user = await this.users.findById(input.userId);
