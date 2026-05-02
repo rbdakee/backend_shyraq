@@ -358,20 +358,23 @@ Worker (каждые 2с)
 
 Подключение: `wss://host/ws`, JWT передаётся в `socket.handshake.auth.token` (не в query — query параметры попадают в access-логи).
 
-`WsJwtGuard` — обёртка над `JwtTokenPort` для handshake-фрейма. После успешной валидации `NotificationGateway` автоматически (без client-subscribe message) подписывает сокет на комнаты:
+`NotificationGateway.handleConnection` верифицирует JWT через `JwtTokenPort` + `TokenBlocklistPort`. При ошибке — эмитит `auth_error` (`{ message: 'unauthorized' }`) и отключает сокет. (`connect_error` в socket.io v4 зарезервирован для middleware-уровня; с сервера не эмитируется.)
+
+После успешной аутентификации `WsAutoSubscribeService` подписывает сокет на комнаты согласно `role` + `kindergarten_id` из JWT:
 
 | Комната | Триггер | DB-запрос |
 |---|---|---|
 | `user:{user_id}` | Всегда (каждый connected сокет) | — |
-| `child:{child_id}` | Для каждого ребёнка с approved guardian-связью | `SELECT child_id FROM child_guardians WHERE user_id=? AND status='approved' AND revoked_at IS NULL` |
-| `group:{group_id}` | Для каждой группы где пользователь — активный ментор | `SELECT group_id FROM group_mentors WHERE user_id=? AND is_active=true` |
+| `child:{child_id}` | `role='parent'` + непустой `kindergarten_id` в JWT | `SELECT child_id FROM child_guardians WHERE user_id=? AND status='approved' AND revoked_at IS NULL AND kindergarten_id=?` |
+| `group:{group_id}` | `role` ∈ staff-ролей + непустой `kindergarten_id` в JWT | `SELECT group_id FROM group_mentors WHERE user_id=? AND is_active=true AND kindergarten_id=?` |
 
-Комнаты определяются в момент handshake. Переподписка — при reconnect.
+`super_admin` и `pending_role_select=true` — только `user:{id}`; kg-scoped комнаты не назначаются. Комнаты определяются строго по JWT в момент handshake — cross-tenant связи в других kg не включаются. Переподписка — при reconnect с новым JWT.
 
-**Event envelope** (одинаковый для всех событий):
-```json
-{ "type": "<event_key>", "kindergarten_id": "...", "emitted_at": "...", "payload": { ... } }
-```
+Сервер эмитит `connected` событие: `{ user_id, rooms: [...] }` — клиент может использовать это для подтверждения подписки перед тем как считать себя "online".
+
+**Broadcast format (B9):** `NotificationDispatcher` вызывает `wsBroadcaster.broadcastToUser(userId, event_key, payload)` — envelope-обёртки нет. Клиент получает событие под именем `event_key` (например, `attendance.checkin`), payload — rendered-шаблон + денормализованные поля (`title_i18n`, `body_i18n`, `data`).
+
+В B9 диспетчер бродкастит **только в `user:{userId}` комнаты**. Порты `broadcastToChild` / `broadcastToGroup` реализованы в `SocketIoWsBroadcaster` но в диспетчере не вызываются — зарезервированы для B17 (scoped fanout по ребёнку/группе, когда появится NotificationPort-метод с childId/groupId адресатом). Комнаты `child:*` и `group:*` уже заполняются при handshake, так что при активации broadcastToChild/broadcastToGroup в B17 никаких изменений на клиенте не потребуется.
 
 ### 6.5 Notification event catalog
 
