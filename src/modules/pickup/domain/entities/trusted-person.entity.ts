@@ -1,3 +1,5 @@
+import { TrustedPersonRevokedError } from '../errors/trusted-person-revoked.error';
+
 /**
  * Plain TS view of a `trusted_people` row. Lives in domain because it's the
  * contract the application/infrastructure layers use to rehydrate a
@@ -133,12 +135,10 @@ export class TrustedPerson {
    */
   revoke(now: Date): TrustedPerson {
     if (this.isRevoked()) {
-      throw new Error('TrustedPerson.revoke: already revoked');
+      throw new TrustedPersonRevokedError();
     }
     if (!this.isActive) {
-      throw new Error(
-        'TrustedPerson.revoke: cannot revoke a non-active trusted person',
-      );
+      throw new TrustedPersonRevokedError();
     }
     return new TrustedPerson(
       this.id,

@@ -1,3 +1,4 @@
+import { TrustedPersonRevokedError } from '../errors/trusted-person-revoked.error';
 import { TrustedPerson } from './trusted-person.entity';
 
 describe('TrustedPerson (domain)', () => {
@@ -69,23 +70,23 @@ describe('TrustedPerson (domain)', () => {
     expect(fresh.isActive).toBe(true);
   });
 
-  it('revoke throws when already revoked', () => {
+  it('revoke throws TrustedPersonRevokedError when already revoked', () => {
     const first = TrustedPerson.create(validInput).revoke(
       new Date('2026-05-02T10:00:00Z'),
     );
     expect(() => first.revoke(new Date('2026-05-02T11:00:00Z'))).toThrow(
-      /already revoked/,
+      TrustedPersonRevokedError,
     );
   });
 
-  it('revoke throws when row is already inactive (e.g. one-time used)', () => {
+  it('revoke throws TrustedPersonRevokedError when row is already inactive (e.g. one-time used)', () => {
     const used = TrustedPerson.create({
       ...validInput,
       isOneTime: true,
     }).markUsed(new Date('2026-05-02T08:00:00Z'));
     expect(used.isActive).toBe(false);
     expect(() => used.revoke(new Date('2026-05-02T09:00:00Z'))).toThrow(
-      /non-active/,
+      TrustedPersonRevokedError,
     );
   });
 

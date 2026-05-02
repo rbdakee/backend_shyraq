@@ -6,6 +6,7 @@ import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { ForbiddenActionError } from '@/shared-kernel/domain/errors';
 import { TrustedPerson } from './domain/entities/trusted-person.entity';
 import { TrustedPersonNotFoundError } from './domain/errors/trusted-person-not-found.error';
+import { TrustedPersonRevokedError } from './domain/errors/trusted-person-revoked.error';
 import {
   TrustedPersonPatch,
   TrustedPersonRepository,
@@ -105,6 +106,9 @@ export class TrustedPersonService {
       throw new TrustedPersonNotFoundError(trustedPersonId);
     }
     await this.assertCallerCanManage(tp, parentUserId);
+    if (tp.isRevoked() || !tp.isActive) {
+      throw new TrustedPersonRevokedError();
+    }
 
     const repoPatch: TrustedPersonPatch = {};
     if (patch.fullName !== undefined) repoPatch.fullName = patch.fullName;
@@ -132,10 +136,10 @@ export class TrustedPersonService {
     }
     await this.assertCallerCanManage(tp, parentUserId);
 
-    // Domain guard surfaces "already revoked" / "not active" as Error —
-    // the relational repo's markRevoked is idempotent at the SQL layer
-    // (`WHERE revoked_at IS NULL`), so we let the entity invariant fail
-    // first to give the API a deterministic 409-style response.
+    // Domain guard surfaces "already revoked" / "not active" as TrustedPersonRevokedError
+    // (410 Gone). The relational repo's markRevoked is idempotent at the SQL
+    // layer (`WHERE revoked_at IS NULL`), so we let the entity invariant fail
+    // first to give the API a deterministic 410 response.
     const now = this.clock.now();
     const revoked = tp.revoke(now);
     await this.trustedPeople.markRevoked(tp.id, now);

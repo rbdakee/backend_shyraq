@@ -28,6 +28,7 @@ import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { ForbiddenActionError } from '@/shared-kernel/domain/errors';
 import { TrustedPerson } from './domain/entities/trusted-person.entity';
 import { TrustedPersonNotFoundError } from './domain/errors/trusted-person-not-found.error';
+import { TrustedPersonRevokedError } from './domain/errors/trusted-person-revoked.error';
 import {
   CreateTrustedPersonRow,
   TrustedPersonPatch,
@@ -316,6 +317,27 @@ function makeTrustedPerson(addedBy: string = PARENT_USER): TrustedPerson {
   });
 }
 
+function makeRevokedTrustedPerson(
+  addedBy: string = PARENT_USER,
+): TrustedPerson {
+  return TrustedPerson.fromState({
+    id: TP_ID,
+    kindergartenId: KG,
+    childId: CHILD,
+    addedByUserId: addedBy,
+    fullName: 'Айгуль',
+    phone: '+77071234567',
+    iin: null,
+    relation: 'aunt',
+    photoUrl: null,
+    isActive: false,
+    isOneTime: false,
+    usedAt: null,
+    createdAt: NOW,
+    revokedAt: NOW,
+  });
+}
+
 interface Wired {
   service: TrustedPersonService;
   trustedPeople: FakeTrustedPersonRepo;
@@ -452,6 +474,15 @@ describe('TrustedPersonService — service-unit', () => {
         w.service.update(KG, 'nope', PARENT_USER, { fullName: 'X' }),
       ).rejects.toBeInstanceOf(TrustedPersonNotFoundError);
     });
+
+    it('throws TrustedPersonRevokedError when the trusted person is already revoked (NM2)', async () => {
+      const w = wire();
+      w.trustedPeople.put(makeRevokedTrustedPerson(PARENT_USER));
+      w.guardians.put(makeApprovedGuardian(PARENT_USER));
+      await expect(
+        w.service.update(KG, TP_ID, PARENT_USER, { fullName: 'X' }),
+      ).rejects.toBeInstanceOf(TrustedPersonRevokedError);
+    });
   });
 
   describe('revoke', () => {
@@ -462,6 +493,15 @@ describe('TrustedPersonService — service-unit', () => {
       const revoked = await w.service.revoke(KG, TP_ID, PARENT_USER);
       expect(revoked.isRevoked()).toBe(true);
       expect(revoked.isActive).toBe(false);
+    });
+
+    it('throws TrustedPersonRevokedError on double-revoke → 410 (NM1)', async () => {
+      const w = wire();
+      w.trustedPeople.put(makeRevokedTrustedPerson(PARENT_USER));
+      w.guardians.put(makeApprovedGuardian(PARENT_USER));
+      await expect(
+        w.service.revoke(KG, TP_ID, PARENT_USER),
+      ).rejects.toBeInstanceOf(TrustedPersonRevokedError);
     });
 
     it('throws ForbiddenActionError when an ex-guardian (revoked link) tries to revoke a row they originally added (T7 M5 fix)', async () => {

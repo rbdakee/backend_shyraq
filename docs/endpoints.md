@@ -600,9 +600,25 @@ Email + password (не OTP). Access-токен — тот же JWT HS256 (`JWT_A
 // Request:
 { "code": "482910" }
 // Response 200:
-{ "pickup_request_id": "550e8400-e29b-41d4-a716-446655440099",
-  "attendance_event_id": "550e8400-e29b-41d4-a716-446655440200",
-  "validated_at": "2026-05-02T12:05:00.000Z" }
+{ "pickup_request": {
+    "id": "550e8400-e29b-41d4-a716-446655440099",
+    "kindergarten_id": "00000000-0000-0000-0000-000000000001",
+    "child_id": "550e8400-e29b-41d4-a716-446655440001",
+    "requested_by_user_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+    "trusted_person_id": "22222222-3333-4444-5555-666666666666",
+    "trusted_person_name": "Асем Нурова",
+    "trusted_person_phone": "+77011234567",
+    "trusted_person_iin": null,
+    "otp_ref": "otp:pickup:550e8400-e29b-41d4-a716-446655440099",
+    "status": "validated",
+    "validated_by": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+    "validated_at": "2026-05-02T12:05:00.000Z",
+    "attendance_event_id": "550e8400-e29b-41d4-a716-446655440200",
+    "parent_request_id": null,
+    "expires_at": "2026-05-02T12:30:00.000Z",
+    "created_at": "2026-05-02T12:00:00.000Z"
+  },
+  "attendance_event_id": "550e8400-e29b-41d4-a716-446655440200" }
 ```
 
 **Error map (B11 additions):**
@@ -617,8 +633,8 @@ Email + password (не OTP). Access-токен — тот же JWT HS256 (`JWT_A
 | 409 | `pickup_request_already_validated` | `pickup_requests.status='validated'` |
 | 409 | `pickup_request_status_invalid` | Неподходящий статус для операции (например, cancel при `validated`) |
 | 410 | `otp_expired` | Ключ `otp:pickup:{requestId}` в Redis истёк или не существует |
-| 410 | `otp_invalid` | Код не совпал (attempts < 3) |
-| 429 | `otp_rate_limited` | `rate:otp:{phone}` превышен (5/hour) |
+| 400 | `invalid_otp` | Код не совпал (attempts < 3) |
+| 429 | `otp_rate_limit` | `rate:otp:{phone}` превышен (5/hour) |
 | 429 | `otp_locked` | `otp:locked:{phone}` активен (3 неверных попытки → 900с блокировка) |
 
 ### 3.7 Timeline & Intraday Status

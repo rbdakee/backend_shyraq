@@ -1,4 +1,4 @@
-import { forwardRef, Module } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AttendanceModule } from '@/modules/attendance/attendance.module';
 import { ChildModule } from '@/modules/child/child.module';
@@ -25,7 +25,7 @@ import { TrustedPersonRepository } from './infrastructure/persistence/trusted-pe
  * exposes three role-scoped HTTP controllers.
  *
  * Cross-module deps:
- *   - `AttendanceModule` (forwardRef) — `AttendanceService.checkOut` is the
+ *   - `AttendanceModule` — `AttendanceService.checkOut` is the
  *     side-effect of a successful OTP-validate.
  *   - `ChildModule` — `ChildRepository` (existence check) +
  *     `ChildGuardianRepository` (parent-permission validation).
@@ -46,7 +46,7 @@ import { TrustedPersonRepository } from './infrastructure/persistence/trusted-pe
       TrustedPersonTypeOrmEntity,
       PickupRequestTypeOrmEntity,
     ]),
-    forwardRef(() => AttendanceModule),
+    AttendanceModule,
     ChildModule,
     KindergartenModule,
     StaffModule,

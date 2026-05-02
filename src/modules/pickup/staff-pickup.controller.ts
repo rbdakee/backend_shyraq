@@ -21,7 +21,6 @@ import {
   ApiNotFoundResponse,
   ApiOkResponse,
   ApiOperation,
-  ApiQuery,
   ApiTags,
   ApiTooManyRequestsResponse,
   ApiUnauthorizedResponse,
@@ -36,6 +35,7 @@ import type { JwtPayload } from '@/common/types/jwt-payload';
 import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-context';
 import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
 import { CreatePickupRequestDto } from './dto/create-pickup-request.dto';
+import { ListPickupRequestsQueryDto } from './dto/list-pickup-requests-query.dto';
 import {
   PickupRequestResponseDto,
   SendPickupOtpResponseDto,
@@ -44,7 +44,6 @@ import {
 import { ValidatePickupOtpDto } from './dto/validate-pickup-otp.dto';
 import { PickupPresenter } from './pickup.presenter';
 import { PickupRequestService } from './pickup-request.service';
-import type { PickupRequestStatus } from './domain/entities/pickup-request.entity';
 
 const TENANT_REQUIRED = 'tenant_required';
 
@@ -83,24 +82,17 @@ export class StaffPickupController {
     summary:
       'List pickup requests for the staff’s kindergarten. Filters: groupId, status.',
   })
-  @ApiQuery({ name: 'groupId', required: false, type: String })
-  @ApiQuery({
-    name: 'status',
-    required: false,
-    enum: ['otp_sent', 'validated', 'expired', 'cancelled'],
-  })
   @ApiOkResponse({ type: [PickupRequestResponseDto] })
   @ApiUnauthorizedResponse({ description: 'Bearer missing/invalid/revoked.' })
   @ApiForbiddenResponse({ description: 'Caller role not allowed.' })
   async list(
     @Tenant() t: TenantContext,
-    @Query('groupId') groupId?: string,
-    @Query('status') status?: PickupRequestStatus,
+    @Query() q: ListPickupRequestsQueryDto,
   ): Promise<PickupRequestResponseDto[]> {
     const kgId = requireTenant(t);
     const items = await this.service.listByKindergarten(kgId, {
-      groupId: groupId ?? null,
-      status: status ?? null,
+      groupId: q.groupId ?? null,
+      status: q.status ?? null,
     });
     return items.map((pr) => PickupPresenter.pickupRequest(pr));
   }
@@ -215,7 +207,7 @@ export class StaffPickupController {
       'pickup_request_already_validated OR pickup_request_status_invalid.',
   })
   @ApiGoneResponse({ description: 'pickup_request_expired.' })
-  @ApiUnprocessableEntityResponse({
+  @ApiBadRequestResponse({
     description: 'invalid_otp / otp_expired_or_missing.',
   })
   @ApiTooManyRequestsResponse({
