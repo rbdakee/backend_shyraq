@@ -53,4 +53,13 @@ export abstract class PushTokenRepository {
    * caller (`NotificationService`) maps `false` → `PushTokenNotFoundError`.
    */
   abstract deleteByIdAndUserId(id: string, userId: string): Promise<boolean>;
+
+  /**
+   * Delete a push-token row by id, regardless of owner. Used by the
+   * dispatcher when the push provider classifies the token as permanently
+   * dead (e.g. FCM `NotRegistered`) — the dispatcher already knows the row
+   * id from `findByUserIds`, so a userId check is redundant. Best-effort:
+   * implementations must NOT throw on a missing row.
+   */
+  abstract deleteById(id: string): Promise<void>;
 }

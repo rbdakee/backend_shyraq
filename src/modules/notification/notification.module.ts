@@ -2,6 +2,8 @@ import { Global, Module, Provider } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { NotificationPort } from '@/common/notifications/notification.port';
 import { ChildModule } from '@/modules/child/child.module';
+import { GroupModule } from '@/modules/group/group.module';
+import { UsersModule } from '@/modules/users/users.module';
 import { PushNotificationPort } from '@/shared-kernel/domain/push-notification.port';
 import { FcmPushAdapter } from '@/shared-kernel/infrastructure/adapters/fcm-push.adapter';
 import { MockPushAdapter } from '@/shared-kernel/infrastructure/adapters/mock-push.adapter';
@@ -59,6 +61,8 @@ function pushPortProvider(): Provider {
       PushTokenTypeOrmEntity,
     ]),
     ChildModule,
+    GroupModule,
+    UsersModule,
     // `WsBroadcaster` is provided globally by the process-side websocket
     // module: api uses `WebsocketModule` (imported by `AppModule`,
     // `@Global()` so its `WsBroadcaster` export reaches the dispatcher);

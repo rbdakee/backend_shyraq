@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { Injectable, Logger } from '@nestjs/common';
 import { ChildGuardianRepository } from '@/modules/child/infrastructure/persistence/child-guardian.repository';
+import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
+import { GroupRepository } from '@/modules/group/infrastructure/persistence/group.repository';
+import { UserRepository } from '@/modules/users/infrastructure/persistence/user.repository';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { PushNotificationPort } from '@/shared-kernel/domain/push-notification.port';
 import { OutboxEvent } from './domain/entities/outbox-event.entity';
@@ -9,6 +12,7 @@ import {
   NotificationRepository,
 } from './notification.repository';
 import { NotificationPreferenceRepository } from './notification-preference.repository';
+import { classifyPushError } from './push-error-classifier';
 import { PushTokenRepository } from './push-token.repository';
 import { WsBroadcaster } from './ws-broadcaster.port';
 
@@ -37,6 +41,20 @@ interface ResolvedRecipients {
 
 interface NotificationTemplateArgs {
   payload: Record<string, unknown>;
+  /**
+   * Optional dispatcher-side enrichment (childName, groupName, requesterName).
+   * Resolved per event-key by `enrichTemplateContext` BEFORE the template is
+   * invoked. Falls back to short generic strings ("ребёнок", "группа") when
+   * a lookup fails or the row was deleted between enqueue and dispatch — we
+   * never want a missing display name to fail the whole event.
+   */
+  enrichment: TemplateEnrichment;
+}
+
+interface TemplateEnrichment {
+  childName: string;
+  groupName: string;
+  newGuardianName: string;
 }
 
 interface NotificationTemplateResult {
@@ -53,11 +71,23 @@ type EventTemplate = (
   args: NotificationTemplateArgs,
 ) => NotificationTemplateResult;
 
+type RecipientResolver = (
+  event: OutboxEvent,
+  deps: { guardianRepo: ChildGuardianRepository },
+) => Promise<ResolvedRecipients>;
+
 /**
  * Set of event-keys nannies are allowed to receive. Anything outside this
  * set is silently dropped for users with `role='nanny'` on the underlying
  * child. `pickup.*` keys land here in B11; B9 leaves the placeholder so
  * nanny pickup notifications work without follow-up.
+ *
+ * `child.transferred` and `guardian.permissions_updated` are deliberately
+ * excluded — they are administrative / parent-facing events. `guardian.*`
+ * self-events about the nanny themselves (pending_approval, rejected,
+ * revoked, self_revoked, approved) bypass the nanny filter because their
+ * recipient is a single user-id and the resolver returns an empty
+ * `nannyUserIds` set.
  */
 const NANNY_ALLOWED_EVENT_KEYS = new Set<string>([
   'attendance.checkin',
@@ -66,6 +96,33 @@ const NANNY_ALLOWED_EVENT_KEYS = new Set<string>([
   'pickup.approved',
   'pickup.completed',
 ]);
+
+/**
+ * Sentinel error thrown by `dispatch()` when the run terminates in `failed`
+ * status. The worker's per-event savepoint catches it, rolls the savepoint
+ * back (so any history rows / preference upserts written inside the
+ * savepoint revert), and then routes to `markFailedWithRetry` against the
+ * OUTER manager — exactly the same code path used for unhandled exceptions
+ * inside the dispatcher.
+ *
+ * Why throw instead of return: the savepoint commits when the inner block
+ * resolves, even if the resolved value is `{status:'failed'}`. With
+ * history-row inserts now living inside the savepoint, a return-failed
+ * would leave duplicate history rows on retry. Throwing forces the
+ * savepoint rollback so the next attempt re-inserts cleanly.
+ */
+export class SavepointRollback extends Error {
+  constructor(reason: string) {
+    super(reason);
+    this.name = 'SavepointRollback';
+  }
+}
+
+const FALLBACK_ENRICHMENT: TemplateEnrichment = {
+  childName: 'ребёнок',
+  groupName: 'группа',
+  newGuardianName: 'новый опекун',
+};
 
 const TEMPLATES: Record<string, EventTemplate> = {
   'attendance.checkin': ({ payload }) => ({
@@ -173,7 +230,157 @@ const TEMPLATES: Record<string, EventTemplate> = {
       userId: payload.userId,
     }),
   }),
+
+  // ── B9 follow-up: cover the rest of NotificationPort surface ─────────────
+
+  'guardian.pending_approval': ({ payload, enrichment }) => {
+    // `childFullName` lives in payload from the producer (`child.service`)
+    // — fall back through enrichment.childName for safety. `newGuardianName`
+    // is enrichment-only (resolver looks up the requester user).
+    const childName =
+      asNonEmptyString(payload.childFullName) ?? enrichment.childName;
+    const requesterName = enrichment.newGuardianName;
+    return {
+      titleI18n: {
+        ru: 'Новый опекун ждёт одобрения',
+        kk: 'Жаңа қамқоршы мақұлдауды күтуде',
+        en: 'New guardian pending approval',
+      },
+      bodyI18n: {
+        ru: `${requesterName} хочет присоединиться к ребёнку ${childName}.`,
+        kk: `${requesterName} ${childName} баласына қосылғысы келеді.`,
+        en: `${requesterName} wants to join child ${childName}.`,
+      },
+      data: stringMap({
+        childId: payload.childId,
+        primaryUserId: payload.primaryUserId,
+        requesterUserId: payload.requesterUserId,
+        role: payload.role,
+      }),
+    };
+  },
+
+  'guardian.rejected': ({ payload, enrichment }) => ({
+    titleI18n: {
+      ru: 'Запрос отклонён',
+      kk: 'Сұраным қабылданбады',
+      en: 'Request rejected',
+    },
+    bodyI18n: {
+      ru: `Ваш запрос на присоединение к ребёнку ${enrichment.childName} отклонён.`,
+      kk: `${enrichment.childName} баласына қосылу сұранымыңыз қабылданбады.`,
+      en: `Your request to join child ${enrichment.childName} was rejected.`,
+    },
+    data: stringMap({
+      childId: payload.childId,
+      guardianUserId: payload.guardianUserId,
+      rejectedBy: payload.rejectedBy,
+    }),
+  }),
+
+  'guardian.revoked': ({ payload, enrichment }) => ({
+    titleI18n: {
+      ru: 'Доступ отозван',
+      kk: 'Қол жеткізу қайтарып алынды',
+      en: 'Access revoked',
+    },
+    bodyI18n: {
+      ru: `Ваш доступ к ребёнку ${enrichment.childName} отозван.`,
+      kk: `${enrichment.childName} баласына қол жеткізуіңіз қайтарып алынды.`,
+      en: `Your access to child ${enrichment.childName} was revoked.`,
+    },
+    data: stringMap({
+      childId: payload.childId,
+      guardianUserId: payload.guardianUserId,
+      revokedBy: payload.revokedBy,
+    }),
+  }),
+
+  'child.transferred': ({ payload, enrichment }) => ({
+    titleI18n: {
+      ru: 'Ребёнок переведён',
+      kk: 'Бала ауыстырылды',
+      en: 'Child transferred',
+    },
+    bodyI18n: {
+      ru: `${enrichment.childName} переведён в группу ${enrichment.groupName}.`,
+      kk: `${enrichment.childName} ${enrichment.groupName} тобына ауыстырылды.`,
+      en: `${enrichment.childName} was transferred to group ${enrichment.groupName}.`,
+    },
+    data: stringMap({
+      childId: payload.childId,
+      fromGroupId: payload.fromGroupId,
+      toGroupId: payload.toGroupId,
+      transferredBy: payload.transferredBy,
+    }),
+  }),
+
+  'guardian.permissions_updated': ({ payload, enrichment }) => ({
+    titleI18n: {
+      ru: 'Права обновлены',
+      kk: 'Құқықтар жаңартылды',
+      en: 'Permissions updated',
+    },
+    bodyI18n: {
+      ru: `Ваши права для ребёнка ${enrichment.childName} обновлены.`,
+      kk: `${enrichment.childName} баласына қатысты құқықтарыңыз жаңартылды.`,
+      en: `Your permissions for child ${enrichment.childName} have been updated.`,
+    },
+    data: stringMap({
+      childId: payload.childId,
+      guardianUserId: payload.guardianUserId,
+      updatedBy: payload.updatedBy,
+    }),
+  }),
 };
+
+const RECIPIENT_RESOLVERS: Record<string, RecipientResolver> = {
+  'attendance.checkin': resolveByChildGuardians,
+  'attendance.checkout': resolveByChildGuardians,
+  'daily_status.changed': resolveByChildGuardians,
+  'timeline.entry_created': resolveByChildGuardians,
+  'guardian.approved': resolveSelfFromField('guardianUserId'),
+  'guardian.self_revoked': resolveSelfFromField('userId'),
+  // ── B9 follow-up wiring ────────────────────────────────────────────────
+  'guardian.pending_approval': resolveSelfFromField('primaryUserId'),
+  'guardian.rejected': resolveSelfFromField('guardianUserId'),
+  'guardian.revoked': resolveSelfFromField('guardianUserId'),
+  'guardian.permissions_updated': resolveSelfFromField('guardianUserId'),
+  'child.transferred': resolveByChildGuardians,
+};
+
+async function resolveByChildGuardians(
+  event: OutboxEvent,
+  deps: { guardianRepo: ChildGuardianRepository },
+): Promise<ResolvedRecipients> {
+  const childId = stringField(event.payload, 'childId');
+  const guardians = await deps.guardianRepo.findByChildId(
+    event.kindergartenId,
+    childId,
+  );
+  const userIds: string[] = [];
+  const nannyUserIds = new Set<string>();
+  for (const g of guardians) {
+    const state = g.toState();
+    if (state.status !== 'approved' || state.revokedAt !== null) {
+      continue;
+    }
+    if (!userIds.includes(state.userId)) {
+      userIds.push(state.userId);
+    }
+    if (state.role === 'nanny') {
+      nannyUserIds.add(state.userId);
+    }
+  }
+  return { userIds, nannyUserIds, childId };
+}
+
+function resolveSelfFromField(fieldName: string): RecipientResolver {
+  return (event: OutboxEvent): Promise<ResolvedRecipients> => {
+    const userId = stringField(event.payload, fieldName);
+    return Promise.resolve({ userIds: [userId], nannyUserIds: new Set() });
+  };
+}
 
 function stringMap(input: Record<string, unknown>): Record<string, string> {
   const out: Record<string, string> = {};
@@ -184,6 +391,10 @@ function stringMap(input: Record<string, unknown>): Record<string, string> {
   return out;
 }
 
+function asNonEmptyString(v: unknown): string | undefined {
+  return typeof v === 'string' && v.length > 0 ? v : undefined;
+}
+
 /**
  * NotificationDispatcher — pure transform from a single outbox event into
  * the side-effects:
@@ -192,20 +403,21 @@ function stringMap(input: Record<string, unknown>): Record<string, string> {
  *   3. apply the nanny-allowlist policy
  *   4. INSERT history rows for users with `in_app_enabled=true`
  *   5. WS broadcast to `user:{id}` rooms (fire-and-forget)
- *   6. Push fan-out to each user's tokens (per-user try/catch)
+ *   6. Push fan-out to each user's tokens (per-token try/catch with
+ *      `classifyPushError` — permanent-token errors delete the token,
+ *      transient errors abort the event so the worker re-tries).
  *
- * Recipient-resolution rule (T4 scope):
- *   - `attendance.*`, `daily_status.changed`, `timeline.entry_created`:
- *     guardians of the child only. Mentors can view via API but do not
- *     receive a push for own-actor events. Documented in
- *     `docs/Shyraq BP.md §10`.
- *   - `guardian.approved` / `guardian.self_revoked`: the affected user only.
+ * On `failed`, `dispatch()` THROWS `SavepointRollback` rather than
+ * returning. The worker's per-event savepoint then rolls back, undoing the
+ * history-row inserts — the next retry will not duplicate them. This keeps
+ * the at-least-once outbox contract while staying exactly-once for history
+ * rows.
+ *
+ * Recipient-resolution rules see `RECIPIENT_RESOLVERS` above; nanny policy
+ * see `NANNY_ALLOWED_EVENT_KEYS` and `applyNannyPolicy`.
  *
  * The dispatcher does NOT call `outboxRepo.markDispatched` /
- * `markFailedWithRetry` itself — the worker (T6) owns that, with the lock
- * still held on the row from `claimBatch`. This keeps the dispatcher a pure
- * function `(event) → DispatchResult` and lets the worker decide retry
- * policy.
+ * `markFailedWithRetry` itself — the worker (T6) owns that.
  */
 @Injectable()
 export class NotificationDispatcher {
@@ -219,19 +431,22 @@ export class NotificationDispatcher {
     private readonly pushPort: PushNotificationPort,
     private readonly wsBroadcaster: WsBroadcaster,
     private readonly clock: ClockPort,
+    private readonly childRepo: ChildRepository,
+    private readonly groupRepo: GroupRepository,
+    private readonly userRepo: UserRepository,
   ) {}
 
   async dispatch(event: OutboxEvent): Promise<DispatchResult> {
     try {
       const template = TEMPLATES[event.eventKey];
-      if (!template) {
-        return {
-          status: 'failed',
-          reason: `unknown_event_key:${event.eventKey}`,
-        };
+      const resolver = RECIPIENT_RESOLVERS[event.eventKey];
+      if (!template || !resolver) {
+        return this.fail(`unknown_event_key:${event.eventKey}`);
       }
 
-      const recipients = await this.resolveRecipients(event);
+      const recipients = await resolver(event, {
+        guardianRepo: this.guardianRepo,
+      });
       if (recipients.userIds.length === 0) {
         // Nothing to do — terminal success. Could legitimately happen if a
         // child's only guardian was revoked between enqueue and dispatch.
@@ -264,9 +479,15 @@ export class NotificationDispatcher {
       const inAppUsers = effective.filter((e) => e.in_app_enabled);
       const pushUsers = effective.filter((e) => e.push_enabled);
 
-      // 4) history rows (in_app_enabled only) — single bulk insert.
-      const rendered = template({ payload: event.payload });
+      // Resolve display-name enrichment once per dispatch — best effort.
+      const enrichment = await this.enrichTemplateContext(event);
+      const rendered = template({ payload: event.payload, enrichment });
       const now = this.clock.now();
+
+      // 4) history rows (in_app_enabled only) — single bulk insert. Lives
+      //    INSIDE the worker's savepoint via `tenantStorage`, so a later
+      //    failed return rolls these back and the next retry re-inserts
+      //    cleanly (no duplicate notifications on retry).
       if (inAppUsers.length > 0) {
         const rows: NotificationCreateInput[] = inAppUsers.map((u) => ({
           id: randomUUID(),
@@ -296,107 +517,170 @@ export class NotificationDispatcher {
         }
       }
 
-      // 6) Push fan-out — load tokens once for every push-enabled user.
-      if (pushUsers.length > 0) {
-        const tokens = await this.pushTokenRepo.findByUserIds(
-          pushUsers.map((u) => u.userId),
-        );
-        const tokensByUser = new Map<
-          string,
-          { id: string; platform: 'ios' | 'android' | 'web'; token: string }[]
-        >();
-        for (const t of tokens) {
-          const arr = tokensByUser.get(t.userId) ?? [];
-          arr.push({ id: t.id, platform: t.platform, token: t.token });
-          tokensByUser.set(t.userId, arr);
-        }
-
-        const pushTitle =
-          rendered.titleI18n.ru ?? Object.values(rendered.titleI18n)[0] ?? '';
-        const pushBody =
-          rendered.bodyI18n.ru ?? Object.values(rendered.bodyI18n)[0] ?? '';
-
-        for (const u of pushUsers) {
-          const userTokens = tokensByUser.get(u.userId);
-          if (!userTokens || userTokens.length === 0) continue;
-          try {
-            await this.pushPort.send(
-              { userId: u.userId, tokens: userTokens },
-              {
-                title: pushTitle,
-                body: pushBody,
-                data: rendered.data,
-              },
-            );
-          } catch (err) {
-            // Per-user push failure must NOT fail the whole dispatch.
-            this.logger.warn(
-              `push_send_failed user=${u.userId} event=${event.eventKey}: ${(err as Error).message}`,
-            );
-          }
-        }
+      // 6) Push fan-out — per-token classification.
+      const transientFailures = await this.fanoutPush(
+        event.eventKey,
+        pushUsers.map((u) => u.userId),
+        rendered,
+      );
+      if (transientFailures > 0) {
+        return this.fail(`push_transient_failures=${transientFailures}`);
       }
 
       return { status: 'dispatched' };
     } catch (err) {
+      // Unhandled exception (DB write, lookup, programmer bug). Surface as
+      // `failed` so the worker's savepoint rolls back and the row retries.
+      if (err instanceof SavepointRollback) {
+        // Already a deliberate rollback — re-throw to the worker.
+        throw err;
+      }
       const reason = err instanceof Error ? err.message : String(err);
       this.logger.warn(
         `dispatch_failed event=${event.eventKey} id=${event.id ?? '<unknown>'}: ${reason}`,
       );
-      return { status: 'failed', reason };
+      return this.fail(reason);
     }
   }
 
   /**
-   * Resolves the user-id set for an outbox event. Per the BP contract:
-   *   - attendance / daily-status / timeline events → guardians of the
-   *     child only. Mentors view via API; they do not receive a notification
-   *     for own-actor events.
-   *   - guardian.approved / guardian.self_revoked → the affected user only.
+   * Per-token push fan-out. Returns the number of transient (retriable)
+   * failures; permanent-token errors delete the token and are treated as
+   * success for the dispatch's purposes.
    */
-  private async resolveRecipients(
+  private async fanoutPush(
+    eventKey: string,
+    userIds: string[],
+    rendered: NotificationTemplateResult,
+  ): Promise<number> {
+    if (userIds.length === 0) return 0;
+
+    const tokens = await this.pushTokenRepo.findByUserIds(userIds);
+    if (tokens.length === 0) return 0;
+
+    const tokensByUser = new Map<
+      string,
+      { id: string; platform: 'ios' | 'android' | 'web'; token: string }[]
+    >();
+    for (const t of tokens) {
+      const arr = tokensByUser.get(t.userId) ?? [];
+      arr.push({ id: t.id, platform: t.platform, token: t.token });
+      tokensByUser.set(t.userId, arr);
+    }
+
+    const pushTitle =
+      rendered.titleI18n.ru ?? Object.values(rendered.titleI18n)[0] ?? '';
+    const pushBody =
+      rendered.bodyI18n.ru ?? Object.values(rendered.bodyI18n)[0] ?? '';
+
+    let transientFailures = 0;
+    for (const userId of userIds) {
+      const userTokens = tokensByUser.get(userId);
+      if (!userTokens || userTokens.length === 0) continue;
+      for (const t of userTokens) {
+        try {
+          await this.pushPort.send(
+            { userId, tokens: [t] },
+            { title: pushTitle, body: pushBody, data: rendered.data },
+          );
+        } catch (err) {
+          const cls = classifyPushError(err);
+          if (cls === 'permanent_token') {
+            // Best-effort cleanup — never let the cleanup itself break the
+            // dispatch, otherwise a transient DB blip during cleanup would
+            // be misclassified as a permanent push failure.
+            this.logger.warn(
+              `push_token_dead user=${userId} token=${t.id} event=${eventKey}: ${(err as Error).message}`,
+            );
+            try {
+              await this.pushTokenRepo.deleteById(t.id);
+            } catch (delErr) {
+              this.logger.warn(
+                `push_token_delete_failed token=${t.id}: ${(delErr as Error).message}`,
+              );
+            }
+          } else {
+            transientFailures += 1;
+            this.logger.warn(
+              `push_send_transient_failure user=${userId} token=${t.id} event=${eventKey}: ${(err as Error).message}`,
+            );
+          }
+        }
+      }
+    }
+    return transientFailures;
+  }
+
+  /**
+   * Look up display names for the template once per dispatch. Best-effort:
+   * any lookup that throws or returns null falls through to the static
+   * fallback so a missing related row never converts a benign event into a
+   * failed one.
+   */
+  private async enrichTemplateContext(
     event: OutboxEvent,
-  ): Promise<ResolvedRecipients> {
-    switch (event.eventKey) {
-      case 'attendance.checkin':
-      case 'attendance.checkout':
-      case 'daily_status.changed':
-      case 'timeline.entry_created': {
-        const childId = stringField(event.payload, 'childId');
-        const guardians = await this.guardianRepo.findByChildId(
+  ): Promise<TemplateEnrichment> {
+    const out: TemplateEnrichment = { ...FALLBACK_ENRICHMENT };
+    const childIdRaw = event.payload.childId;
+    const childId = typeof childIdRaw === 'string' ? childIdRaw : null;
+
+    // child name — needed by guardian.rejected/revoked/permissions_updated,
+    // child.transferred, and as fallback for guardian.pending_approval.
+    if (childId) {
+      try {
+        const child = await this.childRepo.findById(
           event.kindergartenId,
           childId,
         );
-        const userIds: string[] = [];
-        const nannyUserIds = new Set<string>();
-        for (const g of guardians) {
-          const state = g.toState();
-          if (state.status !== 'approved' || state.revokedAt !== null) {
-            continue;
-          }
-          if (!userIds.includes(state.userId)) {
-            userIds.push(state.userId);
-          }
-          if (state.role === 'nanny') {
-            nannyUserIds.add(state.userId);
-          }
-        }
-        return { userIds, nannyUserIds, childId };
+        if (child) out.childName = child.fullName;
+      } catch (err) {
+        this.logger.debug(
+          `enrich_child_lookup_failed child=${childId}: ${(err as Error).message}`,
+        );
       }
-
-      case 'guardian.approved': {
-        const userId = stringField(event.payload, 'guardianUserId');
-        return { userIds: [userId], nannyUserIds: new Set() };
-      }
-
-      case 'guardian.self_revoked': {
-        const userId = stringField(event.payload, 'userId');
-        return { userIds: [userId], nannyUserIds: new Set() };
-      }
-
-      default:
-        throw new Error(`recipient_resolver_missing:${event.eventKey}`);
     }
+
+    if (event.eventKey === 'child.transferred') {
+      const toGroupIdRaw = event.payload.toGroupId;
+      const toGroupId = typeof toGroupIdRaw === 'string' ? toGroupIdRaw : null;
+      if (toGroupId) {
+        try {
+          const group = await this.groupRepo.findById(
+            event.kindergartenId,
+            toGroupId,
+          );
+          if (group) out.groupName = group.name;
+        } catch (err) {
+          this.logger.debug(
+            `enrich_group_lookup_failed group=${toGroupId}: ${(err as Error).message}`,
+          );
+        }
+      }
+    }
+
+    if (event.eventKey === 'guardian.pending_approval') {
+      const requesterIdRaw = event.payload.requesterUserId;
+      const requesterId =
+        typeof requesterIdRaw === 'string' ? requesterIdRaw : null;
+      if (requesterId) {
+        try {
+          const user = await this.userRepo.findById(requesterId);
+          if (user && user.fullName.length > 0) {
+            out.newGuardianName = user.fullName;
+          }
+        } catch (err) {
+          this.logger.debug(
+            `enrich_user_lookup_failed user=${requesterId}: ${(err as Error).message}`,
+          );
+        }
+      }
+    }
+
+    return out;
+  }
+
+  private fail(reason: string): DispatchResult {
+    return { status: 'failed', reason };
   }
 
   private applyNannyPolicy(
@@ -418,3 +702,9 @@ function stringField(payload: Record<string, unknown>, key: string): string {
   }
   return v;
 }
+
+// Test/coverage helpers — kept exported so the dispatcher-coverage spec can
+// assert that every CANONICAL_EVENT_KEY for which we have a producer call-
+// site is wired with both a template and a recipient resolver.
+export const EVENT_TEMPLATES = TEMPLATES;
+export const EVENT_RECIPIENT_RESOLVERS = RECIPIENT_RESOLVERS;

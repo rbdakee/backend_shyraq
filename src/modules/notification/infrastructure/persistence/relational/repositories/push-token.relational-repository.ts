@@ -62,6 +62,13 @@ export class PushTokenRelationalRepository extends PushTokenRepository {
     return (result.affected ?? 0) > 0;
   }
 
+  async deleteById(id: string): Promise<void> {
+    // Best-effort. If the row was already deleted (concurrent purge or the
+    // user re-registered the token under a new id) the DELETE is a no-op
+    // and we still return cleanly — the dispatcher does not retry on this.
+    await this.repo.delete({ id });
+  }
+
   private toModel(r: PushTokenTypeOrmEntity): PushToken {
     return {
       id: r.id,

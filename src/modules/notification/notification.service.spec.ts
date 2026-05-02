@@ -95,6 +95,14 @@ class FakePushTokenRepo extends PushTokenRepository {
     this.tokensByUserAndToken.delete(`${token.userId}:${token.token}`);
     return Promise.resolve(true);
   }
+
+  deleteById(id: string): Promise<void> {
+    const token = this.tokens.get(id);
+    if (!token) return Promise.resolve();
+    this.tokens.delete(id);
+    this.tokensByUserAndToken.delete(`${token.userId}:${token.token}`);
+    return Promise.resolve();
+  }
 }
 
 class FakeNotificationRepo extends NotificationRepository {

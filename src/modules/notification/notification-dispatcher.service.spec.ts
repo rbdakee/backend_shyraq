@@ -2,8 +2,29 @@ import { ChildId } from '@/shared-kernel/domain/value-objects/child-id.vo';
 import { GuardianRelation } from '@/shared-kernel/domain/value-objects/guardian-relation.vo';
 import { KindergartenId } from '@/shared-kernel/domain/value-objects/kindergarten-id.vo';
 import { UserId } from '@/shared-kernel/domain/value-objects/user-id.vo';
+import { Child } from '@/modules/child/domain/entities/child.entity';
 import { ChildGuardian } from '@/modules/child/domain/entities/child-guardian.entity';
 import { ChildGuardianRepository } from '@/modules/child/infrastructure/persistence/child-guardian.repository';
+import {
+  ChildGroupHistoryRecord,
+  ChildListFilters,
+  ChildRepository,
+  PageRequest,
+  PageResult,
+} from '@/modules/child/infrastructure/persistence/child.repository';
+import { Group } from '@/modules/group/domain/entities/group.entity';
+import {
+  GroupRepository,
+  CreateGroupInput,
+  ListGroupsFilters,
+  UpdateGroupInput,
+} from '@/modules/group/infrastructure/persistence/group.repository';
+import { GroupMentor } from '@/modules/group/domain/entities/group-mentor.entity';
+import { User } from '@/modules/users/domain/entities/user.entity';
+import {
+  UserRepository,
+  UserUpdateInput,
+} from '@/modules/users/infrastructure/persistence/user.repository';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import {
   PushNotificationPort,
@@ -11,7 +32,12 @@ import {
   PushTarget,
 } from '@/shared-kernel/domain/push-notification.port';
 import { OutboxEvent } from './domain/entities/outbox-event.entity';
-import { NotificationDispatcher } from './notification-dispatcher.service';
+import {
+  EVENT_RECIPIENT_RESOLVERS,
+  EVENT_TEMPLATES,
+  NotificationDispatcher,
+  SavepointRollback,
+} from './notification-dispatcher.service';
 import {
   NotificationPreference,
   NotificationPreferenceFlags,
@@ -29,6 +55,7 @@ import {
   PushTokenSummary,
   PushTokenUpsertInput,
 } from './push-token.repository';
+import { classifyPushError } from './push-error-classifier';
 import { WsBroadcaster } from './ws-broadcaster.port';
 
 const KG = '11111111-1111-1111-1111-111111111111';
@@ -36,6 +63,7 @@ const CHILD = '22222222-2222-2222-2222-222222222222';
 const USER_A = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const USER_B = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
 const USER_NANNY = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
+const GROUP_NEW = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
 const NOW = new Date('2026-05-01T09:00:00.000Z');
 
 class FixedClock extends ClockPort {
@@ -137,6 +165,7 @@ class FakePreferenceRepo extends NotificationPreferenceRepository {
 
 class FakePushTokenRepo extends PushTokenRepository {
   byUser = new Map<string, PushTokenSummary[]>();
+  deletedTokenIds: string[] = [];
 
   set(userId: string, tokens: PushTokenSummary[]): void {
     this.byUser.set(userId, tokens);
@@ -158,6 +187,20 @@ class FakePushTokenRepo extends PushTokenRepository {
 
   deleteByIdAndUserId(_id: string, _userId: string): Promise<boolean> {
     return Promise.resolve(false);
+  }
+
+  deleteById(id: string): Promise<void> {
+    this.deletedTokenIds.push(id);
+    // Best-effort: simulate the row being gone after the delete by removing
+    // it from the in-memory state, so a follow-up findByUserIds wouldn't
+    // return it. Tests don't currently re-fetch but keeps the fake honest.
+    for (const [user, list] of this.byUser.entries()) {
+      this.byUser.set(
+        user,
+        list.filter((t) => t.id !== id),
+      );
+    }
+    return Promise.resolve();
   }
 }
 
@@ -190,12 +233,18 @@ class FakeNotificationRepo extends NotificationRepository {
 
 class RecordingPushPort extends PushNotificationPort {
   calls: { target: PushTarget; payload: PushPayload }[] = [];
-  failOnUserId: string | null = null;
+  /** Map of token-id → error to throw on send. */
+  errorsByTokenId = new Map<string, Error>();
+
+  failTokenId(id: string, err: Error): void {
+    this.errorsByTokenId.set(id, err);
+  }
 
   send(target: PushTarget, payload: PushPayload): Promise<void> {
     this.calls.push({ target, payload });
-    if (this.failOnUserId === target.userId) {
-      return Promise.reject(new Error('fcm_500'));
+    for (const t of target.tokens) {
+      const err = this.errorsByTokenId.get(t.id);
+      if (err) return Promise.reject(err);
     }
     return Promise.resolve();
   }
@@ -210,6 +259,110 @@ class RecordingWsBroadcaster extends WsBroadcaster {
   }
   broadcastToChild(): void {}
   broadcastToGroup(): void {}
+}
+
+class FakeChildRepo extends ChildRepository {
+  byId = new Map<string, Child>();
+
+  set(child: Child): void {
+    this.byId.set(child.id, child);
+  }
+
+  create(): Promise<void> {
+    return Promise.resolve();
+  }
+  findById(_kg: string, id: string): Promise<Child | null> {
+    return Promise.resolve(this.byId.get(id) ?? null);
+  }
+  findByKindergartenAndIin(): Promise<Child | null> {
+    return Promise.resolve(null);
+  }
+  update(): Promise<void> {
+    return Promise.resolve();
+  }
+  list(
+    _kg: string,
+    _f: ChildListFilters,
+    _p: PageRequest,
+  ): Promise<PageResult<Child>> {
+    return Promise.resolve({ items: [], total: 0 });
+  }
+  countActiveByGroup(): Promise<number> {
+    return Promise.resolve(0);
+  }
+  recordGroupTransfer(): Promise<void> {
+    return Promise.resolve();
+  }
+  listGroupHistory(): Promise<ChildGroupHistoryRecord[]> {
+    return Promise.resolve([]);
+  }
+  findByIinCrossTenant(): Promise<Child[]> {
+    return Promise.resolve([]);
+  }
+}
+
+class FakeGroupRepo extends GroupRepository {
+  byId = new Map<string, Group>();
+
+  set(group: Group): void {
+    this.byId.set(group.id, group);
+  }
+
+  create(_kg: string, _i: CreateGroupInput): Promise<Group> {
+    return Promise.reject(new Error('not used'));
+  }
+  findById(_kg: string, id: string): Promise<Group | null> {
+    return Promise.resolve(this.byId.get(id) ?? null);
+  }
+  list(_kg: string, _f?: ListGroupsFilters): Promise<Group[]> {
+    return Promise.resolve([]);
+  }
+  update(
+    _kg: string,
+    _id: string,
+    _p: UpdateGroupInput,
+  ): Promise<Group | null> {
+    return Promise.resolve(null);
+  }
+  save(g: Group): Promise<Group> {
+    return Promise.resolve(g);
+  }
+  assignMentor(): Promise<GroupMentor> {
+    return Promise.reject(new Error('not used'));
+  }
+  unassignMentor(): Promise<GroupMentor | null> {
+    return Promise.resolve(null);
+  }
+  findActiveMentor(): Promise<GroupMentor | null> {
+    return Promise.resolve(null);
+  }
+  listMentorHistory(): Promise<GroupMentor[]> {
+    return Promise.resolve([]);
+  }
+  findActiveMentorAssignmentsByUserIdCrossTenant(): Promise<GroupMentor[]> {
+    return Promise.resolve([]);
+  }
+}
+
+class FakeUserRepo extends UserRepository {
+  byId = new Map<string, User>();
+
+  set(user: User): void {
+    this.byId.set(user.id, user);
+  }
+
+  findById(id: string): Promise<User | null> {
+    return Promise.resolve(this.byId.get(id) ?? null);
+  }
+  findByPhone(): Promise<User | null> {
+    return Promise.resolve(null);
+  }
+  upsertByPhone(): Promise<User> {
+    return Promise.reject(new Error('not used'));
+  }
+  update(_id: string, _c: UserUpdateInput): Promise<User> {
+    return Promise.reject(new Error('not used'));
+  }
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────
@@ -239,8 +392,54 @@ function approvedGuardian(
   });
 }
 
-// helper to silence unused-imports in lint while keeping VOs reachable for
-// future expansion of this spec.
+function makeChild(fullName = 'Айгерим Сериккызы'): Child {
+  return Child.hydrate({
+    id: CHILD,
+    kindergartenId: KG,
+    iin: null,
+    fullName,
+    dateOfBirth: new Date('2020-01-01T00:00:00.000Z'),
+    gender: 'f',
+    photoUrl: null,
+    status: 'active',
+    currentGroupId: null,
+    enrollmentDate: null,
+    archivedAt: null,
+    archiveReason: null,
+    medicalNotes: null,
+    allergyNotes: null,
+    createdAt: NOW,
+    updatedAt: NOW,
+  });
+}
+
+function makeGroup(id: string, name: string): Group {
+  return Group.hydrate({
+    id,
+    kindergartenId: KG,
+    name,
+    capacity: 20,
+    ageRangeMin: null,
+    ageRangeMax: null,
+    currentLocationId: null,
+    archivedAt: null,
+    createdAt: NOW,
+    updatedAt: NOW,
+  });
+}
+
+function makeUser(id: string, fullName: string): User {
+  return User.hydrate({
+    id,
+    phone: '+77770000000',
+    fullName,
+    avatarUrl: null,
+    iin: null,
+    dateOfBirth: null,
+    locale: 'ru',
+  });
+}
+
 void ChildId;
 void GuardianRelation;
 void KindergartenId;
@@ -254,6 +453,9 @@ interface Wired {
   notificationRepo: FakeNotificationRepo;
   pushPort: RecordingPushPort;
   ws: RecordingWsBroadcaster;
+  childRepo: FakeChildRepo;
+  groupRepo: FakeGroupRepo;
+  userRepo: FakeUserRepo;
 }
 
 function wire(): Wired {
@@ -264,6 +466,9 @@ function wire(): Wired {
   const pushPort = new RecordingPushPort();
   const ws = new RecordingWsBroadcaster();
   const clock = new FixedClock(NOW);
+  const childRepo = new FakeChildRepo();
+  const groupRepo = new FakeGroupRepo();
+  const userRepo = new FakeUserRepo();
   const dispatcher = new NotificationDispatcher(
     guardianRepo,
     prefRepo,
@@ -272,6 +477,9 @@ function wire(): Wired {
     pushPort,
     ws,
     clock,
+    childRepo,
+    groupRepo,
+    userRepo,
   );
   return {
     dispatcher,
@@ -281,6 +489,9 @@ function wire(): Wired {
     notificationRepo,
     pushPort,
     ws,
+    childRepo,
+    groupRepo,
+    userRepo,
   };
 }
 
@@ -352,12 +563,6 @@ describe('NotificationDispatcher', () => {
 
     it('skips nanny for guardian.approved (not in nanny allowlist)', async () => {
       const w = wire();
-      // Send to NANNY user-id explicitly. The dispatcher does not refetch
-      // the guardian role for guardian.* events — they target a specific
-      // userId. The nanny set is empty for guardian.* events, so the
-      // recipient is NOT filtered. This test asserts the documented
-      // behaviour: guardian.approved fires for the affected user even when
-      // they hold a nanny row elsewhere.
       const event = OutboxEvent.create(
         {
           id: '99999999-9999-9999-9999-999999999992',
@@ -381,9 +586,6 @@ describe('NotificationDispatcher', () => {
     });
 
     it('drops nanny for non-allowlisted event when nanny is part of child guardians', async () => {
-      // Use timeline.entry_created — not in nanny allowlist. Nanny is a
-      // guardian on the child, so resolveRecipients picks them up; the
-      // policy filter then drops them.
       const w = wire();
       w.guardianRepo.setGuardiansForChild(CHILD, [
         approvedGuardian(USER_A, 'primary'),
@@ -410,6 +612,66 @@ describe('NotificationDispatcher', () => {
       expect(result).toEqual({ status: 'dispatched' });
       expect(w.notificationRepo.rows).toHaveLength(1);
       expect(w.notificationRepo.rows[0].userId).toBe(USER_A);
+    });
+
+    it('drops nanny for child.transferred (administrative — nannies excluded by policy)', async () => {
+      const w = wire();
+      w.guardianRepo.setGuardiansForChild(CHILD, [
+        approvedGuardian(USER_A, 'primary'),
+        approvedGuardian(USER_NANNY, 'nanny'),
+      ]);
+      w.childRepo.set(makeChild('Айгерим'));
+      w.groupRepo.set(makeGroup(GROUP_NEW, 'Радуга'));
+      const event = OutboxEvent.create(
+        {
+          id: '99999999-9999-9999-9999-99999999cccc',
+          kindergartenId: KG,
+          eventKey: 'child.transferred',
+          payload: {
+            childId: CHILD,
+            fromGroupId: null,
+            toGroupId: GROUP_NEW,
+            transferredBy: USER_A,
+            recipientUserIds: [USER_A, USER_NANNY],
+          },
+        },
+        NOW,
+      );
+
+      const result = await w.dispatcher.dispatch(event);
+
+      expect(result).toEqual({ status: 'dispatched' });
+      // Only USER_A is on the history. Nanny dropped by policy.
+      expect(w.notificationRepo.rows.map((r) => r.userId)).toEqual([USER_A]);
+    });
+
+    it('still notifies the nanny user about guardian.revoked when they themselves are the target', async () => {
+      // The recipient resolver for guardian.revoked targets a single
+      // userId (`guardianUserId`) — the nannyUserIds set is empty, so the
+      // policy filter is a no-op even though the event-key is not in the
+      // nanny allowlist. Self-events about the nanny ALWAYS reach them.
+      const w = wire();
+      w.childRepo.set(makeChild('Айгерим'));
+      const event = OutboxEvent.create(
+        {
+          id: '99999999-9999-9999-9999-99999999dddd',
+          kindergartenId: KG,
+          eventKey: 'guardian.revoked',
+          payload: {
+            childId: CHILD,
+            guardianUserId: USER_NANNY,
+            revokedBy: USER_A,
+          },
+        },
+        NOW,
+      );
+
+      const result = await w.dispatcher.dispatch(event);
+
+      expect(result).toEqual({ status: 'dispatched' });
+      expect(w.notificationRepo.rows.map((r) => r.userId)).toEqual([
+        USER_NANNY,
+      ]);
     });
   });
 
@@ -439,7 +701,6 @@ describe('NotificationDispatcher', () => {
         approvedGuardian(USER_B, 'secondary'),
       ]);
       w.prefRepo.set(USER_A, { push_enabled: false, in_app_enabled: false });
-      // USER_B has no row → defaults to all-on.
       w.tokenRepo.set(USER_B, [
         { id: 'tb', userId: USER_B, platform: 'web', token: 'tok-b' },
       ]);
@@ -458,37 +719,75 @@ describe('NotificationDispatcher', () => {
       w.guardianRepo.setGuardiansForChild(CHILD, [
         approvedGuardian(USER_A, 'primary'),
       ]);
-      // No tokens registered.
 
       const result = await w.dispatcher.dispatch(makeAttendanceEvent());
 
       expect(result).toEqual({ status: 'dispatched' });
       expect(w.pushPort.calls).toHaveLength(0);
-      // History row still written.
       expect(w.notificationRepo.rows).toHaveLength(1);
     });
 
-    it('treats per-user push failure as soft — overall result still dispatched', async () => {
+    it('on PERMANENT-token error: deletes the token, dispatch still succeeds for the rest', async () => {
       const w = wire();
       w.guardianRepo.setGuardiansForChild(CHILD, [
         approvedGuardian(USER_A, 'primary'),
         approvedGuardian(USER_B, 'secondary'),
       ]);
       w.tokenRepo.set(USER_A, [
-        { id: 't1', userId: USER_A, platform: 'ios', token: 'tok-a' },
+        { id: 't-dead', userId: USER_A, platform: 'ios', token: 'tok-a' },
       ]);
       w.tokenRepo.set(USER_B, [
-        { id: 't2', userId: USER_B, platform: 'android', token: 'tok-b' },
+        { id: 't-ok', userId: USER_B, platform: 'android', token: 'tok-b' },
       ]);
-      w.pushPort.failOnUserId = USER_A;
+      w.pushPort.failTokenId('t-dead', new Error('NotRegistered'));
 
       const result = await w.dispatcher.dispatch(makeAttendanceEvent());
 
       expect(result).toEqual({ status: 'dispatched' });
-      // Both calls were attempted.
-      expect(w.pushPort.calls.map((c) => c.target.userId).sort()).toEqual(
-        [USER_A, USER_B].sort(),
+      // Dead token was deleted.
+      expect(w.tokenRepo.deletedTokenIds).toEqual(['t-dead']);
+      // Both push attempts were made (per-token loop).
+      expect(w.pushPort.calls.map((c) => c.target.tokens[0].id).sort()).toEqual(
+        ['t-dead', 't-ok'],
       );
+    });
+
+    it('on TRANSIENT push error: dispatch returns failed (worker retries)', async () => {
+      const w = wire();
+      w.guardianRepo.setGuardiansForChild(CHILD, [
+        approvedGuardian(USER_A, 'primary'),
+      ]);
+      w.tokenRepo.set(USER_A, [
+        { id: 't1', userId: USER_A, platform: 'ios', token: 'tok-a' },
+      ]);
+      w.pushPort.failTokenId('t1', new Error('FCM 503 service unavailable'));
+
+      const result = await w.dispatcher.dispatch(makeAttendanceEvent());
+
+      expect(result.status).toBe('failed');
+      if (result.status === 'failed') {
+        expect(result.reason).toMatch(/push_transient_failures=1/);
+      }
+      // Token was NOT deleted — transient errors must not drop tokens.
+      expect(w.tokenRepo.deletedTokenIds).toEqual([]);
+    });
+
+    it('mixed permanent + transient: still failed (transient wins for retry semantics)', async () => {
+      const w = wire();
+      w.guardianRepo.setGuardiansForChild(CHILD, [
+        approvedGuardian(USER_A, 'primary'),
+      ]);
+      w.tokenRepo.set(USER_A, [
+        { id: 't-dead', userId: USER_A, platform: 'ios', token: 'tok-a' },
+        { id: 't-blip', userId: USER_A, platform: 'android', token: 'tok-b' },
+      ]);
+      w.pushPort.failTokenId('t-dead', new Error('NotRegistered'));
+      w.pushPort.failTokenId('t-blip', new Error('connect ETIMEDOUT'));
+
+      const result = await w.dispatcher.dispatch(makeAttendanceEvent());
+
+      expect(result.status).toBe('failed');
+      expect(w.tokenRepo.deletedTokenIds).toEqual(['t-dead']);
     });
   });
 
@@ -532,7 +831,6 @@ describe('NotificationDispatcher', () => {
   describe('empty recipient set', () => {
     it('returns dispatched when no guardians are approved (terminal success, no work)', async () => {
       const w = wire();
-      // No guardians configured for the child.
 
       const result = await w.dispatcher.dispatch(makeAttendanceEvent());
 
@@ -540,5 +838,268 @@ describe('NotificationDispatcher', () => {
       expect(w.notificationRepo.rows).toHaveLength(0);
       expect(w.pushPort.calls).toHaveLength(0);
     });
+  });
+
+  // ── B9 follow-up: new event-keys ────────────────────────────────────────
+
+  describe('guardian.pending_approval', () => {
+    it('targets the primary, renders new-guardian name + child name', async () => {
+      const w = wire();
+      w.userRepo.set(makeUser(USER_B, 'Алия Адамқызы'));
+      const event = OutboxEvent.create(
+        {
+          id: '99999999-9999-9999-9999-999999999aaa',
+          kindergartenId: KG,
+          eventKey: 'guardian.pending_approval',
+          payload: {
+            childId: CHILD,
+            childFullName: 'Айгерим Сериккызы',
+            primaryUserId: USER_A,
+            requesterUserId: USER_B,
+            role: 'secondary',
+          },
+        },
+        NOW,
+      );
+
+      const result = await w.dispatcher.dispatch(event);
+
+      expect(result).toEqual({ status: 'dispatched' });
+      expect(w.notificationRepo.rows).toHaveLength(1);
+      const row = w.notificationRepo.rows[0];
+      expect(row.userId).toBe(USER_A);
+      expect(row.bodyI18n.ru).toContain('Алия Адамқызы');
+      expect(row.bodyI18n.ru).toContain('Айгерим Сериккызы');
+    });
+  });
+
+  describe('guardian.rejected', () => {
+    it('targets the rejected user, mentions child name from lookup', async () => {
+      const w = wire();
+      w.childRepo.set(makeChild('Дамир Бакытов'));
+      const event = OutboxEvent.create(
+        {
+          id: '99999999-9999-9999-9999-999999999bbb',
+          kindergartenId: KG,
+          eventKey: 'guardian.rejected',
+          payload: {
+            childId: CHILD,
+            guardianUserId: USER_B,
+            rejectedBy: USER_A,
+          },
+        },
+        NOW,
+      );
+
+      const result = await w.dispatcher.dispatch(event);
+
+      expect(result).toEqual({ status: 'dispatched' });
+      expect(w.notificationRepo.rows).toHaveLength(1);
+      expect(w.notificationRepo.rows[0].userId).toBe(USER_B);
+      expect(w.notificationRepo.rows[0].bodyI18n.ru).toContain('Дамир Бакытов');
+    });
+  });
+
+  describe('guardian.revoked', () => {
+    it('targets the revoked user, mentions child name', async () => {
+      const w = wire();
+      w.childRepo.set(makeChild('Камила Серикова'));
+      const event = OutboxEvent.create(
+        {
+          id: '99999999-9999-9999-9999-999999999ccc',
+          kindergartenId: KG,
+          eventKey: 'guardian.revoked',
+          payload: {
+            childId: CHILD,
+            guardianUserId: USER_B,
+            revokedBy: USER_A,
+          },
+        },
+        NOW,
+      );
+
+      const result = await w.dispatcher.dispatch(event);
+
+      expect(result).toEqual({ status: 'dispatched' });
+      expect(w.notificationRepo.rows[0].userId).toBe(USER_B);
+      expect(w.notificationRepo.rows[0].bodyI18n.ru).toContain(
+        'Камила Серикова',
+      );
+    });
+
+    it('falls back to a generic placeholder when the child row is gone', async () => {
+      const w = wire();
+      // No child row registered — lookup returns null.
+      const event = OutboxEvent.create(
+        {
+          id: '99999999-9999-9999-9999-99999999fff0',
+          kindergartenId: KG,
+          eventKey: 'guardian.revoked',
+          payload: {
+            childId: CHILD,
+            guardianUserId: USER_B,
+            revokedBy: USER_A,
+          },
+        },
+        NOW,
+      );
+
+      const result = await w.dispatcher.dispatch(event);
+
+      expect(result).toEqual({ status: 'dispatched' });
+      // Body still rendered; reason for falling back: child row deleted
+      // between enqueue and dispatch must not block the notification.
+      expect(w.notificationRepo.rows[0].bodyI18n.ru).toMatch(/ребёнок/);
+    });
+  });
+
+  describe('child.transferred', () => {
+    it('targets all approved guardians (minus nannies) and renders group name', async () => {
+      const w = wire();
+      w.guardianRepo.setGuardiansForChild(CHILD, [
+        approvedGuardian(USER_A, 'primary'),
+        approvedGuardian(USER_B, 'secondary'),
+      ]);
+      w.childRepo.set(makeChild('Ермек Берікұлы'));
+      w.groupRepo.set(makeGroup(GROUP_NEW, 'Жұлдыз'));
+      const event = OutboxEvent.create(
+        {
+          id: '99999999-9999-9999-9999-99999999dddd',
+          kindergartenId: KG,
+          eventKey: 'child.transferred',
+          payload: {
+            childId: CHILD,
+            fromGroupId: null,
+            toGroupId: GROUP_NEW,
+            transferredBy: USER_A,
+            recipientUserIds: [USER_A, USER_B],
+          },
+        },
+        NOW,
+      );
+
+      const result = await w.dispatcher.dispatch(event);
+
+      expect(result).toEqual({ status: 'dispatched' });
+      expect(w.notificationRepo.rows.map((r) => r.userId).sort()).toEqual(
+        [USER_A, USER_B].sort(),
+      );
+      const ruBody = w.notificationRepo.rows[0].bodyI18n.ru;
+      expect(ruBody).toContain('Ермек Берікұлы');
+      expect(ruBody).toContain('Жұлдыз');
+    });
+  });
+
+  describe('guardian.permissions_updated', () => {
+    it('targets only the affected user, mentions child name', async () => {
+      const w = wire();
+      w.childRepo.set(makeChild('Сабина Маратовна'));
+      const event = OutboxEvent.create(
+        {
+          id: '99999999-9999-9999-9999-99999999eeee',
+          kindergartenId: KG,
+          eventKey: 'guardian.permissions_updated',
+          payload: {
+            childId: CHILD,
+            guardianUserId: USER_B,
+            updatedBy: USER_A,
+            effectivePermissions: { canPickup: true },
+          },
+        },
+        NOW,
+      );
+
+      const result = await w.dispatcher.dispatch(event);
+
+      expect(result).toEqual({ status: 'dispatched' });
+      expect(w.notificationRepo.rows.map((r) => r.userId)).toEqual([USER_B]);
+      expect(w.notificationRepo.rows[0].bodyI18n.ru).toContain(
+        'Сабина Маратовна',
+      );
+    });
+  });
+
+  // ── coverage assertion (HIGH#1 guardrail) ──────────────────────────────
+
+  describe('dispatcher event-key coverage', () => {
+    // Subset of CANONICAL_EVENT_KEYS that the dispatcher MUST be able to
+    // handle today. As B-batches grow this list (payment, content,
+    // diagnostic, fiscal, …), extend the array — the test fails until both
+    // a template and a resolver are wired, so a future B-batch cannot add
+    // an event key without updating the dispatcher.
+    const COVERED_KEYS = [
+      'attendance.checkin',
+      'attendance.checkout',
+      'daily_status.changed',
+      'timeline.entry_created',
+      'guardian.approved',
+      'guardian.self_revoked',
+      'guardian.pending_approval',
+      'guardian.rejected',
+      'guardian.revoked',
+      'guardian.permissions_updated',
+      'child.transferred',
+    ];
+
+    it.each(COVERED_KEYS)(
+      'has a template + resolver wired for %s',
+      (eventKey) => {
+        expect(EVENT_TEMPLATES[eventKey]).toBeDefined();
+        expect(EVENT_RECIPIENT_RESOLVERS[eventKey]).toBeDefined();
+      },
+    );
+  });
+
+  // ── HIGH#2 SavepointRollback contract ──────────────────────────────────
+
+  describe('SavepointRollback', () => {
+    it('exports a sentinel error with the failure reason as message', () => {
+      const err = new SavepointRollback('push_transient_failures=2');
+      expect(err).toBeInstanceOf(Error);
+      expect(err.name).toBe('SavepointRollback');
+      expect(err.message).toBe('push_transient_failures=2');
+    });
+  });
+});
+
+// ── push-error classifier ────────────────────────────────────────────────
+
+describe('classifyPushError', () => {
+  it.each([
+    ['NotRegistered', 'permanent_token'],
+    ['InvalidRegistration', 'permanent_token'],
+    ['BadDeviceToken', 'permanent_token'],
+    ['Unregistered', 'permanent_token'],
+    ['MismatchSenderId', 'permanent_token'],
+    ['messaging/registration-token-not-registered', 'permanent_token'],
+    ['messaging/invalid-registration-token', 'permanent_token'],
+    ['DeviceTokenNotForTopic', 'permanent_token'],
+  ])('classifies "%s" as %s', (msg, expected) => {
+    expect(classifyPushError(new Error(msg))).toBe(expected);
+  });
+
+  it('reads the FCM-style `code` field, not just message', () => {
+    const err = Object.assign(new Error('something happened'), {
+      code: 'messaging/registration-token-not-registered',
+    });
+    expect(classifyPushError(err)).toBe('permanent_token');
+  });
+
+  it.each([
+    'connect ETIMEDOUT',
+    'fcm_500',
+    'service unavailable',
+    'Internal server error',
+    'QuotaExceeded',
+    '',
+  ])('classifies "%s" as transient', (msg) => {
+    expect(classifyPushError(new Error(msg))).toBe('transient');
+  });
+
+  it('classifies non-Error throws as transient (last-resort safety)', () => {
+    expect(classifyPushError('boom')).toBe('transient');
+    expect(classifyPushError(null)).toBe('transient');
+    expect(classifyPushError(undefined)).toBe('transient');
+    expect(classifyPushError({ weird: true })).toBe('transient');
   });
 });

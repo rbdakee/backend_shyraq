@@ -8,7 +8,10 @@ import {
   defaultBackoff,
   OutboxEvent,
 } from './domain/entities/outbox-event.entity';
-import { NotificationDispatcher } from './notification-dispatcher.service';
+import {
+  NotificationDispatcher,
+  SavepointRollback,
+} from './notification-dispatcher.service';
 import { OutboxEventRepository } from './outbox-event.repository';
 
 /**
@@ -137,17 +140,13 @@ export class OutboxPollerProcessor extends WorkerHost {
               await this.outboxRepo.markDispatched(savepoint, event.id!, now);
               return;
             }
-            // result.status === 'failed' — domain decides retry/terminal.
-            event.markFailed(now, result.reason, defaultBackoff);
-            await this.outboxRepo.markFailedWithRetry(
-              savepoint,
-              event.id!,
-              now,
-              event.failedReason ?? result.reason,
-              event.attempts,
-              event.nextRetryAt,
-              event.isTerminal(),
-            );
+            // result.status === 'failed' — throw to roll the savepoint
+            // back. Side-effects performed inside the savepoint (history
+            // row inserts) revert atomically, so the next retry will not
+            // duplicate them. The outer-catch below applies markFailed
+            // exactly once via the OUTER manager (using `result.reason`
+            // as the failure message via SavepointRollback).
+            throw new SavepointRollback(result.reason);
           },
         );
       });
