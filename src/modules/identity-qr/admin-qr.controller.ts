@@ -2,6 +2,7 @@ import {
   Controller,
   HttpCode,
   HttpStatus,
+  InternalServerErrorException,
   Param,
   ParseUUIDPipe,
   Post,
@@ -10,6 +11,7 @@ import {
 import {
   ApiBearerAuth,
   ApiForbiddenResponse,
+  ApiNotFoundResponse,
   ApiOkResponse,
   ApiOperation,
   ApiTags,
@@ -29,15 +31,19 @@ import { IdentityQrService } from './identity-qr.service';
  * `POST /admin/qr/revoke-all/:userId` — admin bulk-revoke.
  *
  * Stamps `revoked_at` on every active `user_qr_tokens` row for the target
- * user. Cache (Redis) is NOT invalidated — admin only has hashes
- * (plaintext was discarded after issuance), so subsequent scans rely on the
+ * user, then clears `qr:user:{userId}:identity` Redis (so the next user
+ * GET mints fresh). Plaintext-keyed Redis (`qr:token:{plaintext}`) is NOT
+ * invalidated — admin only has hashes — so subsequent scans rely on the
  * service's DB recheck to surface `qr_token_revoked` (410). Cache TTL is
  * ≤24h so stale-hit exposure is bounded.
  *
- * The route lives under `/admin` so it inherits the kindergarten-scoped
- * tenant context; the actual revoke is cross-tenant by row (no
- * `kindergarten_id` filter), which is the correct behavior given QR rows
- * are global to a user.
+ * Tenant scoping: the QR rows themselves are cross-tenant (one QR per user
+ * across kindergartens), but the admin authorization is kg-scoped — the
+ * service rejects with 403 `user_no_relationship_to_kindergarten` unless
+ * the target user is an active staff_member in caller's kg or an approved
+ * (non-revoked) child_guardian for a child in caller's kg. Unknown userId
+ * → 404 `user_not_found`. The route inherits caller's kg from the JWT
+ * via `KindergartenScopeGuard`.
  */
 @ApiTags('Admin / Identity QR')
 @ApiBearerAuth()
@@ -56,15 +62,29 @@ export class AdminQrController {
   @ApiOkResponse({ type: RevokeAllQrResponseDto })
   @ApiUnauthorizedResponse({ description: 'Bearer missing/invalid/revoked.' })
   @ApiForbiddenResponse({
-    description: 'Caller is not admin.',
+    description:
+      'Caller is not admin OR target user has no active staff_member / approved guardian relationship with caller’s kindergarten (`user_no_relationship_to_kindergarten`).',
+  })
+  @ApiNotFoundResponse({
+    description: 'Target userId does not exist (`user_not_found`).',
   })
   async revokeAll(
     @CurrentUser() admin: JwtPayload,
     @Param('userId', new ParseUUIDPipe()) userId: string,
   ): Promise<RevokeAllQrResponseDto> {
+    // RolesGuard@admin guarantees the caller is an admin in some kg, so
+    // `kindergarten_id` is a non-null UUID on the JWT. Defensive guard
+    // anyway because a misconfigured guard chain would otherwise let the
+    // service receive `undefined` and crash.
+    if (!admin.kindergarten_id) {
+      throw new InternalServerErrorException(
+        'admin caller missing kindergarten_id claim',
+      );
+    }
     const { revokedCount } = await this.service.revokeAllByUser(
       admin.sub,
       userId,
+      admin.kindergarten_id,
     );
     return IdentityQrPresenter.revokeAll(revokedCount);
   }

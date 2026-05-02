@@ -6,6 +6,8 @@ import {
 } from '@nestjs/common';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { ForbiddenActionError } from '@/shared-kernel/domain/errors';
+import { UserNotFoundError } from '@/modules/users/domain/errors/user-not-found.error';
 import { Child } from '@/modules/child/domain/entities/child.entity';
 import { ChildGuardian } from '@/modules/child/domain/entities/child-guardian.entity';
 import { ChildGuardianRepository } from '@/modules/child/infrastructure/persistence/child-guardian.repository';
@@ -284,8 +286,47 @@ export class IdentityQrService {
   async revokeAllByUser(
     adminUserId: string,
     targetUserId: string,
+    callerKgId: string,
   ): Promise<RevokeAllResult> {
     const now = this.clock.now();
+
+    // 1) 404 for unknown user-id — controllers expose userId in the path
+    // (`POST /admin/qr/revoke-all/:userId`); a missing user must not
+    // collapse silently to revokedCount=0 because that hides typos and,
+    // worse, lets a caller probe userIds without feedback.
+    const target = await this.userRepo.findById(targetUserId);
+    if (!target) {
+      throw new UserNotFoundError(targetUserId);
+    }
+
+    // 2) Tenant scoping. The QR rows themselves are cross-tenant (one QR
+    // per user across kindergartens), but a kg's admin must only be able
+    // to revoke users that have a real relationship with their kg —
+    // staff_member there, or approved+non-revoked guardian for a child
+    // there. Without this check an admin in kg-A who guesses or harvests
+    // a userId could revoke a parent in kg-B's QR (cross-tenant
+    // privilege escalation, even if mostly a denial-of-service vector).
+    const isStaff =
+      (await this.staffMemberRepo.findActiveByUserAndKindergarten(
+        targetUserId,
+        callerKgId,
+      )) !== null;
+    let isGuardian = false;
+    if (!isStaff) {
+      const approved =
+        await this.childGuardianRepo.findApprovedActiveByUserIdCrossTenant(
+          targetUserId,
+          callerKgId,
+        );
+      isGuardian = approved.length > 0;
+    }
+    if (!isStaff && !isGuardian) {
+      throw new ForbiddenActionError(
+        'user_no_relationship_to_kindergarten',
+        'Target user has no active relationship with your kindergarten.',
+      );
+    }
+
     const { revokedHashes } = await this.qrRepo.revokeAllByUser(
       targetUserId,
       'identity',
@@ -301,7 +342,7 @@ export class IdentityQrService {
     await this.cache.clearUserActiveToken(targetUserId);
     if (revokedHashes.length > 0) {
       this.logger.log(
-        `qr.revoke_all admin=${adminUserId} user=${targetUserId} count=${revokedHashes.length}`,
+        `qr.revoke_all admin=${adminUserId} kg=${callerKgId} user=${targetUserId} count=${revokedHashes.length}`,
       );
     }
     // TODO(B22): write a row to audit_log when that table exists.

@@ -356,7 +356,17 @@ describe('B10 Identity QR (e2e)', () => {
 
   it('returns 410 qr_token_revoked when admin revoked (DB-is-SoT, Scenario F)', async () => {
     const a = await createKgWithAdmin('qr-f', '+77021120003');
-    const parentAuth = await otpLogin('+77021110006');
+    const parentPhone = '+77021110006';
+
+    // Enroll the parent as approved guardian in admin's kg so the
+    // tenant-relationship check on /admin/qr/revoke-all passes.
+    await runEnrollmentCardCreated(a.adminToken, {
+      contactName: 'Parent F',
+      contactPhone: parentPhone,
+      childName: 'Child F',
+      childDob: '2021-09-01',
+    });
+    const parentAuth = await otpLogin(parentPhone);
 
     const qrRes = await request(server)
       .get('/api/v1/users/me/qr')
@@ -364,9 +374,10 @@ describe('B10 Identity QR (e2e)', () => {
       .expect(200);
     const qrToken: string = qrRes.body.token as string;
 
-    // Admin bulk-revokes. Redis cache entry is NOT cleared (admin has only
-    // hashes, not plaintext). This tests the DB-recheck path that catches
-    // revoked_at even when the Redis entry still exists.
+    // Admin bulk-revokes. Plaintext-keyed Redis entry is NOT cleared
+    // (admin has only hashes, not plaintext). This tests the DB-recheck
+    // path that catches revoked_at even when the Redis entry still
+    // exists.
     await request(server)
       .post(`/api/v1/admin/qr/revoke-all/${parentAuth.user.id}`)
       .set('Authorization', `Bearer ${a.adminToken}`)
@@ -443,7 +454,17 @@ describe('B10 Identity QR (e2e)', () => {
 
   it('revoke-all returns revokedCount; second call returns 0 (Scenario I)', async () => {
     const a = await createKgWithAdmin('qr-i', '+77021120006');
-    const parentAuth = await otpLogin('+77021110007');
+    const parentPhone = '+77021110007';
+
+    // Enroll the parent as approved guardian in admin's kg so the
+    // tenant-relationship check on /admin/qr/revoke-all passes.
+    await runEnrollmentCardCreated(a.adminToken, {
+      contactName: 'Parent I',
+      contactPhone: parentPhone,
+      childName: 'Child I',
+      childDob: '2021-10-01',
+    });
+    const parentAuth = await otpLogin(parentPhone);
 
     await request(server)
       .get('/api/v1/users/me/qr')
@@ -600,7 +621,17 @@ describe('B10 Identity QR (e2e)', () => {
 
   it('admin revoke-all clears qr:user:{userId}:identity → next user GET mints fresh (Scenario L)', async () => {
     const a = await createKgWithAdmin('qr-l', '+77021120011');
-    const parentAuth = await otpLogin('+77021110010');
+    const parentPhone = '+77021110010';
+
+    // Enroll the parent as approved guardian in admin's kg so the
+    // tenant-relationship check on /admin/qr/revoke-all passes.
+    await runEnrollmentCardCreated(a.adminToken, {
+      contactName: 'Parent L',
+      contactPhone: parentPhone,
+      childName: 'Child L',
+      childDob: '2021-11-01',
+    });
+    const parentAuth = await otpLogin(parentPhone);
 
     const r1 = await request(server)
       .get('/api/v1/users/me/qr')
@@ -638,5 +669,44 @@ describe('B10 Identity QR (e2e)', () => {
         .update(r2.body.token as string)
         .digest('hex'),
     );
+  });
+
+  // ── M. Cross-tenant admin revoke is rejected → 403 ────────────────────────
+
+  it('admin in kg-A cannot revoke a user with no relationship to kg-A → 403 user_no_relationship_to_kindergarten (Scenario M)', async () => {
+    const a = await createKgWithAdmin('qr-m-a', '+77021120012');
+    const b = await createKgWithAdmin('qr-m-b', '+77021120013');
+    const parentPhone = '+77021110011';
+
+    // Parent is enrolled ONLY in kg-B.
+    await runEnrollmentCardCreated(b.adminToken, {
+      contactName: 'Parent M',
+      contactPhone: parentPhone,
+      childName: 'Child M',
+      childDob: '2021-12-01',
+    });
+    const parentAuth = await otpLogin(parentPhone);
+
+    // kg-A admin tries to revoke the parent who has no kg-A relationship
+    // → 403 with the specific code.
+    const res = await request(server)
+      .post(`/api/v1/admin/qr/revoke-all/${parentAuth.user.id}`)
+      .set('Authorization', `Bearer ${a.adminToken}`);
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe('user_no_relationship_to_kindergarten');
+  });
+
+  // ── N. Admin revoke against unknown userId → 404 user_not_found ──────────
+
+  it('admin revoke-all against a non-existent userId → 404 user_not_found (Scenario N)', async () => {
+    const a = await createKgWithAdmin('qr-n', '+77021120014');
+
+    const res = await request(server)
+      .post(`/api/v1/admin/qr/revoke-all/${randomUUID()}`)
+      .set('Authorization', `Bearer ${a.adminToken}`);
+
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('user_not_found');
   });
 });

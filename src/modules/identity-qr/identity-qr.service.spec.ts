@@ -8,6 +8,8 @@
  */
 import { UnauthorizedException } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
+import { ForbiddenActionError } from '@/shared-kernel/domain/errors';
+import { UserNotFoundError } from '@/modules/users/domain/errors/user-not-found.error';
 import { Child } from '@/modules/child/domain/entities/child.entity';
 import { ChildGuardian } from '@/modules/child/domain/entities/child-guardian.entity';
 import { ChildGuardianRepository } from '@/modules/child/infrastructure/persistence/child-guardian.repository';
@@ -387,8 +389,15 @@ class FakeStaffRepo extends StaffMemberRepository {
   findById(): Promise<StaffMember | null> {
     return Promise.resolve(null);
   }
-  findActiveByUserAndKindergarten(): Promise<StaffMember | null> {
-    return Promise.resolve(null);
+  findActiveByUserAndKindergarten(
+    userId: string,
+    kindergartenId: string,
+  ): Promise<StaffMember | null> {
+    const candidates = this.byUserId.get(userId) ?? [];
+    return Promise.resolve(
+      candidates.find((s) => s.toState().kindergartenId === kindergartenId) ??
+        null,
+    );
   }
   listByKindergarten(
     _kg: string,
@@ -833,12 +842,17 @@ describe('IdentityQrService.scan — errors', () => {
     const sut = buildSut();
     sut.refresh.allow(STAFF_USER, DEVICE_ID);
     sut.users.put(makeUser(PARENT_USER));
+    // Make the parent an approved guardian in KG so admin revoke is
+    // authorized for that kg.
+    sut.guardians.setApprovedActive(PARENT_USER, [
+      makeApprovedGuardian(CHILD_1, PARENT_USER, KG, true),
+    ]);
     const issued = await sut.service.issueOrRefresh(PARENT_USER);
     // Admin revokes (clears user-key + stamps revoked_at on the row).
     // The plaintext-keyed cache stays — that's by design — and the scan
     // path's DB-recheck must surface QrTokenRevokedError despite the
     // cache hit.
-    await sut.service.revokeAllByUser(ADMIN_USER, PARENT_USER);
+    await sut.service.revokeAllByUser(ADMIN_USER, PARENT_USER, KG);
 
     await expect(
       sut.service.scan(STAFF_USER, DEVICE_ID, issued.token, KG),
@@ -885,25 +899,47 @@ describe('IdentityQrService.scan — errors', () => {
 // ── revokeAllByUser ──────────────────────────────────────────────────────
 
 describe('IdentityQrService.revokeAllByUser', () => {
+  /**
+   * Make `targetUser` look like an approved guardian in `kg`. The service
+   * gates revoke on (active staff_member in kg) OR (approved guardian for
+   * a child in kg), so without this setup every revoke would 403.
+   */
+  function authorizeAsGuardian(sut: Sut, userId: string, kg: string): void {
+    sut.users.put(makeUser(userId));
+    sut.guardians.setApprovedActive(userId, [
+      makeApprovedGuardian(CHILD_1, userId, kg, true),
+    ]);
+  }
+
   it('returns revoked_count = 1 after revoking the single active token', async () => {
     const sut = buildSut();
+    authorizeAsGuardian(sut, PARENT_USER, KG);
     await sut.service.issueOrRefresh(PARENT_USER);
-    const result = await sut.service.revokeAllByUser(ADMIN_USER, PARENT_USER);
+    const result = await sut.service.revokeAllByUser(
+      ADMIN_USER,
+      PARENT_USER,
+      KG,
+    );
     expect(result.revokedCount).toBe(1);
   });
 
   it('returns revoked_count = 0 when user has no active tokens', async () => {
     const sut = buildSut();
-    const result = await sut.service.revokeAllByUser(ADMIN_USER, PARENT_USER);
+    authorizeAsGuardian(sut, PARENT_USER, KG);
+    const result = await sut.service.revokeAllByUser(
+      ADMIN_USER,
+      PARENT_USER,
+      KG,
+    );
     expect(result.revokedCount).toBe(0);
   });
 
   it('subsequent scan of the just-revoked token throws QrTokenRevokedError', async () => {
     const sut = buildSut();
     sut.refresh.allow(STAFF_USER, DEVICE_ID);
-    sut.users.put(makeUser(PARENT_USER));
+    authorizeAsGuardian(sut, PARENT_USER, KG);
     const issued = await sut.service.issueOrRefresh(PARENT_USER);
-    await sut.service.revokeAllByUser(ADMIN_USER, PARENT_USER);
+    await sut.service.revokeAllByUser(ADMIN_USER, PARENT_USER, KG);
     await expect(
       sut.service.scan(STAFF_USER, DEVICE_ID, issued.token, KG),
     ).rejects.toBeInstanceOf(QrTokenRevokedError);
@@ -911,16 +947,57 @@ describe('IdentityQrService.revokeAllByUser', () => {
 
   it('clears the user-keyed reuse cache so the next GET mints fresh', async () => {
     const sut = buildSut();
+    authorizeAsGuardian(sut, PARENT_USER, KG);
     const first = await sut.service.issueOrRefresh(PARENT_USER);
     expect(sut.cache.userStore.get(PARENT_USER)).toBe(first.token);
 
-    await sut.service.revokeAllByUser(ADMIN_USER, PARENT_USER);
+    await sut.service.revokeAllByUser(ADMIN_USER, PARENT_USER, KG);
     expect(sut.cache.clearUserCalls).toContain(PARENT_USER);
     expect(sut.cache.userStore.has(PARENT_USER)).toBe(false);
 
     // Next GET cannot reuse — falls through to mint a fresh token.
     const second = await sut.service.issueOrRefresh(PARENT_USER);
     expect(second.token).not.toBe(first.token);
+  });
+
+  it('throws UserNotFoundError when targetUserId does not exist', async () => {
+    const sut = buildSut();
+    await expect(
+      sut.service.revokeAllByUser(ADMIN_USER, PARENT_USER, KG),
+    ).rejects.toBeInstanceOf(UserNotFoundError);
+  });
+
+  it('throws ForbiddenActionError(user_no_relationship_to_kindergarten) when target is not staff or guardian in caller kg', async () => {
+    const sut = buildSut();
+    sut.users.put(makeUser(PARENT_USER));
+    // No staff entry in KG, no guardian in KG — only a guardian in KG2.
+    sut.guardians.setApprovedActive(PARENT_USER, [
+      makeApprovedGuardian(CHILD_2, PARENT_USER, KG2, true),
+    ]);
+
+    await expect(
+      sut.service.revokeAllByUser(ADMIN_USER, PARENT_USER, KG),
+    ).rejects.toMatchObject({
+      code: 'user_no_relationship_to_kindergarten',
+    });
+    await expect(
+      sut.service.revokeAllByUser(ADMIN_USER, PARENT_USER, KG),
+    ).rejects.toBeInstanceOf(ForbiddenActionError);
+  });
+
+  it('allows revoke when target is an active staff_member in caller kg', async () => {
+    const sut = buildSut();
+    sut.users.put(makeUser(STAFF_USER));
+    sut.staff.setActive(STAFF_USER, [
+      makeStaff(STAFF_MEMBER_ID, KG, STAFF_USER, 'mentor'),
+    ]);
+    await sut.service.issueOrRefresh(STAFF_USER);
+    const result = await sut.service.revokeAllByUser(
+      ADMIN_USER,
+      STAFF_USER,
+      KG,
+    );
+    expect(result.revokedCount).toBe(1);
   });
 });
 
