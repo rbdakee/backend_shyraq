@@ -29,32 +29,46 @@ export class PushTokenRelationalRepository extends PushTokenRepository {
     }));
   }
 
+  /**
+   * Upsert a device token — globally unique by `(platform, token)`.
+   *
+   * Conflict semantics (post B9 review HIGH#3): the unique key is
+   * `(platform, token)`, NOT `(user_id, token)`. If the same `(platform,
+   * token)` row already exists under a DIFFERENT `user_id` (shared
+   * physical device, user-switch on the same handset), this UPSERT
+   * transfers ownership: the row's `user_id` is updated to the current
+   * caller's `user_id` and the previous owner stops receiving push for
+   * that token. This is atomic — no race window where two rows coexist.
+   *
+   * Implementation is raw `INSERT ... ON CONFLICT (platform, token) DO
+   * UPDATE SET ... RETURNING *` because TypeORM's QueryBuilder `orUpdate`
+   * cannot return the canonical row in a single round-trip across all
+   * dialects, and a separate `findOne` would need `FOR UPDATE` to be
+   * race-safe.
+   */
   async upsert(input: PushTokenUpsertInput): Promise<PushToken> {
     const now = new Date();
-    // Use TypeORM upsert with conflict on (user_id, token) unique constraint.
-    await this.repo
-      .createQueryBuilder()
-      .insert()
-      .into(PushTokenTypeOrmEntity)
-      .values({
-        user_id: input.userId,
-        token: input.token,
-        platform: input.platform,
-        app_version: input.appVersion ?? null,
-        device_id: input.deviceId ?? null,
-        last_seen_at: now,
-      })
-      .orUpdate(
-        ['platform', 'app_version', 'device_id', 'last_seen_at'],
-        ['user_id', 'token'],
-      )
-      .execute();
-
-    // Re-fetch to get the canonical row (including generated id + created_at).
-    const row = await this.repo.findOneOrFail({
-      where: { user_id: input.userId, token: input.token },
-    });
-    return this.toModel(row);
+    const rows = await this.repo.query<PushTokenTypeOrmEntity[]>(
+      `INSERT INTO push_tokens
+         (user_id, token, platform, app_version, device_id, last_seen_at)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (platform, token) DO UPDATE
+          SET user_id      = EXCLUDED.user_id,
+              app_version  = EXCLUDED.app_version,
+              device_id    = EXCLUDED.device_id,
+              last_seen_at = EXCLUDED.last_seen_at
+       RETURNING id, user_id, token, platform, app_version, device_id,
+                 last_seen_at, created_at`,
+      [
+        input.userId,
+        input.token,
+        input.platform,
+        input.appVersion ?? null,
+        input.deviceId ?? null,
+        now,
+      ],
+    );
+    return this.toModel(rows[0]);
   }
 
   async deleteByIdAndUserId(id: string, userId: string): Promise<boolean> {
@@ -77,8 +91,8 @@ export class PushTokenRelationalRepository extends PushTokenRepository {
       token: r.token,
       appVersion: r.app_version,
       deviceId: r.device_id,
-      lastSeenAt: r.last_seen_at,
-      createdAt: r.created_at,
+      lastSeenAt: new Date(r.last_seen_at),
+      createdAt: new Date(r.created_at),
     };
   }
 }

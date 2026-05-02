@@ -41,9 +41,13 @@ export abstract class PushTokenRepository {
   abstract findByUserIds(userIds: string[]): Promise<PushTokenSummary[]>;
 
   /**
-   * Upsert a device token for a user. If the `(user_id, token)` pair already
-   * exists, update `last_seen_at`, `app_version`, and `device_id`. Otherwise
-   * INSERT a new row. Global table — no RLS involved.
+   * Upsert a device token. Conflict key is **`(platform, token)`** (B9
+   * review HIGH#3 — globally unique). Re-registering the same `(platform,
+   * token)` for a different `user_id` (shared physical device taken over
+   * by a new account) transfers ownership atomically: the row's `user_id`
+   * is updated to the new caller, and the previous owner stops receiving
+   * push for that device. Same-user re-register refreshes `last_seen_at`,
+   * `app_version`, and `device_id`. Global table — no RLS involved.
    */
   abstract upsert(input: PushTokenUpsertInput): Promise<PushToken>;
 

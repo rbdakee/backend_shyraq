@@ -44,9 +44,10 @@ export class PushTokenController {
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
     summary:
-      'Register (or refresh) a device push token. ' +
-      'Upsert on (user_id, token) — re-registering the same token updates ' +
-      'last_seen_at, app_version, and device_id.',
+      'Register (or refresh) a device push token. Upsert on ' +
+      '(platform, token) — re-registering the same token under a different ' +
+      'user transfers ownership (the previous owner stops receiving push). ' +
+      'Same-user re-register refreshes last_seen_at, app_version, device_id.',
   })
   @ApiCreatedResponse({
     type: PushTokenResponseDto,

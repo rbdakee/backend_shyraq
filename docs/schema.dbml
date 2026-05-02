@@ -828,7 +828,11 @@ Table push_tokens {
   created_at   timestamptz [not null, default: `now()`]
 
   indexes {
-    (user_id, token) [unique]
+    // (platform, token) is globally unique — same token under a different
+    // user is interpreted as ownership transfer (shared physical device).
+    // See migration B9PushTokenPlatformUnique.
+    (platform, token) [unique]
+    user_id
   }
 }
 

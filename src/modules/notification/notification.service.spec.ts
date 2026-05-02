@@ -38,11 +38,20 @@ const NOW = new Date('2026-05-01T09:00:00.000Z');
 
 class FakePushTokenRepo extends PushTokenRepository {
   private tokens: Map<string, PushToken> = new Map();
-  private tokensByUserAndToken: Map<string, PushToken> = new Map();
+  // Index by (platform, token) — global unique key (post B9 HIGH#3).
+  private tokensByPlatformAndToken: Map<string, PushToken> = new Map();
 
   seed(token: PushToken): void {
     this.tokens.set(token.id, token);
-    this.tokensByUserAndToken.set(`${token.userId}:${token.token}`, token);
+    this.tokensByPlatformAndToken.set(
+      `${token.platform}:${token.token}`,
+      token,
+    );
+  }
+
+  /** Test helper — exposes raw token rows for assertion. */
+  allTokens(): PushToken[] {
+    return Array.from(this.tokens.values());
   }
 
   findByUserIds(userIds: string[]): Promise<PushTokenSummary[]> {
@@ -59,22 +68,26 @@ class FakePushTokenRepo extends PushTokenRepository {
   }
 
   upsert(input: PushTokenUpsertInput): Promise<PushToken> {
-    const key = `${input.userId}:${input.token}`;
-    const existing = this.tokensByUserAndToken.get(key);
+    const key = `${input.platform}:${input.token}`;
+    const existing = this.tokensByPlatformAndToken.get(key);
     if (existing) {
+      // ON CONFLICT (platform, token) DO UPDATE — transfer ownership: the
+      // row's user_id is updated to the new caller. Pre-fix bug allowed
+      // two rows with the same token under different user_ids; this
+      // collapses them into a single row owned by the most recent caller.
       const updated: PushToken = {
         ...existing,
-        platform: input.platform,
+        userId: input.userId,
         appVersion: input.appVersion ?? null,
         deviceId: input.deviceId ?? null,
         lastSeenAt: new Date(),
       };
       this.tokens.set(existing.id, updated);
-      this.tokensByUserAndToken.set(key, updated);
+      this.tokensByPlatformAndToken.set(key, updated);
       return Promise.resolve(updated);
     }
     const newToken: PushToken = {
-      id: `new-${Date.now()}`,
+      id: `new-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       userId: input.userId,
       token: input.token,
       platform: input.platform,
@@ -84,7 +97,7 @@ class FakePushTokenRepo extends PushTokenRepository {
       createdAt: new Date(),
     };
     this.tokens.set(newToken.id, newToken);
-    this.tokensByUserAndToken.set(key, newToken);
+    this.tokensByPlatformAndToken.set(key, newToken);
     return Promise.resolve(newToken);
   }
 
@@ -92,7 +105,7 @@ class FakePushTokenRepo extends PushTokenRepository {
     const token = this.tokens.get(id);
     if (!token || token.userId !== userId) return Promise.resolve(false);
     this.tokens.delete(id);
-    this.tokensByUserAndToken.delete(`${token.userId}:${token.token}`);
+    this.tokensByPlatformAndToken.delete(`${token.platform}:${token.token}`);
     return Promise.resolve(true);
   }
 
@@ -100,7 +113,7 @@ class FakePushTokenRepo extends PushTokenRepository {
     const token = this.tokens.get(id);
     if (!token) return Promise.resolve();
     this.tokens.delete(id);
-    this.tokensByUserAndToken.delete(`${token.userId}:${token.token}`);
+    this.tokensByPlatformAndToken.delete(`${token.platform}:${token.token}`);
     return Promise.resolve();
   }
 }
@@ -283,7 +296,7 @@ describe('NotificationService', () => {
   // ── Push tokens ────────────────────────────────────────────────────────────
 
   describe('registerPushToken', () => {
-    it('inserts a new token when none exists for the (user_id, token) pair', async () => {
+    it('inserts a new token when none exists for the (platform, token) pair', async () => {
       const result = await service.registerPushToken(USER_A, {
         token: 'fcm-token-abc',
         platform: 'android',
@@ -297,7 +310,7 @@ describe('NotificationService', () => {
       expect(result.id).toBeDefined();
     });
 
-    it('updates last_seen_at (upsert) when same (user_id, token) already exists', async () => {
+    it('refreshes the same row when same user re-registers the same (platform, token)', async () => {
       const original: PushToken = {
         id: TOKEN_ID_1,
         userId: USER_A,
@@ -324,6 +337,63 @@ describe('NotificationService', () => {
       expect(result.lastSeenAt.getTime()).toBeGreaterThan(
         new Date('2026-01-01').getTime(),
       );
+      // Still exactly ONE row total.
+      expect(pushTokenRepo.allTokens()).toHaveLength(1);
+    });
+
+    it('transfers ownership when a different user re-registers the same (platform, token)', async () => {
+      // User A previously registered the device — common when phone is
+      // shared, sold, or re-flashed without proper logout flow.
+      const original: PushToken = {
+        id: TOKEN_ID_1,
+        userId: USER_A,
+        token: 'fcm-token-shared-device',
+        platform: 'android',
+        appVersion: '1.0.0',
+        deviceId: 'device-shared',
+        lastSeenAt: new Date('2026-01-01'),
+        createdAt: new Date('2026-01-01'),
+      };
+      pushTokenRepo.seed(original);
+
+      // User B logs in on the same physical device and re-registers the
+      // same FCM token. Ownership must transfer atomically — only ONE row
+      // remains, owned by user B. User A no longer receives push for this
+      // device.
+      const result = await service.registerPushToken(USER_B, {
+        token: 'fcm-token-shared-device',
+        platform: 'android',
+      });
+
+      expect(result.userId).toBe(USER_B);
+      expect(result.token).toBe('fcm-token-shared-device');
+      // Same underlying row id — atomic transfer, not a new insert.
+      expect(result.id).toBe(TOKEN_ID_1);
+
+      // CRITICAL: only ONE row in the store. The old (user_A, token) row
+      // is gone — pre-fix bug had TWO rows here, leaking user A's push
+      // notifications to a device user B now controls.
+      const all = pushTokenRepo.allTokens();
+      expect(all).toHaveLength(1);
+      expect(all[0].userId).toBe(USER_B);
+    });
+
+    it('keeps two rows when same user registers the same token under different platforms', async () => {
+      // Same token string under platform=ios AND platform=android — these
+      // are independent rows (industry assumption: APNs/FCM/web tokens are
+      // namespaced per platform). Pre-fix bug never affected this path.
+      await service.registerPushToken(USER_A, {
+        token: 'cross-platform-token',
+        platform: 'ios',
+      });
+      await service.registerPushToken(USER_A, {
+        token: 'cross-platform-token',
+        platform: 'android',
+      });
+
+      const all = pushTokenRepo.allTokens();
+      expect(all).toHaveLength(2);
+      expect(all.map((t) => t.platform).sort()).toEqual(['android', 'ios']);
     });
   });
 
