@@ -15,7 +15,7 @@
  *     pickupRequestId, pickup-guardian validation NOT triggered
  *   - validateOtp: wrong code → OtpInvalidError + recordFailedAttempt
  *   - validateOtp: 3rd wrong → OtpLockedError + lockRequest
- *   - validateOtp: expired Redis → OtpExpiredError
+ *   - validateOtp: expired Redis → PickupOtpExpiredError (T7-5 MEDIUM#5)
  *   - validateOtp: already validated → AlreadyValidated
  *   - cancel: happy + DEL Redis key
  *
@@ -37,7 +37,6 @@ import {
   PickupValidatedEvent,
   TimelineEntryCreatedEvent,
 } from '@/common/notifications/notification.port';
-import { OtpExpiredError } from '@/modules/auth/domain/errors/otp-expired.error';
 import { OtpInvalidError } from '@/modules/auth/domain/errors/otp-invalid.error';
 import { OtpLockedError } from '@/modules/auth/domain/errors/otp-locked.error';
 import { OtpRateLimitedError } from '@/modules/auth/domain/errors/otp-rate-limited.error';
@@ -45,6 +44,8 @@ import { OtpStorePort, StoredOtp } from '@/modules/auth/otp-store.port';
 import { SmsPort } from '@/modules/auth/sms.port';
 import { Child } from '@/modules/child/domain/entities/child.entity';
 import { ChildGuardian } from '@/modules/child/domain/entities/child-guardian.entity';
+import { PickupOtpExpiredError } from './domain/errors/pickup-otp-expired.error';
+import { PickupRequestExpiredError } from './domain/errors/pickup-request-expired.error';
 import { ChildNotFoundError } from '@/modules/child/domain/errors/child-not-found.error';
 import { ChildGuardianRepository } from '@/modules/child/infrastructure/persistence/child-guardian.repository';
 import {
@@ -248,11 +249,22 @@ class FakeTrustedPersonRepo extends TrustedPersonRepository {
     return Promise.resolve();
   }
 
-  markUsed(id: string, now: Date, deactivate: boolean): Promise<void> {
+  /**
+   * Tracks `claimed` boolean per call. Tests can set
+   * `markUsedNextResult = false` to simulate the concurrent-claim loser
+   * (T7-5 HIGH#2 race-loss path). Default: returns true and stamps
+   * `usedAt`.
+   */
+  markUsedNextResult: boolean | null = null;
+  markUsed(id: string, now: Date, deactivate: boolean): Promise<boolean> {
     this.markUsedCalls.push({ id, deactivate });
-    const tp = this.rows.get(id);
-    if (tp) this.rows.set(id, tp.markUsed(now));
-    return Promise.resolve();
+    const claimed = this.markUsedNextResult ?? true;
+    if (claimed) {
+      const tp = this.rows.get(id);
+      if (tp) this.rows.set(id, tp.markUsed(now));
+    }
+    this.markUsedNextResult = null;
+    return Promise.resolve(claimed);
   }
 }
 
@@ -320,6 +332,24 @@ class FakeChildGuardianRepo extends ChildGuardianRepository {
   }
   findApprovedActiveByUserIdCrossTenant(): Promise<ChildGuardian[]> {
     return Promise.resolve([]);
+  }
+  findApprovedActiveByUserAndChild(
+    kg: string,
+    childId: string,
+    userId: string,
+  ): Promise<ChildGuardian | null> {
+    const r =
+      this.pickupGuardians.find((g) => {
+        const s = g.toState();
+        return (
+          s.kindergartenId === kg &&
+          s.childId === childId &&
+          s.userId === userId &&
+          s.status === 'approved' &&
+          s.revokedAt === null
+        );
+      }) ?? null;
+    return Promise.resolve(r);
   }
 }
 
@@ -1002,6 +1032,18 @@ describe('PickupRequestService — service-unit', () => {
       expect(w.pickupRequests.advisoryLockCalls).toContain(pr.id);
     });
 
+    it('throws PickupRequestExpiredError (410) when the pickup_request has passed expires_at (T7-5 MEDIUM#5 — was 409 status_invalid before)', async () => {
+      const w = wire();
+      const pr = await seedRequest(w);
+      // Advance the clock past expires_at (30 min later).
+      w.clock.set(new Date(NOW.getTime() + 31 * 60 * 1000));
+      await expect(w.service.sendOtp(KG, pr.id)).rejects.toBeInstanceOf(
+        PickupRequestExpiredError,
+      );
+      expect(w.sms.sent).toHaveLength(0);
+      expect(w.notifications.pickupOtpSent).toHaveLength(0);
+    });
+
     it('throws PickupRequestStatusInvalidError when a concurrent path flipped the row out of otp_sent before the lock was acquired (T7-4 — re-check status under lock)', async () => {
       const w = wire();
       const pr = await seedRequest(w);
@@ -1115,13 +1157,13 @@ describe('PickupRequestService — service-unit', () => {
       expect(w.otpStore.lockCalls).toEqual([pr.id]);
     });
 
-    it('throws OtpExpiredError when the Redis entry has been evicted (TTL expired)', async () => {
+    it('throws PickupOtpExpiredError (410 otp_expired) when the Redis entry has been evicted (TTL expired) — T7-5 MEDIUM#5', async () => {
       const w = wire();
       const { pr, code } = await seedAndSend(w);
       w.otpStore.evict(pr.id);
       await expect(
         w.service.validateOtp(KG, pr.id, code, STAFF_USER),
-      ).rejects.toBeInstanceOf(OtpExpiredError);
+      ).rejects.toBeInstanceOf(PickupOtpExpiredError);
     });
 
     it('throws PickupRequestAlreadyValidatedError on a re-submit of the same code (terminal-state guard)', async () => {
@@ -1142,6 +1184,51 @@ describe('PickupRequestService — service-unit', () => {
       await expect(
         w.service.validateOtp(KG, pr.id, code, 'unknown-user'),
       ).rejects.toBeInstanceOf(StaffNotFoundError);
+    });
+
+    it('throws TrustedPersonRevokedError when the trusted_people row was revoked between create and validate (T7-5 HIGH#1 — re-check after lock)', async () => {
+      const w = wire();
+      // Seed a fresh whitelisted tp, create + send-otp.
+      w.trustedPeople.put(makeTrustedPerson({ isOneTime: false }));
+      const pr = await w.service.createByStaff(KG, STAFF_USER, {
+        childId: CHILD,
+        trustedPersonId: TP_ID,
+      });
+      await w.service.sendOtp(KG, pr.id);
+      const code = w.otpStore.storeCalls[0].code;
+
+      // Simulate a parent revoke between create and validate.
+      const tp = w.trustedPeople.rows.get(TP_ID);
+      if (!tp) throw new Error('test seed lost the tp row');
+      w.trustedPeople.rows.set(TP_ID, tp.revoke(NOW));
+
+      await expect(
+        w.service.validateOtp(KG, pr.id, code, STAFF_USER),
+      ).rejects.toBeInstanceOf(TrustedPersonRevokedError);
+      // No attendance side-effect ran.
+      expect(w.attendance.checkOutCalls).toHaveLength(0);
+    });
+
+    it('throws TrustedPersonRevokedError when concurrent markUsed lost the claim race on a one-time row (T7-5 HIGH#2)', async () => {
+      const w = wire();
+      w.trustedPeople.put(makeTrustedPerson({ isOneTime: true }));
+      const pr = await w.service.createByStaff(KG, STAFF_USER, {
+        childId: CHILD,
+        trustedPersonId: TP_ID,
+      });
+      await w.service.sendOtp(KG, pr.id);
+      const code = w.otpStore.storeCalls[0].code;
+      // Force the next markUsed to behave as the race loser.
+      w.trustedPeople.markUsedNextResult = false;
+      await expect(
+        w.service.validateOtp(KG, pr.id, code, STAFF_USER),
+      ).rejects.toBeInstanceOf(TrustedPersonRevokedError);
+      // Service did go far enough to call markUsed (claim attempt).
+      expect(w.trustedPeople.markUsedCalls).toHaveLength(1);
+      expect(w.trustedPeople.markUsedCalls[0]).toEqual({
+        id: TP_ID,
+        deactivate: true,
+      });
     });
   });
 

@@ -3,7 +3,6 @@ import { ConfigService } from '@nestjs/config';
 import { randomInt } from 'node:crypto';
 import { AllConfigType } from '@/config/config.type';
 import { NotificationPort } from '@/common/notifications/notification.port';
-import { OtpExpiredError } from '@/modules/auth/domain/errors/otp-expired.error';
 import { OtpInvalidError } from '@/modules/auth/domain/errors/otp-invalid.error';
 import { OtpLockedError } from '@/modules/auth/domain/errors/otp-locked.error';
 import { OtpRateLimitedError } from '@/modules/auth/domain/errors/otp-rate-limited.error';
@@ -20,6 +19,7 @@ import { ForbiddenActionError } from '@/shared-kernel/domain/errors';
 import { AttendanceService } from '@/modules/attendance/attendance.service';
 import { AttendanceMethod } from '@/modules/attendance/domain/value-objects/attendance-method.vo';
 import { PickupRequest } from './domain/entities/pickup-request.entity';
+import { PickupOtpExpiredError } from './domain/errors/pickup-otp-expired.error';
 import { PickupRequestAlreadyValidatedError } from './domain/errors/pickup-request-already-validated.error';
 import { PickupRequestExpiredError } from './domain/errors/pickup-request-expired.error';
 import { PickupRequestNotFoundError } from './domain/errors/pickup-request-not-found.error';
@@ -211,14 +211,13 @@ export class PickupRequestService {
     }
     const now = this.clock.now();
     if (pr.isExpired(now)) {
-      // Deadline already passed — surface as state-invalid so the caller
-      // creates a fresh request instead of retrying this one. Status flip
-      // to `expired` is left to the cleanup job (T6).
-      throw new PickupRequestStatusInvalidError(
-        pr.status,
-        'otp_sent',
-        'send_otp',
-      );
+      // T7-5 MEDIUM#5: deadline already passed → surface as 410
+      // `pickup_request_expired` (matches docs/endpoints.md §3.6 error
+      // map) so the caller knows to create a fresh request instead of
+      // retrying this one. Status flip to `expired` is left to the
+      // cleanup job (T6). Previously this returned 409
+      // `pickup_request_status_invalid`, contradicting the SoT.
+      throw new PickupRequestExpiredError();
     }
 
     // Order matters: per-request lock check FIRST (free, in-memory Redis
@@ -339,13 +338,31 @@ export class PickupRequestService {
       throw new PickupRequestExpiredError();
     }
 
+    // T7-5 HIGH#1: re-check trusted_person eligibility AFTER acquiring
+    // the advisory lock and BEFORE we burn an OTP attempt or write any
+    // attendance side-effects. Closes the window where a parent revoked
+    // the trusted_person between create and validate-otp — the original
+    // create-time guard inside `createInternal` is no longer sufficient
+    // because revoke / one-time-consume can happen during the OTP TTL.
+    // We surface the same TrustedPersonRevokedError (410 Gone) the
+    // create path uses so client behaviour is consistent.
+    if (pr.trustedPersonId !== null) {
+      const tpCheck = await this.trustedPeople.findById(pr.trustedPersonId);
+      if (tpCheck === null) {
+        throw new TrustedPersonNotFoundError(pr.trustedPersonId);
+      }
+      if (!tpCheck.isAvailableForPickup()) {
+        throw new TrustedPersonRevokedError();
+      }
+    }
+
     if (await this.otpStore.isLocked(requestId)) {
       throw new OtpLockedError();
     }
 
     const stored = await this.otpStore.readCode(requestId);
     if (!stored) {
-      throw new OtpExpiredError();
+      throw new PickupOtpExpiredError();
     }
 
     if (stored.code !== code) {
@@ -399,10 +416,32 @@ export class PickupRequestService {
 
     // 3) If the trusted person came from the whitelist, stamp `used_at`
     //    (and deactivate when one-time).
+    //
+    // T7-5 HIGH#2: for ONE-TIME rows the markUsed UPDATE is now guarded
+    // (`WHERE used_at IS NULL AND revoked_at IS NULL AND is_active=true`).
+    // If two pickup_requests bound to the same one-time trusted_person
+    // race through validate concurrently — each holding its OWN advisory
+    // lock keyed on the request id, so neither serializes against the
+    // other on the trusted_people row — exactly one claim succeeds.
+    // The loser sees `claimed === false` and throws
+    // TrustedPersonRevokedError; the surrounding ambient TX rolls back
+    // the attendance.checkOut + pickup_requests.update side-effects so
+    // the loser gets a clean 410 with no orphan attendance row.
+    //
+    // The earlier HIGH#1 isAvailableForPickup re-check filters parent-
+    // initiated revocations; HIGH#2 closes the residual same-row /
+    // different-request race that re-check alone cannot prevent.
     if (pr.trustedPersonId) {
       const tp = await this.trustedPeople.findById(pr.trustedPersonId);
       if (tp) {
-        await this.trustedPeople.markUsed(tp.id, now, tp.isOneTime);
+        const claimed = await this.trustedPeople.markUsed(
+          tp.id,
+          now,
+          tp.isOneTime,
+        );
+        if (!claimed && tp.isOneTime) {
+          throw new TrustedPersonRevokedError();
+        }
       }
     }
 

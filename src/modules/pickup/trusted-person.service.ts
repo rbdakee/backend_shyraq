@@ -1,4 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
+import { ChildGuardian } from '@/modules/child/domain/entities/child-guardian.entity';
 import { ChildNotFoundError } from '@/modules/child/domain/errors/child-not-found.error';
 import { ChildGuardianRepository } from '@/modules/child/infrastructure/persistence/child-guardian.repository';
 import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
@@ -38,21 +39,26 @@ export type UpdateTrustedPersonInput = Partial<{
  * "is this parent allowed to manage trusted people for this child".
  *
  * Authorization model:
- *   - listByChild / addByParent: caller must have an approved-active
- *     (status='approved', revoked_at IS NULL) guardian link for the
- *     child. `can_pickup` is NOT required to manage the whitelist —
- *     a parent without pickup-rights can still curate trusted people
- *     for the primary guardian.
- *   - update / revoke: caller must currently be an approved-active
- *     guardian on the same child. T7 fix M5: previously a caller was
- *     also allowed to manage the row if their userId matched the
- *     historical `added_by_user_id` column, even after their guardian
- *     link had been revoked. That let an ex-guardian (e.g. revoked
- *     parent post-divorce) keep mutating / revoking trusted_people they
- *     had once added. Authorization is now strictly tied to a current
- *     guardian-link, which is the right invariant — the child's
- *     guardian-of-record is who can curate the whitelist, not whoever
- *     happened to add a row historically.
+ *   - listByChild: caller must have an approved-active (status='approved',
+ *     revoked_at IS NULL) guardian link for the child. Any role with an
+ *     active link can view the whitelist — secondaries / nannies need to
+ *     see who is currently trusted to pick up the child.
+ *   - addByParent / update / revoke: caller must currently be an
+ *     approved-active guardian on the same child AND hold the locked
+ *     `trusted_people_manage` permission (per docs/endpoints.md §4.13
+ *     defaults: primary=true, secondary=false, nanny=false). T7-5 HIGH#3:
+ *     previously any approved guardian could mutate the whitelist,
+ *     contradicting the BP / endpoints SoT that scopes trusted-people
+ *     CRUD to primary by default.
+ *   - T7 fix M5: previously a caller was also allowed to manage the row
+ *     if their userId matched the historical `added_by_user_id` column,
+ *     even after their guardian link had been revoked. That let an
+ *     ex-guardian (e.g. revoked parent post-divorce) keep mutating /
+ *     revoking trusted_people they had once added. Authorization is now
+ *     strictly tied to a current guardian-link with the manage permission,
+ *     which is the right invariant — the child's guardian-of-record is
+ *     who can curate the whitelist, not whoever happened to add a row
+ *     historically.
  */
 @Injectable()
 export class TrustedPersonService {
@@ -80,7 +86,11 @@ export class TrustedPersonService {
     input: AddTrustedPersonInput,
   ): Promise<TrustedPerson> {
     await this.assertChildExists(kindergartenId, childId);
-    await this.assertParentGuardianLink(kindergartenId, childId, parentUserId);
+    await this.assertCanManageTrustedPeople(
+      kindergartenId,
+      childId,
+      parentUserId,
+    );
 
     return this.trustedPeople.create({
       kindergartenId,
@@ -105,7 +115,11 @@ export class TrustedPersonService {
     if (!tp || tp.kindergartenId !== kindergartenId) {
       throw new TrustedPersonNotFoundError(trustedPersonId);
     }
-    await this.assertCallerCanManage(tp, parentUserId);
+    await this.assertCanManageTrustedPeople(
+      tp.kindergartenId,
+      tp.childId,
+      parentUserId,
+    );
     if (tp.isRevoked() || !tp.isActive) {
       throw new TrustedPersonRevokedError();
     }
@@ -134,7 +148,11 @@ export class TrustedPersonService {
     if (!tp || tp.kindergartenId !== kindergartenId) {
       throw new TrustedPersonNotFoundError(trustedPersonId);
     }
-    await this.assertCallerCanManage(tp, parentUserId);
+    await this.assertCanManageTrustedPeople(
+      tp.kindergartenId,
+      tp.childId,
+      parentUserId,
+    );
 
     // Domain guard surfaces "already revoked" / "not active" as TrustedPersonRevokedError
     // (410 Gone). The relational repo's markRevoked is idempotent at the SQL
@@ -160,13 +178,15 @@ export class TrustedPersonService {
 
   /**
    * Throws ForbiddenActionError when the caller does not have an
-   * approved + non-revoked guardian link for this (kg, child).
+   * approved + non-revoked guardian link for this (kg, child). Used by
+   * read-only endpoints (`listByChild`) where any approved guardian role
+   * is allowed to inspect the whitelist.
    */
   private async assertParentGuardianLink(
     kindergartenId: string,
     childId: string,
     parentUserId: string,
-  ): Promise<void> {
+  ): Promise<ChildGuardian> {
     const link = await this.childGuardians.findActiveByChildAndUser(
       kindergartenId,
       childId,
@@ -185,22 +205,35 @@ export class TrustedPersonService {
         'Your guardian link is not approved',
       );
     }
+    return link;
   }
 
   /**
-   * Caller is allowed to manage the trusted_person row only when they
-   * currently have an approved-active guardian link on the same child.
-   * The historical `added_by_user_id` is NOT used for authorization (see
-   * class-level docstring — T7 fix M5).
+   * T7-5 HIGH#3 — caller is allowed to mutate the whitelist (add /
+   * update / revoke) only when their current guardian link grants the
+   * locked `trusted_people_manage` permission. Per
+   * docs/endpoints.md §4.13 defaults this is primary-only; secondaries
+   * and nannies surface `trusted_people_manage_required` (403). The
+   * permission is locked, so it cannot be hand-toggled to an unexpected
+   * role via PATCH .../permissions — the role's default is the source
+   * of truth.
    */
-  private async assertCallerCanManage(
-    tp: TrustedPerson,
+  private async assertCanManageTrustedPeople(
+    kindergartenId: string,
+    childId: string,
     parentUserId: string,
   ): Promise<void> {
-    await this.assertParentGuardianLink(
-      tp.kindergartenId,
-      tp.childId,
+    const link = await this.assertParentGuardianLink(
+      kindergartenId,
+      childId,
       parentUserId,
     );
+    const effective = link.permissions.effective(link.role);
+    if (effective.trusted_people_manage !== true) {
+      throw new ForbiddenActionError(
+        'trusted_people_manage_required',
+        'Trusted-people management requires the trusted_people_manage permission (primary guardian)',
+      );
+    }
   }
 }

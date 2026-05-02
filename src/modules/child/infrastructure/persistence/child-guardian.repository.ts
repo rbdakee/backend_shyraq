@@ -118,4 +118,25 @@ export abstract class ChildGuardianRepository {
     userId: string,
     kindergartenId?: string,
   ): Promise<ChildGuardian[]>;
+
+  /**
+   * kg-scoped lookup for the current approved-active guardian link of a
+   * user on a child. Differs from `findApprovedActivePickupGuardian` in
+   * that it does NOT require `can_pickup = true` — used by callers that
+   * just need to assert "is this user currently a guardian of this child?"
+   * regardless of pickup-rights (e.g. trusted-people CRUD authorization,
+   * pickup-flow notification recipient re-validation).
+   *
+   * Returns the guardian row only when ALL hold:
+   *   - kindergarten_id = kg AND child_id = childId AND user_id = userId
+   *   - status = 'approved'
+   *   - revoked_at IS NULL
+   *
+   * No info-leak about which condition failed — returns null otherwise.
+   */
+  abstract findApprovedActiveByUserAndChild(
+    kindergartenId: string,
+    childId: string,
+    userId: string,
+  ): Promise<ChildGuardian | null>;
 }

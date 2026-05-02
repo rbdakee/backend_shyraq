@@ -327,6 +327,9 @@ class FakeGuardianRepo extends ChildGuardianRepository {
       all.filter((g) => g.toState().kindergartenId === kindergartenId),
     );
   }
+  findApprovedActiveByUserAndChild(): Promise<ChildGuardian | null> {
+    return Promise.resolve(null);
+  }
 }
 
 // ── Fake child repo ──────────────────────────────────────────────────────

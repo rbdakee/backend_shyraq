@@ -341,6 +341,9 @@ class FakeGuardianRepo extends ChildGuardianRepository {
   ): Promise<ChildGuardian[]> {
     return Promise.resolve([]);
   }
+  findApprovedActiveByUserAndChild(): Promise<ChildGuardian | null> {
+    return Promise.resolve(null);
+  }
 }
 
 class FakeGroupRepo extends GroupRepository {

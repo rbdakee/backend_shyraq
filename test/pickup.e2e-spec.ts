@@ -22,7 +22,9 @@
  *   B. Revoke trusted_person → staff create with that tp_id → 410
  *   C. Happy path: staff create → send-otp → validate (right code) → 200 + validated + checkout + timeline
  *   D. Wrong OTP: 3 × wrong → 400 (invalid_otp) × 3 then 429 (otp_locked); 4th attempt also 429
- *   E. Delete Redis key after send-otp → validate → 422 (otp_expired_or_missing)
+ *   E. Delete Redis key after send-otp → validate → 410 (otp_expired)
+ *      [T7-5 MEDIUM#5: was 400 `otp_expired_or_missing` before — pickup
+ *       contract per docs/endpoints.md §3.6 is 410 `otp_expired`.]
  *   F. Cancel a request → status cancelled, redis key gone, 2nd cancel → 409
  *   G. is_one_time = true → after validate the trusted_person is deactivated → 2nd staff create → 410
  *   H. Cross-tenant RLS: pickup_request from kg_A is invisible from kg_B
@@ -32,6 +34,17 @@
  *   L. GET /staff/pickup-requests reachable (regression test for B11 T6 C1
  *      — admin StaffController used to mount at `/staff` and shadow the
  *      pickup list endpoint via `@Get(':id')`)
+ *   Q. T7-5 HIGH#1: parent revokes trusted_person AFTER staff create+send-otp
+ *      → validate-otp returns 410 trusted_person_revoked (re-check inside
+ *      validateOtp closes window between create-time guard and validate)
+ *   R. T7-5 HIGH#2: two pickup_requests share one is_one_time trusted_person;
+ *      concurrent validate → exactly one wins, other gets 410
+ *      trusted_person_revoked, exactly one attendance row written.
+ *      [True PG-level concurrency lives in pickup.race.integration.spec.ts;
+ *       this scenario only proves the SECOND validate (sequentially)
+ *       fails after the first consumed the row.]
+ *   S. T7-5 HIGH#3: secondary parent (no trusted_people_manage permission)
+ *      attempts to add trusted_person → 403 trusted_people_manage_required
  */
 import type { Server } from 'node:http';
 import { randomUUID } from 'node:crypto';
@@ -163,6 +176,7 @@ describe('B11 Pickup OTP (e2e)', () => {
     childId: string,
     userId: string,
     canPickup = false,
+    role: 'primary' | 'secondary' | 'nanny' = 'primary',
   ): Promise<void> {
     await ctx.dataSource.transaction(async (m) => {
       await m.query(`SET LOCAL app.bypass_rls = 'true'`);
@@ -170,8 +184,8 @@ describe('B11 Pickup OTP (e2e)', () => {
         `INSERT INTO child_guardians
            (id, kindergarten_id, child_id, user_id, role, status,
             can_pickup, approved_by, approved_at)
-         VALUES ($1, $2, $3, $4, 'primary', 'approved', $5, $4, now())`,
-        [randomUUID(), kgId, childId, userId, canPickup],
+         VALUES ($1, $2, $3, $4, $6, 'approved', $5, $4, now())`,
+        [randomUUID(), kgId, childId, userId, canPickup, role],
       );
     });
   }
@@ -422,9 +436,9 @@ describe('B11 Pickup OTP (e2e)', () => {
     expect(lockedRes.body.error).toBe('otp_locked');
   });
 
-  // ── E. Delete Redis key → 422 otp_expired_or_missing ─────────────────────
+  // ── E. Delete Redis key → 410 otp_expired ────────────────────────────────
 
-  it('returns 422 otp_expired_or_missing when Redis key is deleted before validate (Scenario E)', async () => {
+  it('returns 410 otp_expired when Redis key is deleted before validate (Scenario E)', async () => {
     const a = await createKgWithAdmin('pu-e', '+77011000041');
     const childId = await createChild(a.adminToken, {
       full_name: 'Child E',
@@ -438,16 +452,17 @@ describe('B11 Pickup OTP (e2e)', () => {
       trustedPersonPhone: '+77011555555',
     });
 
-    // Manually delete the Redis key to simulate expiry
+    // Manually delete the Redis key to simulate expiry. Per
+    // docs/endpoints.md §3.6 pickup error map: 410 `otp_expired`.
     await ctx.redis.del(`otp:pickup:${requestId}`);
 
     const res = await request(server)
       .post(`/api/v1/staff/pickup-requests/${requestId}/validate-otp`)
       .set('Authorization', `Bearer ${a.staffToken}`)
       .send({ code })
-      .expect(400);
+      .expect(410);
 
-    expect(res.body.error).toBe('otp_expired_or_missing');
+    expect(res.body.error).toBe('otp_expired');
   });
 
   // ── F. Cancel → status cancelled, Redis key gone ──────────────────────────
@@ -766,5 +781,193 @@ describe('B11 Pickup OTP (e2e)', () => {
     expect(populated.body).toHaveLength(1);
     expect(populated.body[0].id).toBe(requestId);
     expect(populated.body[0].status).toBe('otp_sent');
+  });
+
+  // ── Q. T7-5 HIGH#1: revoke between create+send-otp and validate ─────────
+
+  it('returns 410 trusted_person_revoked when parent revokes the whitelist row between send-otp and validate (Scenario Q, T7-5 HIGH#1)', async () => {
+    const a = await createKgWithAdmin('pu-q', '+77011000201');
+    const parentId = await seedUser('+77011000202');
+    const childId = await createChild(a.adminToken, {
+      full_name: 'Child Q',
+      date_of_birth: '2020-01-01',
+    });
+    await seedApprovedPickupGuardian(a.kgId, childId, parentId, false);
+    const parentToken = await mintToken({
+      sub: parentId,
+      role: 'parent',
+      kindergartenId: a.kgId,
+    });
+
+    // Add trusted person.
+    const addRes = await request(server)
+      .post(`/api/v1/parent/children/${childId}/trusted-people`)
+      .set('Authorization', `Bearer ${parentToken}`)
+      .send({
+        full_name: 'Soon-Revoked',
+        phone: '+77011200001',
+        relation: 'aunt',
+      })
+      .expect(201);
+    const tpId = addRes.body.id as string;
+
+    // Create pickup_request + send-otp BEFORE revoke.
+    const { requestId, code } = await setupPickupRequestWithOtp({
+      staffToken: a.staffToken,
+      childId,
+      trustedPersonId: tpId,
+    });
+
+    // Parent revokes the trusted_person — pickup_request still has a
+    // non-null trusted_person_id pointing at the now-revoked row.
+    await request(server)
+      .post(`/api/v1/parent/trusted-people/${tpId}/revoke`)
+      .set('Authorization', `Bearer ${parentToken}`)
+      .expect(200);
+
+    // Staff tries to validate — must fail with 410 trusted_person_revoked
+    // because the validateOtp re-check sees `isAvailableForPickup() ===
+    // false`. Without HIGH#1 this validate would succeed and create a
+    // checkout attendance row backed by a revoked trusted_person.
+    const res = await request(server)
+      .post(`/api/v1/staff/pickup-requests/${requestId}/validate-otp`)
+      .set('Authorization', `Bearer ${a.staffToken}`)
+      .send({ code })
+      .expect(410);
+
+    expect(res.body.error).toBe('trusted_person_revoked');
+
+    // Verify NO attendance_event was created.
+    const events = (await ctx.dataSource.transaction(async (m) => {
+      await m.query(`SET LOCAL app.bypass_rls = 'true'`);
+      return m.query(`SELECT id FROM attendance_events WHERE child_id = $1`, [
+        childId,
+      ]);
+    })) as Array<{ id: string }>;
+    expect(events.length).toBe(0);
+  });
+
+  // ── R. T7-5 HIGH#2: one-time concurrent claim — second loses ─────────────
+
+  it('returns 410 trusted_person_revoked on a 2nd validate that targets the SAME consumed one-time trusted_person via a different pickup_request (Scenario R, T7-5 HIGH#2 sequential leg)', async () => {
+    const a = await createKgWithAdmin('pu-r', '+77011000211');
+    const parentId = await seedUser('+77011000212');
+    const childId = await createChild(a.adminToken, {
+      full_name: 'Child R',
+      date_of_birth: '2020-01-01',
+    });
+    await seedApprovedPickupGuardian(a.kgId, childId, parentId, false);
+    const parentToken = await mintToken({
+      sub: parentId,
+      role: 'parent',
+      kindergartenId: a.kgId,
+    });
+
+    // Add ONE-TIME trusted_person.
+    const addRes = await request(server)
+      .post(`/api/v1/parent/children/${childId}/trusted-people`)
+      .set('Authorization', `Bearer ${parentToken}`)
+      .send({
+        full_name: 'One-Time Race',
+        phone: '+77011210001',
+        relation: 'driver',
+        is_one_time: true,
+      })
+      .expect(201);
+    const tpId = addRes.body.id as string;
+
+    // Create 2 pickup_requests bound to the same trusted_person AND
+    // capture both OTP codes BEFORE either validate runs (otherwise
+    // the staff create path's own `isAvailableForPickup` guard would
+    // fail PR2 immediately because PR1's validate flipped is_active
+    // to false). Each pickup_request has its own send-otp call so
+    // both OTP codes are still in Redis when validate-otp races.
+    const pr1 = await setupPickupRequestWithOtp({
+      staffToken: a.staffToken,
+      childId,
+      trustedPersonId: tpId,
+    });
+    const pr2 = await setupPickupRequestWithOtp({
+      staffToken: a.staffToken,
+      childId,
+      trustedPersonId: tpId,
+    });
+
+    // First validate — succeeds, claims the one-time row.
+    await request(server)
+      .post(`/api/v1/staff/pickup-requests/${pr1.requestId}/validate-otp`)
+      .set('Authorization', `Bearer ${a.staffToken}`)
+      .send({ code: pr1.code })
+      .expect(200);
+
+    // Second validate — must fail with 410 because the markUsed claim
+    // (`used_at IS NULL ... AND is_active = true`) sees 0 rows
+    // affected. The HIGH#1 isAvailableForPickup re-check ALSO catches
+    // this sequentially (because PR1's validate flipped `is_active=false`
+    // and stamped `used_at`); the load-bearing assertion is just "not
+    // 200, no 2nd attendance row".
+    const res2 = await request(server)
+      .post(`/api/v1/staff/pickup-requests/${pr2.requestId}/validate-otp`)
+      .set('Authorization', `Bearer ${a.staffToken}`)
+      .send({ code: pr2.code })
+      .expect(410);
+
+    expect(res2.body.error).toBe('trusted_person_revoked');
+
+    // Exactly ONE attendance_event for that child.
+    const events = (await ctx.dataSource.transaction(async (m) => {
+      await m.query(`SET LOCAL app.bypass_rls = 'true'`);
+      return m.query(`SELECT id FROM attendance_events WHERE child_id = $1`, [
+        childId,
+      ]);
+    })) as Array<{ id: string }>;
+    expect(events.length).toBe(1);
+  });
+
+  // ── S. T7-5 HIGH#3: secondary parent → 403 trusted_people_manage_required
+
+  it('returns 403 trusted_people_manage_required when a SECONDARY guardian tries to add a trusted_person (Scenario S, T7-5 HIGH#3)', async () => {
+    const a = await createKgWithAdmin('pu-s', '+77011000221');
+    const secondaryId = await seedUser('+77011000222');
+    const childId = await createChild(a.adminToken, {
+      full_name: 'Child S',
+      date_of_birth: '2020-01-01',
+    });
+    // Seed as `secondary` — defaults table sets
+    // trusted_people_manage=false for non-primary roles.
+    await seedApprovedPickupGuardian(
+      a.kgId,
+      childId,
+      secondaryId,
+      false,
+      'secondary',
+    );
+    const parentToken = await mintToken({
+      sub: secondaryId,
+      role: 'parent',
+      kindergartenId: a.kgId,
+    });
+
+    const res = await request(server)
+      .post(`/api/v1/parent/children/${childId}/trusted-people`)
+      .set('Authorization', `Bearer ${parentToken}`)
+      .send({
+        full_name: 'Secondary Tries',
+        phone: '+77011220001',
+        relation: 'neighbor',
+      })
+      .expect(403);
+
+    expect(res.body.error).toBe('trusted_people_manage_required');
+
+    // List endpoint stays open to any approved guardian — secondary
+    // can still SEE the whitelist (empty here, but the call must
+    // succeed with 200 [] not 403).
+    const listRes = await request(server)
+      .get(`/api/v1/parent/children/${childId}/trusted-people`)
+      .set('Authorization', `Bearer ${parentToken}`)
+      .expect(200);
+    expect(Array.isArray(listRes.body)).toBe(true);
+    expect(listRes.body).toHaveLength(0);
   });
 });

@@ -48,10 +48,11 @@ export abstract class TrustedPersonRepository {
   abstract findById(id: string): Promise<TrustedPerson | null>;
 
   /**
-   * Lists all trusted_people rows for a given child within the tenant.
-   * Includes both active and revoked rows — the caller decides whether to
-   * filter (parent-app may want to show "previously trusted" rows greyed
-   * out). Sorted by `created_at DESC`.
+   * Lists active trusted_people rows for a given child within the tenant.
+   * "Active" means `is_active=true AND revoked_at IS NULL` — revoked rows
+   * are filtered out at the SQL layer to match docs/endpoints.md §4.6
+   * "Whitelist доверенных для ребёнка. Возвращает is_active=true записи".
+   * Sorted by `created_at DESC`.
    */
   abstract listByChild(
     kindergartenId: string,
@@ -81,6 +82,22 @@ export abstract class TrustedPersonRepository {
    * Stamps `used_at = now` and (when `deactivate` is true) flips
    * `is_active = false`. Service supplies `deactivate` based on the
    * domain aggregate's `isOneTime` flag.
+   *
+   * **Atomic claim semantics (T7-5 HIGH#2):** the SQL UPDATE is guarded
+   * by `WHERE used_at IS NULL AND revoked_at IS NULL AND is_active = true`,
+   * so concurrent validates trying to consume the same one-time
+   * trusted_people row see exactly one winner. Returns `true` when the
+   * row was claimed (1 row affected) or `false` when another path
+   * already consumed it. Service callers MUST treat `false` as a
+   * conflict on `is_one_time=true` rows and roll back the surrounding
+   * TX (no attendance row, no validated state). For non-one-time rows
+   * the boolean is informational — `false` simply means the row was
+   * concurrently revoked, in which case the validate flow has already
+   * been gated by `isAvailableForPickup()` upstream.
    */
-  abstract markUsed(id: string, now: Date, deactivate: boolean): Promise<void>;
+  abstract markUsed(
+    id: string,
+    now: Date,
+    deactivate: boolean,
+  ): Promise<boolean>;
 }

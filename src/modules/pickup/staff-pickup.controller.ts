@@ -206,9 +206,12 @@ export class StaffPickupController {
     description:
       'pickup_request_already_validated OR pickup_request_status_invalid.',
   })
-  @ApiGoneResponse({ description: 'pickup_request_expired.' })
+  @ApiGoneResponse({
+    description:
+      'pickup_request_expired / otp_expired / trusted_person_revoked.',
+  })
   @ApiBadRequestResponse({
-    description: 'invalid_otp / otp_expired_or_missing.',
+    description: 'invalid_otp.',
   })
   @ApiTooManyRequestsResponse({
     description: 'otp_locked — too many failed attempts on this request.',

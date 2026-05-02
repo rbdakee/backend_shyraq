@@ -102,8 +102,8 @@ class FakeTrustedPersonRepo extends TrustedPersonRepository {
     if (tp) this.rows.set(id, tp.revoke(now));
     return Promise.resolve();
   }
-  markUsed(): Promise<void> {
-    return Promise.resolve();
+  markUsed(): Promise<boolean> {
+    return Promise.resolve(true);
   }
 }
 
@@ -167,6 +167,24 @@ class FakeChildGuardianRepo extends ChildGuardianRepository {
   }
   findApprovedActiveByUserIdCrossTenant(): Promise<ChildGuardian[]> {
     return Promise.resolve([]);
+  }
+  findApprovedActiveByUserAndChild(
+    kg: string,
+    childId: string,
+    userId: string,
+  ): Promise<ChildGuardian | null> {
+    const r =
+      this.rows.find((g) => {
+        const s = g.toState();
+        return (
+          s.kindergartenId === kg &&
+          s.childId === childId &&
+          s.userId === userId &&
+          s.status === 'approved' &&
+          s.revokedAt === null
+        );
+      }) ?? null;
+    return Promise.resolve(r);
   }
 }
 
@@ -241,6 +259,31 @@ function makeApprovedGuardian(userId: string): ChildGuardian {
     role: 'primary',
     status: 'approved',
     hasApprovalRights: true,
+    approvedBy: userId,
+    approvedAt: NOW,
+    revokedBy: null,
+    revokedAt: null,
+    canPickup: true,
+    permissions: {},
+    permissionsUpdatedBy: null,
+    permissionsUpdatedAt: null,
+    createdAt: NOW,
+    updatedAt: NOW,
+  });
+}
+
+function makeApprovedGuardianWithRole(
+  userId: string,
+  role: 'primary' | 'secondary' | 'nanny',
+): ChildGuardian {
+  return ChildGuardian.hydrate({
+    id: `g-${role}-${userId}`,
+    kindergartenId: KG,
+    childId: CHILD,
+    userId,
+    role,
+    status: 'approved',
+    hasApprovalRights: role === 'primary',
     approvedBy: userId,
     approvedAt: NOW,
     revokedBy: null,
@@ -386,6 +429,14 @@ describe('TrustedPersonService — service-unit', () => {
       ).rejects.toBeInstanceOf(ForbiddenActionError);
     });
 
+    it('returns rows for a SECONDARY guardian — listByChild does NOT require trusted_people_manage permission (T7-5 HIGH#3 scope)', async () => {
+      const w = wire();
+      w.guardians.put(makeApprovedGuardianWithRole(PARENT_USER, 'secondary'));
+      w.trustedPeople.put(makeTrustedPerson());
+      const items = await w.service.listByChild(KG, CHILD, PARENT_USER);
+      expect(items).toHaveLength(1);
+    });
+
     it('throws ChildNotFoundError when the child does not exist in this kg', async () => {
       const w = wire();
       w.guardians.put(makeApprovedGuardian(PARENT_USER));
@@ -427,6 +478,40 @@ describe('TrustedPersonService — service-unit', () => {
           isOneTime: false,
         }),
       ).rejects.toBeInstanceOf(ForbiddenActionError);
+    });
+
+    it('throws ForbiddenActionError(trusted_people_manage_required) when caller is a SECONDARY guardian (T7-5 HIGH#3 — locked permission, primary-only by default)', async () => {
+      const w = wire();
+      w.guardians.put(makeApprovedGuardianWithRole(PARENT_USER, 'secondary'));
+      await expect(
+        w.service.addByParent(KG, CHILD, PARENT_USER, {
+          fullName: 'Aunt',
+          phone: '+77001112233',
+          iin: null,
+          relation: 'aunt',
+          photoUrl: null,
+          isOneTime: false,
+        }),
+      ).rejects.toMatchObject({
+        code: 'trusted_people_manage_required',
+      });
+    });
+
+    it('throws ForbiddenActionError(trusted_people_manage_required) when caller is a NANNY guardian (T7-5 HIGH#3)', async () => {
+      const w = wire();
+      w.guardians.put(makeApprovedGuardianWithRole(PARENT_USER, 'nanny'));
+      await expect(
+        w.service.addByParent(KG, CHILD, PARENT_USER, {
+          fullName: 'Aunt',
+          phone: '+77001112233',
+          iin: null,
+          relation: 'aunt',
+          photoUrl: null,
+          isOneTime: false,
+        }),
+      ).rejects.toMatchObject({
+        code: 'trusted_people_manage_required',
+      });
     });
   });
 
@@ -483,6 +568,15 @@ describe('TrustedPersonService — service-unit', () => {
         w.service.update(KG, TP_ID, PARENT_USER, { fullName: 'X' }),
       ).rejects.toBeInstanceOf(TrustedPersonRevokedError);
     });
+
+    it('throws ForbiddenActionError(trusted_people_manage_required) when caller is a SECONDARY guardian (T7-5 HIGH#3)', async () => {
+      const w = wire();
+      w.trustedPeople.put(makeTrustedPerson(PARENT_USER));
+      w.guardians.put(makeApprovedGuardianWithRole(PARENT_USER, 'secondary'));
+      await expect(
+        w.service.update(KG, TP_ID, PARENT_USER, { fullName: 'X' }),
+      ).rejects.toMatchObject({ code: 'trusted_people_manage_required' });
+    });
   });
 
   describe('revoke', () => {
@@ -535,6 +629,15 @@ describe('TrustedPersonService — service-unit', () => {
       await expect(
         w.service.revoke(KG, TP_ID, PARENT_USER),
       ).rejects.toBeInstanceOf(ForbiddenActionError);
+    });
+
+    it('throws ForbiddenActionError(trusted_people_manage_required) when caller is a SECONDARY guardian (T7-5 HIGH#3)', async () => {
+      const w = wire();
+      w.trustedPeople.put(makeTrustedPerson(PARENT_USER));
+      w.guardians.put(makeApprovedGuardianWithRole(PARENT_USER, 'secondary'));
+      await expect(
+        w.service.revoke(KG, TP_ID, PARENT_USER),
+      ).rejects.toMatchObject({ code: 'trusted_people_manage_required' });
     });
   });
 });

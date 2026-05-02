@@ -93,6 +93,9 @@ class FakeGuardianRepo extends ChildGuardianRepository {
       : this.rows;
     return Promise.resolve(filtered);
   }
+  findApprovedActiveByUserAndChild(): Promise<ChildGuardian | null> {
+    return Promise.resolve(null);
+  }
 }
 
 class FakeGroupRepo extends GroupRepository {

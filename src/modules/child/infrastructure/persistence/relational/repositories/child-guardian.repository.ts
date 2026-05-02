@@ -243,6 +243,23 @@ export class ChildGuardianRelationalRepository extends ChildGuardianRepository {
     return row ? ChildGuardianMapper.toDomain(row) : null;
   }
 
+  async findApprovedActiveByUserAndChild(
+    kindergartenId: string,
+    childId: string,
+    userId: string,
+  ): Promise<ChildGuardian | null> {
+    const row = await this.manager()
+      .getRepository(ChildGuardianEntity)
+      .createQueryBuilder('g')
+      .where('g.kindergarten_id = :kg', { kg: kindergartenId })
+      .andWhere('g.child_id = :cid', { cid: childId })
+      .andWhere('g.user_id = :uid', { uid: userId })
+      .andWhere("g.status = 'approved'")
+      .andWhere('g.revoked_at IS NULL')
+      .getOne();
+    return row ? ChildGuardianMapper.toDomain(row) : null;
+  }
+
   async findApprovedActiveByUserIdCrossTenant(
     userId: string,
     kindergartenId?: string,

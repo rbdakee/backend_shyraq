@@ -129,6 +129,25 @@ class FakeGuardianRepo
   findApprovedActiveByUserIdCrossTenant(): Promise<ChildGuardian[]> {
     return Promise.resolve([]);
   }
+  findApprovedActiveByUserAndChild(
+    kg: string,
+    childId: string,
+    userId: string,
+  ): Promise<ChildGuardian | null> {
+    const list = this.rowsByChild.get(childId) ?? [];
+    const r =
+      list.find((g) => {
+        const s = g.toState();
+        return (
+          s.kindergartenId === kg &&
+          s.childId === childId &&
+          s.userId === userId &&
+          s.status === 'approved' &&
+          s.revokedAt === null
+        );
+      }) ?? null;
+    return Promise.resolve(r);
+  }
 }
 
 class FakePreferenceRepo extends NotificationPreferenceRepository {
@@ -1019,6 +1038,85 @@ describe('NotificationDispatcher', () => {
       expect(w.notificationRepo.rows[0].bodyI18n.ru).toContain(
         'Сабина Маратовна',
       );
+    });
+  });
+
+  // ── T7-5 MEDIUM#4: pickup recipient re-validation ──────────────────────
+
+  describe('pickup recipient re-validation (T7-5 MEDIUM#4)', () => {
+    function makeOtpSentEvent(requesterUserId: string): OutboxEvent {
+      return OutboxEvent.create(
+        {
+          id: '99999999-9999-9999-9999-99999999aaaa',
+          kindergartenId: KG,
+          eventKey: 'pickup.otp_sent',
+          payload: {
+            childId: CHILD,
+            pickupRequestId: 'pr-1',
+            requesterUserId,
+            trustedPersonName: 'Aunt',
+          },
+        },
+        NOW,
+      );
+    }
+
+    function makeValidatedEvent(requesterUserId: string): OutboxEvent {
+      return OutboxEvent.create(
+        {
+          id: '99999999-9999-9999-9999-99999999bbbb',
+          kindergartenId: KG,
+          eventKey: 'pickup.validated',
+          payload: {
+            childId: CHILD,
+            pickupRequestId: 'pr-1',
+            requesterUserId,
+            trustedPersonName: 'Aunt',
+            attendanceEventId: 'evt-1',
+            validatedAt: NOW.toISOString(),
+          },
+        },
+        NOW,
+      );
+    }
+
+    it('drops the requester from `pickup.otp_sent` recipients when their guardian-link is no longer approved-active', async () => {
+      const w = wire();
+      // No active guardian link for USER_A (the requester) — resolver
+      // returns empty; dispatcher short-circuits to status='dispatched'
+      // with NO history row written.
+      const result = await w.dispatcher.dispatch(makeOtpSentEvent(USER_A));
+      expect(result).toEqual({ status: 'dispatched' });
+      expect(w.notificationRepo.rows).toHaveLength(0);
+      expect(w.pushPort.calls).toHaveLength(0);
+    });
+
+    it('delivers `pickup.otp_sent` to the requester when their guardian-link is still approved-active', async () => {
+      const w = wire();
+      w.guardianRepo.setGuardiansForChild(CHILD, [
+        approvedGuardian(USER_A, 'primary'),
+      ]);
+      w.tokenRepo.set(USER_A, [
+        { id: 't1', userId: USER_A, platform: 'ios', token: 'tok-a' },
+      ]);
+      const result = await w.dispatcher.dispatch(makeOtpSentEvent(USER_A));
+      expect(result).toEqual({ status: 'dispatched' });
+      expect(w.notificationRepo.rows.map((r) => r.userId)).toEqual([USER_A]);
+    });
+
+    it('drops a stale requester from `pickup.validated` but still delivers to current approved guardians', async () => {
+      const w = wire();
+      // USER_B is the current approved guardian; USER_A initiated the
+      // request but their link has been revoked (no entry in setGuardiansForChild).
+      w.guardianRepo.setGuardiansForChild(CHILD, [
+        approvedGuardian(USER_B, 'primary'),
+      ]);
+      w.tokenRepo.set(USER_B, [
+        { id: 't2', userId: USER_B, platform: 'android', token: 'tok-b' },
+      ]);
+      const result = await w.dispatcher.dispatch(makeValidatedEvent(USER_A));
+      expect(result).toEqual({ status: 'dispatched' });
+      expect(w.notificationRepo.rows.map((r) => r.userId)).toEqual([USER_B]);
     });
   });
 

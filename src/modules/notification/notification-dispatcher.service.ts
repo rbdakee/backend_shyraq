@@ -394,7 +394,13 @@ const RECIPIENT_RESOLVERS: Record<string, RecipientResolver> = {
   'guardian.permissions_updated': resolveSelfFromField('guardianUserId'),
   'child.transferred': resolveByChildGuardians,
   // ── B11 Pickup OTP ─────────────────────────────────────────────────────
-  'pickup.otp_sent': resolveSelfFromField('requesterUserId'),
+  // T7-5 MEDIUM#4: pickup recipients are re-validated against the
+  // current guardian-link before delivery. Without this, a parent who
+  // initiated a pickup_request and was subsequently revoked / unlinked
+  // would still receive `pickup.otp_sent` and `pickup.validated`
+  // notifications for the duration of the request's lifetime — leaking
+  // child activity to an account that no longer has access.
+  'pickup.otp_sent': resolvePickupOtpSentRecipients,
   'pickup.validated': resolvePickupValidatedRecipients,
 };
 
@@ -427,8 +433,11 @@ async function resolveByChildGuardians(
 /**
  * Recipient resolver for `pickup.validated` — fans out to the child's
  * approved guardians AND includes the requester (the parent who started
- * the flow). Deduplicates if the requester is already in the guardian
- * list. Marks nanny guardians so the nanny-policy gate still applies.
+ * the flow), but only if the requester is STILL an approved-active
+ * guardian on the child at dispatch time (T7-5 MEDIUM#4 — closes the
+ * stale-recipient leak). Deduplicates if the requester is already in
+ * the guardian list. Marks nanny guardians so the nanny-policy gate
+ * still applies.
  */
 async function resolvePickupValidatedRecipients(
   event: OutboxEvent,
@@ -436,10 +445,48 @@ async function resolvePickupValidatedRecipients(
 ): Promise<ResolvedRecipients> {
   const guardiansResult = await resolveByChildGuardians(event, deps);
   const requesterId = stringField(event.payload, 'requesterUserId');
-  if (!guardiansResult.userIds.includes(requesterId)) {
+  // The base resolver already filters to approved + non-revoked
+  // guardians. If the requester is in that list, dedup is enough.
+  // Otherwise re-validate the requester independently — they may not
+  // have been a guardian (e.g. staff-initiated request) OR may have
+  // been revoked between enqueue and dispatch.
+  if (guardiansResult.userIds.includes(requesterId)) {
+    return guardiansResult;
+  }
+  const childId = stringField(event.payload, 'childId');
+  const link = await deps.guardianRepo.findApprovedActiveByUserAndChild(
+    event.kindergartenId,
+    childId,
+    requesterId,
+  );
+  if (link !== null) {
     guardiansResult.userIds.push(requesterId);
   }
   return guardiansResult;
+}
+
+/**
+ * Recipient resolver for `pickup.otp_sent` — only the requester (parent)
+ * receives this notification, and only if they are STILL an
+ * approved-active guardian on the child at dispatch time. T7-5
+ * MEDIUM#4: closes the leak where a parent revoked between enqueue and
+ * dispatch would still get the OTP-sent SMS notification.
+ */
+async function resolvePickupOtpSentRecipients(
+  event: OutboxEvent,
+  deps: { guardianRepo: ChildGuardianRepository },
+): Promise<ResolvedRecipients> {
+  const requesterId = stringField(event.payload, 'requesterUserId');
+  const childId = stringField(event.payload, 'childId');
+  const link = await deps.guardianRepo.findApprovedActiveByUserAndChild(
+    event.kindergartenId,
+    childId,
+    requesterId,
+  );
+  if (link === null) {
+    return { userIds: [], nannyUserIds: new Set() };
+  }
+  return { userIds: [requesterId], nannyUserIds: new Set() };
 }
 
 function resolveSelfFromField(fieldName: string): RecipientResolver {

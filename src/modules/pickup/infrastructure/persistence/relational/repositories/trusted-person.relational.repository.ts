@@ -63,12 +63,20 @@ export class TrustedPersonRelationalRepository extends TrustedPersonRepository {
     kindergartenId: string,
     childId: string,
   ): Promise<TrustedPerson[]> {
+    // T7-5 LOW#6: filter to active rows only (`is_active=true AND
+    // revoked_at IS NULL`) so the parent-app list endpoint matches the
+    // docs/endpoints.md §4.6 contract ("Возвращает is_active=true
+    // записи"). Historical / revoked rows live in the audit DB but the
+    // client never sees them through `GET .../trusted-people`.
     const rows = await this.manager()
       .getRepository(TrustedPersonTypeOrmEntity)
-      .find({
-        where: { kindergarten_id: kindergartenId, child_id: childId },
-        order: { created_at: 'DESC' },
-      });
+      .createQueryBuilder('tp')
+      .where('tp.kindergarten_id = :kg', { kg: kindergartenId })
+      .andWhere('tp.child_id = :cid', { cid: childId })
+      .andWhere('tp.is_active = true')
+      .andWhere('tp.revoked_at IS NULL')
+      .orderBy('tp.created_at', 'DESC')
+      .getMany();
     return rows.map((r) => TrustedPersonMapper.toDomain(r));
   }
 
@@ -104,11 +112,35 @@ export class TrustedPersonRelationalRepository extends TrustedPersonRepository {
       .execute();
   }
 
-  async markUsed(id: string, now: Date, deactivate: boolean): Promise<void> {
+  async markUsed(id: string, now: Date, deactivate: boolean): Promise<boolean> {
+    // T7-5 HIGH#2: guarded UPDATE so concurrent validates of the same
+    // ONE-TIME trusted_people row resolve to exactly one winner. Without
+    // the `used_at IS NULL` guard, two staff devices validating two
+    // pickup_requests bound to the same `is_one_time=true` row could
+    // both call markUsed and both succeed — letting a one-time row back
+    // a second pickup. The advisory lock per pickup_request_id only
+    // serializes the SAME request, not two requests sharing a tp row.
+    //
+    // For non-one-time rows the guard would be wrong — `used_at` is
+    // intentionally a "last used" audit field that re-stamps on every
+    // pickup, so we drop the `used_at IS NULL` constraint on that
+    // branch. The `revoked_at IS NULL AND is_active = true` part is
+    // still useful as defense-in-depth for the access drift case
+    // (parent revokes mid-flow), in which case the upstream
+    // `isAvailableForPickup()` check should already have refused.
     const m = this.manager();
-    const set: Partial<TrustedPersonTypeOrmEntity> = { used_at: now };
-    if (deactivate) set.is_active = false;
-    await m.getRepository(TrustedPersonTypeOrmEntity).update({ id }, set);
+    const qb = m
+      .createQueryBuilder()
+      .update(TrustedPersonTypeOrmEntity)
+      .set(deactivate ? { used_at: now, is_active: false } : { used_at: now })
+      .where('id = :id', { id })
+      .andWhere('revoked_at IS NULL')
+      .andWhere('is_active = true');
+    if (deactivate) {
+      qb.andWhere('used_at IS NULL');
+    }
+    const result = await qb.execute();
+    return (result.affected ?? 0) > 0;
   }
 
   /**

@@ -5,3 +5,4 @@ export { PickupRequestNotFoundError } from './pickup-request-not-found.error';
 export { PickupRequestExpiredError } from './pickup-request-expired.error';
 export { PickupRequestAlreadyValidatedError } from './pickup-request-already-validated.error';
 export { PickupRequestStatusInvalidError } from './pickup-request-status-invalid.error';
+export { PickupOtpExpiredError } from './pickup-otp-expired.error';
