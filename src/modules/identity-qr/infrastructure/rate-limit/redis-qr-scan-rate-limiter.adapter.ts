@@ -17,16 +17,11 @@ const DEFAULT_WINDOW_SECONDS = 60;
  */
 @Injectable()
 export class RedisQrScanRateLimiterAdapter extends QrScanRateLimiterPort {
-  private readonly limit: number;
-  private readonly windowSeconds: number;
+  private readonly limit = DEFAULT_LIMIT;
+  private readonly windowSeconds = DEFAULT_WINDOW_SECONDS;
 
-  constructor(
-    private readonly redis: RedisService,
-    options?: { limit?: number; windowSeconds?: number },
-  ) {
+  constructor(private readonly redis: RedisService) {
     super();
-    this.limit = options?.limit ?? DEFAULT_LIMIT;
-    this.windowSeconds = options?.windowSeconds ?? DEFAULT_WINDOW_SECONDS;
   }
 
   async check(
