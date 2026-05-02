@@ -40,8 +40,11 @@ export abstract class RefreshTokenRepository {
    * could spoof a different device id in the header to bypass the
    * 60-scans/min budget.
    *
-   * Bypass-RLS internally because the row's `kindergarten_id` may be null
-   * or different from the active tenant; the lookup is by user+device only.
+   * Runs under the ambient tenant GUC (no internal RLS bypass). Caller's
+   * refresh_tokens row's `kindergarten_id` is set at OTP-verify /
+   * role-select to match the caller's JWT `kindergarten_id`, so the
+   * row passes RLS naturally for the same-user same-kg lookup pattern
+   * this method serves.
    */
   abstract hasActiveSessionForDevice(
     userId: string,

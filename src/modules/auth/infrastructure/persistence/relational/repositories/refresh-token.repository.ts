@@ -108,29 +108,32 @@ export class RefreshTokenRelationalRepository extends RefreshTokenRepository {
    * X-Device-Id header (otherwise a malicious caller could rotate header
    * values to dodge the 60/min rate-limit).
    *
-   * Runs under `app.bypass_rls=true` because refresh_tokens is RLS-scoped on
-   * `kindergarten_id` but the active tenant for /staff/qr/scan is the
-   * SCANNING staff's kg — which is fine for refresh-token reads on that
-   * same staff user. We bypass anyway so this method is callable from
-   * cross-tenant pipelines (consistency with `findApproved...CrossTenant`).
+   * No `bypass_rls` here: the caller is checking their OWN session, the
+   * refresh_tokens row's `kindergarten_id` was assigned at OTP-verify /
+   * role-select to match the JWT's `kindergarten_id` claim
+   * (auth.service.ts:530-548 / 313-329), and the ambient tenant context
+   * sets `app.kindergarten_id` to that same value — so the row passes RLS
+   * naturally. Previously this method opened a sub-transaction
+   * (SAVEPOINT inside the ambient HTTP TX) and SET LOCAL
+   * `app.bypass_rls = 'true'`. Because RELEASE SAVEPOINT does NOT reset
+   * GUC, the bypass leaked into the rest of the request TX — a footgun
+   * for any future caller. Plain query through `manager()` closes the
+   * leak.
    */
   async hasActiveSessionForDevice(
     userId: string,
     deviceId: string,
     now: Date,
   ): Promise<boolean> {
-    const outerManager = this.manager();
-    return outerManager.transaction(async (tx) => {
-      await tx.query(`SET LOCAL app.bypass_rls = 'true'`);
-      const count = await tx
-        .createQueryBuilder(RefreshTokenEntity, 'rt')
-        .where('rt.user_id = :uid', { uid: userId })
-        .andWhere('rt.device_id = :did', { did: deviceId })
-        .andWhere('rt.revoked_at IS NULL')
-        .andWhere('rt.expires_at > :now', { now })
-        .getCount();
-      return count > 0;
-    });
+    const m = this.manager();
+    const count = await m
+      .createQueryBuilder(RefreshTokenEntity, 'rt')
+      .where('rt.user_id = :uid', { uid: userId })
+      .andWhere('rt.device_id = :did', { did: deviceId })
+      .andWhere('rt.revoked_at IS NULL')
+      .andWhere('rt.expires_at > :now', { now })
+      .getCount();
+    return count > 0;
   }
 
   /**
