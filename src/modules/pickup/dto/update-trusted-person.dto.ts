@@ -14,9 +14,12 @@ const IIN_REGEX = /^\d{12}$/;
 
 /**
  * Patch shape for `PATCH /parent/trusted-people/:id`. All fields optional.
- * `isActive` is intentionally NOT here — revoking a trusted person goes
+ * `is_active` is intentionally NOT here — revoking a trusted person goes
  * through `POST /parent/trusted-people/:id/revoke` so the audit timestamp
  * (`revoked_at`) is set deterministically.
+ *
+ * Wire keys snake_case per project convention; controller maps to
+ * camelCase service-layer types via local destructuring.
  */
 export class UpdateTrustedPersonDto {
   @ApiProperty({
@@ -29,7 +32,7 @@ export class UpdateTrustedPersonDto {
   @IsString()
   @MinLength(2)
   @MaxLength(200)
-  fullName?: string;
+  full_name?: string;
 
   @ApiProperty({ example: '+77071234567', required: false })
   @IsOptional()
@@ -60,10 +63,10 @@ export class UpdateTrustedPersonDto {
   @IsOptional()
   @IsString()
   @MaxLength(2048)
-  photoUrl?: string | null;
+  photo_url?: string | null;
 
   @ApiProperty({ example: true, required: false })
   @IsOptional()
   @IsBoolean()
-  isOneTime?: boolean;
+  is_one_time?: boolean;
 }

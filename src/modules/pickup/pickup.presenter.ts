@@ -18,6 +18,10 @@ import { TrustedPersonResponseDto } from './dto/trusted-person-response.dto';
 export const PickupPresenter = {
   pickupRequest(pr: PickupRequest): PickupRequestResponseDto {
     const s = pr.toState();
+    // T7-4 LOW: `otp_ref` (Redis key namespace) is intentionally NOT
+    // surfaced on list/get/create/cancel responses — it's an internal
+    // cache implementation detail. The dedicated `SendPickupOtpResponseDto`
+    // still returns it as auditable info for the calling staff.
     return {
       id: s.id,
       kindergarten_id: s.kindergartenId,
@@ -27,7 +31,6 @@ export const PickupPresenter = {
       trusted_person_name: s.trustedPersonName,
       trusted_person_phone: s.trustedPersonPhone,
       trusted_person_iin: s.trustedPersonIin,
-      otp_ref: s.otpRef,
       status: s.status,
       validated_by: s.validatedBy,
       validated_at: s.validatedAt ? s.validatedAt.toISOString() : null,

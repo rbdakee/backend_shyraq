@@ -994,6 +994,27 @@ describe('PickupRequestService — service-unit', () => {
         PickupRequestNotFoundError,
       );
     });
+
+    it('acquires the same advisory lock validateOtp/cancel use (T7-4 — serializes vs concurrent cancel/validate to avoid SMS sent for terminal request)', async () => {
+      const w = wire();
+      const pr = await seedRequest(w);
+      await w.service.sendOtp(KG, pr.id);
+      expect(w.pickupRequests.advisoryLockCalls).toContain(pr.id);
+    });
+
+    it('throws PickupRequestStatusInvalidError when a concurrent path flipped the row out of otp_sent before the lock was acquired (T7-4 — re-check status under lock)', async () => {
+      const w = wire();
+      const pr = await seedRequest(w);
+      // Simulate a concurrent cancel that snuck through before sendOtp grabs
+      // the lock — flip the row to `cancelled` directly via the fake repo.
+      await w.pickupRequests.update(pr.id, { status: 'cancelled' });
+      await expect(w.service.sendOtp(KG, pr.id)).rejects.toBeInstanceOf(
+        PickupRequestStatusInvalidError,
+      );
+      // SMS / outbox MUST NOT fire for a cancelled request.
+      expect(w.sms.sent).toHaveLength(0);
+      expect(w.notifications.pickupOtpSent).toHaveLength(0);
+    });
   });
 
   describe('validateOtp', () => {

@@ -110,12 +110,12 @@ export class ParentTrustedPersonController {
   ): Promise<TrustedPersonResponseDto> {
     const kgId = requireTenant(t);
     const tp = await this.service.addByParent(kgId, childId, user.sub, {
-      fullName: dto.fullName,
+      fullName: dto.full_name,
       phone: dto.phone,
       iin: dto.iin ?? null,
       relation: dto.relation,
-      photoUrl: dto.photoUrl ?? null,
-      isOneTime: dto.isOneTime ?? false,
+      photoUrl: dto.photo_url ?? null,
+      isOneTime: dto.is_one_time ?? false,
     });
     return PickupPresenter.trustedPerson(tp);
   }
@@ -138,7 +138,14 @@ export class ParentTrustedPersonController {
     @Body() dto: UpdateTrustedPersonDto,
   ): Promise<TrustedPersonResponseDto> {
     const kgId = requireTenant(t);
-    const tp = await this.service.update(kgId, trustedPersonId, user.sub, dto);
+    const tp = await this.service.update(kgId, trustedPersonId, user.sub, {
+      fullName: dto.full_name,
+      phone: dto.phone,
+      iin: dto.iin,
+      relation: dto.relation,
+      photoUrl: dto.photo_url,
+      isOneTime: dto.is_one_time,
+    });
     return PickupPresenter.trustedPerson(tp);
   }
 

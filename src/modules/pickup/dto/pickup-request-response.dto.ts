@@ -38,13 +38,6 @@ export class PickupRequestResponseDto {
   trusted_person_iin!: string | null;
 
   @ApiProperty({
-    example: 'otp:pickup:11111111-2222-3333-4444-555555555555',
-    nullable: true,
-    description: 'Internal OTP cache key (only populated after send-otp)',
-  })
-  otp_ref!: string | null;
-
-  @ApiProperty({
     example: 'otp_sent',
     enum: ['otp_sent', 'validated', 'expired', 'cancelled'],
   })

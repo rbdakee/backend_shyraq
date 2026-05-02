@@ -195,12 +195,12 @@ describe('B11 Pickup OTP (e2e)', () => {
     trustedPersonName?: string;
     trustedPersonPhone?: string;
   }): Promise<{ requestId: string; code: string }> {
-    const body: Record<string, unknown> = { childId: opts.childId };
+    const body: Record<string, unknown> = { child_id: opts.childId };
     if (opts.trustedPersonId != null) {
-      body.trustedPersonId = opts.trustedPersonId;
+      body.trusted_person_id = opts.trustedPersonId;
     } else {
-      body.trustedPersonName = opts.trustedPersonName ?? 'Test Trusted';
-      body.trustedPersonPhone = opts.trustedPersonPhone ?? '+77011999001';
+      body.trusted_person_name = opts.trustedPersonName ?? 'Test Trusted';
+      body.trusted_person_phone = opts.trustedPersonPhone ?? '+77011999001';
     }
 
     const createRes = await request(server)
@@ -265,10 +265,10 @@ describe('B11 Pickup OTP (e2e)', () => {
       .post(`/api/v1/parent/children/${childId}/trusted-people`)
       .set('Authorization', `Bearer ${parentToken}`)
       .send({
-        fullName: 'Айгуль',
+        full_name: 'Айгуль',
         phone: '+77011111111',
         relation: 'aunt',
-        isOneTime: false,
+        is_one_time: false,
       })
       .expect(201);
 
@@ -306,7 +306,7 @@ describe('B11 Pickup OTP (e2e)', () => {
       .post(`/api/v1/parent/children/${childId}/trusted-people`)
       .set('Authorization', `Bearer ${parentToken}`)
       .send({
-        fullName: 'Revokable Person',
+        full_name: 'Revokable Person',
         phone: '+77011222222',
         relation: 'neighbor',
       })
@@ -323,7 +323,7 @@ describe('B11 Pickup OTP (e2e)', () => {
     const createRes = await request(server)
       .post('/api/v1/staff/pickup-requests')
       .set('Authorization', `Bearer ${a.staffToken}`)
-      .send({ childId, trustedPersonId: tpId })
+      .send({ child_id: childId, trusted_person_id: tpId })
       .expect(410);
 
     expect(createRes.body.error).toBe('trusted_person_revoked');
@@ -508,10 +508,10 @@ describe('B11 Pickup OTP (e2e)', () => {
       .post(`/api/v1/parent/children/${childId}/trusted-people`)
       .set('Authorization', `Bearer ${parentToken}`)
       .send({
-        fullName: 'One-Time Person',
+        full_name: 'One-Time Person',
         phone: '+77011777777',
         relation: 'driver',
-        isOneTime: true,
+        is_one_time: true,
       })
       .expect(201);
     const tpId = addRes.body.id as string;
@@ -533,7 +533,7 @@ describe('B11 Pickup OTP (e2e)', () => {
     const res2 = await request(server)
       .post('/api/v1/staff/pickup-requests')
       .set('Authorization', `Bearer ${a.staffToken}`)
-      .send({ childId, trustedPersonId: tpId })
+      .send({ child_id: childId, trusted_person_id: tpId })
       .expect(410);
 
     expect(res2.body.error).toBe('trusted_person_revoked');
@@ -555,9 +555,9 @@ describe('B11 Pickup OTP (e2e)', () => {
       .post('/api/v1/staff/pickup-requests')
       .set('Authorization', `Bearer ${a.staffToken}`)
       .send({
-        childId: childA,
-        trustedPersonName: 'RLS Test',
-        trustedPersonPhone: '+77011888888',
+        child_id: childA,
+        trusted_person_name: 'RLS Test',
+        trusted_person_phone: '+77011888888',
       })
       .expect(201);
     const requestIdA = createRes.body.id as string;
@@ -598,9 +598,9 @@ describe('B11 Pickup OTP (e2e)', () => {
         .post('/api/v1/staff/pickup-requests')
         .set('Authorization', `Bearer ${a.staffToken}`)
         .send({
-          childId: children[i],
-          trustedPersonName: `Person ${i}`,
-          trustedPersonPhone: PHONE,
+          child_id: children[i],
+          trusted_person_name: `Person ${i}`,
+          trusted_person_phone: PHONE,
         })
         .expect(201);
 
@@ -616,9 +616,9 @@ describe('B11 Pickup OTP (e2e)', () => {
       .post('/api/v1/staff/pickup-requests')
       .set('Authorization', `Bearer ${a.staffToken}`)
       .send({
-        childId: children[5],
-        trustedPersonName: 'Person 5',
-        trustedPersonPhone: PHONE,
+        child_id: children[5],
+        trusted_person_name: 'Person 5',
+        trusted_person_phone: PHONE,
       })
       .expect(201);
 
@@ -692,9 +692,9 @@ describe('B11 Pickup OTP (e2e)', () => {
       .post('/api/v1/staff/pickup-requests')
       .set('Authorization', `Bearer ${a.staffToken}`)
       .send({
-        childId,
-        trustedPersonName: 'Ad-Hoc Person',
-        trustedPersonPhone: '+77011110001',
+        child_id: childId,
+        trusted_person_name: 'Ad-Hoc Person',
+        trusted_person_phone: '+77011110001',
       })
       .expect(201);
 
@@ -751,9 +751,9 @@ describe('B11 Pickup OTP (e2e)', () => {
       .post('/api/v1/staff/pickup-requests')
       .set('Authorization', `Bearer ${a.staffToken}`)
       .send({
-        childId,
-        trustedPersonName: 'List Test',
-        trustedPersonPhone: '+77011110002',
+        child_id: childId,
+        trusted_person_name: 'List Test',
+        trusted_person_phone: '+77011110002',
       })
       .expect(201);
     const requestId = createRes.body.id as string;

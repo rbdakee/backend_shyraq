@@ -181,7 +181,24 @@ export class PickupRequestService {
     kindergartenId: string,
     requestId: string,
   ): Promise<SendOtpResult> {
-    const pr = await this.pickupRequests.findById(requestId);
+    // T7-4 MEDIUM: sendOtp must serialize with concurrent cancel/validate
+    // on the same request id. Without the advisory lock there is a race
+    // window:
+    //   1. sendOtp (A) reads status='otp_sent'
+    //   2. cancel/validate (B) acquires advisory lock → flips status to
+    //      terminal (cancelled/validated) → clears Redis → COMMIT
+    //   3. sendOtp (A) writes Redis + sends SMS + emits notification for a
+    //      now-terminal request (worst case: SMS delivered + outbox row
+    //      written for cancelled/validated request).
+    //
+    // Acquiring the same `pickup:validate:{requestId}` lock here makes
+    // sendOtp wait behind a concurrent cancel/validate (and vice versa),
+    // so we observe the post-flip status and surface 409 cleanly.
+    // Lock lives on the ambient HTTP TX — released at controller-level
+    // COMMIT/ROLLBACK alongside the Redis writes + DB update + SMS call.
+    await this.pickupRequests.acquireValidateAdvisoryLock(requestId);
+
+    const pr = await this.pickupRequests.findByIdForUpdate(requestId);
     if (!pr || pr.kindergartenId !== kindergartenId) {
       throw new PickupRequestNotFoundError(requestId);
     }

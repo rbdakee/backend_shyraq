@@ -34,7 +34,7 @@ import { RolesGuard } from '@/common/guards/roles.guard';
 import type { JwtPayload } from '@/common/types/jwt-payload';
 import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-context';
 import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
-import { CreatePickupRequestDto } from './dto/create-pickup-request.dto';
+import { StaffCreatePickupRequestDto } from './dto/create-pickup-request.dto';
 import { ListPickupRequestsQueryDto } from './dto/list-pickup-requests-query.dto';
 import {
   PickupRequestResponseDto,
@@ -143,15 +143,15 @@ export class StaffPickupController {
   async create(
     @Tenant() t: TenantContext,
     @CurrentUser() user: JwtPayload,
-    @Body() dto: CreatePickupRequestDto,
+    @Body() dto: StaffCreatePickupRequestDto,
   ): Promise<PickupRequestResponseDto> {
     const kgId = requireTenant(t);
     const pr = await this.service.createByStaff(kgId, user.sub, {
-      childId: dto.childId,
-      trustedPersonId: dto.trustedPersonId ?? null,
-      trustedPersonName: dto.trustedPersonName,
-      trustedPersonPhone: dto.trustedPersonPhone,
-      trustedPersonIin: dto.trustedPersonIin ?? null,
+      childId: dto.child_id,
+      trustedPersonId: dto.trusted_person_id ?? null,
+      trustedPersonName: dto.trusted_person_name,
+      trustedPersonPhone: dto.trusted_person_phone,
+      trustedPersonIin: dto.trusted_person_iin ?? null,
     });
     return PickupPresenter.pickupRequest(pr);
   }

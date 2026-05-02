@@ -29,7 +29,7 @@ import { RolesGuard } from '@/common/guards/roles.guard';
 import type { JwtPayload } from '@/common/types/jwt-payload';
 import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-context';
 import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
-import { CreatePickupRequestDto } from './dto/create-pickup-request.dto';
+import { ParentCreatePickupRequestDto } from './dto/create-pickup-request.dto';
 import { PickupRequestResponseDto } from './dto/pickup-request-response.dto';
 import { PickupPresenter } from './pickup.presenter';
 import { PickupRequestService } from './pickup-request.service';
@@ -48,8 +48,8 @@ function requireTenant(t: TenantContext): string {
  *
  * The parent must have an approved-active guardian link with
  * `can_pickup=true` for the child — same precondition as a direct
- * check-out via Staff App. The body's `child_id` must match the URL
- * `:id` param to keep the contract symmetric with the staff endpoint.
+ * check-out via Staff App. `child_id` is taken from the URL `:id`
+ * path param (NOT the body) — the parent DTO does not declare it.
  */
 @ApiTags('Parent / Pickup')
 @ApiBearerAuth()
@@ -67,8 +67,7 @@ export class ParentPickupRequestController {
   })
   @ApiCreatedResponse({ type: PickupRequestResponseDto })
   @ApiBadRequestResponse({
-    description:
-      'Validation error OR body.child_id mismatches URL :id (`child_id_mismatch`).',
+    description: 'Validation error.',
   })
   @ApiUnauthorizedResponse({ description: 'Bearer missing/invalid/revoked.' })
   @ApiForbiddenResponse({
@@ -86,18 +85,15 @@ export class ParentPickupRequestController {
     @Tenant() t: TenantContext,
     @CurrentUser() user: JwtPayload,
     @Param('id', new ParseUUIDPipe()) childId: string,
-    @Body() dto: CreatePickupRequestDto,
+    @Body() dto: ParentCreatePickupRequestDto,
   ): Promise<PickupRequestResponseDto> {
     const kgId = requireTenant(t);
-    if (dto.childId !== childId) {
-      throw new BadRequestException('child_id_mismatch');
-    }
     const pr = await this.service.createByParent(kgId, user.sub, {
       childId,
-      trustedPersonId: dto.trustedPersonId ?? null,
-      trustedPersonName: dto.trustedPersonName,
-      trustedPersonPhone: dto.trustedPersonPhone,
-      trustedPersonIin: dto.trustedPersonIin ?? null,
+      trustedPersonId: dto.trusted_person_id ?? null,
+      trustedPersonName: dto.trusted_person_name,
+      trustedPersonPhone: dto.trusted_person_phone,
+      trustedPersonIin: dto.trusted_person_iin ?? null,
     });
     return PickupPresenter.pickupRequest(pr);
   }

@@ -12,6 +12,11 @@ import {
 const PHONE_REGEX = /^\+[1-9]\d{10,14}$/;
 const IIN_REGEX = /^\d{12}$/;
 
+/**
+ * Body shape for `POST /parent/children/:id/trusted-people`. Wire keys
+ * are snake_case per the project endpoints.md convention; the controller
+ * maps to camelCase service-layer types via local destructuring.
+ */
 export class AddTrustedPersonDto {
   @ApiProperty({
     example: 'Айгуль Бекмаганбетова',
@@ -22,7 +27,7 @@ export class AddTrustedPersonDto {
   @IsString()
   @MinLength(2)
   @MaxLength(200)
-  fullName!: string;
+  full_name!: string;
 
   @ApiProperty({
     example: '+77071234567',
@@ -66,7 +71,7 @@ export class AddTrustedPersonDto {
   @IsOptional()
   @IsString()
   @MaxLength(2048)
-  photoUrl?: string | null;
+  photo_url?: string | null;
 
   @ApiProperty({
     example: false,
@@ -77,5 +82,5 @@ export class AddTrustedPersonDto {
   })
   @IsOptional()
   @IsBoolean()
-  isOneTime?: boolean;
+  is_one_time?: boolean;
 }
