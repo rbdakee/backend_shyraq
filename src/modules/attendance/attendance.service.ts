@@ -484,7 +484,7 @@ export class AttendanceService {
       date?: string;
     } = {},
   ): Promise<ChildDailyStatus[]> {
-    const today = new Date().toLocaleDateString('en-CA', {
+    const today = this.clock.now().toLocaleDateString('en-CA', {
       timeZone: 'Asia/Almaty',
     });
     const date = opts.date ?? today;
