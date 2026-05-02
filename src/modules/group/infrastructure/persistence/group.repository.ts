@@ -90,8 +90,15 @@ export abstract class GroupRepository {
    * regardless of which kindergarten(s) the user staffs.
    *
    * Bypasses RLS via `app.bypass_rls=true` inside its own transaction.
+   *
+   * When `kindergartenId` is provided, the result is filtered to that
+   * single kg — used by WS auto-subscribe to scope rooms to the JWT's
+   * `kindergarten_id` claim (a staff member who is also a mentor in
+   * another kg must NOT receive that other kg's group events while
+   * connected with a kgA-scoped JWT).
    */
   abstract findActiveMentorAssignmentsByUserIdCrossTenant(
     userId: string,
+    kindergartenId?: string,
   ): Promise<GroupMentor[]>;
 }

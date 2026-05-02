@@ -245,17 +245,24 @@ export class ChildGuardianRelationalRepository extends ChildGuardianRepository {
 
   async findApprovedActiveByUserIdCrossTenant(
     userId: string,
+    kindergartenId?: string,
   ): Promise<ChildGuardian[]> {
     return this.dataSource.transaction(async (manager) => {
       await manager.query(`SET LOCAL app.bypass_rls = 'true'`);
-      const rows = await manager
+      const qb = manager
         .getRepository(ChildGuardianEntity)
         .createQueryBuilder('g')
         .where('g.user_id = :uid', { uid: userId })
         .andWhere("g.status = 'approved'")
-        .andWhere('g.revoked_at IS NULL')
-        .orderBy('g.created_at', 'ASC')
-        .getMany();
+        .andWhere('g.revoked_at IS NULL');
+      // When the caller passes a kg-id (WS auto-subscribe scoping by JWT
+      // claim) we narrow the result EVEN THOUGH RLS is bypassed — the
+      // bypass exists so this method works outside the HTTP pipeline,
+      // not so the caller forfeits tenant scoping.
+      if (kindergartenId) {
+        qb.andWhere('g.kindergarten_id = :kg', { kg: kindergartenId });
+      }
+      const rows = await qb.orderBy('g.created_at', 'ASC').getMany();
       return rows.map((r) => ChildGuardianMapper.toDomain(r));
     });
   }

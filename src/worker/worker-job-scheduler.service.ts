@@ -70,6 +70,15 @@ export class WorkerJobSchedulerService implements OnModuleInit {
     // Weekly rollout — Sunday 23:00 Asia/Almaty. Cron pattern + tz are the
     // exact pair the previous @nestjs/schedule decoration used so the
     // operational contract (BP §9.3) is unchanged.
+    //
+    // attempts=3 + exponential backoff (1m / 2m / 4m base spacing → up to
+    // ~7 minutes of infra-recovery time) ensures a transient DB blip /
+    // connection-pool exhaustion at the Sunday 23:00 tick is retried
+    // within the same Sunday night. Without these opts a single failed
+    // attempt would leave staff and parents on stale schedules for the
+    // FOLLOWING week (next cron fire is +7d). Mirrors the
+    // exponential-backoff philosophy of the notification outbox
+    // (`defaultBackoff` in outbox-event.entity.ts).
     await this.rolloutQueue.upsertJobScheduler(
       'weekly-rollout-cron',
       {
@@ -79,6 +88,8 @@ export class WorkerJobSchedulerService implements OnModuleInit {
       {
         name: WEEKLY_ROLLOUT_JOB,
         opts: {
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 60_000 },
           removeOnComplete: { count: 50 },
           removeOnFail: { count: 50 },
         },

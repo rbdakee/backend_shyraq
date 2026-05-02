@@ -6,8 +6,11 @@
  *   - The processor delegates to `WeeklyRolloutService.runWeeklyRollout`
  *     with the previous-Monday derived from the injected clock and
  *     `source='cron'`.
- *   - Top-level service failures are swallowed so a single tick failure
- *     does not crash the worker (mirrors the pre-T6 behaviour).
+ *   - Top-level service failures PROPAGATE to BullMQ so the scheduler's
+ *     `attempts` + exponential `backoff` policy can retry within the
+ *     same Sunday window. Per-kg failures are isolated INSIDE the
+ *     service; only true orchestration-level errors reach the processor
+ *     boundary, and those must surface so BullMQ retries them.
  *   - The processor ignores BullMQ jobs whose name does not match
  *     `WEEKLY_ROLLOUT_JOB`, which lets the queue host other jobs in the
  *     future without colliding.
@@ -110,7 +113,7 @@ describe('WeeklyRolloutProcessor.process', () => {
     );
   });
 
-  it('swallows a top-level service failure so a tick does not crash the worker', async () => {
+  it('rethrows a top-level service failure so BullMQ can retry the tick (attempts+backoff)', async () => {
     const fakeService = new FakeRolloutService();
     fakeService.shouldThrow = true;
     const clock = new FixedClock(new Date('2026-05-03T18:00:00.000Z'));
@@ -118,9 +121,9 @@ describe('WeeklyRolloutProcessor.process', () => {
       fakeService as unknown as WeeklyRolloutService,
       clock,
     );
-    await expect(
-      proc.process(makeJob(WEEKLY_ROLLOUT_JOB)),
-    ).resolves.toBeUndefined();
+    await expect(proc.process(makeJob(WEEKLY_ROLLOUT_JOB))).rejects.toThrow(
+      'boom',
+    );
   });
 
   it('ignores jobs whose name is not the weekly-rollout name (forward compat)', async () => {

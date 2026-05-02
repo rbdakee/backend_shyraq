@@ -358,4 +358,58 @@ describe('B9 websocket gateway (e2e)', () => {
       socket.disconnect();
     }
   });
+
+  // ── E. JWT scoping: parent in kg_A who also has a guardian row in kg_B ──
+  //
+  //   Mixed-tenant accounts exist in this system. A user can be a parent in
+  //   kg_A AND have an approved guardian row in kg_B at the same time (e.g.
+  //   children moved between kindergartens, or a relative living in two
+  //   cities). When the user connects with a kg_A-scoped parent JWT, they
+  //   must NOT subscribe to kg_B's child-room — receiving those events
+  //   would leak from a tenant the current handshake is not scoped to.
+
+  it('parent JWT scoped to kg_A does not join child:{cid} rooms for guardian links in kg_B (Scenario E)', async () => {
+    const a = await createKgWithAdmin('ws-e-a', '+77011990005');
+    const b = await createKgWithAdmin('ws-e-b', '+77011990006');
+
+    const childA = await createChild(a.adminToken, {
+      full_name: 'WS-E-Child-A',
+      date_of_birth: '2022-01-10',
+    });
+    const childB = await createChild(b.adminToken, {
+      full_name: 'WS-E-Child-B',
+      date_of_birth: '2022-01-10',
+    });
+
+    // Same user is an approved guardian in BOTH kgs (mixed-tenant account).
+    const parentUserId = await seedUser('+77011990015');
+    await seedApprovedGuardian(childA, parentUserId, a.kgId);
+    await seedApprovedGuardian(childB, parentUserId, b.kgId);
+
+    // Connect with a kg_A-scoped parent JWT.
+    const parentJwtA = await mintParentAccess({
+      sub: parentUserId,
+      kindergartenId: a.kgId,
+    });
+
+    const socket = ioClient(baseUrl, {
+      path: '/ws',
+      auth: { token: parentJwtA },
+      transports: ['websocket'],
+      forceNew: true,
+      reconnection: false,
+    });
+    try {
+      const ack = await awaitConnected(socket);
+      expect(ack.user_id).toBe(parentUserId);
+      // Joins only the kg_A child room — kg_B leak prevented.
+      expect(ack.rooms).toEqual(
+        expect.arrayContaining([`user:${parentUserId}`, `child:${childA}`]),
+      );
+      expect(ack.rooms).not.toContain(`child:${childB}`);
+      expect(ack.rooms.length).toBe(2);
+    } finally {
+      socket.disconnect();
+    }
+  });
 });

@@ -76,7 +76,12 @@ export class NotificationGateway
       client.data.role = payload.role;
       client.data.kindergartenId = payload.kindergarten_id ?? null;
 
-      const { rooms } = await this.autoSubscribe.subscribe(client, payload.sub);
+      // Auto-subscribe is JWT-aware: the resolved room set must match
+      // the JWT's `role` + `kindergarten_id` at handshake time. A user
+      // who is also a guardian / mentor in OTHER kindergartens does
+      // NOT receive those tenants' events while connected with a
+      // single-kg-scoped JWT. Re-handshake required to switch context.
+      const { rooms } = await this.autoSubscribe.subscribe(client, payload);
       client.emit('connected', { user_id: payload.sub, rooms });
 
       this.logger.log(

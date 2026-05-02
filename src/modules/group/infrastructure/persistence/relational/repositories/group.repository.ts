@@ -228,10 +228,11 @@ export class GroupRelationalRepository extends GroupRepository {
 
   async findActiveMentorAssignmentsByUserIdCrossTenant(
     userId: string,
+    kindergartenId?: string,
   ): Promise<GroupMentor[]> {
     return this.dataSource.transaction(async (manager) => {
       await manager.query(`SET LOCAL app.bypass_rls = 'true'`);
-      const rows = await manager
+      const qb = manager
         .getRepository(GroupMentorEntity)
         .createQueryBuilder('m')
         .innerJoin(
@@ -240,9 +241,14 @@ export class GroupRelationalRepository extends GroupRepository {
           's.id = m.staff_member_id AND s.user_id = :uid',
           { uid: userId },
         )
-        .where('m.unassigned_at IS NULL')
-        .orderBy('m.assigned_at', 'ASC')
-        .getMany();
+        .where('m.unassigned_at IS NULL');
+      // WS auto-subscribe passes the JWT's kindergarten_id so a user
+      // who staffs multiple kgs only joins group:* rooms for the kg
+      // their current handshake is scoped to.
+      if (kindergartenId) {
+        qb.andWhere('m.kindergarten_id = :kg', { kg: kindergartenId });
+      }
+      const rows = await qb.orderBy('m.assigned_at', 'ASC').getMany();
       return rows.map((r) => GroupMentorMapper.toDomain(r));
     });
   }

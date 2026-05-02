@@ -105,8 +105,17 @@ export abstract class ChildGuardianRepository {
    * `child:{cid}` rooms a freshly-connected socket should join, regardless
    * of how many kindergartens that user has children in. Bypasses RLS via
    * `app.bypass_rls=true` inside its own transaction.
+   *
+   * When `kindergartenId` is provided, the result is filtered to that
+   * single kg — used by the WS auto-subscribe handler to scope rooms to
+   * the JWT's `kindergarten_id` claim (a parent who is also a guardian
+   * in another kg must NOT receive that other kg's child events while
+   * connected with a kgA-scoped JWT). The bypass is still required
+   * because the runtime app role is NOBYPASSRLS and the GUC is not set
+   * outside the HTTP pipeline (the WS handshake runs without it).
    */
   abstract findApprovedActiveByUserIdCrossTenant(
     userId: string,
+    kindergartenId?: string,
   ): Promise<ChildGuardian[]>;
 }
