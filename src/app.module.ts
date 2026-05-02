@@ -27,6 +27,7 @@ import { IdentityQrModule } from './modules/identity-qr/identity-qr.module';
 import { KindergartenModule } from './modules/kindergarten/kindergarten.module';
 import { LocationModule } from './modules/location/location.module';
 import { NotificationModule } from './modules/notification/notification.module';
+import { PickupModule } from './modules/pickup/pickup.module';
 import { ScheduleModule } from './modules/schedule/schedule.module';
 import { ScheduleRolloutModule } from './modules/schedule-rollout/schedule-rollout.module';
 import { StaffModule } from './modules/staff/staff.module';
@@ -103,6 +104,7 @@ const resolveI18nPath = (): string => {
     ScheduleModule,
     ScheduleRolloutModule,
     AttendanceModule,
+    PickupModule,
   ],
   providers: [
     // The interceptor establishes a tenant-scoped TypeORM transaction (with
