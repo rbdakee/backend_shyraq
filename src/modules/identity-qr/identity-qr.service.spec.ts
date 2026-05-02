@@ -8,7 +8,6 @@
  */
 import { UnauthorizedException } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
-import { DataSource } from 'typeorm';
 import { Child } from '@/modules/child/domain/entities/child.entity';
 import { ChildGuardian } from '@/modules/child/domain/entities/child-guardian.entity';
 import { ChildGuardianRepository } from '@/modules/child/infrastructure/persistence/child-guardian.repository';
@@ -84,17 +83,6 @@ class FixedClock extends ClockPort {
   }
   set(d: Date): void {
     this.fixed = d;
-  }
-}
-
-// ── Fake DataSource — service uses .transaction() only ───────────────────
-
-class FakeDataSource {
-  transaction<T>(work: (m: unknown) => Promise<T>): Promise<T> {
-    // The fake repos do not consult the EntityManager — they store rows in
-    // memory directly. We just invoke the work function so the service's
-    // revoke + insert pair runs in order.
-    return work({});
   }
 }
 
@@ -519,14 +507,12 @@ function buildSut(): Sut {
   const children = new FakeChildRepo();
   const staff = new FakeStaffRepo();
   const users = new FakeUserRepo();
-  const ds = new FakeDataSource() as unknown as DataSource;
 
   const service = new IdentityQrService(
     qrRepo,
     cache,
     rateLimiter,
     clock,
-    ds,
     refresh,
     guardians,
     children,

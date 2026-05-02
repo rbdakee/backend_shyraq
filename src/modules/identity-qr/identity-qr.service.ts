@@ -4,9 +4,8 @@ import {
   Logger,
   UnauthorizedException,
 } from '@nestjs/common';
-import { InjectDataSource } from '@nestjs/typeorm';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { DataSource } from 'typeorm';
+import { tenantStorage } from '@/database/tenant-storage';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { Child } from '@/modules/child/domain/entities/child.entity';
 import { ChildGuardian } from '@/modules/child/domain/entities/child-guardian.entity';
@@ -85,7 +84,6 @@ export class IdentityQrService {
     private readonly cache: QrTokenCachePort,
     private readonly rateLimiter: QrScanRateLimiterPort,
     @Inject(ClockPort) private readonly clock: ClockPort,
-    @InjectDataSource() private readonly dataSource: DataSource,
     private readonly refreshTokenRepo: RefreshTokenRepository,
     private readonly childGuardianRepo: ChildGuardianRepository,
     private readonly childRepo: ChildRepository,
@@ -118,24 +116,36 @@ export class IdentityQrService {
     const plaintext = randomBytes(TOKEN_BYTES).toString('hex');
     const tokenHash = sha256Hex(plaintext);
 
-    // Inside `dataSource.transaction` so that the revoke + insert pair is
-    // atomic. The repos pull the EntityManager from `tenantStorage` only when
-    // available (e.g. when an outer interceptor already opened a TX); here we
-    // open our own and the helpers fall back to `repo.manager` — that's still
-    // fine because user_qr_tokens has no RLS.
-    await this.dataSource.transaction(async () => {
-      await this.qrRepo.revokeAllByUser(userId, 'identity', now);
-      const token = QrToken.create({
-        id: randomUUID(),
-        userId,
-        kindergartenId: null,
-        purpose: 'identity',
-        tokenHash,
-        issuedAt,
-        expiresAt,
-      });
-      await this.qrRepo.create(token);
+    // Atomicity provided by TenantContextInterceptor's ambient TX. The
+    // interceptor opens a transaction around every controller invocation and
+    // pushes its EntityManager into `tenantStorage`; the QR repo's manager()
+    // helper picks it up so revoke + insert run in the same TX. No inner
+    // dataSource.transaction(...) wrapper is needed.
+    //
+    // pg_advisory_xact_lock serializes concurrent issueOrRefresh calls for
+    // the same user. Without it, two simultaneous GETs both observe "no
+    // active row", both issue revoke-all (no-op), then race on INSERT — the
+    // partial unique idx (user_id, purpose) WHERE revoked_at IS NULL rejects
+    // the second with PG 23505 → 500. With the xact-lock, the second call
+    // blocks until the first commits, then re-runs cleanly: it revokes the
+    // row the first just inserted and inserts its own.
+    //
+    // The lock key derives from the user id via PG hashtext(); the
+    // 'qr:identity:' prefix scopes it so we never collide with other
+    // advisory-lock users in the same backend.
+    await this.acquireUserAdvisoryLock(userId);
+
+    await this.qrRepo.revokeAllByUser(userId, 'identity', now);
+    const token = QrToken.create({
+      id: randomUUID(),
+      userId,
+      kindergartenId: null,
+      purpose: 'identity',
+      tokenHash,
+      issuedAt,
+      expiresAt,
     });
+    await this.qrRepo.create(token);
 
     // Cache write outside the DB transaction — Redis has no TX semantics
     // anyway, so a redis failure here would not roll back the row. Worst
@@ -146,6 +156,29 @@ export class IdentityQrService {
     await this.cache.setToken(plaintext, userId, TTL_SECONDS);
 
     return { token: plaintext, issuedAt, expiresAt };
+  }
+
+  /**
+   * pg_advisory_xact_lock keyed on `qr:identity:<userId>` — released
+   * automatically at TX end. Inlined here (not on the QR repo port) because
+   * advisory locks are a postgres-specific concurrency primitive that
+   * doesn't naturally belong in a domain-shaped persistence port; future
+   * adapters (SQLite for tests, etc.) would need a different mechanism. The
+   * call goes through `tenantStorage.getStore()?.entityManager` so it
+   * participates in the ambient TX from TenantContextInterceptor.
+   */
+  private async acquireUserAdvisoryLock(userId: string): Promise<void> {
+    const ctx = tenantStorage.getStore();
+    if (!ctx?.entityManager) {
+      // No ambient TX (e.g. CLI / test harness with no interceptor). The
+      // race scenario the lock guards against is HTTP-only, so just skip;
+      // the integration spec exercises the HTTP path explicitly.
+      return;
+    }
+    await ctx.entityManager.query(
+      `SELECT pg_advisory_xact_lock(hashtext('qr:identity:' || $1)::bigint)`,
+      [userId],
+    );
   }
 
   // ── scan ────────────────────────────────────────────────────────────────
