@@ -253,6 +253,28 @@ function makeApprovedGuardian(userId: string): ChildGuardian {
   });
 }
 
+function makeRevokedGuardian(userId: string): ChildGuardian {
+  return ChildGuardian.hydrate({
+    id: `g-revoked-${userId}`,
+    kindergartenId: KG,
+    childId: CHILD,
+    userId,
+    role: 'primary',
+    status: 'approved',
+    hasApprovalRights: true,
+    approvedBy: userId,
+    approvedAt: NOW,
+    revokedBy: userId,
+    revokedAt: NOW,
+    canPickup: true,
+    permissions: {},
+    permissionsUpdatedBy: null,
+    permissionsUpdatedAt: null,
+    createdAt: NOW,
+    updatedAt: NOW,
+  });
+}
+
 function makePendingGuardian(userId: string): ChildGuardian {
   return ChildGuardian.hydrate({
     id: `g-pending-${userId}`,
@@ -387,15 +409,6 @@ describe('TrustedPersonService — service-unit', () => {
   });
 
   describe('update', () => {
-    it('returns the patched row when the caller is the original adder', async () => {
-      const w = wire();
-      w.trustedPeople.put(makeTrustedPerson(PARENT_USER));
-      const updated = await w.service.update(KG, TP_ID, PARENT_USER, {
-        fullName: 'Aunt Renamed',
-      });
-      expect(updated.fullName).toBe('Aunt Renamed');
-    });
-
     it('returns the patched row when the caller is an approved-active guardian on the same child', async () => {
       const w = wire();
       w.trustedPeople.put(makeTrustedPerson(OTHER_USER));
@@ -404,6 +417,25 @@ describe('TrustedPersonService — service-unit', () => {
         relation: 'driver',
       });
       expect(updated.relation).toBe('driver');
+    });
+
+    it('returns the patched row when caller is original adder AND still an active guardian', async () => {
+      const w = wire();
+      w.trustedPeople.put(makeTrustedPerson(PARENT_USER));
+      w.guardians.put(makeApprovedGuardian(PARENT_USER));
+      const updated = await w.service.update(KG, TP_ID, PARENT_USER, {
+        fullName: 'Aunt Renamed',
+      });
+      expect(updated.fullName).toBe('Aunt Renamed');
+    });
+
+    it('throws ForbiddenActionError when original adder is no longer a guardian (T7 M5 fix — addedByUserId no longer authorizes)', async () => {
+      const w = wire();
+      // PARENT_USER added the row but is NOT currently a guardian.
+      w.trustedPeople.put(makeTrustedPerson(PARENT_USER));
+      await expect(
+        w.service.update(KG, TP_ID, PARENT_USER, { fullName: 'X' }),
+      ).rejects.toBeInstanceOf(ForbiddenActionError);
     });
 
     it('throws ForbiddenActionError when the caller has no relationship', async () => {
@@ -423,12 +455,25 @@ describe('TrustedPersonService — service-unit', () => {
   });
 
   describe('revoke', () => {
-    it('returns the revoked row when the caller is the original adder', async () => {
+    it('returns the revoked row when caller is original adder AND still an active guardian', async () => {
       const w = wire();
       w.trustedPeople.put(makeTrustedPerson(PARENT_USER));
+      w.guardians.put(makeApprovedGuardian(PARENT_USER));
       const revoked = await w.service.revoke(KG, TP_ID, PARENT_USER);
       expect(revoked.isRevoked()).toBe(true);
       expect(revoked.isActive).toBe(false);
+    });
+
+    it('throws ForbiddenActionError when an ex-guardian (revoked link) tries to revoke a row they originally added (T7 M5 fix)', async () => {
+      const w = wire();
+      w.trustedPeople.put(makeTrustedPerson(PARENT_USER));
+      // Guardian link exists but is revoked → assertCallerCanManage must
+      // reject. Without the M5 fix the addedByUserId short-circuit would
+      // still let this call succeed.
+      w.guardians.put(makeRevokedGuardian(PARENT_USER));
+      await expect(
+        w.service.revoke(KG, TP_ID, PARENT_USER),
+      ).rejects.toBeInstanceOf(ForbiddenActionError);
     });
 
     it('throws TrustedPersonNotFoundError when the row is in a different kg', async () => {

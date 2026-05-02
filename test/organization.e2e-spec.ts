@@ -113,10 +113,10 @@ describe('P4 organization endpoints (e2e)', () => {
   // ── staff ───────────────────────────────────────────────────────────────
 
   describe('staff CRUD', () => {
-    it('POST /staff creates a staff member', async () => {
+    it('POST /admin/staff creates a staff member', async () => {
       const a = await createKgWithAdmin('org-staff-1', '+77011114001');
       const res = await request(server)
-        .post('/api/v1/staff')
+        .post('/api/v1/admin/staff')
         .set('Authorization', `Bearer ${a.adminToken}`)
         .send({
           full_name: 'Jane Mentor',
@@ -128,20 +128,20 @@ describe('P4 organization endpoints (e2e)', () => {
       expect(res.body.full_name).toBe('Jane Mentor');
     });
 
-    it('GET /staff includes the seeded admin', async () => {
+    it('GET /admin/staff includes the seeded admin', async () => {
       const a = await createKgWithAdmin('org-staff-2', '+77011114002');
       const res = await request(server)
-        .get('/api/v1/staff')
+        .get('/api/v1/admin/staff')
         .set('Authorization', `Bearer ${a.adminToken}`)
         .expect(200);
       expect(Array.isArray(res.body)).toBe(true);
       expect(res.body.length).toBeGreaterThanOrEqual(1);
     });
 
-    it('PATCH /staff/:id renames', async () => {
+    it('PATCH /admin/staff/:id renames', async () => {
       const a = await createKgWithAdmin('org-staff-3', '+77011114003');
       const create = await request(server)
-        .post('/api/v1/staff')
+        .post('/api/v1/admin/staff')
         .set('Authorization', `Bearer ${a.adminToken}`)
         .send({
           full_name: 'Bob Reception',
@@ -151,7 +151,7 @@ describe('P4 organization endpoints (e2e)', () => {
         .expect(201);
       const id = create.body.id as string;
       const res = await request(server)
-        .patch(`/api/v1/staff/${id}`)
+        .patch(`/api/v1/admin/staff/${id}`)
         .set('Authorization', `Bearer ${a.adminToken}`)
         .send({ full_name: 'Robert' })
         .expect(200);
@@ -161,7 +161,7 @@ describe('P4 organization endpoints (e2e)', () => {
     it('archive + restore is idempotent', async () => {
       const a = await createKgWithAdmin('org-staff-4', '+77011114004');
       const create = await request(server)
-        .post('/api/v1/staff')
+        .post('/api/v1/admin/staff')
         .set('Authorization', `Bearer ${a.adminToken}`)
         .send({
           full_name: 'X',
@@ -171,15 +171,15 @@ describe('P4 organization endpoints (e2e)', () => {
         .expect(201);
       const id = create.body.id as string;
       await request(server)
-        .post(`/api/v1/staff/${id}/archive`)
+        .post(`/api/v1/admin/staff/${id}/archive`)
         .set('Authorization', `Bearer ${a.adminToken}`)
         .expect(200);
       await request(server)
-        .post(`/api/v1/staff/${id}/archive`)
+        .post(`/api/v1/admin/staff/${id}/archive`)
         .set('Authorization', `Bearer ${a.adminToken}`)
         .expect(200);
       const restored = await request(server)
-        .post(`/api/v1/staff/${id}/restore`)
+        .post(`/api/v1/admin/staff/${id}/restore`)
         .set('Authorization', `Bearer ${a.adminToken}`)
         .expect(200);
       expect(restored.body.archived_at).toBeNull();
@@ -234,7 +234,7 @@ describe('P4 organization endpoints (e2e)', () => {
 
       // Need at least two staff members to test reassignment.
       const s1 = await request(server)
-        .post('/api/v1/staff')
+        .post('/api/v1/admin/staff')
         .set('Authorization', `Bearer ${a.adminToken}`)
         .send({
           full_name: 'Mentor One',
@@ -243,7 +243,7 @@ describe('P4 organization endpoints (e2e)', () => {
         })
         .expect(201);
       const s2 = await request(server)
-        .post('/api/v1/staff')
+        .post('/api/v1/admin/staff')
         .set('Authorization', `Bearer ${a.adminToken}`)
         .send({
           full_name: 'Mentor Two',

@@ -30,6 +30,18 @@ export type PickupRequestPatch = Partial<{
 }>;
 
 /**
+ * Optional guard for `update`. When `expectedStatus` is provided the
+ * update only fires if the persisted row currently has that status; the
+ * impl reports `false` when no row matches so the caller can race-detect.
+ * Used by `cancel` to guard against a concurrent `validate` flipping the
+ * row to `validated` between the in-memory state-machine check and the
+ * physical UPDATE.
+ */
+export interface PickupRequestUpdateOpts {
+  expectedStatus?: PickupRequestStatus;
+}
+
+/**
  * Persistence port for the PickupRequest aggregate (B11). Methods exchange
  * domain objects, not TypeORM entities.
  *
@@ -75,8 +87,18 @@ export abstract class PickupRequestRepository {
    * Partial update of mutable fields. The patch is applied verbatim; the
    * service is responsible for state-machine validity (it transitions the
    * domain aggregate first, then writes the new shape via this method).
+   *
+   * When `opts.expectedStatus` is set, the impl adds it to the WHERE
+   * clause and returns `false` if no row matches (caller has lost the
+   * race vs another transition). When omitted the update is unconditional
+   * and always returns `true` (legacy behaviour). Empty patches return
+   * `true` without touching the row.
    */
-  abstract update(id: string, patch: PickupRequestPatch): Promise<void>;
+  abstract update(
+    id: string,
+    patch: PickupRequestPatch,
+    opts?: PickupRequestUpdateOpts,
+  ): Promise<boolean>;
 
   /**
    * Acquires `pg_advisory_xact_lock(hashtext('pickup:validate:'||requestId))`.

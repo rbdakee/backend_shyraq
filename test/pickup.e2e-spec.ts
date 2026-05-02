@@ -29,6 +29,9 @@
  *   I. Rate limit: 5 send-otp same phone → 6th → 429 (otp_rate_limit)
  *   J. Outbox: pickup.otp_sent + pickup.validated rows written to notification_outbox
  *   K. Ad-hoc (no trusted_person_id): pass name+phone directly, happy path
+ *   L. GET /staff/pickup-requests reachable (regression test for B11 T6 C1
+ *      — admin StaffController used to mount at `/staff` and shadow the
+ *      pickup list endpoint via `@Get(':id')`)
  */
 import type { Server } from 'node:http';
 import { randomUUID } from 'node:crypto';
@@ -722,5 +725,46 @@ describe('B11 Pickup OTP (e2e)', () => {
 
     expect(validateRes.body.pickup_request.status).toBe('validated');
     expect(validateRes.body.pickup_request.trusted_person_id).toBeNull();
+  });
+
+  // ── L. List endpoint reachable + populates correctly ─────────────────────
+
+  it('returns the pickup-requests list (closes B11 T6 C1 — route shadow with /staff admin controller, Scenario L)', async () => {
+    const a = await createKgWithAdmin('pu-l', '+77011000121');
+    const childId = await createChild(a.adminToken, {
+      full_name: 'Child L',
+      date_of_birth: '2020-01-01',
+    });
+
+    // Empty list — must return 200 [], NOT 404 / 400 from the admin
+    // StaffController @Get(':id') route shadow that used to claim
+    // `/staff/pickup-requests` before the prefix move to admin/staff.
+    const empty = await request(server)
+      .get('/api/v1/staff/pickup-requests')
+      .set('Authorization', `Bearer ${a.staffToken}`)
+      .expect(200);
+    expect(Array.isArray(empty.body)).toBe(true);
+    expect(empty.body).toHaveLength(0);
+
+    // Seed a request and re-list.
+    const createRes = await request(server)
+      .post('/api/v1/staff/pickup-requests')
+      .set('Authorization', `Bearer ${a.staffToken}`)
+      .send({
+        childId,
+        trustedPersonName: 'List Test',
+        trustedPersonPhone: '+77011110002',
+      })
+      .expect(201);
+    const requestId = createRes.body.id as string;
+
+    const populated = await request(server)
+      .get('/api/v1/staff/pickup-requests')
+      .set('Authorization', `Bearer ${a.staffToken}`)
+      .expect(200);
+    expect(Array.isArray(populated.body)).toBe(true);
+    expect(populated.body).toHaveLength(1);
+    expect(populated.body[0].id).toBe(requestId);
+    expect(populated.body[0].status).toBe('otp_sent');
   });
 });

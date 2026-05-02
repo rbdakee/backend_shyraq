@@ -7,14 +7,27 @@ import {
 } from './pickup-otp-cache.namespace';
 import { PickupOtpStorePort, StoredPickupOtp } from './pickup-otp-store.port';
 
+const ATTEMPTS_TTL_SEC = 30 * 60;
+
 /**
  * Redis-backed adapter for `PickupOtpStorePort`. Mirrors the
  * `RedisOtpStoreAdapter` shape but operates in the `otp:pickup:*`
  * namespace and keys by `pickup_request.id` rather than phone.
  *
- * The code entry stores `{ code, attempts }` as a hash to keep the existing
- * pattern; failed-attempt increments use the same hash so the counter
- * outlives the code on partial reads.
+ * Two keys per request id:
+ *   - `otp:pickup:{requestId}`         — the code (string), TTL = pickup
+ *                                        expires_at - now (~30 min).
+ *   - `otp:pickup:attempts:{requestId}`— failed-attempt counter, TTL
+ *                                        equal to the lock TTL so
+ *                                        attempts outlive the code on
+ *                                        TTL eviction (T7 fix M6).
+ *
+ * The previous shape stored `{ code, attempts }` together as a hash,
+ * which reset the attempts counter every time the code TTL expired —
+ * an attacker could throttle just below the lock threshold, wait for
+ * Redis to evict the hash, and then start over with a fresh 3-strike
+ * budget on the same request id. Splitting the keys gives `attempts`
+ * its own lifecycle.
  */
 @Injectable()
 export class RedisPickupOtpStoreAdapter extends PickupOtpStorePort {
@@ -28,19 +41,20 @@ export class RedisPickupOtpStoreAdapter extends PickupOtpStorePort {
     ttlSec: number,
   ): Promise<string> {
     const key = pickupOtpRedisKey(requestId);
-    await this.redis.del(key);
-    await this.redis.hset(key, { code, attempts: '0' });
-    await this.redis.expire(key, ttlSec);
-    // Reset the standalone attempts counter too so a resend gives the
+    // Pure string entry now (was hash with attempts inline). Plain SET
+    // is atomic w/ EX so we don't need a separate EXPIRE round-trip.
+    await this.redis.set(key, code, 'EX', ttlSec);
+    // Reset the standalone attempts counter so a resend gives the
     // trusted person a fresh 3-strike budget.
     await this.redis.del(pickupOtpAttemptsRedisKey(requestId));
     return key;
   }
 
   async readCode(requestId: string): Promise<StoredPickupOtp | null> {
-    const raw = await this.redis.hgetall(pickupOtpRedisKey(requestId));
-    if (!raw || !raw.code) return null;
-    return { code: raw.code, attempts: Number(raw.attempts ?? '0') };
+    const code = await this.redis.get(pickupOtpRedisKey(requestId));
+    if (!code) return null;
+    const attempts = await this.getFailedAttempts(requestId);
+    return { code, attempts };
   }
 
   async clearCode(requestId: string): Promise<void> {
@@ -48,7 +62,14 @@ export class RedisPickupOtpStoreAdapter extends PickupOtpStorePort {
   }
 
   async incrementAttempts(requestId: string): Promise<number> {
-    return this.redis.hincrby(pickupOtpRedisKey(requestId), 'attempts', 1);
+    const key = pickupOtpAttemptsRedisKey(requestId);
+    const n = await this.redis.incr(key);
+    // First write seeds the TTL — INCR alone leaves the key persistent
+    // which would brick the lock-budget for that request id forever.
+    if (n === 1) {
+      await this.redis.expire(key, ATTEMPTS_TTL_SEC);
+    }
+    return n;
   }
 
   async lockRequest(requestId: string, lockTtlSec: number): Promise<void> {
@@ -63,5 +84,10 @@ export class RedisPickupOtpStoreAdapter extends PickupOtpStorePort {
   async isLocked(requestId: string): Promise<boolean> {
     const v = await this.redis.exists(pickupOtpLockRedisKey(requestId));
     return v === 1;
+  }
+
+  private async getFailedAttempts(requestId: string): Promise<number> {
+    const raw = await this.redis.get(pickupOtpAttemptsRedisKey(requestId));
+    return raw ? Number(raw) : 0;
   }
 }

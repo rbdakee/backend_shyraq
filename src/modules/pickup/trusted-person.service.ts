@@ -42,12 +42,16 @@ export type UpdateTrustedPersonInput = Partial<{
  *     child. `can_pickup` is NOT required to manage the whitelist —
  *     a parent without pickup-rights can still curate trusted people
  *     for the primary guardian.
- *   - update / revoke: caller must be the user that originally added
- *     the row OR an approved-active guardian on the same child.
- *     (Primary guardians effectively manage every trusted person under
- *     their child.) `findActiveByChildAndUser` is used for the
- *     existence-of-link check; the actual "is this caller approved"
- *     status check is done in TS to keep the SQL trivial.
+ *   - update / revoke: caller must currently be an approved-active
+ *     guardian on the same child. T7 fix M5: previously a caller was
+ *     also allowed to manage the row if their userId matched the
+ *     historical `added_by_user_id` column, even after their guardian
+ *     link had been revoked. That let an ex-guardian (e.g. revoked
+ *     parent post-divorce) keep mutating / revoking trusted_people they
+ *     had once added. Authorization is now strictly tied to a current
+ *     guardian-link, which is the right invariant — the child's
+ *     guardian-of-record is who can curate the whitelist, not whoever
+ *     happened to add a row historically.
  */
 @Injectable()
 export class TrustedPersonService {
@@ -180,16 +184,15 @@ export class TrustedPersonService {
   }
 
   /**
-   * Caller is allowed to manage the trusted_person row when they either
-   * added it OR have an approved-active guardian link on the same child.
+   * Caller is allowed to manage the trusted_person row only when they
+   * currently have an approved-active guardian link on the same child.
+   * The historical `added_by_user_id` is NOT used for authorization (see
+   * class-level docstring — T7 fix M5).
    */
   private async assertCallerCanManage(
     tp: TrustedPerson,
     parentUserId: string,
   ): Promise<void> {
-    if (tp.addedByUserId === parentUserId) {
-      return;
-    }
     await this.assertParentGuardianLink(
       tp.kindergartenId,
       tp.childId,

@@ -1,8 +1,6 @@
 import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { InjectDataSource } from '@nestjs/typeorm';
 import { randomInt } from 'node:crypto';
-import { DataSource } from 'typeorm';
 import { AllConfigType } from '@/config/config.type';
 import { NotificationPort } from '@/common/notifications/notification.port';
 import { OtpExpiredError } from '@/modules/auth/domain/errors/otp-expired.error';
@@ -75,11 +73,16 @@ export interface ValidateOtpResult {
  * on auth's per-phone window so abusing pickup OTP can't earn extra login
  * budget for free.
  *
- * Validate flow runs inside a TX with `pg_advisory_xact_lock` keyed on the
- * request id so a network retry / two staff devices cannot both flip the
- * status and produce two attendance_events. The interceptor's ambient TX
- * is sufficient at the HTTP layer; here we open a fresh TX explicitly so
- * the lock + read + write + checkout side-effect commit atomically.
+ * Validate + cancel both grab `pg_advisory_xact_lock` keyed on the request
+ * id so a network retry, two staff devices, OR a concurrent
+ * cancel-vs-validate cannot both transition the status and either produce
+ * two attendance_events or roll back a successful validate to cancelled.
+ * The HTTP-layer ambient TX (set up by `TenantContextInterceptor`) carries
+ * both the GUC for RLS and the advisory lock; we deliberately do NOT open
+ * an inner `dataSource.transaction(...)` here — that wasted a pool
+ * connection AND let the inner TX's lock release at the inner COMMIT
+ * before the surrounding side-effects had committed. T7 collapsed the
+ * inner TX so the lock now lives on the ambient TX for its full lifetime.
  */
 @Injectable()
 export class PickupRequestService {
@@ -99,7 +102,6 @@ export class PickupRequestService {
     @Inject(forwardRef(() => AttendanceService))
     private readonly attendance: AttendanceService,
     @Inject(ClockPort) private readonly clock: ClockPort,
-    @InjectDataSource() private readonly dataSource: DataSource,
     private readonly configService: ConfigService<AllConfigType>,
   ) {}
 
@@ -202,6 +204,15 @@ export class PickupRequestService {
       );
     }
 
+    // Order matters: per-request lock check FIRST (free, in-memory Redis
+    // GET), then per-phone rate-limit (consumes a slot in the shared auth
+    // budget). T7 fix M4: the previous order let a locked request burn
+    // rate-limit slots that legitimate auth-login flows on the same phone
+    // would later need, opening a cross-flow griefing vector.
+    if (await this.otpStore.isLocked(requestId)) {
+      throw new OtpLockedError();
+    }
+
     // Per-phone rate-limit shared with auth login (one phone = one budget).
     const limit = this.configService.getOrThrow(
       'auth.rateLimitOtpRequestLimit',
@@ -220,12 +231,6 @@ export class PickupRequestService {
       throw new OtpRateLimitedError();
     }
 
-    // Per-request lock (after N failed validates) — guards send-otp too so
-    // a locked request can't refresh the code to bypass the wall.
-    if (await this.otpStore.isLocked(requestId)) {
-      throw new OtpLockedError();
-    }
-
     const code = generateSixDigitCode();
     const redisKey = await this.otpStore.storeCode(
       requestId,
@@ -234,21 +239,25 @@ export class PickupRequestService {
     );
     await this.pickupRequests.update(requestId, { otpRef: redisKey });
 
-    // SMS body needs human-readable child + kg names. Best-effort lookup —
-    // a missing kg row should not block OTP delivery (we fall back to the
-    // kg-id) because at this point the request itself is real.
-    const child = await this.childRepo.findById(kindergartenId, pr.childId);
-    if (!child) {
-      // The pickup_request row predates the child being archived. Surface
-      // as 404 — staff can't usefully proceed.
-      throw new ChildNotFoundError(pr.childId);
-    }
-    const kg = await this.kindergartenRepo.findById(kindergartenId);
+    // SMS body needs human-readable child + kg names. Both lookups are
+    // best-effort — a missing row should not block OTP delivery because
+    // at this point the request itself is real and the trusted person is
+    // already on their way. T7 fix M2: child lookup is now best-effort
+    // too (was throwing 404 silently for a window where the pickup
+    // request row outlived a just-archived child) — symmetry with the
+    // kindergarten lookup below.
+    const child = await this.childRepo
+      .findById(kindergartenId, pr.childId)
+      .catch(() => null);
+    const childName = child?.fullName ?? 'ребёнок';
+    const kg = await this.kindergartenRepo
+      .findById(kindergartenId)
+      .catch(() => null);
     const kgName = kg?.name ?? 'детский сад';
 
     await this.sms.send(
       pr.trustedPersonPhone,
-      pickupOtpTemplate(code, child.fullName, kgName),
+      pickupOtpTemplate(code, childName, kgName),
     );
 
     await this.notifications.notifyPickupOtpSent({
@@ -270,125 +279,139 @@ export class PickupRequestService {
     code: string,
     callerUserId: string,
   ): Promise<ValidateOtpResult> {
-    // Pre-resolve caller staff outside the inner TX so a missing staff
-    // surface as 404 rather than holding the lock for nothing.
+    // Pre-resolve caller staff before grabbing the advisory lock so a
+    // missing staff surfaces as 404 without holding the lock for nothing.
     const staff = await this.staffRepo.findActiveByUserAndKindergarten(
       callerUserId,
       kindergartenId,
     );
     if (!staff) throw new StaffNotFoundError(callerUserId);
 
-    return await this.dataSource.transaction(async (manager) => {
-      // Switch the ambient EntityManager so repos that read from
-      // tenantStorage pick this TX up. We don't have to set
-      // `app.kindergarten_id` again because the outer interceptor already
-      // did — but TypeORM transactions inherit GUCs from the parent
-      // session anyway.
-      void manager;
+    // Everything below runs on the ambient HTTP TX (set up by
+    // `TenantContextInterceptor`). The advisory lock therefore lives on
+    // the same TX as the side-effect writes — released only at the
+    // controller-level COMMIT/ROLLBACK. T7 fix H2: previously this body
+    // opened an inner `dataSource.transaction(...)` which (a) consumed an
+    // extra pool connection per validate, (b) released the lock at the
+    // inner COMMIT before the outer notifications/log lines ran, and
+    // (c) confused readers about which TX state the GUC for RLS was set
+    // on. Now: lock + read-for-update + side-effects all share the
+    // ambient TX.
+    await this.pickupRequests.acquireValidateAdvisoryLock(requestId);
 
-      await this.pickupRequests.acquireValidateAdvisoryLock(requestId);
+    const pr = await this.pickupRequests.findByIdForUpdate(requestId);
+    if (!pr || pr.kindergartenId !== kindergartenId) {
+      throw new PickupRequestNotFoundError(requestId);
+    }
 
-      const pr = await this.pickupRequests.findByIdForUpdate(requestId);
-      if (!pr || pr.kindergartenId !== kindergartenId) {
-        throw new PickupRequestNotFoundError(requestId);
-      }
+    const now = this.clock.now();
+    // Pre-check the state-machine guards explicitly so the OTP store I/O
+    // below isn't wasted on a doomed request. The domain `validate(...)`
+    // call at the end re-enforces these before stamping.
+    if (pr.status === 'validated') {
+      throw new PickupRequestAlreadyValidatedError();
+    }
+    if (pr.status !== 'otp_sent') {
+      throw new PickupRequestStatusInvalidError(
+        pr.status,
+        'otp_sent',
+        'validate',
+      );
+    }
+    if (pr.isExpired(now)) {
+      throw new PickupRequestExpiredError();
+    }
 
-      const now = this.clock.now();
-      // Pre-check the state-machine guards explicitly so the OTP store I/O
-      // below isn't wasted on a doomed request. The domain `validate(...)`
-      // call at the end re-enforces these before stamping.
-      if (pr.status === 'validated') {
-        throw new PickupRequestAlreadyValidatedError();
-      }
-      if (pr.status !== 'otp_sent') {
-        throw new PickupRequestStatusInvalidError(
-          pr.status,
-          'otp_sent',
-          'validate',
-        );
-      }
-      if (pr.isExpired(now)) {
-        throw new PickupRequestExpiredError();
-      }
+    if (await this.otpStore.isLocked(requestId)) {
+      throw new OtpLockedError();
+    }
 
-      if (await this.otpStore.isLocked(requestId)) {
+    const stored = await this.otpStore.readCode(requestId);
+    if (!stored) {
+      throw new OtpExpiredError();
+    }
+
+    if (stored.code !== code) {
+      const attempts = await this.otpStore.incrementAttempts(requestId);
+      if (attempts >= PICKUP_OTP_MAX_FAILED_ATTEMPTS) {
+        await this.otpStore.lockRequest(requestId, PICKUP_OTP_LOCK_TTL_SEC);
+        await this.otpStore.clearCode(requestId);
         throw new OtpLockedError();
       }
+      throw new OtpInvalidError();
+    }
 
-      const stored = await this.otpStore.readCode(requestId);
-      if (!stored) {
-        throw new OtpExpiredError();
-      }
+    // Code accepted. T7 fix M3: DB writes BEFORE Redis clearCode. If the
+    // attendance check-out throws (FK violation, attendance-rule
+    // violation, …) the ambient TX rolls back AND the OTP code is still
+    // in Redis — staff/network can retry validate without the trusted
+    // person re-dictating a fresh code. Replay protection on success now
+    // relies on the `pr.status === 'validated'` guard above (terminal
+    // state ⇒ `PickupRequestAlreadyValidatedError` on retry).
+    //
+    // Order:
+    //   1. attendance.checkOut       — may throw; advisory lock still held
+    //   2. pickupRequests.update     — flip status to validated
+    //   3. trustedPeople.markUsed    — stamp used_at + deactivate one-time
+    //   4. otpStore.clearCode        — Redis cleanup (post-DB)
+    //   5. notifications.notifyPickupValidated — outbox row, atomic
+    //
+    // 1) Side-effect: attendance check-out under the OTP-pickup branch.
+    //    AttendanceService accepts pickupUserId=null + pickupRequestId so
+    //    it skips the pickup-guardian assertion (already gated by us).
+    const checkout = await this.attendance.checkOut(
+      kindergartenId,
+      pr.childId,
+      callerUserId,
+      null,
+      {
+        method: AttendanceMethod.OTP_PICKUP,
+        pickupRequestId: requestId,
+        recordedAt: now,
+      },
+    );
 
-      if (stored.code !== code) {
-        const attempts = await this.otpStore.incrementAttempts(requestId);
-        if (attempts >= PICKUP_OTP_MAX_FAILED_ATTEMPTS) {
-          await this.otpStore.lockRequest(requestId, PICKUP_OTP_LOCK_TTL_SEC);
-          await this.otpStore.clearCode(requestId);
-          throw new OtpLockedError();
-        }
-        throw new OtpInvalidError();
-      }
-
-      // Code accepted — clear before the side-effect so a partial failure
-      // can't replay the same code. The TX rolls back state-machine flip,
-      // but Redis isn't transactional; clearing here keeps "successful
-      // validate" idempotent at the network layer.
-      await this.otpStore.clearCode(requestId);
-
-      // 1) Side-effect: attendance check-out under the OTP-pickup branch.
-      //    AttendanceService accepts pickupUserId=null + pickupRequestId so
-      //    it skips the pickup-guardian assertion (already gated by us).
-      const checkout = await this.attendance.checkOut(
-        kindergartenId,
-        pr.childId,
-        callerUserId,
-        null,
-        {
-          method: AttendanceMethod.OTP_PICKUP,
-          pickupRequestId: requestId,
-          recordedAt: now,
-        },
-      );
-
-      // 2) Flip the pickup_request state-machine.
-      const validated = pr.validate(staff.id, checkout.event.id, now);
-      await this.pickupRequests.update(requestId, {
-        status: validated.status,
-        validatedBy: validated.validatedBy,
-        validatedAt: validated.validatedAt,
-        attendanceEventId: validated.attendanceEventId,
-      });
-
-      // 3) If the trusted person came from the whitelist, stamp `used_at`
-      //    (and deactivate when one-time).
-      if (pr.trustedPersonId) {
-        const tp = await this.trustedPeople.findById(pr.trustedPersonId);
-        if (tp) {
-          await this.trustedPeople.markUsed(tp.id, now, tp.isOneTime);
-        }
-      }
-
-      // 4) Outbox notification — atomic with the writes (same TX).
-      await this.notifications.notifyPickupValidated({
-        kindergartenId,
-        childId: pr.childId,
-        pickupRequestId: pr.id,
-        requesterUserId: pr.requestedByUserId,
-        trustedPersonName: pr.trustedPersonName,
-        attendanceEventId: checkout.event.id,
-        validatedAt: now,
-      });
-
-      this.logger.log(
-        `pickup.validated request=${requestId} kg=${kindergartenId} child=${pr.childId} attendance=${checkout.event.id}`,
-      );
-
-      return {
-        pickupRequest: validated,
-        attendanceEventId: checkout.event.id,
-      };
+    // 2) Flip the pickup_request state-machine.
+    const validated = pr.validate(staff.id, checkout.event.id, now);
+    await this.pickupRequests.update(requestId, {
+      status: validated.status,
+      validatedBy: validated.validatedBy,
+      validatedAt: validated.validatedAt,
+      attendanceEventId: validated.attendanceEventId,
     });
+
+    // 3) If the trusted person came from the whitelist, stamp `used_at`
+    //    (and deactivate when one-time).
+    if (pr.trustedPersonId) {
+      const tp = await this.trustedPeople.findById(pr.trustedPersonId);
+      if (tp) {
+        await this.trustedPeople.markUsed(tp.id, now, tp.isOneTime);
+      }
+    }
+
+    // 4) Cleanup Redis OTP entry — post-DB so a transient checkOut
+    //    failure cannot silently consume the code.
+    await this.otpStore.clearCode(requestId);
+
+    // 5) Outbox notification — atomic with the writes (same TX).
+    await this.notifications.notifyPickupValidated({
+      kindergartenId,
+      childId: pr.childId,
+      pickupRequestId: pr.id,
+      requesterUserId: pr.requestedByUserId,
+      trustedPersonName: pr.trustedPersonName,
+      attendanceEventId: checkout.event.id,
+      validatedAt: now,
+    });
+
+    this.logger.log(
+      `pickup.validated request=${requestId} kg=${kindergartenId} child=${pr.childId} attendance=${checkout.event.id}`,
+    );
+
+    return {
+      pickupRequest: validated,
+      attendanceEventId: checkout.event.id,
+    };
   }
 
   // ── cancel ─────────────────────────────────────────────────────────────
@@ -397,16 +420,51 @@ export class PickupRequestService {
     kindergartenId: string,
     requestId: string,
   ): Promise<PickupRequest> {
-    const pr = await this.pickupRequests.findById(requestId);
+    // T7 fix H3: cancel must serialize with concurrent validateOtp on the
+    // same request id. Without the advisory lock we have a lost-update
+    // window: validate reads `otp_sent`, cancel reads `otp_sent`, both
+    // pass their state-machine guards, then validate flips to `validated`
+    // (writes attendance row), cancel flips to `cancelled` (overwriting
+    // validated). Acquiring the same `pickup:validate:{requestId}` lock
+    // here makes cancel wait behind a concurrent validate (and vice
+    // versa), so we observe the post-validate `validated` status and
+    // surface 409 `pickup_request_status_invalid` cleanly.
+    //
+    // Defense-in-depth: we ALSO pass `expectedStatus: 'otp_sent'` to the
+    // repo update so the SQL UPDATE filters `WHERE status = 'otp_sent'`
+    // — if some other path ever transitions the row out of band the
+    // 0-row-affected branch maps back to the same state-invalid error.
+    await this.pickupRequests.acquireValidateAdvisoryLock(requestId);
+
+    const pr = await this.pickupRequests.findByIdForUpdate(requestId);
     if (!pr || pr.kindergartenId !== kindergartenId) {
       throw new PickupRequestNotFoundError(requestId);
     }
     const now = this.clock.now();
     const cancelled = pr.cancel(now);
-    await this.pickupRequests.update(requestId, { status: cancelled.status });
-    if (pr.otpRef !== null) {
-      await this.otpStore.clearCode(requestId);
+    const updated = await this.pickupRequests.update(
+      requestId,
+      { status: cancelled.status },
+      { expectedStatus: 'otp_sent' },
+    );
+    if (!updated) {
+      // Some concurrent path beat us out of `otp_sent`. Read back to find
+      // the actual current status and surface the same conflict the entity
+      // guard would have produced.
+      const fresh = await this.pickupRequests.findById(requestId);
+      throw new PickupRequestStatusInvalidError(
+        fresh?.status ?? 'unknown',
+        'otp_sent',
+        'cancel',
+      );
     }
+    // T7 fix H5: clearCode unconditionally. The previous `otpRef !== null`
+    // guard was a leak vector — a request that was created but never had
+    // send-otp called still doesn't have an `otpRef`, but a later send-otp
+    // attempt could have written a key just before cancel acquired the
+    // lock (race against the in-flight send). Redis DEL is idempotent so
+    // an extra DEL on an empty key is free.
+    await this.otpStore.clearCode(requestId);
     return cancelled;
   }
 

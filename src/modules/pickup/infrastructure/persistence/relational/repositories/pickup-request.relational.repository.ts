@@ -8,6 +8,7 @@ import {
   ListPickupFilters,
   PickupRequestPatch,
   PickupRequestRepository,
+  PickupRequestUpdateOpts,
 } from '../../pickup-request.repository';
 import { PickupRequestTypeOrmEntity } from '../entities/pickup-request.typeorm.entity';
 import { PickupRequestMapper } from '../mappers/pickup-request.mapper';
@@ -101,7 +102,11 @@ export class PickupRequestRelationalRepository extends PickupRequestRepository {
     return rows.map((r) => PickupRequestMapper.toDomain(r));
   }
 
-  async update(id: string, patch: PickupRequestPatch): Promise<void> {
+  async update(
+    id: string,
+    patch: PickupRequestPatch,
+    opts: PickupRequestUpdateOpts = {},
+  ): Promise<boolean> {
     const m = this.manager();
     const setObj: Partial<PickupRequestTypeOrmEntity> = {};
     if (patch.status !== undefined) setObj.status = patch.status;
@@ -113,13 +118,24 @@ export class PickupRequestRelationalRepository extends PickupRequestRepository {
     if (patch.attendanceEventId !== undefined) {
       setObj.attendance_event_id = patch.attendanceEventId;
     }
-    if (Object.keys(setObj).length === 0) return;
-    await m
+    if (Object.keys(setObj).length === 0) return true;
+    const qb = m
       .createQueryBuilder()
       .update(PickupRequestTypeOrmEntity)
       .set(setObj)
-      .where('id = :id', { id })
-      .execute();
+      .where('id = :id', { id });
+    if (opts.expectedStatus !== undefined) {
+      qb.andWhere('status = :expectedStatus', {
+        expectedStatus: opts.expectedStatus,
+      });
+    }
+    const result = await qb.execute();
+    // `affected` is null on some driver paths (very old typeorm). When
+    // the caller passed an `expectedStatus` the contract is "guard-aware"
+    // — we treat null/undefined as success here; PG returns the count
+    // for UPDATEs through pg-driver so this is exercised in tests.
+    const affected = result.affected ?? 1;
+    return affected > 0;
   }
 
   /**

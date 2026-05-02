@@ -1,4 +1,4 @@
-﻿/**
+/**
  * B11 Pickup OTP — concurrent validateOtp race-integration spec.
  *
  * Self-skips when `INTEGRATION_DB !== '1'` so `npm test` stays green
@@ -7,28 +7,32 @@
  *   INTEGRATION_DB=1 DATABASE_USERNAME=shyraq_app DATABASE_PASSWORD=shyraq_app \
  *   npm test -- --testPathPattern pickup.race.integration
  *
- * What this guards: two concurrent `validateOtp` calls for the same
+ * What this guards: two+ concurrent `validateOtp` calls for the same
  * pickup_request (e.g. two staff members on different devices, a
  * network retry) must not both succeed — i.e. must not produce two
  * checkout attendance_events. The `pg_advisory_xact_lock` keyed on
  * `requestId` serializes access so the second concurrent call waits
  * behind the first and then observes that the OTP code has been cleared
  * (first caller consumed it via `clearCode`). The second call therefore
- * receives 422 `otp_expired_or_missing` rather than double-validating.
+ * receives `OtpExpiredError` rather than double-validating.
  *
  * The spec runs three concurrent `service.validateOtp(...)` calls
- * inside the same TenantContextInterceptor wiring the HTTP path uses,
- * and asserts:
- *   - Advisory lock serializes so at most 1 caller finds the OTP code.
- *   - At least 2 callers throw OtpExpiredError (code cleared by winner).
- *   - DB pickup_requests.status stays otp_sent because AttendanceService
- *     is null and all TXs roll back at the checkOut call.
+ * inside the same TenantContextInterceptor wiring the HTTP path uses
+ * and asserts the post-condition invariants:
+ *   - Exactly 1 caller fully validates (`pickupRequest.status='validated'`).
+ *   - 2 callers reject with `OtpExpiredError` (code cleared by winner).
+ *   - DB pickup_requests row ends up `status='validated'`.
+ *   - DB attendance_events shows exactly 1 row for that pickup_request_id.
  *
- * Note: Because AttendanceService is stubbed as null, the validateOtp TX
- * always rolls back after the advisory lock releases. This means the DB
- * pickup_request row stays in `otp_sent`. The important invariant is that
- * (a) the lock serializes the callers and (b) the second+third callers see
- * the code cleared by the first caller's in-memory fake OTP store.
+ * The previous shape of this spec stubbed StaffMemberRepository and
+ * AttendanceService as `null` which meant the first caller crashed at
+ * the staff lookup — useful for proving the lock serialised callers but
+ * not actually exercising the validate side-effect path. T7 H1 rewrite:
+ * real PG-backed StaffMemberRelationalRepository + a deterministic
+ * in-memory FakeAttendanceService that just stamps an attendance_events
+ * row and returns its id; the OtpExpired branch then comes from the
+ * shared in-memory FakePickupOtpStore (clearCode happens-before second
+ * caller's readCode).
  */
 import 'reflect-metadata';
 import { ExecutionContext } from '@nestjs/common';
@@ -37,6 +41,7 @@ import { defer, lastValueFrom } from 'rxjs';
 import { ConfigService } from '@nestjs/config';
 import { DataSource } from 'typeorm';
 import { TenantContextInterceptor } from '@/common/interceptors/tenant-context.interceptor';
+import { tenantStorage } from '@/database/tenant-storage';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { OtpStorePort, StoredOtp } from '@/modules/auth/otp-store.port';
 import { SmsPort, SmsSendResult } from '@/modules/auth/sms.port';
@@ -57,10 +62,14 @@ import {
   TimelineEntryCreatedEvent,
 } from '@/common/notifications/notification.port';
 import { OtpExpiredError } from '@/modules/auth/domain/errors/otp-expired.error';
+import { PickupRequestAlreadyValidatedError } from '@/modules/pickup/domain/errors/pickup-request-already-validated.error';
 import { ChildGuardianRepository } from '@/modules/child/infrastructure/persistence/child-guardian.repository';
 import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
 import { KindergartenRepository } from '@/modules/kindergarten/infrastructure/persistence/kindergarten.repository';
-import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
+import { StaffMemberRelationalRepository } from '@/modules/staff/infrastructure/persistence/relational/repositories/staff-member.repository';
+import { StaffMemberEntity } from '@/modules/staff/infrastructure/persistence/relational/entities/staff-member.entity';
+import { KindergartenEntity } from '@/modules/kindergarten/infrastructure/persistence/relational/entities/kindergarten.entity';
+import { UserEntity } from '@/modules/users/infrastructure/persistence/relational/entities/user.entity';
 import { AttendanceService } from '@/modules/attendance/attendance.service';
 import { PickupRequestService } from '@/modules/pickup/pickup-request.service';
 import {
@@ -208,6 +217,59 @@ class FixedClock implements ClockPort {
   }
 }
 
+/**
+ * Minimal in-memory AttendanceService stand-in. The race spec only needs
+ * `checkOut(...)` to return a stable `event.id` AND to write a row in
+ * `attendance_events` so the post-condition assertion can count it. We
+ * write the row through the supplied DataSource so it participates in
+ * the ambient TX (rolls back if the surrounding service path throws).
+ */
+class FakeAttendanceService {
+  constructor(private readonly dataSource: DataSource) {}
+
+  async checkOut(
+    kindergartenId: string,
+    childId: string,
+    callerUserId: string,
+    _pickupUserId: string | null,
+    opts: {
+      method?: { value: string };
+      pickupRequestId?: string | null;
+      recordedAt?: Date;
+    } = {},
+  ): Promise<{ event: { id: string } }> {
+    const eventId = randomUUID();
+    const now = opts.recordedAt ?? new Date();
+    // Resolve the staff_member_id for the caller (`recorded_by` FK on
+    // attendance_events). Use the ambient TX manager so we participate
+    // in the surrounding service TX — and we DON'T bypass RLS because
+    // the manager has the right GUC set already by the interceptor.
+    const tStore = tenantStorage.getStore();
+    const m = tStore?.entityManager ?? this.dataSource.manager;
+    const staffRow = await m.query(
+      `SELECT id FROM staff_members WHERE user_id = $1 AND kindergarten_id = $2 LIMIT 1`,
+      [callerUserId, kindergartenId],
+    );
+    const staffMemberId = staffRow[0]?.id ?? null;
+    await m.query(
+      `INSERT INTO attendance_events
+         (id, kindergarten_id, child_id, event_type, method,
+          recorded_at, recorded_by, pickup_request_id)
+       VALUES ($1, $2, $3, 'check_out', $4, $5, $6, $7)`,
+      [
+        eventId,
+        kindergartenId,
+        childId,
+        opts.method?.value ?? 'otp_pickup',
+        now,
+        staffMemberId,
+        opts.pickupRequestId ?? null,
+      ],
+    );
+    return { event: { id: eventId } };
+  }
+}
+
 // ── Spec ──────────────────────────────────────────────────────────────────────
 
 describeIntegration(
@@ -219,6 +281,7 @@ describeIntegration(
     let kgId: string;
     let childId: string;
     let staffUserId: string;
+    let staffMemberId: string;
     let requestId: string;
 
     beforeAll(async () => {
@@ -231,7 +294,13 @@ describeIntegration(
         username: process.env.DATABASE_USERNAME ?? 'shyraq_app',
         password: process.env.DATABASE_PASSWORD ?? 'shyraq_app',
         database: process.env.DATABASE_NAME ?? 'shyraq',
-        entities: [PickupRequestTypeOrmEntity, TrustedPersonTypeOrmEntity],
+        entities: [
+          PickupRequestTypeOrmEntity,
+          TrustedPersonTypeOrmEntity,
+          StaffMemberEntity,
+          KindergartenEntity,
+          UserEntity,
+        ],
         synchronize: false,
         logging: false,
         poolSize: 10,
@@ -248,57 +317,76 @@ describeIntegration(
       kgId = randomUUID();
       childId = randomUUID();
       staffUserId = randomUUID();
+      staffMemberId = randomUUID();
       requestId = randomUUID();
 
       const expiresAt = new Date(Date.now() + 30 * 60 * 1000);
       const staffPhone = `+7700${kgId.slice(0, 7).replace(/[^0-9]/g, '0')}`;
       const kgSlug = `race-kg-${kgId.slice(0, 8)}`;
 
-      // Seed required FK rows
-      await dataSource.query(
-        `INSERT INTO kindergartens (id, name, slug, is_active)
-         VALUES ($1, 'Race KG', $2, true)`,
-        [kgId, kgSlug],
-      );
-      await dataSource.query(
-        `INSERT INTO users (id, phone, full_name) VALUES ($1, $2, 'Staff Race')`,
-        [staffUserId, staffPhone],
-      );
-      await dataSource.query(
-        `INSERT INTO children (id, kindergarten_id, full_name, date_of_birth, status)
-         VALUES ($1, $2, 'Race Child', '2020-01-01', 'active')`,
-        [childId, kgId],
-      );
-      await dataSource.query(
-        `INSERT INTO staff_members (id, kindergarten_id, user_id, role, is_active)
-         VALUES ($1, $2, $3, 'mentor', true)`,
-        [randomUUID(), kgId, staffUserId],
-      );
-      await dataSource.query(
-        `INSERT INTO pickup_requests
-           (id, kindergarten_id, child_id, requested_by_user_id,
-            trusted_person_phone, trusted_person_name, status, expires_at)
-         VALUES ($1, $2, $3, $4, '+77011000001', 'Race Person', 'otp_sent', $5)`,
-        [requestId, kgId, childId, staffUserId, expiresAt],
-      );
+      // Seed required FK rows. Wrap in a TX with `app.bypass_rls = 'true'`
+      // because we connect as the non-superuser `shyraq_app` role and the
+      // tenant tables FORCE RLS.
+      await dataSource.transaction(async (m) => {
+        await m.query(`SET LOCAL app.bypass_rls = 'true'`);
+        await m.query(
+          `INSERT INTO kindergartens (id, name, slug, is_active)
+           VALUES ($1, 'Race KG', $2, true)`,
+          [kgId, kgSlug],
+        );
+        await m.query(
+          `INSERT INTO users (id, phone, full_name) VALUES ($1, $2, 'Staff Race')`,
+          [staffUserId, staffPhone],
+        );
+        await m.query(
+          `INSERT INTO children (id, kindergarten_id, full_name, date_of_birth, status)
+           VALUES ($1, $2, 'Race Child', '2020-01-01', 'active')`,
+          [childId, kgId],
+        );
+        await m.query(
+          `INSERT INTO staff_members (id, kindergarten_id, user_id, role, is_active)
+           VALUES ($1, $2, $3, 'mentor', true)`,
+          [staffMemberId, kgId, staffUserId],
+        );
+        await m.query(
+          `INSERT INTO pickup_requests
+             (id, kindergarten_id, child_id, requested_by_user_id,
+              trusted_person_phone, trusted_person_name, status, expires_at)
+           VALUES ($1, $2, $3, $4, '+77011000001', 'Race Person', 'otp_sent', $5)`,
+          [requestId, kgId, childId, staffUserId, expiresAt],
+        );
+      });
     });
 
     afterEach(async () => {
       if (!dataSource?.isInitialized) return;
-      await dataSource.query(
-        `DELETE FROM pickup_requests WHERE kindergarten_id = $1`,
-        [kgId],
-      );
-      await dataSource.query(
-        `DELETE FROM staff_members WHERE kindergarten_id = $1`,
-        [kgId],
-      );
-      await dataSource.query(
-        `DELETE FROM children WHERE kindergarten_id = $1`,
-        [kgId],
-      );
-      await dataSource.query(`DELETE FROM users WHERE id = $1`, [staffUserId]);
-      await dataSource.query(`DELETE FROM kindergartens WHERE id = $1`, [kgId]);
+      await dataSource.transaction(async (m) => {
+        await m.query(`SET LOCAL app.bypass_rls = 'true'`);
+        // Break the FK cycle: pickup_requests.attendance_event_id ↔
+        // attendance_events.pickup_request_id. NULL the back-reference on
+        // pickup_requests first, then drop attendance_events, then
+        // pickup_requests.
+        await m.query(
+          `UPDATE pickup_requests SET attendance_event_id = NULL WHERE kindergarten_id = $1`,
+          [kgId],
+        );
+        await m.query(
+          `DELETE FROM attendance_events WHERE kindergarten_id = $1`,
+          [kgId],
+        );
+        await m.query(
+          `DELETE FROM pickup_requests WHERE kindergarten_id = $1`,
+          [kgId],
+        );
+        await m.query(`DELETE FROM staff_members WHERE kindergarten_id = $1`, [
+          kgId,
+        ]);
+        await m.query(`DELETE FROM children WHERE kindergarten_id = $1`, [
+          kgId,
+        ]);
+        await m.query(`DELETE FROM users WHERE id = $1`, [staffUserId]);
+        await m.query(`DELETE FROM kindergartens WHERE id = $1`, [kgId]);
+      });
     });
 
     function makeCtx(req: Record<string, unknown>): ExecutionContext {
@@ -334,10 +422,14 @@ describeIntegration(
       const tpRepo = new TrustedPersonRelationalRepository(
         dataSource.getRepository(TrustedPersonTypeOrmEntity),
       );
+      const staffRepo = new StaffMemberRelationalRepository(
+        dataSource.getRepository(StaffMemberEntity),
+      );
       const authOtpStore = new FakeAuthOtpStore();
       const sms = new FakeSms();
       const notifications = new FakeNotifications();
       const clock = new FixedClock(new Date());
+      const attendance = new FakeAttendanceService(dataSource);
 
       const configService = {
         getOrThrow: (key: string) => {
@@ -353,29 +445,31 @@ describeIntegration(
         null as unknown as ChildGuardianRepository,
         null as unknown as ChildRepository,
         null as unknown as KindergartenRepository,
-        null as unknown as StaffMemberRepository,
+        staffRepo,
         otpStore,
         authOtpStore,
         sms,
         notifications,
-        // AttendanceService is null — validateOtp TX rolls back at checkOut.
-        // Intentional: testing lock serialization, not full checkout flow.
-        null as unknown as AttendanceService,
+        attendance as unknown as AttendanceService,
         clock,
-        dataSource,
         configService,
       );
     }
 
-    it('serializes concurrent validateOtp — first caller clears OTP; subsequent callers get OtpExpiredError', async () => {
+    it('serializes concurrent validateOtp — exactly one caller validates, others get OtpExpiredError, single attendance row', async () => {
       const OTP_CODE = '123456';
       const otpStore = new FakePickupOtpStore();
       otpStore.seed(requestId, OTP_CODE);
       const service = makeService(otpStore);
 
-      // Three concurrent validate calls. Each acquires the advisory lock in
-      // sequence. The first clears the OTP code. The second and third find
-      // no code and throw OtpExpiredError.
+      // Three concurrent validate calls. Each acquires the advisory lock
+      // in sequence. The first calls attendance.checkOut + writes the
+      // attendance row + flips status to validated + clearCode's the OTP
+      // store. The second and third see the validated status and throw
+      // PickupRequestAlreadyValidatedError — OR they see the OTP cleared
+      // and throw OtpExpiredError. Either is acceptable — the
+      // load-bearing invariants are "exactly one validated" + "exactly
+      // one attendance_events row".
       const results = await Promise.allSettled([
         runScoped(kgId, () =>
           service.validateOtp(kgId, requestId, OTP_CODE, staffUserId),
@@ -388,27 +482,60 @@ describeIntegration(
         ),
       ]);
 
-      // Because AttendanceService is null, the first winner's TX also rolls
-      // back (TypeError at attendance.checkOut). All three callers reject —
-      // but the important invariant is at most ONE caller found the code;
-      // the other 2+ get OtpExpiredError.
-      const expiredCount = results.filter(
-        (r) => r.status === 'rejected' && r.reason instanceof OtpExpiredError,
-      ).length;
+      const fulfilled = results.filter((r) => r.status === 'fulfilled');
+      const rejected = results.filter((r) => r.status === 'rejected');
 
-      // Advisory lock guarantees clearCode was called exactly once —
-      // so at least 2 callers found the code already cleared.
-      expect(expiredCount).toBeGreaterThanOrEqual(2);
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(2);
 
-      // DB pickup_request stays otp_sent (all TXs rolled back due to null
-      // AttendanceService).
-      const rows = (await dataSource.query(
-        `SELECT status FROM pickup_requests WHERE id = $1`,
-        [requestId],
-      )) as Array<{ status: string }>;
+      // The two losers reject with either OtpExpiredError (code cleared
+      // by the winner) OR PickupRequestAlreadyValidatedError (the row's
+      // terminal-state guard fires once the winner has flipped the status
+      // to validated). Both are acceptable: the load-bearing invariant is
+      // that they did NOT successfully validate. Post T7 fix M3 (clearCode
+      // after DB writes) the typical outcome shifts toward
+      // AlreadyValidatedError because the status flip happens before the
+      // OTP cleanup.
+      for (const r of rejected) {
+        const ok =
+          r.status === 'rejected' &&
+          (r.reason instanceof OtpExpiredError ||
+            r.reason instanceof PickupRequestAlreadyValidatedError);
+        if (!ok) {
+          throw new Error(
+            `unexpected rejection: ${(r as PromiseRejectedResult).reason}`,
+          );
+        }
+      }
 
-      expect(rows).toHaveLength(1);
-      expect(rows[0].status).toBe('otp_sent');
+      // DB invariant 1: pickup_requests.status = 'validated'.
+      // DB invariant 2: exactly one attendance_events row for that
+      // pickup_request_id.
+      // Both reads bypass RLS since the test runs as `shyraq_app`.
+      const { prRows, evtRows } = await dataSource.transaction(async (m) => {
+        await m.query(`SET LOCAL app.bypass_rls = 'true'`);
+        const prRowsInner = (await m.query(
+          `SELECT status, validated_by, attendance_event_id
+           FROM pickup_requests WHERE id = $1`,
+          [requestId],
+        )) as Array<{
+          status: string;
+          validated_by: string | null;
+          attendance_event_id: string | null;
+        }>;
+        const evtRowsInner = (await m.query(
+          `SELECT id FROM attendance_events WHERE pickup_request_id = $1`,
+          [requestId],
+        )) as Array<{ id: string }>;
+        return { prRows: prRowsInner, evtRows: evtRowsInner };
+      });
+
+      expect(prRows).toHaveLength(1);
+      expect(prRows[0].status).toBe('validated');
+      expect(prRows[0].validated_by).toBe(staffMemberId);
+      expect(prRows[0].attendance_event_id).not.toBeNull();
+      expect(evtRows).toHaveLength(1);
+      expect(evtRows[0].id).toBe(prRows[0].attendance_event_id);
     });
   },
 );

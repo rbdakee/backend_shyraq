@@ -22,7 +22,6 @@
  * Test names: `it('returns ...')`, `it('throws ...')` — never `should`.
  */
 import { ConfigService } from '@nestjs/config';
-import { EntityManager } from 'typeorm';
 import {
   AttendanceCheckInEvent,
   AttendanceCheckOutEvent,
@@ -76,6 +75,7 @@ import { AttendanceService } from '@/modules/attendance/attendance.service';
 import { PickupRequest } from './domain/entities/pickup-request.entity';
 import { PickupRequestAlreadyValidatedError } from './domain/errors/pickup-request-already-validated.error';
 import { PickupRequestNotFoundError } from './domain/errors/pickup-request-not-found.error';
+import { PickupRequestStatusInvalidError } from './domain/errors/pickup-request-status-invalid.error';
 import { TrustedPersonNotForChildError } from './domain/errors/trusted-person-not-for-child.error';
 import { TrustedPersonRevokedError } from './domain/errors/trusted-person-revoked.error';
 import { TrustedPerson } from './domain/entities/trusted-person.entity';
@@ -88,6 +88,7 @@ import {
   ListPickupFilters,
   PickupRequestPatch,
   PickupRequestRepository,
+  PickupRequestUpdateOpts,
 } from './infrastructure/persistence/pickup-request.repository';
 import {
   CreateTrustedPersonRow,
@@ -163,9 +164,19 @@ class FakePickupRequestRepo extends PickupRequestRepository {
     );
   }
 
-  update(id: string, patch: PickupRequestPatch): Promise<void> {
+  update(
+    id: string,
+    patch: PickupRequestPatch,
+    opts: PickupRequestUpdateOpts = {},
+  ): Promise<boolean> {
     const pr = this.rows.get(id);
-    if (!pr) return Promise.resolve();
+    if (!pr) return Promise.resolve(false);
+    if (
+      opts.expectedStatus !== undefined &&
+      pr.status !== opts.expectedStatus
+    ) {
+      return Promise.resolve(false);
+    }
     const s = pr.toState();
     const next = PickupRequest.fromState({
       ...s,
@@ -181,7 +192,7 @@ class FakePickupRequestRepo extends PickupRequestRepository {
           : s.attendanceEventId,
     });
     this.rows.set(id, next);
-    return Promise.resolve();
+    return Promise.resolve(true);
   }
 
   acquireValidateAdvisoryLock(requestId: string): Promise<void> {
@@ -583,15 +594,6 @@ class FakeAttendanceService {
   }
 }
 
-const fakeManager = {
-  query: (_sql: string): Promise<unknown> => Promise.resolve(undefined),
-} as unknown as EntityManager;
-
-const fakeDataSource = {
-  transaction: <T>(cb: (m: EntityManager) => Promise<T>): Promise<T> =>
-    cb(fakeManager),
-} as unknown as import('typeorm').DataSource;
-
 class FakeConfig {
   getOrThrow(key: string): unknown {
     if (key === 'auth.rateLimitOtpRequestLimit') return 5;
@@ -759,7 +761,6 @@ function wire(): Wired {
     notifications,
     attendance as unknown as AttendanceService,
     clock,
-    fakeDataSource,
     new FakeConfig() as unknown as ConfigService,
   );
 
@@ -956,6 +957,37 @@ describe('PickupRequestService — service-unit', () => {
       expect(w.sms.sent).toHaveLength(0);
     });
 
+    it('does NOT consume an auth-shared rate-limit slot when the request is locked (T7 M4 fix — order: isLocked first, then rate-limit)', async () => {
+      const w = wire();
+      const pr = await seedRequest(w);
+      w.otpStore.locks.add(pr.id);
+      const beforeRate = w.authOtpStore.rateLimitCalls;
+      await expect(w.service.sendOtp(KG, pr.id)).rejects.toBeInstanceOf(
+        OtpLockedError,
+      );
+      expect(w.authOtpStore.rateLimitCalls).toBe(beforeRate);
+    });
+
+    it('continues to send OTP when the kg lookup fails (best-effort) — T7 M2', async () => {
+      const w = wire();
+      const pr = await seedRequest(w);
+      w.kindergartenRepo.byId.clear();
+      const result = await w.service.sendOtp(KG, pr.id);
+      expect(result.expiresIn).toBe(1800);
+      expect(w.sms.sent).toHaveLength(1);
+      // SMS body falls back to literal placeholder when kg name is unknown.
+      expect(w.sms.sent[0].message).toContain('детский сад');
+    });
+
+    it('continues to send OTP when the child lookup returns null (best-effort, T7 M2 — was throwing 404 silently)', async () => {
+      const w = wire();
+      const pr = await seedRequest(w);
+      w.childRepo.byId.clear();
+      const result = await w.service.sendOtp(KG, pr.id);
+      expect(result.expiresIn).toBe(1800);
+      expect(w.sms.sent).toHaveLength(1);
+    });
+
     it('throws PickupRequestNotFoundError for unknown id', async () => {
       const w = wire();
       await expect(w.service.sendOtp(KG, 'nope')).rejects.toBeInstanceOf(
@@ -1105,6 +1137,55 @@ describe('PickupRequestService — service-unit', () => {
       const cancelled = await w.service.cancel(KG, pr.id);
       expect(cancelled.status).toBe('cancelled');
       expect(await w.otpStore.readCode(pr.id)).toBeNull();
+    });
+
+    it('acquires the same advisory lock validateOtp uses (T7 H3 — serializes vs concurrent validate)', async () => {
+      const w = wire();
+      const pr = await w.service.createByStaff(KG, STAFF_USER, {
+        childId: CHILD,
+        trustedPersonId: null,
+        trustedPersonName: 'Aunt',
+        trustedPersonPhone: TRUSTED_PHONE,
+      });
+      await w.service.cancel(KG, pr.id);
+      expect(w.pickupRequests.advisoryLockCalls).toContain(pr.id);
+    });
+
+    it('clears the OTP cache key unconditionally even when otp_ref is null (T7 H5 — defensive cleanup vs in-flight send-otp)', async () => {
+      const w = wire();
+      const pr = await w.service.createByStaff(KG, STAFF_USER, {
+        childId: CHILD,
+        trustedPersonId: null,
+        trustedPersonName: 'Aunt',
+        trustedPersonPhone: TRUSTED_PHONE,
+      });
+      // Simulate a phantom OTP entry that was written (e.g. by a concurrent
+      // send-otp) AFTER cancel reads the row but before the DB UPDATE.
+      // Without the unconditional clearCode the entry would leak.
+      w.otpStore.codes.set(pr.id, { code: '999999', attempts: 0 });
+      await w.service.cancel(KG, pr.id);
+      expect(await w.otpStore.readCode(pr.id)).toBeNull();
+    });
+
+    it('throws PickupRequestStatusInvalidError when a concurrent path flipped the row out of otp_sent (T7 H3 — expectedStatus repo guard)', async () => {
+      const w = wire();
+      const pr = await w.service.createByStaff(KG, STAFF_USER, {
+        childId: CHILD,
+        trustedPersonId: null,
+        trustedPersonName: 'Aunt',
+        trustedPersonPhone: TRUSTED_PHONE,
+      });
+      await w.service.sendOtp(KG, pr.id);
+      // Simulate a concurrent validate that snuck through the lock window —
+      // we manually flip status to validated BEFORE cancel runs. The
+      // domain-level entity guard at `pr.cancel(now)` and/or the
+      // expectedStatus='otp_sent' repo guard should both reject.
+      const code = w.otpStore.storeCalls[0].code;
+      await w.service.validateOtp(KG, pr.id, code, STAFF_USER);
+      // Now `pr` is in `validated`. Cancel should observe the conflict.
+      await expect(w.service.cancel(KG, pr.id)).rejects.toBeInstanceOf(
+        PickupRequestStatusInvalidError,
+      );
     });
 
     it('throws PickupRequestNotFoundError for an unknown id', async () => {

@@ -33,14 +33,22 @@ import { StaffService } from './staff.service';
 import { StaffNotFoundError } from './domain/errors/staff-not-found.error';
 
 /**
- * Admin-scoped staff endpoints. Wrapped by the global guard chain
- * (`JwtAuthGuard` → `KindergartenScopeGuard` → `RolesGuard`) and the
- * `TenantContextInterceptor` that pins `app.kindergarten_id` to the JWT
- * tenant for the duration of the handler.
+ * Admin-scoped staff endpoints. Mounted under `/admin/staff/...` per
+ * `endpoints.md` §2.2 (admin/staff CRUD surface).
+ *
+ * History note: through B11 T6 this controller mounted at `staff/` which
+ * collided with `/staff/pickup-requests` — Express resolves routes in
+ * registration order, so `@Get(':id')` here was claiming
+ * `GET /staff/pickup-requests` before the pickup controller could see it.
+ * Move to `admin/staff` aligns the prefix with the documented contract
+ * AND removes the route shadow at the same time. Wrapped by the global
+ * guard chain (`JwtAuthGuard` → `KindergartenScopeGuard` → `RolesGuard`)
+ * and the `TenantContextInterceptor` that pins `app.kindergarten_id` to
+ * the JWT tenant for the duration of the handler.
  */
 @ApiTags('Staff (Admin)')
 @ApiBearerAuth()
-@Controller({ path: 'staff', version: '1' })
+@Controller({ path: 'admin/staff', version: '1' })
 @UseGuards(JwtAuthGuard, PendingRoleSelectGuard, RolesGuard)
 @Roles('admin')
 export class StaffController {
