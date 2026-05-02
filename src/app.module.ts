@@ -23,6 +23,7 @@ import { ChildModule } from './modules/child/child.module';
 import { EnrollmentModule } from './modules/enrollment/enrollment.module';
 import { MealModule } from './modules/meal/meal.module';
 import { GroupModule } from './modules/group/group.module';
+import { IdentityQrModule } from './modules/identity-qr/identity-qr.module';
 import { KindergartenModule } from './modules/kindergarten/kindergarten.module';
 import { LocationModule } from './modules/location/location.module';
 import { NotificationModule } from './modules/notification/notification.module';
@@ -96,6 +97,7 @@ const resolveI18nPath = (): string => {
     ChildModule,
     WebsocketModule,
     NotificationModule,
+    IdentityQrModule,
     EnrollmentModule,
     MealModule,
     ScheduleModule,

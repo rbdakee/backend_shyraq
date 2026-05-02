@@ -9,8 +9,10 @@ import {
   ConflictError,
   DomainError,
   ForbiddenActionError,
+  GoneError,
   InvariantViolationError,
   NotFoundError,
+  TooManyRequestsError,
 } from '@/shared-kernel/domain/errors';
 import { IinAlreadyTakenError } from '@/modules/users/domain/errors/iin-already-taken.error';
 import { ProfileUniqueViolationError } from '@/modules/users/domain/errors/profile-unique-violation.error';
@@ -154,6 +156,9 @@ export class DomainErrorFilter implements ExceptionFilter {
     if (err instanceof KindergartenNotFoundError) return HttpStatus.NOT_FOUND;
     if (err instanceof NotFoundError) return HttpStatus.NOT_FOUND;
     if (err instanceof ConflictError) return HttpStatus.CONFLICT;
+    if (err instanceof GoneError) return HttpStatus.GONE;
+    if (err instanceof TooManyRequestsError)
+      return HttpStatus.TOO_MANY_REQUESTS;
     if (err instanceof InvariantViolationError) return HttpStatus.BAD_REQUEST;
     if (err instanceof ForbiddenActionError) return HttpStatus.FORBIDDEN;
     if (err instanceof DomainError) return HttpStatus.UNPROCESSABLE_ENTITY;
