@@ -190,9 +190,9 @@ describe('B10 Identity QR (e2e)', () => {
     expect((expiresMs - issuedMs) / 3_600_000).toBeCloseTo(24, 1);
   });
 
-  // ── B. Re-GET issues a DIFFERENT token ────────────────────────────────────
+  // ── B. Re-GET inside reuse window returns the SAME token ─────────────────
 
-  it('issues a DIFFERENT token on re-GET (no reuse design, Scenario B)', async () => {
+  it('returns the SAME token on re-GET when expires_at-now > 1h (reuse flow, Scenario B)', async () => {
     const parentAuth = await otpLogin('+77021110002');
 
     const r1 = await request(server)
@@ -205,13 +205,28 @@ describe('B10 Identity QR (e2e)', () => {
       .set('Authorization', `Bearer ${parentAuth.access_token}`)
       .expect(200);
 
-    expect(r2.body.token).toMatch(/^[0-9a-f]{32}$/);
-    expect(r2.body.token).not.toBe(r1.body.token);
+    // Reuse flow: same plaintext + same issuedAt + same expiresAt; the
+    // server has the active plaintext in `qr:user:{userId}:identity` and
+    // the DB row is fresh (>1h to expiry), so no mint happens.
+    expect(r2.body.token).toBe(r1.body.token);
+    expect(r2.body.issuedAt).toBe(r1.body.issuedAt);
+    expect(r2.body.expiresAt).toBe(r1.body.expiresAt);
+
+    // Only one DB row total — reuse path runs no DB writes.
+    const rows = (await ctx.dataSource.transaction(async (m) => {
+      await m.query(`SET LOCAL app.bypass_rls = 'true'`);
+      return m.query(
+        `SELECT id, revoked_at FROM user_qr_tokens WHERE user_id = $1`,
+        [parentAuth.user.id],
+      );
+    })) as Array<{ id: string; revoked_at: string | null }>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].revoked_at).toBeNull();
   });
 
-  // ── C. DB-level: previous row has revoked_at after re-GET ─────────────────
+  // ── C. Re-GET when <1h to expiry mints fresh and revokes old ─────────────
 
-  it('stamps revoked_at on the old DB row after re-GET (Scenario C)', async () => {
+  it('mints a fresh token and stamps revoked_at on the old row when <1h to expiry (Scenario C)', async () => {
     const parentAuth = await otpLogin('+77021110003');
 
     const r1 = await request(server)
@@ -222,22 +237,40 @@ describe('B10 Identity QR (e2e)', () => {
       .update(r1.body.token as string)
       .digest('hex');
 
-    // Second GET triggers revoke of the first token row.
-    await request(server)
+    // Force the active row to be near expiry — under the 1h refresh
+    // threshold — so the next GET takes the mint-fresh + revoke-old
+    // branch instead of reusing the cached plaintext.
+    await ctx.dataSource.transaction(async (m) => {
+      await m.query(`SET LOCAL app.bypass_rls = 'true'`);
+      await m.query(
+        `UPDATE user_qr_tokens
+         SET expires_at = NOW() + INTERVAL '30 minutes'
+         WHERE token_hash = $1`,
+        [firstHash],
+      );
+    });
+
+    const r2 = await request(server)
       .get('/api/v1/users/me/qr')
       .set('Authorization', `Bearer ${parentAuth.access_token}`)
       .expect(200);
 
+    expect(r2.body.token).not.toBe(r1.body.token);
+
     const rows = (await ctx.dataSource.transaction(async (m) => {
       await m.query(`SET LOCAL app.bypass_rls = 'true'`);
       return m.query(
-        `SELECT revoked_at FROM user_qr_tokens WHERE token_hash = $1`,
-        [firstHash],
+        `SELECT token_hash, revoked_at FROM user_qr_tokens WHERE user_id = $1 ORDER BY issued_at`,
+        [parentAuth.user.id],
       );
-    })) as Array<{ revoked_at: string | null }>;
+    })) as Array<{ token_hash: string; revoked_at: string | null }>;
 
-    expect(rows).toHaveLength(1);
-    expect(rows[0].revoked_at).not.toBeNull();
+    expect(rows).toHaveLength(2);
+    const oldRow = rows.find((r) => r.token_hash === firstHash);
+    expect(oldRow?.revoked_at).not.toBeNull();
+    const active = rows.filter((r) => r.revoked_at === null);
+    expect(active).toHaveLength(1);
+    expect(active[0].token_hash).not.toBe(firstHash);
   });
 
   // ── D. Staff scans valid parent token ─────────────────────────────────────
@@ -560,6 +593,50 @@ describe('B10 Identity QR (e2e)', () => {
     // Primary guardian in kg-A with can_pickup=true → check_in/check_out.
     expect(scanRes.body.allowedActions).toEqual(
       expect.arrayContaining(['check_in', 'check_out']),
+    );
+  });
+
+  // ── L. Admin revoke-all clears reuse cache → next user GET mints fresh ───
+
+  it('admin revoke-all clears qr:user:{userId}:identity → next user GET mints fresh (Scenario L)', async () => {
+    const a = await createKgWithAdmin('qr-l', '+77021120011');
+    const parentAuth = await otpLogin('+77021110010');
+
+    const r1 = await request(server)
+      .get('/api/v1/users/me/qr')
+      .set('Authorization', `Bearer ${parentAuth.access_token}`)
+      .expect(200);
+
+    // Admin bulk-revokes — this MUST also clear the user-keyed Redis
+    // entry so reuse-flow on the next GET cannot return a soon-to-410
+    // plaintext.
+    await request(server)
+      .post(`/api/v1/admin/qr/revoke-all/${parentAuth.user.id}`)
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .expect(200);
+
+    const r2 = await request(server)
+      .get('/api/v1/users/me/qr')
+      .set('Authorization', `Bearer ${parentAuth.access_token}`)
+      .expect(200);
+
+    expect(r2.body.token).not.toBe(r1.body.token);
+
+    // The new row must be active and the old one revoked.
+    const rows = (await ctx.dataSource.transaction(async (m) => {
+      await m.query(`SET LOCAL app.bypass_rls = 'true'`);
+      return m.query(
+        `SELECT token_hash, revoked_at FROM user_qr_tokens WHERE user_id = $1 ORDER BY issued_at`,
+        [parentAuth.user.id],
+      );
+    })) as Array<{ token_hash: string; revoked_at: string | null }>;
+    expect(rows).toHaveLength(2);
+    const active = rows.filter((r) => r.revoked_at === null);
+    expect(active).toHaveLength(1);
+    expect(active[0].token_hash).toBe(
+      createHash('sha256')
+        .update(r2.body.token as string)
+        .digest('hex'),
     );
   });
 });

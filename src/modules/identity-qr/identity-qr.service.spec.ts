@@ -165,6 +165,12 @@ class FakeQrRepo extends IdentityQrRepository {
     });
     return Promise.resolve();
   }
+
+  acquireUserAdvisoryLock(_userId: string): Promise<void> {
+    // No-op fake — real PG-backed advisory-lock semantics are exercised
+    // by `identity-qr.race.integration.spec.ts`.
+    return Promise.resolve();
+  }
 }
 
 // ── Fake cache ───────────────────────────────────────────────────────────
@@ -173,6 +179,9 @@ class FakeCache extends QrTokenCachePort {
   store = new Map<string, string>();
   ttlSec = new Map<string, number>();
   setCalls: Array<{ plaintext: string; userId: string; ttl: number }> = [];
+  userStore = new Map<string, string>();
+  userTtlSec = new Map<string, number>();
+  clearUserCalls: string[] = [];
 
   setToken(
     plaintext: string,
@@ -189,6 +198,23 @@ class FakeCache extends QrTokenCachePort {
   }
   revoke(plaintext: string): Promise<void> {
     this.store.delete(plaintext);
+    return Promise.resolve();
+  }
+  setUserActiveToken(
+    userId: string,
+    plaintext: string,
+    ttlSeconds: number,
+  ): Promise<void> {
+    this.userStore.set(userId, plaintext);
+    this.userTtlSec.set(userId, ttlSeconds);
+    return Promise.resolve();
+  }
+  getUserActiveToken(userId: string): Promise<string | null> {
+    return Promise.resolve(this.userStore.get(userId) ?? null);
+  }
+  clearUserActiveToken(userId: string): Promise<void> {
+    this.userStore.delete(userId);
+    this.clearUserCalls.push(userId);
     return Promise.resolve();
   }
 }
@@ -561,14 +587,36 @@ describe('IdentityQrService.issueOrRefresh', () => {
 
     expect(sut.cache.store.get(result.token)).toBe(PARENT_USER);
     expect(sut.cache.ttlSec.get(result.token)).toBe(24 * 60 * 60);
+    // Reuse path requires the user-keyed cache entry too.
+    expect(sut.cache.userStore.get(PARENT_USER)).toBe(result.token);
+    expect(sut.cache.userTtlSec.get(PARENT_USER)).toBe(24 * 60 * 60);
   });
 
-  it('revokes all previously-active tokens before inserting a new one', async () => {
+  it('reuses the same plaintext when an active row is fresh (>1h to expiry)', async () => {
     const sut = buildSut();
     const first = await sut.service.issueOrRefresh(PARENT_USER);
+    // +1 minute later — well under the 1h refresh threshold.
+    sut.clock.set(new Date(NOW.getTime() + 60_000));
     const second = await sut.service.issueOrRefresh(PARENT_USER);
 
-    expect(first.token).not.toBe(second.token);
+    expect(second.token).toBe(first.token);
+    expect(second.issuedAt).toEqual(first.issuedAt);
+    expect(second.expiresAt).toEqual(first.expiresAt);
+    // Only one DB row total — reuse path takes no DB writes.
+    expect(sut.qrRepo.rows).toHaveLength(1);
+    expect(sut.qrRepo.rows[0].toState().revokedAt).toBeNull();
+  });
+
+  it('mints fresh and revokes the old row when <1h remaining (refresh threshold)', async () => {
+    const sut = buildSut();
+    const first = await sut.service.issueOrRefresh(PARENT_USER);
+    // Advance to 30 min before expiry — under the 1h threshold.
+    sut.clock.set(
+      new Date(NOW.getTime() + 24 * 60 * 60 * 1000 - 30 * 60 * 1000),
+    );
+    const second = await sut.service.issueOrRefresh(PARENT_USER);
+
+    expect(second.token).not.toBe(first.token);
     expect(sut.qrRepo.rows).toHaveLength(2);
     const firstRow = sut.qrRepo.rows.find(
       (r) => r.toState().tokenHash === sha256Hex(first.token),
@@ -576,16 +624,41 @@ describe('IdentityQrService.issueOrRefresh', () => {
     const secondRow = sut.qrRepo.rows.find(
       (r) => r.toState().tokenHash === sha256Hex(second.token),
     );
-    expect(firstRow?.toState().revokedAt).toEqual(NOW);
+    expect(firstRow?.toState().revokedAt).not.toBeNull();
     expect(secondRow?.toState().revokedAt).toBeNull();
   });
 
-  it('issues a fresh token even when an active row exists (no reuse branch)', async () => {
+  it('mints fresh when the user-keyed cache is empty even if a fresh DB row exists', async () => {
     const sut = buildSut();
     const first = await sut.service.issueOrRefresh(PARENT_USER);
-    sut.clock.set(new Date(NOW.getTime() + 60_000)); // +1 minute later
+    // Simulate Redis dropping the user-key (eviction / restart) while the
+    // DB row is still fresh. The server has no way to recover the
+    // plaintext without it, so it must mint fresh.
+    sut.cache.userStore.delete(PARENT_USER);
     const second = await sut.service.issueOrRefresh(PARENT_USER);
-    expect(first.token).not.toBe(second.token);
+
+    expect(second.token).not.toBe(first.token);
+    expect(sut.qrRepo.rows).toHaveLength(2);
+    const firstRow = sut.qrRepo.rows.find(
+      (r) => r.toState().tokenHash === sha256Hex(first.token),
+    );
+    expect(firstRow?.toState().revokedAt).not.toBeNull();
+  });
+
+  it('mints fresh when cached plaintext does not match the active DB row hash', async () => {
+    const sut = buildSut();
+    const first = await sut.service.issueOrRefresh(PARENT_USER);
+    // Stale Redis state: user-key points at a different plaintext than
+    // the active row encodes (e.g. admin revoked + cleared user-key + new
+    // mint happened, but external poisoning re-set user-key to an old
+    // value). The hash defensive-check forces a fresh mint.
+    await sut.cache.setUserActiveToken(
+      PARENT_USER,
+      'a'.repeat(32),
+      24 * 60 * 60,
+    );
+    const second = await sut.service.issueOrRefresh(PARENT_USER);
+    expect(second.token).not.toBe(first.token);
   });
 
   it('always sets kindergarten_id=null on issued rows (cross-tenant)', async () => {
@@ -761,8 +834,11 @@ describe('IdentityQrService.scan — errors', () => {
     sut.refresh.allow(STAFF_USER, DEVICE_ID);
     sut.users.put(makeUser(PARENT_USER));
     const issued = await sut.service.issueOrRefresh(PARENT_USER);
-    // Trigger a fresh issue → revokes the first row.
-    await sut.service.issueOrRefresh(PARENT_USER);
+    // Admin revokes (clears user-key + stamps revoked_at on the row).
+    // The plaintext-keyed cache stays — that's by design — and the scan
+    // path's DB-recheck must surface QrTokenRevokedError despite the
+    // cache hit.
+    await sut.service.revokeAllByUser(ADMIN_USER, PARENT_USER);
 
     await expect(
       sut.service.scan(STAFF_USER, DEVICE_ID, issued.token, KG),
@@ -831,6 +907,20 @@ describe('IdentityQrService.revokeAllByUser', () => {
     await expect(
       sut.service.scan(STAFF_USER, DEVICE_ID, issued.token, KG),
     ).rejects.toBeInstanceOf(QrTokenRevokedError);
+  });
+
+  it('clears the user-keyed reuse cache so the next GET mints fresh', async () => {
+    const sut = buildSut();
+    const first = await sut.service.issueOrRefresh(PARENT_USER);
+    expect(sut.cache.userStore.get(PARENT_USER)).toBe(first.token);
+
+    await sut.service.revokeAllByUser(ADMIN_USER, PARENT_USER);
+    expect(sut.cache.clearUserCalls).toContain(PARENT_USER);
+    expect(sut.cache.userStore.has(PARENT_USER)).toBe(false);
+
+    // Next GET cannot reuse — falls through to mint a fresh token.
+    const second = await sut.service.issueOrRefresh(PARENT_USER);
+    expect(second.token).not.toBe(first.token);
   });
 });
 

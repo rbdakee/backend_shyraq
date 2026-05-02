@@ -5,7 +5,6 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { tenantStorage } from '@/database/tenant-storage';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { Child } from '@/modules/child/domain/entities/child.entity';
 import { ChildGuardian } from '@/modules/child/domain/entities/child-guardian.entity';
@@ -27,6 +26,12 @@ import { QrScanRateLimiterPort } from './infrastructure/rate-limit/qr-scan-rate-
 
 const TTL_SECONDS = 24 * 60 * 60;
 const TOKEN_BYTES = 16; // → 32 hex chars
+/**
+ * Reuse threshold — if the active row's `expires_at - now` is less than
+ * this, the next `GET /users/me/qr` mints fresh instead of returning the
+ * existing token. Locked at 1h in `replicated-rolling-blum.md` §1.
+ */
+const REFRESH_THRESHOLD_MS = 60 * 60 * 1000;
 
 export interface IssueOrRefreshResult {
   token: string;
@@ -51,12 +56,17 @@ export interface RevokeAllResult {
  * Three public methods, each mapping 1:1 to a controller endpoint:
  *
  *   issueOrRefresh(userId)
- *     — atomic TX: revokes all currently-active rows for the user, mints a
- *       fresh 16-byte (32-hex) plaintext token, persists its SHA-256 hash,
- *       and writes the plaintext to Redis with a 24h TTL. Cross-tenant —
- *       `user_qr_tokens` has no RLS by design (a parent guardianship may
- *       span multiple kindergartens, the QR is the user's identity, not a
- *       per-kg token).
+ *     — reuse-or-mint. Reuse path: if the user-keyed cache holds a
+ *       plaintext AND the matching DB row is active AND `expires_at - now`
+ *       is over the 1h refresh threshold, return the cached plaintext (no
+ *       DB write, no cache write). Mint path: revoke any active rows,
+ *       insert a fresh row, write both `qr:token:{plaintext}` and
+ *       `qr:user:{userId}:identity` cache entries. Both paths run inside
+ *       the ambient TX (TenantContextInterceptor) and start with a
+ *       per-user pg_advisory_xact_lock so concurrent calls serialize and
+ *       converge on a single mint. Cross-tenant — `user_qr_tokens` has no
+ *       RLS by design (a parent guardianship may span multiple
+ *       kindergartens, the QR is the user's identity, not a per-kg token).
  *
  *   scan(callerUserId, deviceId, plaintext)
  *     — 5-step: (1) verify caller's refresh-token session is bound to
@@ -69,11 +79,14 @@ export interface RevokeAllResult {
  *       stamps `last_scanned_at`.
  *
  *   revokeAllByUser(adminUserId, targetUserId)
- *     — bulk-stamps `revoked_at` on every active row for the target user.
- *       Cache entries are NOT proactively deleted: admin only has hashes
- *       (not plaintext), so we rely on the next scan's DB recheck to
- *       surface `qr_token_revoked` (410). Cache TTL ≤ 24h provides the
- *       upper bound on stale cache exposure.
+ *     — bulk-stamps `revoked_at` on every active row for the target user
+ *       AND clears the user-keyed reuse cache (`qr:user:{userId}:identity`)
+ *       so the user's next GET mints fresh instead of returning the
+ *       just-revoked plaintext. The plaintext-keyed cache
+ *       (`qr:token:{plaintext}`) cannot be cleared from this path (admin
+ *       only has the hash, not the plaintext); it stays correct because
+ *       `scan`'s DB-recheck still surfaces `qr_token_revoked` (410). Cache
+ *       TTL ≤ 24h is the upper bound on stale plaintext-cache exposure.
  */
 @Injectable()
 export class IdentityQrService {
@@ -94,46 +107,64 @@ export class IdentityQrService {
   // ── issueOrRefresh ───────────────────────────────────────────────────────
 
   /**
-   * Mint a fresh QR for `userId`. Always revokes any currently-active rows
-   * first so the partial uniqueness invariant (`(user_id, purpose) WHERE
-   * revoked_at IS NULL`) holds, then inserts a new row + Redis entry inside
-   * the same transaction so a rollback nukes both.
+   * Reuse-or-mint the user's Identity QR.
    *
-   * No "reuse if fresh" branch by design: the DB row stores only the SHA-256
-   * hash of the plaintext, and Redis is keyed on the plaintext — neither
-   * direction is reversible. So even if a "young" row exists in the DB, the
-   * server has no way to retrieve the matching plaintext on a subsequent
-   * GET. Every GET issues a new token; old plaintexts are revoked at the
-   * row level (causing the next scan to 410) and naturally TTL out of Redis.
+   * Reuse path: if the user-keyed cache holds an active plaintext and the
+   * paired DB row is active AND `expires_at - now > REFRESH_THRESHOLD_MS`,
+   * return the cached plaintext as-is. No DB write, no cache write.
    *
-   * Volume note: a polling client could mint ~1 token/min — this is an
-   * accepted write-amplification tradeoff for the simpler invariant.
+   * Mint path: any failure of the reuse precondition (cache miss, row
+   * missing, row revoked, row expired, row near-expiry) falls through to
+   * revoke-all-then-insert-new + sync both cache keys.
+   *
+   * Atomicity is provided by TenantContextInterceptor's ambient TX: the
+   * interceptor opens a TX around every controller invocation and pushes
+   * its EntityManager into `tenantStorage`; the QR repo's `manager()` helper
+   * picks it up so the advisory lock + the optional revoke + insert all run
+   * in the same TX.
+   *
+   * `acquireUserAdvisoryLock` serializes concurrent calls for the same user.
+   * Without it, two simultaneous GETs would both see "no active row", both
+   * run revoke-all (no-op), then race on INSERT — the partial unique idx
+   * `(user_id, purpose) WHERE revoked_at IS NULL` rejects the second with
+   * PG 23505 → 500. With the lock, the second caller blocks until the first
+   * commits, then either reuses the just-minted token (cache populated by
+   * the first caller) or revokes-and-mints cleanly.
    */
   async issueOrRefresh(userId: string): Promise<IssueOrRefreshResult> {
     const now = this.clock.now();
+
+    await this.qrRepo.acquireUserAdvisoryLock(userId);
+
+    // ── Reuse path ─────────────────────────────────────────────────────
+    const cachedPlaintext = await this.cache.getUserActiveToken(userId);
+    if (cachedPlaintext !== null) {
+      const row = await this.qrRepo.findActiveByUserAndPurpose(
+        userId,
+        'identity',
+        now,
+      );
+      if (row && !row.shouldRefresh(now, REFRESH_THRESHOLD_MS)) {
+        // Defensive: the cached plaintext must hash to the active row.
+        // A mismatch means stale Redis state (eviction collision or admin
+        // revoke that cleared the user-key but not yet the row). Fall
+        // through to mint instead of returning a stale token.
+        if (sha256Hex(cachedPlaintext) === row.toState().tokenHash) {
+          const state = row.toState();
+          return {
+            token: cachedPlaintext,
+            issuedAt: state.issuedAt,
+            expiresAt: state.expiresAt,
+          };
+        }
+      }
+    }
+
+    // ── Mint path ──────────────────────────────────────────────────────
     const issuedAt = now;
     const expiresAt = new Date(now.getTime() + TTL_SECONDS * 1000);
     const plaintext = randomBytes(TOKEN_BYTES).toString('hex');
     const tokenHash = sha256Hex(plaintext);
-
-    // Atomicity provided by TenantContextInterceptor's ambient TX. The
-    // interceptor opens a transaction around every controller invocation and
-    // pushes its EntityManager into `tenantStorage`; the QR repo's manager()
-    // helper picks it up so revoke + insert run in the same TX. No inner
-    // dataSource.transaction(...) wrapper is needed.
-    //
-    // pg_advisory_xact_lock serializes concurrent issueOrRefresh calls for
-    // the same user. Without it, two simultaneous GETs both observe "no
-    // active row", both issue revoke-all (no-op), then race on INSERT — the
-    // partial unique idx (user_id, purpose) WHERE revoked_at IS NULL rejects
-    // the second with PG 23505 → 500. With the xact-lock, the second call
-    // blocks until the first commits, then re-runs cleanly: it revokes the
-    // row the first just inserted and inserts its own.
-    //
-    // The lock key derives from the user id via PG hashtext(); the
-    // 'qr:identity:' prefix scopes it so we never collide with other
-    // advisory-lock users in the same backend.
-    await this.acquireUserAdvisoryLock(userId);
 
     await this.qrRepo.revokeAllByUser(userId, 'identity', now);
     const token = QrToken.create({
@@ -147,38 +178,15 @@ export class IdentityQrService {
     });
     await this.qrRepo.create(token);
 
-    // Cache write outside the DB transaction — Redis has no TX semantics
-    // anyway, so a redis failure here would not roll back the row. Worst
-    // case: row exists in DB but cache miss → first scan hits the DB-recheck
-    // path which still resolves correctly (we look up by token_hash via
-    // `findByTokenHash`). The `cache.lookup → null` fallback in scan() is
-    // therefore robust.
+    // Sync both Redis keys. Sequential SETs are fine: partial-state is
+    // benign — if `setUserActiveToken` fails after `setToken` succeeded,
+    // the next GET sees no user-key, mints fresh, and re-syncs; the
+    // leftover `qr:token:{plaintext}` is harmless because the row will be
+    // revoked on that next mint and `scan` re-checks the DB anyway.
     await this.cache.setToken(plaintext, userId, TTL_SECONDS);
+    await this.cache.setUserActiveToken(userId, plaintext, TTL_SECONDS);
 
     return { token: plaintext, issuedAt, expiresAt };
-  }
-
-  /**
-   * pg_advisory_xact_lock keyed on `qr:identity:<userId>` — released
-   * automatically at TX end. Inlined here (not on the QR repo port) because
-   * advisory locks are a postgres-specific concurrency primitive that
-   * doesn't naturally belong in a domain-shaped persistence port; future
-   * adapters (SQLite for tests, etc.) would need a different mechanism. The
-   * call goes through `tenantStorage.getStore()?.entityManager` so it
-   * participates in the ambient TX from TenantContextInterceptor.
-   */
-  private async acquireUserAdvisoryLock(userId: string): Promise<void> {
-    const ctx = tenantStorage.getStore();
-    if (!ctx?.entityManager) {
-      // No ambient TX (e.g. CLI / test harness with no interceptor). The
-      // race scenario the lock guards against is HTTP-only, so just skip;
-      // the integration spec exercises the HTTP path explicitly.
-      return;
-    }
-    await ctx.entityManager.query(
-      `SELECT pg_advisory_xact_lock(hashtext('qr:identity:' || $1)::bigint)`,
-      [userId],
-    );
   }
 
   // ── scan ────────────────────────────────────────────────────────────────
@@ -283,10 +291,14 @@ export class IdentityQrService {
       'identity',
       now,
     );
-    // Cache cannot be invalidated here — admin has hashes only, not the
-    // plaintexts that key Redis. Subsequent scans hit the DB-recheck path
-    // and surface `qr_token_revoked` (410). Cache entries naturally expire
-    // ≤24h after issuance.
+    // Clear the user-keyed reuse cache so the next `GET /users/me/qr`
+    // mints fresh instead of returning the just-revoked plaintext. The
+    // plaintext-keyed `qr:token:{plaintext}` cannot be cleared here
+    // (admin has only the hash); it stays correct because `scan`'s
+    // DB-recheck still surfaces `qr_token_revoked` (410). Always clear
+    // (even when revokedHashes is empty) so we don't end up with a stale
+    // user-key pointing at a row we believe absent.
+    await this.cache.clearUserActiveToken(targetUserId);
     if (revokedHashes.length > 0) {
       this.logger.log(
         `qr.revoke_all admin=${adminUserId} user=${targetUserId} count=${revokedHashes.length}`,

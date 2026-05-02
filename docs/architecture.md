@@ -257,12 +257,12 @@ WS/BullMQ (B9), QR-scan (B10), Pickup OTP (B11), Face ID (B19).
 ### 4.2 Identity QR
 
 - **Token format** — 32-char opaque hex (`crypto.randomBytes(16).toString('hex')`). Не JWT, не UUID.
-- **Storage** — SHA-256 hash в `user_qr_tokens.token_hash` (varchar 64, unique). Plaintext хранится только в Redis: ключ `qr:token:{plaintext}` → `user_id`, TTL = remaining lifetime.
-- **Lifetime** — 24h. Auto-refresh на `GET /users/me/qr` если активного нет ИЛИ `expires_at - now < 1h` → атомарная TX: revoke old (`revoked_at = NOW()`) + insert new + sync Redis (`DEL` старого ключа + `SET` нового с TTL). Ручного refresh-endpoint'а нет.
+- **Storage** — SHA-256 hash в `user_qr_tokens.token_hash` (varchar 64, unique). Plaintext хранится только в Redis. Две парные записи: `qr:token:{plaintext} → user_id` (для O(1) валидации сканов) и `qr:user:{userId}:identity → plaintext` (для recover активного plaintext'а на повторном GET — без неё сервер не смог бы переиспользовать токен, потому что DB хранит только хэш). Обе с TTL = remaining lifetime.
+- **Lifetime** — 24h. Reuse-or-mint на `GET /users/me/qr`: если активный токен есть и `expires_at - now > 1h` → возвращает тот же plaintext из `qr:user:{userId}:identity`; иначе атомарная TX (revoke old + insert new) + sync обеих Redis-записей. Каждый issueOrRefresh начинается с `pg_advisory_xact_lock(hashtext('qr:identity:'||user_id))` — сериализует concurrent GET'ы по user-id, чтобы избежать гонки на partial unique idx `(user_id, purpose) WHERE revoked_at IS NULL`. Ручного refresh-endpoint'а нет.
 - **Lazy-issue** — токен не создаётся при login; первый `GET /users/me/qr` trigger'ит issue.
 - **Cross-tenant** — `kindergarten_id` nullable, RLS не применяется к `user_qr_tokens`. Один QR на пользователя независимо от числа садиков.
 - **Rate-limit на `/staff/qr/scan`** — 60/мин per `device_id` (берётся из активной `refresh_tokens` сессии вызывающего staff). Redis: `rl:qr:scan:{device_id}` через `INCR` + `EXPIRE 60`.
-- **Admin revoke-all** — `POST /admin/qr/revoke-all/:userId`: bulk `UPDATE user_qr_tokens SET revoked_at = NOW() WHERE user_id = :userId AND revoked_at IS NULL` + Redis `DEL` для каждого токена. Response `{revoked_count}`.
+- **Admin revoke-all** — `POST /admin/qr/revoke-all/:userId`: bulk `UPDATE user_qr_tokens SET revoked_at = NOW() WHERE user_id = :userId AND revoked_at IS NULL` + `DEL qr:user:{userId}:identity` (next user GET сразу mintsит fresh). Plaintext-keyed `qr:token:{plaintext}` не удаляется — admin имеет только хэш; `scan`-side DB-recheck всё равно ловит revoked. Tenant-scoping: target user должен быть staff в kg вызывающего админа ИЛИ approved guardian ребёнка из этой kg, иначе 403 `user_no_relationship_to_kindergarten`. Response `{revoked_count}`.
 
 Паттерн хранения (`token_hash` в БД + plaintext только в Redis) аналогичен `refresh_tokens` (см. §4.1).
 

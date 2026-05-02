@@ -88,6 +88,23 @@ export class IdentityQrRelationalRepository extends IdentityQrRepository {
   }
 
   /**
+   * `pg_advisory_xact_lock(hashtext('qr:identity:'||userId)::bigint)` —
+   * released automatically when the surrounding TX commits/rolls back.
+   * Runs through `manager()` so it joins the ambient HTTP TX (set up by
+   * `TenantContextInterceptor`); when no ambient TX is present the call
+   * still goes through the default pool manager but the lock is released
+   * at the implicit per-statement TX boundary, effectively making it a
+   * no-op — safe for CLI / non-HTTP code paths (those don't race).
+   */
+  async acquireUserAdvisoryLock(userId: string): Promise<void> {
+    const m = this.manager();
+    await m.query(
+      `SELECT pg_advisory_xact_lock(hashtext('qr:identity:' || $1)::bigint)`,
+      [userId],
+    );
+  }
+
+  /**
    * Selects the EntityManager bound to the active tenant transaction (set
    * by `TenantContextInterceptor`) when present, otherwise falls back to
    * the repository's default pool manager. The fallback is required for

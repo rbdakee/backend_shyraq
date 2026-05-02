@@ -12,14 +12,22 @@
  * idx `(user_id, purpose) WHERE revoked_at IS NULL` rejected the second,
  * surfacing as a 500. The fix is `pg_advisory_xact_lock` keyed on the
  * user-id at the start of `issueOrRefresh`; the second concurrent call
- * blocks until the first commits, then re-runs cleanly.
+ * blocks until the first commits.
+ *
+ * After the T7-2 reuse-flow fix the second/third concurrent caller no
+ * longer revokes-and-mints — they read the cache populated by the first
+ * caller (an in-memory fake here, hooked through the same port) and
+ * return the same plaintext. Final DB state is 1 active row + 0 revoked
+ * rows; all three callers receive the same token.
  *
  * The spec runs three concurrent `service.issueOrRefresh(userId)` calls
  * inside the same TenantContextInterceptor wiring the HTTP path uses, and
  * asserts:
  *   - All three resolve (no thrown error / 500).
- *   - Final DB state has exactly 1 active row + 2 revoked rows for that
+ *   - Final DB state has exactly 1 active row, 0 revoked rows for that
  *     user, all with valid 64-hex token_hash.
+ *   - All three callers received the SAME plaintext (advisory-lock
+ *     serializes; first caller mints, next two reuse from cache).
  *   - No 23505 leaks through.
  */
 import 'reflect-metadata';
@@ -44,14 +52,32 @@ const SHOULD_RUN = process.env.INTEGRATION_DB === '1';
 const describeIntegration = SHOULD_RUN ? describe : describe.skip;
 
 class FakeQrTokenCache extends QrTokenCachePort {
-  async setToken(): Promise<void> {
-    // No-op: race-test is purely about the DB partial-unique invariant.
+  // Plaintext-keyed entries are not exercised by issueOrRefresh's reuse
+  // path; only the user-keyed map below matters for serialization.
+  store = new Map<string, string>();
+  userStore = new Map<string, string>();
+
+  setToken(plaintext: string, userId: string): Promise<void> {
+    this.store.set(plaintext, userId);
+    return Promise.resolve();
   }
-  lookup(): Promise<string | null> {
-    return Promise.resolve(null);
+  lookup(plaintext: string): Promise<string | null> {
+    return Promise.resolve(this.store.get(plaintext) ?? null);
   }
-  async revoke(): Promise<void> {
-    // No-op.
+  revoke(plaintext: string): Promise<void> {
+    this.store.delete(plaintext);
+    return Promise.resolve();
+  }
+  setUserActiveToken(userId: string, plaintext: string): Promise<void> {
+    this.userStore.set(userId, plaintext);
+    return Promise.resolve();
+  }
+  getUserActiveToken(userId: string): Promise<string | null> {
+    return Promise.resolve(this.userStore.get(userId) ?? null);
+  }
+  clearUserActiveToken(userId: string): Promise<void> {
+    this.userStore.delete(userId);
+    return Promise.resolve();
   }
 }
 
@@ -169,11 +195,14 @@ describeIntegration('IdentityQrService — concurrent issueOrRefresh', () => {
     );
   }
 
-  it('three concurrent issueOrRefresh calls all succeed; final state = 1 active + 2 revoked', async () => {
+  it('three concurrent issueOrRefresh calls all succeed; final state = 1 active + 0 revoked, all callers share the same token', async () => {
     const service = makeService();
 
     // Three parallel HTTP-equivalents. Each opens its own TX via
-    // TenantContextInterceptor; they race for the advisory lock.
+    // TenantContextInterceptor; they race for the advisory lock. The
+    // first caller mints (cache empty); the next two acquire the lock
+    // sequentially, find the user-keyed cache populated, and reuse the
+    // freshly-minted plaintext.
     const results = await Promise.all([
       runScoped(() => service.issueOrRefresh(userId)),
       runScoped(() => service.issueOrRefresh(userId)),
@@ -186,6 +215,10 @@ describeIntegration('IdentityQrService — concurrent issueOrRefresh', () => {
       expect(r.expiresAt.getTime()).toBeGreaterThan(r.issuedAt.getTime());
     }
 
+    // All three callers received the same plaintext (reuse-flow + lock).
+    const distinct = new Set(results.map((r) => r.token));
+    expect(distinct.size).toBe(1);
+
     const rows = (await dataSource.query(
       `SELECT id, token_hash, revoked_at FROM user_qr_tokens WHERE user_id = $1`,
       [userId],
@@ -195,13 +228,8 @@ describeIntegration('IdentityQrService — concurrent issueOrRefresh', () => {
       revoked_at: string | null;
     }>;
 
-    expect(rows).toHaveLength(3);
-    const active = rows.filter((r) => r.revoked_at === null);
-    const revoked = rows.filter((r) => r.revoked_at !== null);
-    expect(active).toHaveLength(1);
-    expect(revoked).toHaveLength(2);
-    for (const r of rows) {
-      expect(r.token_hash).toMatch(/^[0-9a-f]{64}$/);
-    }
+    expect(rows).toHaveLength(1);
+    expect(rows[0].revoked_at).toBeNull();
+    expect(rows[0].token_hash).toMatch(/^[0-9a-f]{64}$/);
   });
 });

@@ -48,4 +48,22 @@ export abstract class IdentityQrRepository {
   abstract revokeById(id: string, now: Date): Promise<void>;
 
   abstract updateLastScannedAt(id: string, now: Date): Promise<void>;
+
+  /**
+   * Acquires a transaction-scoped Postgres advisory lock keyed on the user.
+   * Idempotent within a TX; released automatically on TX commit/rollback.
+   * Used by the issueOrRefresh flow to serialize concurrent
+   * `GET /users/me/qr` calls for the same user — without this lock two
+   * simultaneous calls both see "no active row", both run revoke-all (no-op),
+   * then race on INSERT into the partial unique idx
+   * `(user_id, purpose) WHERE revoked_at IS NULL` and the second crashes
+   * with PG 23505 → 500. With the lock the second caller blocks until the
+   * first commits, then either reuses the just-minted token (if the cache
+   * is now warm and the row is fresh) or revokes-and-mints cleanly.
+   *
+   * Implementations should silently no-op when no ambient TX is available
+   * (CLI scripts, integration tests outside the HTTP pipeline). The
+   * race-integration spec exercises the real lock against PG.
+   */
+  abstract acquireUserAdvisoryLock(userId: string): Promise<void>;
 }

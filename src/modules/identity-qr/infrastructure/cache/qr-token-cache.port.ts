@@ -1,18 +1,29 @@
 /**
- * Plaintext-keyed QR token cache. Maps `qr:token:{plaintext} → userId`,
- * letting the staff-scan path skip the DB on cache hits.
+ * QR token cache. Two paired Redis keys per active QR:
+ *   - `qr:token:{plaintext} → userId` (TTL = remaining token lifetime).
+ *     Used by `/staff/qr/scan` to map a presented plaintext to a user-id
+ *     without hitting the DB on the hot path. Plaintext-keyed because the
+ *     scan path receives the plaintext from the client.
+ *   - `qr:user:{userId}:identity → plaintext` (same TTL).
+ *     Used by `GET /users/me/qr` to recover the active plaintext on a
+ *     subsequent GET inside the reuse window so the same token is returned
+ *     instead of always minting (the locked contract: reuse if the active
+ *     row's `expires_at - now > 1h`). User-keyed because the issuance path
+ *     only knows the userId (the previous plaintext was discarded after
+ *     the previous response).
  *
- * Design note: the cache is keyed on plaintext, but admin bulk-revoke
- * `POST /admin/qr/revoke-all/:userId` only has the SHA-256 `token_hash`
- * (admin never sees plaintext). There is no reverse hash→plaintext index
- * by design (owning a hash should not let you reconstruct the plaintext).
+ * Cache miss handling: both keys are advisory. `scan` always re-validates
+ * via the DB row's `revoked_at` / `expires_at` (DB is SoT). `issueOrRefresh`
+ * falls through to mint-fresh when the user-key is missing OR when the DB
+ * row no longer matches the cache (revoked / expired / about-to-expire).
  *
- * Resolution:
- *   - The auto-refresh path on `GET /users/me/qr` *can* call `revoke()`
- *     because the server has the just-revoked plaintext in scope.
- *   - The admin bulk-revoke path *does not* invalidate cache. Cache TTL
- *     never exceeds 24h (the token TTL), and `scan` always re-checks the
- *     DB row's `revoked_at` after a cache hit — DB is the source of truth.
+ * Admin bulk-revoke (`POST /admin/qr/revoke-all/:userId`) clears
+ * `qr:user:{userId}:identity` (key reachable by userId), which is a real
+ * UX improvement: the user's next GET mints fresh immediately rather than
+ * returning a soon-to-410 reused token. The plaintext-keyed entry
+ * (`qr:token:{plaintext}`) cannot be cleared from the admin path (admin
+ * has only the hash), but it stays correct because `scan`'s DB-recheck
+ * surfaces `qr_token_revoked` (410) regardless.
  */
 export abstract class QrTokenCachePort {
   /** Sets `qr:token:{plaintext} → userId` with `EX ttlSeconds`. */
@@ -27,4 +38,26 @@ export abstract class QrTokenCachePort {
 
   /** Deletes the plaintext entry — used by the user-driven refresh path. */
   abstract revoke(plaintext: string): Promise<void>;
+
+  /**
+   * Sets `qr:user:{userId}:identity → plaintext` with `EX ttlSeconds`.
+   * Paired with `setToken` on every successful mint so the next
+   * `issueOrRefresh` for the same user can reuse the active plaintext
+   * without rerolling the token.
+   */
+  abstract setUserActiveToken(
+    userId: string,
+    plaintext: string,
+    ttlSeconds: number,
+  ): Promise<void>;
+
+  /** Returns the cached active plaintext for `userId` or `null` on miss. */
+  abstract getUserActiveToken(userId: string): Promise<string | null>;
+
+  /**
+   * Deletes `qr:user:{userId}:identity`. Called by admin bulk-revoke so
+   * the next user GET mints fresh (the just-revoked plaintext is no
+   * longer reusable).
+   */
+  abstract clearUserActiveToken(userId: string): Promise<void>;
 }
