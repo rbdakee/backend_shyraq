@@ -222,7 +222,18 @@ CREATE POLICY tenant_isolation ON <name>
 
 ### 3.5 Cross-tenant tables
 
-`users`, `refresh_tokens` (с nullable `kindergarten_id`), `saas_users`, `saas_refresh_tokens` — глобальные. RLS не накладывается. Изоляция обеспечивается на уровне сервиса (например, refresh-token revocation scoped по `kindergarten_id` + `user_id`).
+`users`, `saas_users`, `saas_refresh_tokens` — глобальные, RLS не накладывается.
+
+`refresh_tokens` (`kindergarten_id` nullable) — **fizycznie tenant-scoped**: таблица имеет `FORCE ROW LEVEL SECURITY` + policy `tenant_isolation` (см. миграцию `1777593601000-AuthAndUsersTables`, строка 110). Однако три репо-метода `RefreshTokenRelationalRepository.{create, rotate, revokeAllByUserId}` сознательно обходят RLS через `SET LOCAL app.bypass_rls='true'` потому что:
+
+- `create` / `rotate` вызываются из публичных эндпоинтов (`/auth/otp/verify`, `/auth/refresh`), которые не проходят через `KindergartenScopeGuard` — у запроса нет `kindergarten_id`, к которому RLS могла бы прикрепить.
+- `revokeAllByUserId` вызывается из `/auth/logout` "logout-from-all-sessions" path и должен попасть в строки **всех** kindergartens, где у пользователя есть активные сессии. Без bypass RLS отфильтрует UPDATE до строки в kg-A (caller's tenant), оставив kg-B сессию активной — реальный session leak для multi-kg пользователей.
+
+`revokeAllByUserId` использует **fresh-connection sub-transaction** (`this.repo.manager.transaction(...)`), а не savepoint в ambient TX (`outerManager.transaction(...)`). PostgreSQL `RELEASE SAVEPOINT` не сбрасывает GUC, поэтому `SET LOCAL app.bypass_rls='true'` в savepoint утёк бы в остаток request-TX. Trade-off: revoke commit'ится независимо от outer HTTP TX — если controller бросит ошибку после revoke, отмена не откатится. Для logout это желаемое поведение (partial-revoked > partial-keep).
+
+Для остальных read-методов (`hasActiveSessionForDevice`, `revokeByHash`) RLS пропускает строки естественно — owner `user_id` + ambient `app.kindergarten_id` совпадают.
+
+Изоляция в любом случае защищена на уровне сервиса (явные `kindergarten_id` + `user_id` фильтры в repo-методах).
 
 ### 3.6 B8 manual attendance flow
 
@@ -374,6 +385,11 @@ Worker (каждые 2с)
 Подключение: `wss://host/ws`, JWT передаётся в `socket.handshake.auth.token` (не в query — query параметры попадают в access-логи).
 
 `NotificationGateway.handleConnection` верифицирует JWT через `JwtTokenPort` + `TokenBlocklistPort`. При ошибке — эмитит `auth_error` (`{ message: 'unauthorized' }`) и отключает сокет. (`connect_error` в socket.io v4 зарезервирован для middleware-уровня; с сервера не эмитируется.)
+
+**Long-lived session safety (F15 fix)** — handshake-only auth не закрывает три сценария: (1) logout, (2) истечение access-token TTL, (3) admin revoke. Гейтвей реализует две защиты:
+
+- **Layer A — per-socket TTL.** На успешном connect шедулится `setTimeout(payload.exp * 1000 - Date.now())` (cap 24h sanity bound). При срабатывании эмитит `auth_error` (`{ message: 'token_expired' }`) + `disconnect(true)`. На reconnect с новым токеном — новый таймер. Очищается в `handleDisconnect`.
+- **Layer B — blocklist propagation.** `RedisTokenBlocklistAdapter.blocklist()` после SET делает `PUBLISH token:blocklist:events <jti>`. Каждый api-процесс держит отдельный subscriber-клиент через `TokenBlocklistEventsPort` (`WsBlocklistListenerService` в `src/websocket/`). На входящее событие — гейтвей по in-process индексу `Map<jti, Set<Socket>>` находит локальные сокеты и шлёт им `auth_error` (`{ message: 'session_revoked' }`) + `disconnect(true)`. Pub/sub фанит на все api-реплики; worker-процесс не подписан (нет сокетов).
 
 После успешной аутентификации `WsAutoSubscribeService` подписывает сокет на комнаты согласно `role` + `kindergarten_id` из JWT:
 

@@ -24,6 +24,8 @@ import { OtpLockedError } from '@/modules/auth/domain/errors/otp-locked.error';
 import { OtpRateLimitedError } from '@/modules/auth/domain/errors/otp-rate-limited.error';
 import { RefreshInvalidError } from '@/modules/auth/domain/errors/refresh-invalid.error';
 import { RoleNotAvailableError } from '@/modules/auth/domain/errors/role-not-available.error';
+import { RoleSelectNotRequiredError } from '@/modules/auth/domain/errors/role-select-not-required.error';
+import { SaasLoginRateLimitError } from '@/modules/auth/domain/errors/saas-login-rate-limit.error';
 import { FiscalSettingsForbiddenError } from '@/modules/kindergarten/domain/errors/fiscal-settings-forbidden.error';
 import { KindergartenArchivedError } from '@/modules/kindergarten/domain/errors/kindergarten-archived.error';
 import { KindergartenNotFoundError } from '@/modules/kindergarten/domain/errors/kindergarten-not-found.error';
@@ -99,11 +101,14 @@ export class DomainErrorFilter implements ExceptionFilter {
   private statusFor(err: unknown): number | null {
     if (err instanceof OtpRateLimitedError) return HttpStatus.TOO_MANY_REQUESTS;
     if (err instanceof OtpLockedError) return HttpStatus.TOO_MANY_REQUESTS;
+    if (err instanceof SaasLoginRateLimitError)
+      return HttpStatus.TOO_MANY_REQUESTS;
     if (err instanceof OtpExpiredError) return HttpStatus.BAD_REQUEST;
     if (err instanceof OtpInvalidError) return HttpStatus.BAD_REQUEST;
     if (err instanceof InvalidCredentialsError) return HttpStatus.UNAUTHORIZED;
     if (err instanceof RefreshInvalidError) return HttpStatus.UNAUTHORIZED;
     if (err instanceof RoleNotAvailableError) return HttpStatus.FORBIDDEN;
+    if (err instanceof RoleSelectNotRequiredError) return HttpStatus.FORBIDDEN;
     if (err instanceof NoActiveRolesError) return HttpStatus.FORBIDDEN;
     if (err instanceof IinAlreadyTakenError) return HttpStatus.CONFLICT;
     if (err instanceof ProfileUniqueViolationError) return HttpStatus.CONFLICT;

@@ -45,6 +45,14 @@ class EnvironmentVariablesValidator {
   @IsOptional()
   RATE_LIMIT_SUPER_ADMIN_LOGIN_WINDOW_SEC: number;
 
+  @IsInt()
+  @IsOptional()
+  RATE_LIMIT_PARENT_LINK_LIMIT: number;
+
+  @IsInt()
+  @IsOptional()
+  RATE_LIMIT_PARENT_LINK_WINDOW_SEC: number;
+
   @IsString()
   @IsOptional()
   OTP_TEST_PHONES: string;
@@ -85,6 +93,12 @@ export default registerAs<AuthConfig>('auth', () => {
     rateLimitSuperAdminLoginWindowSec: process.env
       .RATE_LIMIT_SUPER_ADMIN_LOGIN_WINDOW_SEC
       ? parseInt(process.env.RATE_LIMIT_SUPER_ADMIN_LOGIN_WINDOW_SEC, 10)
+      : 3600,
+    rateLimitParentLinkLimit: process.env.RATE_LIMIT_PARENT_LINK_LIMIT
+      ? parseInt(process.env.RATE_LIMIT_PARENT_LINK_LIMIT, 10)
+      : 5,
+    rateLimitParentLinkWindowSec: process.env.RATE_LIMIT_PARENT_LINK_WINDOW_SEC
+      ? parseInt(process.env.RATE_LIMIT_PARENT_LINK_WINDOW_SEC, 10)
       : 3600,
     otpTestPhones: process.env.OTP_TEST_PHONES || '',
     otpTestCode: process.env.OTP_TEST_CODE || '000000',

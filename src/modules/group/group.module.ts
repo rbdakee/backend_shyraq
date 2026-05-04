@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { forwardRef, Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { LocationModule } from '@/modules/location/location.module';
 import { StaffModule } from '@/modules/staff/staff.module';
@@ -13,11 +13,15 @@ import { GroupRelationalRepository } from './infrastructure/persistence/relation
  * GroupModule — wires the rich group + group_mentors aggregate. Imports
  * StaffModule (to look up StaffMemberRepository for assignMentor pre-checks)
  * and LocationModule (to validate `current_location_id` on create/update).
+ *
+ * `StaffModule` is imported with `forwardRef` because StaffService imports
+ * `GroupRepository` (for the F10 mentor cascade on deactivate/archive),
+ * which closes the dependency cycle.
  */
 @Module({
   imports: [
     TypeOrmModule.forFeature([GroupEntity, GroupMentorEntity]),
-    StaffModule,
+    forwardRef(() => StaffModule),
     LocationModule,
   ],
   controllers: [GroupController],

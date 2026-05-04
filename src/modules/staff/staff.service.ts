@@ -1,8 +1,9 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { Locale } from '@/shared-kernel/domain/value-objects/locale.vo';
 import { Phone } from '@/shared-kernel/domain/value-objects/phone.vo';
 import { SmsPort } from '@/modules/auth/sms.port';
+import { GroupRepository } from '@/modules/group/infrastructure/persistence/group.repository';
 import { UserRepository } from '@/modules/users/infrastructure/persistence/user.repository';
 import { StaffMember, StaffRole } from './domain/entities/staff-member.entity';
 import { SpecialistType } from './domain/value-objects/specialist-type.vo';
@@ -51,6 +52,13 @@ export class StaffService {
     private readonly users: UserRepository,
     private readonly sms: SmsPort,
     @Inject(ClockPort) private readonly clock: ClockPort,
+    // GroupRepository is provided by GroupModule. The two modules form a
+    // legitimate cycle (GroupModule needs StaffMemberRepository for
+    // assign-mentor pre-checks; StaffService needs GroupRepository for the
+    // F10 deactivate/archive mentor cascade), so the import on GroupModule
+    // is wrapped in `forwardRef` and we mirror that here.
+    @Inject(forwardRef(() => GroupRepository))
+    private readonly groups: GroupRepository,
   ) {}
 
   // ── reads ────────────────────────────────────────────────────────────────
@@ -147,8 +155,16 @@ export class StaffService {
     if (!current) throw new StaffNotFoundError(id);
     if (current.isArchived) throw new StaffArchivedError(id);
     if (!current.isActive) return current; // idempotent
-    current.deactivate(this.clock.now());
-    return this.staff.save(current);
+    const now = this.clock.now();
+    current.deactivate(now);
+    const saved = await this.staff.save(current);
+    // F10 cascade — close every active group_mentors row owned by this
+    // staff member. A deactivated staff cannot continue to occupy a group's
+    // unique active-mentor slot. Idempotent (returns 0 when none active).
+    // Runs inside the request-scoped TX from TenantContextInterceptor, so
+    // the staff update + the cascade UPDATE commit atomically.
+    await this.groups.unassignMentorByStaffMember(kindergartenId, id, now);
+    return saved;
   }
 
   async activate(kindergartenId: string, id: string): Promise<StaffMember> {
@@ -164,8 +180,14 @@ export class StaffService {
     const current = await this.staff.findById(kindergartenId, id);
     if (!current) throw new StaffNotFoundError(id);
     if (current.isArchived) return current; // idempotent
-    current.archive(this.clock.now());
-    return this.staff.save(current);
+    const now = this.clock.now();
+    current.archive(now);
+    const saved = await this.staff.save(current);
+    // F10 cascade — archived staff is implicitly deactivated, so the same
+    // mentor-row close-out applies. Idempotent (no-op when not actively
+    // mentoring anywhere).
+    await this.groups.unassignMentorByStaffMember(kindergartenId, id, now);
+    return saved;
   }
 
   async restore(kindergartenId: string, id: string): Promise<StaffMember> {

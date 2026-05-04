@@ -113,6 +113,46 @@ export class ChildDailyStatusRelationalRepository extends ChildDailyStatusReposi
     return ChildDailyStatusMapper.toDomain(row);
   }
 
+  /**
+   * Conditional UPDATE: flip status → present only when current is
+   * `absent` or `late`. Race-safe replacement for the read-then-save flow
+   * in `AttendanceService.checkIn` step 3. Returns the post-update row
+   * when affected ≥ 1, otherwise re-reads the unchanged row so the
+   * service can return what's currently in the DB without overwriting
+   * a concurrent explicit setter (sick / on_vacation / etc.).
+   */
+  async updatePresentIfAbsentOrLate(
+    kindergartenId: string,
+    childId: string,
+    date: string,
+    setBy: string | null,
+    now: Date,
+  ): Promise<{ updated: boolean; current: ChildDailyStatus | null }> {
+    const m = this.manager();
+    const result = await m
+      .getRepository(ChildDailyStatusTypeOrmEntity)
+      .createQueryBuilder()
+      .update(ChildDailyStatusTypeOrmEntity)
+      .set({ status: 'present', set_by: setBy, updated_at: now })
+      .where('kindergarten_id = :kg', { kg: kindergartenId })
+      .andWhere('child_id = :cid', { cid: childId })
+      .andWhere('date = :d', { d: date })
+      .andWhere("status IN ('absent', 'late')")
+      .execute();
+    const updated = (result.affected ?? 0) > 0;
+    const row = await m.getRepository(ChildDailyStatusTypeOrmEntity).findOne({
+      where: {
+        kindergarten_id: kindergartenId,
+        child_id: childId,
+        date,
+      },
+    });
+    return {
+      updated,
+      current: row ? ChildDailyStatusMapper.toDomain(row) : null,
+    };
+  }
+
   async list(
     kindergartenId: string,
     filter: ListDailyStatusFilter,

@@ -157,6 +157,9 @@ export class GroupService {
     if (!staff.isActive || staff.isArchived) {
       throw new MentorNotEligibleError(staffMemberId);
     }
+    if (staff.role !== 'mentor') {
+      throw new MentorNotEligibleError(staffMemberId);
+    }
 
     return this.groups.assignMentor(
       kindergartenId,

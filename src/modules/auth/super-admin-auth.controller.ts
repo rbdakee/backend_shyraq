@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Headers,
   HttpCode,
   HttpStatus,
   Post,
@@ -20,11 +21,14 @@ import {
 import type { Request } from 'express';
 import { CurrentUser } from '@/common/decorators/current-user.decorator';
 import { Public } from '@/common/decorators/public.decorator';
+import { Roles } from '@/common/decorators/roles.decorator';
 import { SuperAdminScope } from '@/common/decorators/super-admin-scope.decorator';
 import { JwtAuthGuard } from '@/common/guards/jwt-auth.guard';
+import { RolesGuard } from '@/common/guards/roles.guard';
 import type { JwtPayload } from '@/common/types/jwt-payload';
 import { AuthPresenter } from './auth.presenter';
 import { AuthService } from './auth.service';
+import { JwtTokenPort } from './jwt-token.port';
 import { SuperAdminAuthResponseDto } from './dto/auth-response.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { SuperAdminLoginDto } from './dto/super-admin-login.dto';
@@ -32,7 +36,10 @@ import { SuperAdminLoginDto } from './dto/super-admin-login.dto';
 @ApiTags('SuperAdmin')
 @Controller({ path: 'saas/auth', version: '1' })
 export class SuperAdminAuthController {
-  constructor(private readonly auth: AuthService) {}
+  constructor(
+    private readonly auth: AuthService,
+    private readonly jwt: JwtTokenPort,
+  ) {}
 
   @Post('login')
   @Public()
@@ -92,17 +99,37 @@ export class SuperAdminAuthController {
   })
   async refresh(
     @Body() dto: RefreshTokenDto,
+    @Headers('authorization') authorization: string | undefined,
     @Req() req: Request,
   ): Promise<SuperAdminAuthResponseDto> {
+    // Best-effort: decode (no verification) the old access token from the
+    // Authorization header so its JTI can be blocklisted immediately.
+    // Failure to decode (header absent or malformed) is silently ignored.
+    let oldAccessJti: string | undefined;
+    let oldAccessExpUnix: number | undefined;
+    if (authorization && authorization.startsWith('Bearer ')) {
+      const token = authorization.slice(7).trim();
+      if (token.length > 0) {
+        const decoded = this.jwt.decodeWithoutVerify(token);
+        if (decoded?.jti && typeof decoded.exp === 'number') {
+          oldAccessJti = decoded.jti;
+          oldAccessExpUnix = decoded.exp;
+        }
+      }
+    }
+
     const result = await this.auth.superAdminRefresh({
       rawRefreshToken: dto.refreshToken,
+      oldAccessJti,
+      oldAccessExpUnix,
       ipAddress: req.ip,
     });
     return AuthPresenter.superAdminAuthResult(result);
   }
 
   @Post('logout')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('super_admin', 'support')
   @SuperAdminScope()
   @ApiBearerAuth()
   @HttpCode(HttpStatus.NO_CONTENT)

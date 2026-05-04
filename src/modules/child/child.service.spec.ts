@@ -1,6 +1,8 @@
+import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
 import { DataSource, EntityManager } from 'typeorm';
 import { NotificationPort } from '@/common/notifications/notification.port';
+import { OtpStorePort, StoredOtp } from '@/modules/auth/otp-store.port';
 import { Group } from '@/modules/group/domain/entities/group.entity';
 import { GroupNotFoundError } from '@/modules/group/domain/errors/group-not-found.error';
 import {
@@ -48,6 +50,8 @@ import { InvalidGuardianStatusTransitionError } from './domain/errors/invalid-gu
 import { MaxApprovalRightsExceededError } from './domain/errors/max-approval-rights-exceeded.error';
 import { MultipleChildrenForIinError } from './domain/errors/multiple-children-for-iin.error';
 import { NotPrimaryGuardianError } from './domain/errors/not-primary-guardian.error';
+import { ParentLinkRateLimitError } from './domain/errors/parent-link-rate-limit.error';
+import { PrimaryCannotSelfRevokeError } from './domain/errors/primary-cannot-self-revoke.error';
 import { PrimaryCannotSelfUnlinkError } from './domain/errors/primary-cannot-self-unlink.error';
 
 // ── fakes ─────────────────────────────────────────────────────────────────
@@ -291,6 +295,13 @@ class FakeGuardianRepo extends ChildGuardianRepository {
     );
   }
 
+  acquireApprovalRightsLock(
+    _kindergartenId: string,
+    _childId: string,
+  ): Promise<void> {
+    return Promise.resolve();
+  }
+
   listApprovedKindergartenIdsByUserId(userId: string): Promise<string[]> {
     return Promise.resolve(
       Array.from(
@@ -337,9 +348,18 @@ class FakeGuardianRepo extends ChildGuardianRepository {
     return Promise.resolve(null);
   }
   findApprovedActiveByUserIdCrossTenant(
-    _userId: string,
+    userId: string,
+    kindergartenId?: string,
   ): Promise<ChildGuardian[]> {
-    return Promise.resolve([]);
+    return Promise.resolve(
+      [...this.guardians.values()].filter(
+        (g) =>
+          g.userId === userId &&
+          g.status.value === 'approved' &&
+          !g.revokedAt &&
+          (kindergartenId === undefined || g.kindergartenId === kindergartenId),
+      ),
+    );
   }
   findApprovedActiveByUserAndChild(): Promise<ChildGuardian | null> {
     return Promise.resolve(null);
@@ -380,6 +400,9 @@ class FakeGroupRepo extends GroupRepository {
   }
   unassignMentor(): Promise<GroupMentor | null> {
     return Promise.resolve(null);
+  }
+  unassignMentorByStaffMember(): Promise<number> {
+    return Promise.resolve(0);
   }
   findActiveMentor(): Promise<GroupMentor | null> {
     return Promise.resolve(null);
@@ -496,6 +519,76 @@ const fakeDataSource = {
     cb(fakeManager),
 } as unknown as DataSource;
 
+/**
+ * Minimal in-memory `OtpStorePort` for ChildService tests. Only
+ * `checkRateLimitGeneric` is exercised by `linkChildByIin`; the rest are
+ * implemented as no-ops to satisfy the abstract contract.
+ */
+class FakeOtpStore extends OtpStorePort {
+  rateCounts = new Map<string, number>();
+  checkRateLimit(
+    phone: string,
+    maxPerWindow: number,
+    _windowSec: number,
+  ): Promise<'ok' | 'exceeded'> {
+    const next = (this.rateCounts.get(phone) ?? 0) + 1;
+    this.rateCounts.set(phone, next);
+    return Promise.resolve(next > maxPerWindow ? 'exceeded' : 'ok');
+  }
+  checkRateLimitGeneric(
+    key: string,
+    maxPerWindow: number,
+    _windowSec: number,
+  ): Promise<'ok' | 'exceeded'> {
+    const next = (this.rateCounts.get(key) ?? 0) + 1;
+    this.rateCounts.set(key, next);
+    return Promise.resolve(next > maxPerWindow ? 'exceeded' : 'ok');
+  }
+  isLocked(_phone: string): Promise<boolean> {
+    return Promise.resolve(false);
+  }
+  storeCode(_p: string, _c: string, _t: number): Promise<void> {
+    return Promise.resolve();
+  }
+  readCode(_p: string): Promise<StoredOtp | null> {
+    return Promise.resolve(null);
+  }
+  incrementAttempts(_p: string): Promise<number> {
+    return Promise.resolve(0);
+  }
+  lockPhone(_p: string, _t: number): Promise<void> {
+    return Promise.resolve();
+  }
+  clearCode(_p: string): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
+/**
+ * Stub `ConfigService` exposing only the auth.* keys ChildService reads.
+ * Defaults mirror `auth.config.ts` so the rate-limit test can override them
+ * (e.g. set the limit to 2 to exercise the throttle quickly).
+ */
+function makeFakeConfig(
+  overrides: {
+    rateLimitParentLinkLimit?: number;
+    rateLimitParentLinkWindowSec?: number;
+  } = {},
+): ConfigService {
+  const values: Record<string, unknown> = {
+    'auth.rateLimitParentLinkLimit': overrides.rateLimitParentLinkLimit ?? 5,
+    'auth.rateLimitParentLinkWindowSec':
+      overrides.rateLimitParentLinkWindowSec ?? 3600,
+  };
+  return {
+    getOrThrow: (key: string): unknown => {
+      if (!(key in values)) throw new Error(`config_not_set: ${key}`);
+      return values[key];
+    },
+    get: (key: string): unknown => values[key],
+  } as unknown as ConfigService;
+}
+
 class FakeNotification extends NotificationPort {
   events: { type: string; payload: unknown }[] = [];
   push(type: string, payload: unknown): Promise<void> {
@@ -594,7 +687,12 @@ function makeUser(id: string, phone: string): User {
   });
 }
 
-function setup() {
+function setup(
+  opts: {
+    rateLimitParentLinkLimit?: number;
+    rateLimitParentLinkWindowSec?: number;
+  } = {},
+) {
   const clock = new FakeClock(NOW);
   const children = new FakeChildRepo();
   const guardians = new FakeGuardianRepo();
@@ -602,6 +700,8 @@ function setup() {
   const staff = new FakeStaffRepo();
   const users = new FakeUserRepo();
   const notification = new FakeNotification();
+  const otpStore = new FakeOtpStore();
+  const configService = makeFakeConfig(opts);
   const service = new ChildService(
     children,
     guardians,
@@ -611,6 +711,8 @@ function setup() {
     notification,
     clock,
     fakeDataSource,
+    otpStore,
+    configService,
   );
   return {
     clock,
@@ -620,6 +722,8 @@ function setup() {
     staff,
     users,
     notification,
+    otpStore,
+    configService,
     service,
   };
 }
@@ -1008,6 +1112,62 @@ describe('ChildService — guardian state machine', () => {
     expect(rows[0].id).toBe(ctx.childId);
   });
 
+  it('listMyChildrenCrossTenant returns approved-guardian children across kgs without a kg arg', async () => {
+    // Two kgs, same primary user, one approved child in each. The
+    // cross-tenant variant fans out and returns both children — used by
+    // /parent/children when the JWT has no kindergarten_id.
+    const ctxA = await bootChildWithPrimary();
+    const { service } = ctxA.setup;
+
+    // Hand-roll a child + approved primary guardian in kg-B via the in-memory
+    // repos (createChild requires a tenant + group lookup; the cross-tenant
+    // service path does not, so we bypass createChild for the foreign kg).
+    const otherChildId = '00000000-0000-0000-0000-000000000c2c';
+    const otherChild = Child.hydrate({
+      id: otherChildId,
+      kindergartenId: KG2,
+      fullName: 'Cross-Kg Child',
+      iin: null,
+      dateOfBirth: new Date('2021-09-15'),
+      gender: null,
+      photoUrl: null,
+      currentGroupId: null,
+      enrollmentDate: null,
+      medicalNotes: null,
+      allergyNotes: null,
+      status: 'active',
+      archivedAt: null,
+      archiveReason: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    ctxA.setup.children.put(otherChild);
+    const otherGuardian = ChildGuardian.hydrate({
+      id: '00000000-0000-0000-0000-000000000c3c',
+      kindergartenId: KG2,
+      childId: otherChildId,
+      userId: ctxA.primaryUserId,
+      role: 'primary',
+      status: 'approved',
+      hasApprovalRights: true,
+      approvedBy: ctxA.primaryUserId,
+      approvedAt: NOW,
+      revokedBy: null,
+      revokedAt: null,
+      canPickup: true,
+      permissions: {},
+      permissionsUpdatedBy: null,
+      permissionsUpdatedAt: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    ctxA.setup.guardians.put(otherGuardian);
+
+    const rows = await service.listMyChildrenCrossTenant(ctxA.primaryUserId);
+    const ids = rows.map((c) => c.id).sort();
+    expect(ids).toEqual([ctxA.childId, otherChildId].sort());
+  });
+
   it('updateGuardianRoleAndPickup throws GuardianNotFoundError if id mismatches childId', async () => {
     const ctx = await bootChildWithPrimary();
     const { service } = ctx.setup;
@@ -1023,6 +1183,107 @@ describe('ChildService — guardian state machine', () => {
         { canPickup: false },
       ),
     ).rejects.toBeInstanceOf(GuardianNotFoundError);
+  });
+});
+
+// ── revokeGuardianByPrimary self-revoke guard ─────────────────────────────
+
+describe('ChildService — revokeGuardianByPrimary', () => {
+  async function bootWithPrimaryAndSecondary(): Promise<{
+    setup: ReturnType<typeof setup>;
+    childId: string;
+    primaryUserId: string;
+    primaryGuardianId: string;
+    secondaryUserId: string;
+    secondaryGuardianId: string;
+  }> {
+    const ctx = setup();
+    const primaryUser = makeUser(randomUUID(), '+77011110001');
+    ctx.users.put(primaryUser);
+    const secondaryUser = makeUser(randomUUID(), '+77011110002');
+    ctx.users.put(secondaryUser);
+
+    const child = await ctx.service.createChild(KG, {
+      fullName: 'C',
+      dateOfBirth: new Date('2021-09-15'),
+    });
+
+    const primaryGuardian = ChildGuardian.hydrate({
+      id: randomUUID(),
+      kindergartenId: KG,
+      childId: child.id,
+      userId: primaryUser.id,
+      role: 'primary',
+      status: 'approved',
+      hasApprovalRights: true,
+      approvedBy: primaryUser.id,
+      approvedAt: NOW,
+      revokedBy: null,
+      revokedAt: null,
+      canPickup: true,
+      permissions: {},
+      permissionsUpdatedBy: null,
+      permissionsUpdatedAt: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    ctx.guardians.put(primaryGuardian);
+
+    const secondaryGuardian = ChildGuardian.hydrate({
+      id: randomUUID(),
+      kindergartenId: KG,
+      childId: child.id,
+      userId: secondaryUser.id,
+      role: 'secondary',
+      status: 'approved',
+      hasApprovalRights: false,
+      approvedBy: primaryUser.id,
+      approvedAt: NOW,
+      revokedBy: null,
+      revokedAt: null,
+      canPickup: true,
+      permissions: {},
+      permissionsUpdatedBy: null,
+      permissionsUpdatedAt: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    ctx.guardians.put(secondaryGuardian);
+
+    return {
+      setup: ctx,
+      childId: child.id,
+      primaryUserId: primaryUser.id,
+      primaryGuardianId: primaryGuardian.id,
+      secondaryUserId: secondaryUser.id,
+      secondaryGuardianId: secondaryGuardian.id,
+    };
+  }
+
+  it('throws PrimaryCannotSelfRevokeError when primary tries to revoke own row', async () => {
+    const ctx = await bootWithPrimaryAndSecondary();
+    const { service } = ctx.setup;
+    await expect(
+      service.revokeGuardianByPrimary(
+        KG,
+        ctx.primaryUserId,
+        ctx.primaryGuardianId,
+      ),
+    ).rejects.toBeInstanceOf(PrimaryCannotSelfRevokeError);
+  });
+
+  it('revokes a secondary guardian row when called by the approved primary', async () => {
+    const ctx = await bootWithPrimaryAndSecondary();
+    const { service, guardians } = ctx.setup;
+    const result = await service.revokeGuardianByPrimary(
+      KG,
+      ctx.primaryUserId,
+      ctx.secondaryGuardianId,
+    );
+    expect(result.status.value).toBe('revoked');
+    expect(result.revokedBy).toBe(ctx.primaryUserId);
+    const persisted = guardians.guardians.get(ctx.secondaryGuardianId);
+    expect(persisted?.status.value).toBe('revoked');
   });
 });
 
@@ -1125,7 +1386,7 @@ describe('ChildService — linkChildByIin', () => {
     ).rejects.toBeInstanceOf(ChildNotFoundForIinError);
   });
 
-  it('throws MultipleChildrenForIinError with kindergartenIds when iin matches multiple children', async () => {
+  it('throws MultipleChildrenForIinError without leaking kindergartenIds when iin matches multiple children', async () => {
     const ctx = setup();
     const callerUser = makeUser(randomUUID(), '+77011112222');
     ctx.users.put(callerUser);
@@ -1150,10 +1411,74 @@ describe('ChildService — linkChildByIin', () => {
       captured = err as MultipleChildrenForIinError;
     }
     expect(captured).toBeInstanceOf(MultipleChildrenForIinError);
-    expect(captured!.kindergartenIds).toEqual(
-      expect.arrayContaining([KG, KG2]),
-    );
-    expect(captured!.kindergartenIds.length).toBe(2);
+    // Information-disclosure guard: details must NOT carry kindergartenIds.
+    expect(captured!.details).toEqual({ iin: sharedIin });
+    expect(
+      (captured! as unknown as { kindergartenIds?: string[] }).kindergartenIds,
+    ).toBeUndefined();
+  });
+
+  it('throws ParentLinkRateLimitError after caller exceeds the per-user limit', async () => {
+    // Tight cap = 2 so the test runs in 3 calls.
+    const ctx = setup({
+      rateLimitParentLinkLimit: 2,
+      rateLimitParentLinkWindowSec: 60,
+    });
+    const callerUser = makeUser(randomUUID(), '+77011112222');
+    ctx.users.put(callerUser);
+    await ctx.service.createChild(KG, {
+      fullName: 'RL',
+      iin: '040315500777',
+      dateOfBirth: new Date('2021-09-15'),
+    });
+
+    // 1st + 2nd attempts pass the rate-limit (2 allowed). They throw
+    // AlreadyPendingForChildError on the 2nd because the 1st created a
+    // pending row — this is irrelevant; we only care about the 3rd hit
+    // exceeding the limit.
+    await ctx.service.linkChildByIin(callerUser.id, {
+      iin: '040315500777',
+      role: 'secondary',
+    });
+    await expect(
+      ctx.service.linkChildByIin(callerUser.id, {
+        iin: '040315500777',
+        role: 'secondary',
+      }),
+    ).rejects.toBeInstanceOf(AlreadyPendingForChildError);
+
+    // 3rd attempt — over the cap → 429.
+    await expect(
+      ctx.service.linkChildByIin(callerUser.id, {
+        iin: '040315500777',
+        role: 'secondary',
+      }),
+    ).rejects.toBeInstanceOf(ParentLinkRateLimitError);
+  });
+
+  it('rate-limit gates the IIN lookup itself — exceeded callers never reach findByIinCrossTenant', async () => {
+    // Tight cap = 1.
+    const ctx = setup({
+      rateLimitParentLinkLimit: 1,
+      rateLimitParentLinkWindowSec: 60,
+    });
+    const callerUser = makeUser(randomUUID(), '+77011113333');
+    ctx.users.put(callerUser);
+    // First call burns the quota and 404s on an unknown IIN.
+    await expect(
+      ctx.service.linkChildByIin(callerUser.id, {
+        iin: '999999999999',
+        role: 'secondary',
+      }),
+    ).rejects.toBeInstanceOf(ChildNotFoundForIinError);
+    // Second call — over the cap. Even though the IIN is still unknown,
+    // the service must short-circuit on rate-limit BEFORE the lookup.
+    await expect(
+      ctx.service.linkChildByIin(callerUser.id, {
+        iin: '999999999998',
+        role: 'secondary',
+      }),
+    ).rejects.toBeInstanceOf(ParentLinkRateLimitError);
   });
 
   it('throws AlreadyLinkedToChildError when caller already approved on the child', async () => {

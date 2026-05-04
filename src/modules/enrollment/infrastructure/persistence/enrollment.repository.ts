@@ -44,6 +44,23 @@ export abstract class EnrollmentRepository {
     enrollment: Enrollment,
   ): Promise<Enrollment>;
 
+  /**
+   * Conditional UPDATE for status transitions: writes the enrollment row
+   * only when the row's current `status` still matches `expectedOldStatus`.
+   * Returns `true` when 1 row was updated, `false` when the row was moved
+   * concurrently (loser of a race).
+   *
+   * Critical for the `card_created` edge: the loser's `createChild` +
+   * `inviteGuardian` writes still happen earlier in the same ambient TX —
+   * the service must throw `EnrollmentTransitionConflictError` on `false`
+   * so the surrounding TX rolls back the orphan child + guardian rows.
+   */
+  abstract updateWithExpectedStatus(
+    kindergartenId: string,
+    enrollment: Enrollment,
+    expectedOldStatus: EnrollmentStatusValue,
+  ): Promise<boolean>;
+
   abstract list(
     kindergartenId: string,
     filter: EnrollmentListFilter,

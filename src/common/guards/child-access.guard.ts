@@ -51,7 +51,11 @@ export class ChildAccessGuard implements CanActivate {
 
     if (!childId) {
       // Routes without a child / guardian id (e.g. listMyChildren) skip the
-      // guard — they apply their own per-row scoping inside the service.
+      // guard — they apply their own per-row scoping inside the service. We
+      // intentionally do NOT touch `req.tenant` here: KindergartenScopeGuard
+      // has already populated it from the JWT (kg-scoped parent) or left it
+      // null (unscoped parent — the controller routes that branch to a
+      // cross-tenant service path).
       return true;
     }
 
@@ -62,6 +66,20 @@ export class ChildAccessGuard implements CanActivate {
     if (!guardian) {
       throw new ForbiddenException('child_access_denied');
     }
+
+    // The approved guardian row carries the kindergarten the parent is acting
+    // for. Pin `req.tenant` to that kg so the downstream
+    // TenantContextInterceptor can issue `SET LOCAL app.kindergarten_id` and
+    // RLS still applies — the parent JWT may not carry `kindergarten_id`
+    // (multi-kg or freshly-linked-but-not-yet-rotated tokens), so without
+    // this hook the controller would either reject as `tenant_required` or
+    // act under a stale kg. Stash the guardian record itself for forward-
+    // looking permission decorators (architecture.md §4.5).
+    req.tenant = {
+      kgId: guardian.kindergartenId,
+      bypass: false,
+    };
+    req.guardianRecord = guardian;
     return true;
   }
 }

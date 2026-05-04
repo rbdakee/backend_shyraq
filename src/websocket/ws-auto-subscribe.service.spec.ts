@@ -70,6 +70,9 @@ class FakeGuardianRepo extends ChildGuardianRepository {
   countApprovalRights(): Promise<number> {
     throw new Error('not impl');
   }
+  acquireApprovalRightsLock(): Promise<void> {
+    return Promise.resolve();
+  }
   listApprovedKindergartenIdsByUserId(): Promise<string[]> {
     throw new Error('not impl');
   }
@@ -123,6 +126,9 @@ class FakeGroupRepo extends GroupRepository {
   }
   unassignMentor(): Promise<never> {
     return Promise.reject(new Error('not impl'));
+  }
+  unassignMentorByStaffMember(): Promise<number> {
+    return Promise.resolve(0);
   }
   findActiveMentor(): Promise<never> {
     return Promise.reject(new Error('not impl'));

@@ -10,6 +10,7 @@ import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { Enrollment } from './domain/entities/enrollment.entity';
 import { EnrollmentMissingRequiredFieldsError } from './domain/errors/enrollment-missing-required-fields.error';
 import { EnrollmentNotFoundError } from './domain/errors/enrollment-not-found.error';
+import { EnrollmentTransitionConflictError } from './domain/errors/enrollment-transition-conflict.error';
 import { EnrollmentStatusLogEntry } from './domain/types/enrollment-status-log-entry';
 import {
   EnrollmentStatus,
@@ -249,6 +250,11 @@ export class EnrollmentService {
       if (!group) throw new GroupNotFoundError(input.currentGroupId!);
     }
 
+    // Capture the old status BEFORE the in-memory transition so the
+    // conditional UPDATE below can guard against a concurrent transition
+    // that already moved the row.
+    const oldStatus = enrollment.status.value;
+
     const { logEntry } = enrollment.transitionTo(
       next,
       callerStaffId,
@@ -275,11 +281,35 @@ export class EnrollmentService {
       enrollment.assignChild(child.id, this.clock);
     }
 
-    const updated = await this.enrollmentRepo.update(
+    // Status-guarded UPDATE: 0 rows affected means another caller already
+    // transitioned the enrollment. Throwing here aborts the ambient TX,
+    // rolling back any `createChild` + `inviteGuardian` writes performed
+    // moments earlier — without this guard, two concurrent card_created
+    // transitions would both create children for the same enrollment.
+    const written = await this.enrollmentRepo.updateWithExpectedStatus(
       kindergartenId,
       enrollment,
+      oldStatus,
     );
+    if (!written) {
+      throw new EnrollmentTransitionConflictError(
+        enrollment.id,
+        oldStatus,
+        next.value,
+      );
+    }
     await this.logRepo.append(kindergartenId, logEntry);
+
+    // Re-read to surface the post-write row (mirrors the legacy
+    // `update().return-row` contract callers expect).
+    const updated = await this.enrollmentRepo.findById(
+      kindergartenId,
+      enrollment.id,
+    );
+    if (!updated) {
+      // Should be impossible — we just wrote under the same RLS scope.
+      throw new EnrollmentNotFoundError(enrollment.id);
+    }
 
     return child === undefined
       ? { enrollment: updated }

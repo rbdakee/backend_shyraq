@@ -189,6 +189,43 @@ class FakeChildDailyStatusRepo extends ChildDailyStatusRepository {
     this.rows[idx] = daily;
     return Promise.resolve(daily);
   }
+  /**
+   * Test override: when set for a `${childId}@${date}`, force
+   * `updatePresentIfAbsentOrLate` to short-circuit and report
+   * `updated=false`. Mirrors the production behaviour when a concurrent
+   * setter has flipped the row to a non-promotable status (sick /
+   * on_vacation / etc.) between the service's read and write — the
+   * conditional UPDATE returns 0 affected rows.
+   */
+  forceUpdateBlockedFor = new Set<string>();
+  updatePresentIfAbsentOrLate(
+    kg: string,
+    childId: string,
+    date: string,
+    setBy: string | null,
+    now: Date,
+  ): Promise<{ updated: boolean; current: ChildDailyStatus | null }> {
+    const key = `${childId}@${date}`;
+    const idx = this.rows.findIndex(
+      (x) =>
+        x.kindergartenId === kg && x.childId === childId && x.date === date,
+    );
+    if (idx < 0) {
+      return Promise.resolve({ updated: false, current: null });
+    }
+    const row = this.rows[idx];
+    if (this.forceUpdateBlockedFor.has(key)) {
+      return Promise.resolve({ updated: false, current: row });
+    }
+    // Mirror SQL: only `absent` and `late` are promotable.
+    const promotable =
+      row.status.value === 'absent' || row.status.value === 'late';
+    if (!promotable) {
+      return Promise.resolve({ updated: false, current: row });
+    }
+    row.markPresent(setBy, { now: () => now });
+    return Promise.resolve({ updated: true, current: row });
+  }
   /** Optional in-memory group lookup so tests can exercise groupId filtering. */
   childGroup = new Map<string, string | null>();
   list(kg: string, filter: ListDailyStatusFilter): Promise<ChildDailyStatus[]> {
@@ -317,6 +354,9 @@ class FakeGuardianRepo extends ChildGuardianRepository {
   }
   countApprovalRights(): Promise<number> {
     return Promise.resolve(0);
+  }
+  acquireApprovalRightsLock(): Promise<void> {
+    return Promise.resolve();
   }
   listApprovedKindergartenIdsByUserId(): Promise<string[]> {
     return Promise.resolve([]);
@@ -670,6 +710,43 @@ describe('AttendanceService — service-unit', () => {
       expect(result.dailyStatus!.status.value).toBe('present');
       expect(w.dailyRepo.rows).toHaveLength(1);
       expect(w.dailyRepo.rows[0].status.value).toBe('present');
+    });
+
+    it('does NOT throw and does NOT overwrite when concurrent setter blocked the conditional UPDATE', async () => {
+      // Repo started with status=absent (which would be promotable), but
+      // a concurrent setter is simulated by `forceUpdateBlockedFor` —
+      // the conditional UPDATE returns 0 affected rows. Service must NOT
+      // throw, must NOT call .save() (which would overwrite), and the
+      // returned dailyStatus must reflect the unchanged in-DB state.
+      const w = wire();
+      const isoDate = NOW.toLocaleDateString('en-CA', {
+        timeZone: 'Asia/Almaty',
+      });
+      const seeded = ChildDailyStatus.createNew(
+        {
+          id: randomUUID(),
+          kindergartenId: KG,
+          childId: CHILD,
+          date: isoDate,
+          status: ChildIntradayStatus.ABSENT,
+          note: null,
+          setBy: STAFF_ID,
+        },
+        w.clock,
+      );
+      w.dailyRepo.put(seeded);
+      w.dailyRepo.forceUpdateBlockedFor.add(`${CHILD}@${isoDate}`);
+      const result = await w.service.checkIn(KG, CHILD, STAFF_USER);
+      // The check-in still returns the existing row's snapshot (the
+      // service prefers `current` from the conditional UPDATE which the
+      // fake returns unchanged). status stays `absent` — the service
+      // did NOT overwrite it.
+      expect(result.dailyStatus!.status.value).toBe('absent');
+      expect(w.dailyRepo.rows[0].status.value).toBe('absent');
+      // Event + timeline + notifications still recorded — check-in is
+      // not aborted by the daily_status conflict.
+      expect(w.eventRepo.rows.size).toBe(1);
+      expect(w.timelineRepo.rows.size).toBe(1);
     });
 
     it('throws ChildNotFoundError when child does not exist in this kindergarten', async () => {

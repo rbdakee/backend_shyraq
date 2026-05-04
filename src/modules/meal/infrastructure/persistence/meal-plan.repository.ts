@@ -79,4 +79,19 @@ export abstract class MealPlanRepository {
     kindergartenId: string,
     plans: MealPlan[],
   ): Promise<{ plans_created: number; plans_skipped: number }>;
+
+  /**
+   * Acquire a per-(kg, week) advisory lock to serialize concurrent
+   * `copyWeekMenuToNext` callers (cron + admin manual trigger, two admin
+   * clicks). Released at the surrounding TX boundary.
+   *
+   * Without the lock, two callers can both observe `existsAnyInRange = false`
+   * in the race window, both enter `batchCreate`, the loser's INSERT hits
+   * 23505 → PG sets the TX state to 25P02 (InFailedSqlTransactionError)
+   * which poisons every subsequent statement in the ambient TX.
+   */
+  abstract acquireWeekCopyLock(
+    kindergartenId: string,
+    weekStartIso: string,
+  ): Promise<void>;
 }

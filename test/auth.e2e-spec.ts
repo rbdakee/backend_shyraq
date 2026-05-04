@@ -213,7 +213,7 @@ describe('Auth — /api/v1/auth/* (e2e)', () => {
     expect(me.status).toBe(401);
   });
 
-  it('selectRole stub rejects with role_not_available (P3 will wire it)', async () => {
+  it('selectRole rejects regular (non-pending) JWT with role_select_not_required', async () => {
     await request(server)
       .post('/api/v1/auth/otp/request')
       .send({ phone: PARENT_PHONE })
@@ -233,6 +233,6 @@ describe('Auth — /api/v1/auth/* (e2e)', () => {
         role: 'teacher',
       });
     expect(res.status).toBe(403);
-    expect((res.body as ErrorBody).error).toBe('role_not_available');
+    expect((res.body as ErrorBody).error).toBe('role_select_not_required');
   });
 });

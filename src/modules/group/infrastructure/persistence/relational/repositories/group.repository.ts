@@ -198,6 +198,27 @@ export class GroupRelationalRepository extends GroupRepository {
     return GroupMentorMapper.toDomain(fresh);
   }
 
+  async unassignMentorByStaffMember(
+    kindergartenId: string,
+    staffMemberId: string,
+    now: Date,
+  ): Promise<number> {
+    // Cascade triggered by Staff lifecycle (deactivate / archive). One staff
+    // member may simultaneously be the active mentor of MULTIPLE groups —
+    // there is no DB constraint forbidding that, the partial-unique index
+    // is keyed on `group_id`. Close every active row in the kg, idempotent.
+    const result = await this.manager()
+      .getRepository(GroupMentorEntity)
+      .createQueryBuilder()
+      .update(GroupMentorEntity)
+      .set({ unassigned_at: now })
+      .where('kindergarten_id = :kg', { kg: kindergartenId })
+      .andWhere('staff_member_id = :sid', { sid: staffMemberId })
+      .andWhere('unassigned_at IS NULL')
+      .execute();
+    return result.affected ?? 0;
+  }
+
   async findActiveMentor(
     kindergartenId: string,
     groupId: string,

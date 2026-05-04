@@ -285,6 +285,26 @@ export class MealPlanRelationalRepository extends MealPlanRepository {
     return { plans_created, plans_skipped };
   }
 
+  /**
+   * `pg_advisory_xact_lock(hashtext('meal-copy:'||kg||':'||weekStart)::bigint)`
+   * — released at the surrounding TX boundary set up by
+   * `TenantContextInterceptor`. Two concurrent `copyWeekMenuToNext` callers
+   * for the same (kg, week) serialize on this lock, so the second one
+   * observes the first one's just-committed plans via `existsAnyInRange`
+   * and short-circuits cleanly with `plans_skipped = sourceCount` instead
+   * of racing into `batchCreate` where a 23505 would poison the ambient TX.
+   */
+  async acquireWeekCopyLock(
+    kindergartenId: string,
+    weekStartIso: string,
+  ): Promise<void> {
+    const m = this.manager();
+    await m.query(
+      `SELECT pg_advisory_xact_lock(hashtext('meal-copy:' || $1 || ':' || $2)::bigint)`,
+      [kindergartenId, weekStartIso],
+    );
+  }
+
   // ── helpers ──────────────────────────────────────────────────────────────
 
   private itemToInsert(item: MealItemState) {

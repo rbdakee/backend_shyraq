@@ -72,6 +72,22 @@ export abstract class GroupRepository {
     now: Date,
   ): Promise<GroupMentor | null>;
 
+  /**
+   * Cascade entry point used by Staff lifecycle actions (deactivate /
+   * archive). A staff member can be the active mentor of multiple groups
+   * (no DB constraint forbids it — the partial-unique index is keyed on
+   * `group_id`, not `staff_member_id`). Closes EVERY currently-active
+   * group_mentors row for `(kindergartenId, staffMemberId)` by setting
+   * `unassigned_at = now`. Returns the number of rows updated. Idempotent —
+   * a no-op (returns 0) when the staff member is not actively mentoring
+   * anywhere.
+   */
+  abstract unassignMentorByStaffMember(
+    kindergartenId: string,
+    staffMemberId: string,
+    now: Date,
+  ): Promise<number>;
+
   abstract findActiveMentor(
     kindergartenId: string,
     groupId: string,

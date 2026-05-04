@@ -176,7 +176,17 @@ export class AttendanceService {
       ),
     );
 
-    // 3) child_daily_status — read-then-conditional-write.
+    // 3) child_daily_status — race-safe conditional-promotion path.
+    //
+    //   * No row → INSERT-or-CONFLICT-update through `upsert` (one-statement
+    //     atomic; the unique idx on (child_id, date) means a concurrent
+    //     INSERT loses cleanly via the ON CONFLICT clause).
+    //   * Row exists → atomic conditional UPDATE that flips `absent|late →
+    //     present` only. If a concurrent setter already moved the row to
+    //     `sick` / `on_vacation` (or any non-promotable status), the UPDATE
+    //     affects 0 rows and we surface whatever's currently in the DB.
+    //     This replaces the previous read-then-`save()` flow which could
+    //     overwrite a concurrent explicit status.
     const isoDate = formatLocalIsoDate(recordedAt, KG_TZ);
     const existing = await this.dailyStatusRepo.findByChildAndDate(
       kindergartenId,
@@ -200,8 +210,21 @@ export class AttendanceService {
           this.clock,
         ),
       );
-    } else if (existing.markPresent(staff, this.clock)) {
-      dailyStatus = await this.dailyStatusRepo.save(kindergartenId, existing);
+    } else {
+      const { current } =
+        await this.dailyStatusRepo.updatePresentIfAbsentOrLate(
+          kindergartenId,
+          childId,
+          isoDate,
+          staff,
+          this.clock.now(),
+        );
+      // `updated=false` is NOT an error: the row was either already
+      // `present` (idempotent re-check-in) or held a non-promotable
+      // explicit status (`sick`, `on_vacation`, …) set concurrently.
+      // Either way, surface the post-statement DB row so the service's
+      // return value reflects ground truth.
+      dailyStatus = current ?? existing;
     }
 
     // 4) outbox notification — atomic with the attendance write (same TX).

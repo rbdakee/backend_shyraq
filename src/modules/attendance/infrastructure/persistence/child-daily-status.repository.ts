@@ -36,6 +36,29 @@ export abstract class ChildDailyStatusRepository {
   ): Promise<ChildDailyStatus>;
 
   /**
+   * Conditional UPDATE for the check-in promotion path. Atomically flips
+   * `status` to `present` (and updates `set_by` + `updated_at`) ONLY when
+   * the row's current status is in `{absent, late}`. Returns the
+   * post-write row when the update happened, or the existing row
+   * (unchanged) when a concurrent explicit setter already wrote `sick` /
+   * `on_vacation` / `early_pickup` / `present`.
+   *
+   * Replaces the racy read-then-save sequence in `AttendanceService.checkIn`
+   * step 3: between `findByChildAndDate` returning `absent` and the
+   * subsequent `save(... PRESENT)`, a parent or admin can flip the row to
+   * `sick` via `setDailyStatus`. The unconditional `save` would then
+   * overwrite the explicit status with `present`. The conditional UPDATE
+   * here makes the persistence step atomic.
+   */
+  abstract updatePresentIfAbsentOrLate(
+    kindergartenId: string,
+    childId: string,
+    date: string,
+    setBy: string | null,
+    now: Date,
+  ): Promise<{ updated: boolean; current: ChildDailyStatus | null }>;
+
+  /**
    * Paged list of daily_status rows for a kindergarten with optional filters.
    * Used by admin and T4 list endpoints.
    */

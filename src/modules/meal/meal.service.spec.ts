@@ -164,6 +164,10 @@ class FakeMealPlanRepository extends MealPlanRepository {
     }
     return Promise.resolve({ plans_created, plans_skipped });
   }
+
+  acquireWeekCopyLock(_kgId: string, _weekStartIso: string): Promise<void> {
+    return Promise.resolve();
+  }
 }
 
 class FakeGroupRepository extends GroupRepository {
@@ -208,6 +212,13 @@ class FakeGroupRepository extends GroupRepository {
     _now: Date,
   ): Promise<GroupMentor | null> {
     return Promise.resolve(null);
+  }
+  unassignMentorByStaffMember(
+    _kgId: string,
+    _smId: string,
+    _now: Date,
+  ): Promise<number> {
+    return Promise.resolve(0);
   }
   findActiveMentor(_kgId: string, _gId: string): Promise<GroupMentor | null> {
     return Promise.resolve(null);

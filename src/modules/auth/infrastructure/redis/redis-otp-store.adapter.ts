@@ -15,10 +15,30 @@ export class RedisOtpStoreAdapter extends OtpStorePort {
     windowSec: number,
   ): Promise<'ok' | 'exceeded'> {
     const key = RedisKeys.rateOtp(phone);
-    const count = await this.redis.incr(key);
-    if (count === 1) {
-      await this.redis.expire(key, windowSec);
-    }
+    // Pipeline batches INCR + EXPIRE in one round-trip so a crash between
+    // the two commands cannot leave the key without a TTL (permanent block).
+    // Both commands are always sent regardless of the INCR result, which is
+    // safe: setting the same TTL on an existing key just resets it to the
+    // window boundary — the fixed-window semantics are preserved.
+    const pipeline = this.redis.pipeline();
+    pipeline.incr(key);
+    pipeline.expire(key, windowSec);
+    const results = await pipeline.exec();
+    // results[0] = [error, incrResult], results[1] = [error, expireResult]
+    const count = (results?.[0]?.[1] as number | null) ?? 1;
+    return count > maxPerWindow ? 'exceeded' : 'ok';
+  }
+
+  async checkRateLimitGeneric(
+    key: string,
+    maxPerWindow: number,
+    windowSec: number,
+  ): Promise<'ok' | 'exceeded'> {
+    const pipeline = this.redis.pipeline();
+    pipeline.incr(key);
+    pipeline.expire(key, windowSec);
+    const results = await pipeline.exec();
+    const count = (results?.[0]?.[1] as number | null) ?? 1;
     return count > maxPerWindow ? 'exceeded' : 'ok';
   }
 

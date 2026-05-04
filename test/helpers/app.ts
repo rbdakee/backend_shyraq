@@ -88,12 +88,53 @@ export async function createTestApp(
   return { app, server: app.getHttpServer() as Server, dataSource, redis, sms };
 }
 
-export async function truncateAll(dataSource: DataSource): Promise<void> {
-  // Tenant-scoped tables (staff_members, refresh_tokens) FORCE row-level
-  // security on the runtime role, so a plain TRUNCATE issued without
-  // app.bypass_rls fails. Wrap in a tx with the GUC set so cleanup runs as
-  // an "operator" regardless of the connecting role.
-  await dataSource.transaction(async (m) => {
+/**
+ * Lazily-built DataSource that connects as the migration role
+ * (DATABASE_MIGRATION_USERNAME, SUPERUSER) — required because the runtime
+ * role (`shyraq_app`) is intentionally NOT granted TRUNCATE (RLS does not
+ * cover TRUNCATE; see `RevokeTruncateFromAppRole` migration). Tests that
+ * need to wipe tables between cases run cleanup through this connection.
+ */
+let cleanupDataSource: DataSource | null = null;
+
+async function getCleanupDataSource(): Promise<DataSource> {
+  if (cleanupDataSource && cleanupDataSource.isInitialized) {
+    return cleanupDataSource;
+  }
+  const ds = new DataSource({
+    type: process.env.DATABASE_TYPE as 'postgres',
+    host: process.env.DATABASE_HOST,
+    port: process.env.DATABASE_PORT
+      ? parseInt(process.env.DATABASE_PORT, 10)
+      : 5432,
+    username:
+      process.env.DATABASE_MIGRATION_USERNAME ?? process.env.DATABASE_USERNAME,
+    password:
+      process.env.DATABASE_MIGRATION_PASSWORD ?? process.env.DATABASE_PASSWORD,
+    database: process.env.DATABASE_NAME,
+    // No entities/migrations needed — only used for TRUNCATE.
+    entities: [],
+    extra: { max: 2 },
+  });
+  await ds.initialize();
+  cleanupDataSource = ds;
+  return ds;
+}
+
+export async function closeCleanupDataSource(): Promise<void> {
+  if (cleanupDataSource && cleanupDataSource.isInitialized) {
+    await cleanupDataSource.destroy();
+    cleanupDataSource = null;
+  }
+}
+
+export async function truncateAll(_dataSource: DataSource): Promise<void> {
+  // The first arg used to be the app DataSource, but the runtime role no
+  // longer has TRUNCATE. We keep the signature for compatibility and route
+  // through a privileged cleanup DataSource. RLS is still bypassed inside
+  // the tx for FORCE-RLS tables.
+  const ds = await getCleanupDataSource();
+  await ds.transaction(async (m) => {
     await m.query(`SET LOCAL app.bypass_rls = 'true'`);
     await m.query(
       `TRUNCATE TABLE pickup_requests, trusted_people, user_qr_tokens, notification_outbox, notifications, notification_preferences, push_tokens, saas_refresh_tokens, saas_users, timeline_entries, attendance_events, child_daily_status, schedule_week_snapshots, activity_events, schedule_template_slots, schedule_templates, meal_items, meal_plans, child_group_history, child_guardians, children, group_mentors, groups, cameras, locations, staff_members, refresh_tokens, users, kindergartens RESTART IDENTITY CASCADE`,

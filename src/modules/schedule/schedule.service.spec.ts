@@ -24,10 +24,12 @@ import {
 } from '@/modules/group/infrastructure/persistence/group.repository';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { ActivityEvent } from './domain/entities/activity-event.entity';
+import { ActivityEventStatusValue } from './domain/value-objects/activity-event-status.vo';
 import { ScheduleTemplate } from './domain/entities/schedule-template.entity';
 import { ScheduleWeekSnapshot } from './domain/entities/schedule-week-snapshot.entity';
 import { ActivityEventNotFoundError } from './domain/errors/activity-event-not-found.error';
 import { EventNotDeletableError } from './domain/errors/event-not-deletable.error';
+import { EventTransitionConflictError } from './domain/errors/event-transition-conflict.error';
 import { InvalidEventTransitionError } from './domain/errors/invalid-event-transition.error';
 import { ScheduleTemplateNotFoundError } from './domain/errors/schedule-template-not-found.error';
 import { SlotConflictError } from './domain/errors/slot-conflict.error';
@@ -155,6 +157,21 @@ class FakeActivityEventRepo extends ActivityEventRepository {
     this.rows.set(e.id, cloneEvent(e));
     return Promise.resolve(cloneEvent(e));
   }
+  updateWithExpectedStatus(
+    kg: string,
+    e: ActivityEvent,
+    expectedOldStatus: ActivityEventStatusValue,
+  ): Promise<boolean> {
+    const current = this.rows.get(e.id);
+    if (!current || current.kindergartenId !== kg)
+      return Promise.resolve(false);
+    if (current.status.value !== expectedOldStatus) {
+      // Race: another caller already moved this row off the expected status.
+      return Promise.resolve(false);
+    }
+    this.rows.set(e.id, cloneEvent(e));
+    return Promise.resolve(true);
+  }
   list(kg: string, filter: ListActivityEventsFilter): Promise<ActivityEvent[]> {
     let items = [...this.rows.values()].filter((e) => e.kindergartenId === kg);
     if (filter.groupId !== undefined) {
@@ -272,6 +289,13 @@ class FakeGroupRepo extends GroupRepository {
     _gid: string,
     _now: Date,
   ): Promise<GroupMentor | null> {
+    throw new Error('not used');
+  }
+  unassignMentorByStaffMember(
+    _kg: string,
+    _sid: string,
+    _now: Date,
+  ): Promise<number> {
     throw new Error('not used');
   }
   findActiveMentor(_kg: string, _gid: string): Promise<GroupMentor | null> {
@@ -560,6 +584,50 @@ describe('ScheduleService — service-unit', () => {
       await expect(service.startEvent(KG, 'no-such')).rejects.toBeInstanceOf(
         ActivityEventNotFoundError,
       );
+    });
+
+    it('throws EventTransitionConflictError when start() conditional UPDATE matches 0 rows (lost-update race)', async () => {
+      const { service, eventRepo, eventId } = await setupEvent();
+      // Simulate a concurrent transition: the service reads status=scheduled
+      // and validates locally, but by the time the conditional UPDATE runs
+      // another request has already moved the row to `cancelled`. The fake
+      // repo's `updateWithExpectedStatus` then returns false → 409.
+      const origUpdate = eventRepo.updateWithExpectedStatus.bind(eventRepo);
+      eventRepo.updateWithExpectedStatus = () => Promise.resolve(false);
+      try {
+        await expect(service.startEvent(KG, eventId)).rejects.toBeInstanceOf(
+          EventTransitionConflictError,
+        );
+      } finally {
+        eventRepo.updateWithExpectedStatus = origUpdate;
+      }
+    });
+
+    it('throws EventTransitionConflictError when cancel() loses the race', async () => {
+      const { service, eventRepo, eventId } = await setupEvent();
+      const origUpdate = eventRepo.updateWithExpectedStatus.bind(eventRepo);
+      eventRepo.updateWithExpectedStatus = () => Promise.resolve(false);
+      try {
+        await expect(
+          service.cancelEvent(KG, eventId, 'weather'),
+        ).rejects.toBeInstanceOf(EventTransitionConflictError);
+      } finally {
+        eventRepo.updateWithExpectedStatus = origUpdate;
+      }
+    });
+
+    it('throws EventTransitionConflictError when complete() loses the race', async () => {
+      const { service, eventRepo, eventId } = await setupEvent();
+      await service.startEvent(KG, eventId);
+      const origUpdate = eventRepo.updateWithExpectedStatus.bind(eventRepo);
+      eventRepo.updateWithExpectedStatus = () => Promise.resolve(false);
+      try {
+        await expect(service.completeEvent(KG, eventId)).rejects.toBeInstanceOf(
+          EventTransitionConflictError,
+        );
+      } finally {
+        eventRepo.updateWithExpectedStatus = origUpdate;
+      }
     });
   });
 

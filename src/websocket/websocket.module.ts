@@ -9,6 +9,7 @@ import {
 } from './socket-io-server.provider';
 import { SocketIoWsBroadcaster } from './socket-io-ws-broadcaster';
 import { WsAutoSubscribeService } from './ws-auto-subscribe.service';
+import { WsBlocklistListenerService } from './ws-blocklist-listener.service';
 import { WsJwtGuard } from './ws-jwt.guard';
 
 /**
@@ -34,6 +35,7 @@ import { WsJwtGuard } from './ws-jwt.guard';
   providers: [
     NotificationGateway,
     WsAutoSubscribeService,
+    WsBlocklistListenerService,
     WsJwtGuard,
     {
       provide: SocketIoServerProvider,

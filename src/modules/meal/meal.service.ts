@@ -349,6 +349,17 @@ export class MealService {
     const targetSundayStr = toIsoDate(addDaysUtc(targetMonday, 6));
     const targetMondayStr = toIsoDate(targetMonday);
 
+    // Per-(kg, target-week) advisory lock. Serializes concurrent callers
+    // (cron + admin manual trigger, two admin clicks) on the SAME target
+    // week so the existsAnyInRange probe below observes the first
+    // caller's just-committed plans and short-circuits, instead of racing
+    // into batchCreate where a 23505 would poison the ambient TX. Lock
+    // is auto-released when the ambient TX commits/rolls back.
+    await this.mealPlanRepo.acquireWeekCopyLock(
+      kindergartenId,
+      targetMondayStr,
+    );
+
     const sourcePlans = await this.mealPlanRepo.list(kindergartenId, {
       dateFrom: fromStart,
       dateTo: fromEndStr,

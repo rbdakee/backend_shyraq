@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, Repository } from 'typeorm';
 import { tenantStorage } from '@/database/tenant-storage';
 import { ActivityEvent } from '../../../../domain/entities/activity-event.entity';
+import { ActivityEventStatusValue } from '../../../../domain/value-objects/activity-event-status.vo';
 import {
   ActivityEventRepository,
   ListActivityEventsFilter,
@@ -118,6 +119,37 @@ export class ActivityEventRelationalRepository extends ActivityEventRepository {
       );
     }
     return ActivityEventMapper.toDomain(row);
+  }
+
+  async updateWithExpectedStatus(
+    kindergartenId: string,
+    event: ActivityEvent,
+    expectedOldStatus: ActivityEventStatusValue,
+  ): Promise<boolean> {
+    const m = this.manager();
+    const state = event.toState();
+    // Conditional UPDATE: only commit the new status (and the rest of the
+    // mutated columns) when the row's current status still matches
+    // `expectedOldStatus`. If a concurrent transition already moved the row,
+    // `affected = 0` and the service raises EventTransitionConflictError.
+    const result = await m
+      .getRepository(ActivityEventEntity)
+      .createQueryBuilder()
+      .update(ActivityEventEntity)
+      .set({
+        activity_name: state.activityName,
+        location_id: state.locationId,
+        starts_at: state.startsAt,
+        ends_at: state.endsAt,
+        status: state.status,
+        notes: state.notes,
+        updated_at: state.updatedAt,
+      })
+      .where('id = :id', { id: state.id })
+      .andWhere('kindergarten_id = :kg', { kg: kindergartenId })
+      .andWhere('status = :expected', { expected: expectedOldStatus })
+      .execute();
+    return (result.affected ?? 0) > 0;
   }
 
   async list(

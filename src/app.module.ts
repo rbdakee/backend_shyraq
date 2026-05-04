@@ -11,6 +11,7 @@ import databaseConfig from './database/config/database.config';
 import appConfig from './config/app.config';
 import redisConfig from './redis/config/redis.config';
 import authConfig from './modules/auth/config/auth.config';
+import { DbRoleCheckService } from './database/db-role-check.service';
 import { TypeOrmConfigService } from './database/typeorm-config.service';
 import { AllConfigType } from './config/config.type';
 import { SharedKernelModule } from './shared-kernel/shared-kernel.module';
@@ -123,6 +124,10 @@ const resolveI18nPath = (): string => {
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: KindergartenScopeGuard },
     { provide: APP_GUARD, useClass: PendingRoleSelectGuard },
+    // Fail-fast probe: aborts startup if the runtime DB role can bypass RLS
+    // (SUPERUSER or BYPASSRLS). Migrations connect via a separate DataSource
+    // and are unaffected. Escape hatch: DATABASE_BYPASS_ROLE_CHECK=true.
+    DbRoleCheckService,
   ],
 })
 export class AppModule {}

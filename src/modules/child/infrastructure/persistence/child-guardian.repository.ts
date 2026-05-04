@@ -55,6 +55,19 @@ export abstract class ChildGuardianRepository {
   ): Promise<number>;
 
   /**
+   * Acquire a per-(kg, child) advisory lock to serialize concurrent grants of
+   * `has_approval_rights = true` against the ≤2 cap. Released automatically at
+   * the surrounding TX boundary. Callers must invoke this BEFORE
+   * `countApprovalRights` so the count reflects any in-flight writes by a
+   * prior winner. Outside an ambient TX the lock effectively no-ops (released
+   * at the implicit per-statement TX) — safe for non-HTTP code paths.
+   */
+  abstract acquireApprovalRightsLock(
+    kindergartenId: string,
+    childId: string,
+  ): Promise<void>;
+
+  /**
    * Used by AuthModule role-assembly to enumerate the set of kg-ids on which
    * the user has at least one approved guardian record.
    */

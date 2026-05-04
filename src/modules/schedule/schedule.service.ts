@@ -14,8 +14,10 @@ import {
 } from './domain/entities/schedule-week-snapshot.entity';
 import { ActivityEventNotFoundError } from './domain/errors/activity-event-not-found.error';
 import { EventNotDeletableError } from './domain/errors/event-not-deletable.error';
+import { EventTransitionConflictError } from './domain/errors/event-transition-conflict.error';
 import { ScheduleTemplateNotFoundError } from './domain/errors/schedule-template-not-found.error';
 import { isoWeekdayOf } from './domain/value-objects/day-of-week.vo';
+import { ActivityEventStatusValue } from './domain/value-objects/activity-event-status.vo';
 import {
   ActivityEventRepository,
   ListActivityEventsFilter,
@@ -298,8 +300,13 @@ export class ScheduleService {
     eventId: string,
   ): Promise<ActivityEvent> {
     const event = await this.requireEvent(kindergartenId, eventId);
+    const expectedOldStatus = event.status.value;
     event.start(this.clock);
-    return await this.eventRepo.update(kindergartenId, event);
+    return await this.persistTransition(
+      kindergartenId,
+      event,
+      expectedOldStatus,
+    );
   }
 
   async completeEvent(
@@ -307,8 +314,13 @@ export class ScheduleService {
     eventId: string,
   ): Promise<ActivityEvent> {
     const event = await this.requireEvent(kindergartenId, eventId);
+    const expectedOldStatus = event.status.value;
     event.complete(this.clock);
-    return await this.eventRepo.update(kindergartenId, event);
+    return await this.persistTransition(
+      kindergartenId,
+      event,
+      expectedOldStatus,
+    );
   }
 
   async cancelEvent(
@@ -317,8 +329,13 @@ export class ScheduleService {
     reason: string,
   ): Promise<ActivityEvent> {
     const event = await this.requireEvent(kindergartenId, eventId);
+    const expectedOldStatus = event.status.value;
     event.cancel(reason, this.clock);
-    return await this.eventRepo.update(kindergartenId, event);
+    return await this.persistTransition(
+      kindergartenId,
+      event,
+      expectedOldStatus,
+    );
   }
 
   // ── Snapshots & week views ──────────────────────────────────────────────
@@ -522,6 +539,41 @@ export class ScheduleService {
     const e = await this.eventRepo.findById(kindergartenId, eventId);
     if (e === null) throw new ActivityEventNotFoundError(eventId);
     return e;
+  }
+
+  /**
+   * Persist a state-machine transition with a conditional UPDATE so two
+   * concurrent admin clicks (e.g. start + cancel on the same `scheduled`
+   * event) cannot both win. The repo's `updateWithExpectedStatus` returns
+   * `false` when 0 rows matched the (`id`, `kg`, `status = expectedOld`)
+   * predicate — that means another request already moved the row to a
+   * different status, so the current transition must be aborted with a 409.
+   */
+  private async persistTransition(
+    kindergartenId: string,
+    event: ActivityEvent,
+    expectedOldStatus: ActivityEventStatusValue,
+  ): Promise<ActivityEvent> {
+    const ok = await this.eventRepo.updateWithExpectedStatus(
+      kindergartenId,
+      event,
+      expectedOldStatus,
+    );
+    if (!ok) {
+      throw new EventTransitionConflictError(
+        event.id,
+        expectedOldStatus,
+        event.status.value,
+      );
+    }
+    // Re-fetch to mirror the read-back behaviour of `update` and surface any
+    // mapper-level normalisation back to the caller.
+    const fresh = await this.eventRepo.findById(kindergartenId, event.id);
+    if (fresh === null) {
+      // Should not happen — we just observed affected=1 inside the same TX.
+      throw new ActivityEventNotFoundError(event.id);
+    }
+    return fresh;
   }
 }
 

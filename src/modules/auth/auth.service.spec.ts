@@ -14,12 +14,15 @@ import {
 import { AuthService } from './auth.service';
 import { SaasUser } from './domain/entities/saas-user.entity';
 import { InvalidCredentialsError } from './domain/errors/invalid-credentials.error';
+import { NoActiveRolesError } from './domain/errors/no-active-roles.error';
 import { OtpExpiredError } from './domain/errors/otp-expired.error';
 import { OtpInvalidError } from './domain/errors/otp-invalid.error';
 import { OtpLockedError } from './domain/errors/otp-locked.error';
 import { OtpRateLimitedError } from './domain/errors/otp-rate-limited.error';
 import { RefreshInvalidError } from './domain/errors/refresh-invalid.error';
 import { RoleNotAvailableError } from './domain/errors/role-not-available.error';
+import { RoleSelectNotRequiredError } from './domain/errors/role-select-not-required.error';
+import { SaasLoginRateLimitError } from './domain/errors/saas-login-rate-limit.error';
 import {
   IssueAccessPayload,
   JwtTokenPort,
@@ -239,6 +242,15 @@ class FakeOtpStore extends OtpStorePort {
     this.rateCounts.set(phone, next);
     return Promise.resolve(next > maxPerWindow ? 'exceeded' : 'ok');
   }
+  checkRateLimitGeneric(
+    key: string,
+    maxPerWindow: number,
+    _windowSec: number,
+  ): Promise<'ok' | 'exceeded'> {
+    const next = (this.rateCounts.get(key) ?? 0) + 1;
+    this.rateCounts.set(key, next);
+    return Promise.resolve(next > maxPerWindow ? 'exceeded' : 'ok');
+  }
   isLocked(phone: string): Promise<boolean> {
     return Promise.resolve(this.lockedPhones.has(phone));
   }
@@ -398,6 +410,9 @@ class FakeGuardianRepo extends ChildGuardianRepository {
   }
   countApprovalRights(_kg: string, _childId: string): Promise<number> {
     return Promise.resolve(0);
+  }
+  acquireApprovalRightsLock(_kg: string, _childId: string): Promise<void> {
+    return Promise.resolve();
   }
   listApprovedKindergartenIdsByUserId(userId: string): Promise<string[]> {
     return Promise.resolve(
@@ -621,6 +636,112 @@ describe('AuthService', () => {
       await expect(service.requestOtp('+77012345678')).rejects.toBeInstanceOf(
         OtpLockedError,
       );
+    });
+  });
+
+  describe('onModuleInit — OTP_TEST_PHONES production guard', () => {
+    const TEST_PHONE = '+77099999999';
+
+    function buildWithTestPhone(nodeEnv: string | undefined): AuthDeps {
+      const users = new FakeUserRepo();
+      const saasUsers = new FakeSaasUserRepo();
+      const refresh = new FakeRefreshRepo();
+      const saasRefresh = new FakeSaasRefreshRepo();
+      const otpStore = new FakeOtpStore();
+      const sms = new FakeSms();
+      const jwt = new FakeJwt();
+      const passwords = new FakePasswordHasher();
+      const blocklist = new FakeBlocklist();
+      const staffRepo = new FakeStaffRepo();
+      const guardianRepo = new FakeGuardianRepo();
+      const notifications = new FakeNotificationPort();
+      const config = new ConfigService<Record<string, unknown>>({
+        auth: {
+          jwtAccessSecret: 'test-secret-test-secret-test',
+          jwtAccessTtl: '15m',
+          refreshTokenTtlDays: 30,
+          bcryptCost: 4,
+          otpLength: 6,
+          otpTtlSeconds: 300,
+          rateLimitOtpRequestLimit: 5,
+          rateLimitOtpRequestWindowSec: 3600,
+          rateLimitSuperAdminLoginLimit: 10,
+          rateLimitSuperAdminLoginWindowSec: 3600,
+          otpTestPhones: TEST_PHONE,
+          otpTestCode: '000000',
+        },
+      });
+      const service = new AuthService(
+        users,
+        saasUsers,
+        refresh,
+        saasRefresh,
+        otpStore,
+        sms,
+        jwt,
+        passwords,
+        blocklist,
+        new FixedClock(new Date('2025-01-01T00:00:00Z')),
+        config as unknown as ConfigService,
+        staffRepo,
+        guardianRepo,
+        fakeDataSource,
+        notifications,
+      );
+      const saved = process.env.NODE_ENV;
+      if (nodeEnv === undefined) {
+        delete process.env.NODE_ENV;
+      } else {
+        process.env.NODE_ENV = nodeEnv;
+      }
+      service.onModuleInit();
+      if (saved === undefined) {
+        delete process.env.NODE_ENV;
+      } else {
+        process.env.NODE_ENV = saved;
+      }
+      return {
+        service,
+        users,
+        saasUsers,
+        refresh,
+        saasRefresh,
+        otpStore,
+        sms,
+        jwt,
+        passwords,
+        blocklist,
+        staffRepo,
+        guardianRepo,
+        notifications,
+      };
+    }
+
+    it('honours OTP_TEST_PHONES in development (no real SMS sent)', async () => {
+      const { service, otpStore, sms } = buildWithTestPhone('development');
+      await service.requestOtp(TEST_PHONE);
+      // Test phone → no SMS dispatched
+      expect(sms.sent).toHaveLength(0);
+      const stored = await otpStore.readCode(TEST_PHONE);
+      // Fixed test code from config
+      expect(stored?.code).toBe('000000');
+    });
+
+    it('sends a real random code for non-test phone in development', async () => {
+      const { service, sms } = buildWithTestPhone('development');
+      const normalPhone = '+77011111111';
+      await service.requestOtp(normalPhone);
+      expect(sms.sent).toHaveLength(1);
+    });
+
+    it('ignores OTP_TEST_PHONES in production and sends real SMS', async () => {
+      const { service, otpStore, sms } = buildWithTestPhone('production');
+      await service.requestOtp(TEST_PHONE);
+      // Production: backdoor disabled → real SMS dispatched
+      expect(sms.sent).toHaveLength(1);
+      const stored = await otpStore.readCode(TEST_PHONE);
+      // Production code is random, not the fixed test code
+      expect(stored?.code).not.toBe('000000');
     });
   });
 
@@ -974,6 +1095,211 @@ describe('AuthService', () => {
         service.refreshToken({ rawRefreshToken: raw }),
       ).rejects.toBeInstanceOf(RefreshInvalidError);
     });
+
+    it('preserves the original session kg/role even when user has roles in other kindergartens', async () => {
+      // Original session: parent in kg-B. User has since gained a staff role
+      // in kg-A. Refresh must NOT silently jump to kg-A staff.
+      const { service, refresh, users, guardianRepo, staffRepo, jwt } = build();
+      const userId = 'user-1';
+      users.put(
+        User.hydrate({
+          id: userId,
+          phone: '+77000000000',
+          fullName: 'X',
+          avatarUrl: null,
+          iin: null,
+          dateOfBirth: null,
+          locale: 'ru',
+        }),
+      );
+      // Parent guardian link in kg-B (rotated session origin)
+      guardianRepo.approvedKindergartenIdsByUserId.set(userId, ['kg-B']);
+      // Plus a staff_member row in kg-A — added after the refresh row was issued
+      staffRepo.rows.push(
+        StaffMember.hydrate({
+          id: 'staff-1',
+          kindergartenId: 'kg-A',
+          userId,
+          fullName: 'X',
+          phone: null,
+          role: 'admin',
+          specialistType: null,
+          isActive: true,
+          hiredAt: new Date('2025-01-01'),
+          firedAt: null,
+          archivedAt: null,
+          createdAt: new Date('2025-01-01'),
+          updatedAt: new Date('2025-01-01'),
+        }),
+      );
+      const raw = generateRefreshToken();
+      await refresh.create({
+        userId,
+        kindergartenId: 'kg-B', // session was originally for kg-B parent
+        tokenHash: hashRefreshToken(raw),
+        deviceId: null,
+        ipAddress: null,
+        expiresAt: computeRefreshExpiresAt(new Date('2025-01-01'), 30),
+      });
+
+      const issueSpy = jest.spyOn(jwt, 'issueAccessToken');
+      const res = await service.refreshToken({ rawRefreshToken: raw });
+
+      expect(issueSpy).toHaveBeenCalledTimes(1);
+      const claims = issueSpy.mock.calls[0][0];
+      expect(claims.role).toBe('parent');
+      expect(claims.kindergarten_id).toBe('kg-B');
+      // Response still surfaces all current associations for role-switch UI
+      expect(
+        res.roles.some(
+          (r) => r.role === 'admin' && r.kindergartenId === 'kg-A',
+        ),
+      ).toBe(true);
+      expect(
+        res.roles.some(
+          (r) => r.role === 'parent' && r.kindergartenId === 'kg-B',
+        ),
+      ).toBe(true);
+    });
+
+    it('throws NoActiveRolesError when the user has no role in the rotated kg anymore', async () => {
+      // Refresh row says kg-B, but the guardian link has since been revoked
+      // (so assembleRoles returns no kg-B row).
+      const { service, refresh, users, guardianRepo, staffRepo } = build();
+      const userId = 'user-1';
+      users.put(
+        User.hydrate({
+          id: userId,
+          phone: '+77000000000',
+          fullName: 'X',
+          avatarUrl: null,
+          iin: null,
+          dateOfBirth: null,
+          locale: 'ru',
+        }),
+      );
+      // User now only has staff role in kg-A; no longer guardian in kg-B
+      staffRepo.rows.push(
+        StaffMember.hydrate({
+          id: 'staff-1',
+          kindergartenId: 'kg-A',
+          userId,
+          fullName: 'X',
+          phone: null,
+          role: 'admin',
+          specialistType: null,
+          isActive: true,
+          hiredAt: new Date('2025-01-01'),
+          firedAt: null,
+          archivedAt: null,
+          createdAt: new Date('2025-01-01'),
+          updatedAt: new Date('2025-01-01'),
+        }),
+      );
+      guardianRepo.approvedKindergartenIdsByUserId.set(userId, []);
+      const raw = generateRefreshToken();
+      await refresh.create({
+        userId,
+        kindergartenId: 'kg-B',
+        tokenHash: hashRefreshToken(raw),
+        deviceId: null,
+        ipAddress: null,
+        expiresAt: computeRefreshExpiresAt(new Date('2025-01-01'), 30),
+      });
+
+      await expect(
+        service.refreshToken({ rawRefreshToken: raw }),
+      ).rejects.toBeInstanceOf(NoActiveRolesError);
+    });
+
+    it('prefers staff role over parent when both exist in the rotated kg', async () => {
+      const { service, refresh, users, guardianRepo, staffRepo, jwt } = build();
+      const userId = 'user-1';
+      users.put(
+        User.hydrate({
+          id: userId,
+          phone: '+77000000000',
+          fullName: 'X',
+          avatarUrl: null,
+          iin: null,
+          dateOfBirth: null,
+          locale: 'ru',
+        }),
+      );
+      // Same kg holds both staff_member and approved guardian for this user
+      staffRepo.rows.push(
+        StaffMember.hydrate({
+          id: 'staff-1',
+          kindergartenId: 'kg-A',
+          userId,
+          fullName: 'X',
+          phone: null,
+          role: 'admin',
+          specialistType: null,
+          isActive: true,
+          hiredAt: new Date('2025-01-01'),
+          firedAt: null,
+          archivedAt: null,
+          createdAt: new Date('2025-01-01'),
+          updatedAt: new Date('2025-01-01'),
+        }),
+      );
+      guardianRepo.approvedKindergartenIdsByUserId.set(userId, ['kg-A']);
+      const raw = generateRefreshToken();
+      await refresh.create({
+        userId,
+        kindergartenId: 'kg-A',
+        tokenHash: hashRefreshToken(raw),
+        deviceId: null,
+        ipAddress: null,
+        expiresAt: computeRefreshExpiresAt(new Date('2025-01-01'), 30),
+      });
+
+      const issueSpy = jest.spyOn(jwt, 'issueAccessToken');
+      await service.refreshToken({ rawRefreshToken: raw });
+
+      // assembleRoles short-circuits on staff: when staff_members for the user
+      // is non-empty, parent role is not added (see assembleRoles). The
+      // selection still must yield staff (admin), not parent, for kg-A.
+      const claims = issueSpy.mock.calls[0][0];
+      expect(claims.role).toBe('admin');
+      expect(claims.kindergarten_id).toBe('kg-A');
+    });
+
+    it('preserves legacy parent-with-null-kg session unchanged', async () => {
+      // Refresh row stored kindergartenId=null (legacy parent token before
+      // per-kg scoping). User has no staff and no guardian rows → only the
+      // implicit parent-null row in assembleRoles. Rotation must keep null.
+      const { service, refresh, users, jwt } = build();
+      const userId = 'user-1';
+      users.put(
+        User.hydrate({
+          id: userId,
+          phone: '+77000000000',
+          fullName: 'X',
+          avatarUrl: null,
+          iin: null,
+          dateOfBirth: null,
+          locale: 'ru',
+        }),
+      );
+      const raw = generateRefreshToken();
+      await refresh.create({
+        userId,
+        kindergartenId: null,
+        tokenHash: hashRefreshToken(raw),
+        deviceId: null,
+        ipAddress: null,
+        expiresAt: computeRefreshExpiresAt(new Date('2025-01-01'), 30),
+      });
+
+      const issueSpy = jest.spyOn(jwt, 'issueAccessToken');
+      await service.refreshToken({ rawRefreshToken: raw });
+
+      const claims = issueSpy.mock.calls[0][0];
+      expect(claims.role).toBe('parent');
+      expect(claims.kindergarten_id).toBeNull();
+    });
   });
 
   describe('logout', () => {
@@ -1016,13 +1342,26 @@ describe('AuthService', () => {
   });
 
   describe('selectRole', () => {
-    it('throws RoleNotAvailableError (P2.4 stub — no staff_members yet)', async () => {
+    it('throws RoleSelectNotRequiredError when pendingRoleSelect is false', async () => {
       const { service } = build();
       await expect(
         service.selectRole({
           userId: 'user-1',
           kindergartenId: '5b3d3b8a-7f4f-4d2a-9c84-9a7c1c1c1c1c',
           role: 'teacher',
+          pendingRoleSelect: false,
+        }),
+      ).rejects.toBeInstanceOf(RoleSelectNotRequiredError);
+    });
+
+    it('throws RoleNotAvailableError when pendingRoleSelect is true but role not available', async () => {
+      const { service } = build();
+      await expect(
+        service.selectRole({
+          userId: 'user-1',
+          kindergartenId: '5b3d3b8a-7f4f-4d2a-9c84-9a7c1c1c1c1c',
+          role: 'teacher',
+          pendingRoleSelect: true,
         }),
       ).rejects.toBeInstanceOf(RoleNotAvailableError);
     });
@@ -1046,6 +1385,7 @@ describe('AuthService', () => {
         userId: 'user-1',
         kindergartenId: 'kg-1',
         role: 'parent',
+        pendingRoleSelect: true,
       });
 
       expect(res.roles).toEqual([
@@ -1123,6 +1463,49 @@ describe('AuthService', () => {
           password: 'admin123',
         }),
       ).rejects.toBeInstanceOf(InvalidCredentialsError);
+    });
+
+    it('throws SaasLoginRateLimitError after exceeding 10/hour', async () => {
+      const deps = build();
+      seedSaasUser(deps);
+      // Drive rate-limit counter past 10
+      for (let i = 0; i < 10; i++) {
+        await deps.service.superAdminLogin({
+          email: 'admin@shyraq.local',
+          password: 'admin123',
+        });
+      }
+      await expect(
+        deps.service.superAdminLogin({
+          email: 'admin@shyraq.local',
+          password: 'admin123',
+        }),
+      ).rejects.toBeInstanceOf(SaasLoginRateLimitError);
+    });
+
+    it('normalises email case before rate-limiting', async () => {
+      const deps = build();
+      seedSaasUser(deps);
+      // 5 requests from mixed-case variant
+      for (let i = 0; i < 5; i++) {
+        await deps.service.superAdminLogin({
+          email: 'ADMIN@shyraq.local',
+          password: 'admin123',
+        });
+      }
+      // 5 more from lowercase — should share the same counter (total 10 → next hits 11)
+      for (let i = 0; i < 5; i++) {
+        await deps.service.superAdminLogin({
+          email: 'admin@shyraq.local',
+          password: 'admin123',
+        });
+      }
+      await expect(
+        deps.service.superAdminLogin({
+          email: 'admin@shyraq.local',
+          password: 'admin123',
+        }),
+      ).rejects.toBeInstanceOf(SaasLoginRateLimitError);
     });
   });
 

@@ -28,7 +28,10 @@ import { SaasRefreshTokenRepository } from './infrastructure/persistence/saas-re
 import { SaasUserRepository } from './infrastructure/persistence/saas-user.repository';
 import { SmsPort } from './sms.port';
 import { SuperAdminAuthController } from './super-admin-auth.controller';
-import { TokenBlocklistPort } from './token-blocklist.port';
+import {
+  TokenBlocklistEventsPort,
+  TokenBlocklistPort,
+} from './token-blocklist.port';
 
 @Global()
 @Module({
@@ -65,7 +68,12 @@ import { TokenBlocklistPort } from './token-blocklist.port';
     { provide: JwtTokenPort, useClass: JsonwebtokenJwtAdapter },
     { provide: PasswordHasherPort, useClass: BcryptPasswordHasherAdapter },
     { provide: OtpStorePort, useClass: RedisOtpStoreAdapter },
-    { provide: TokenBlocklistPort, useClass: RedisTokenBlocklistAdapter },
+    RedisTokenBlocklistAdapter,
+    { provide: TokenBlocklistPort, useExisting: RedisTokenBlocklistAdapter },
+    {
+      provide: TokenBlocklistEventsPort,
+      useExisting: RedisTokenBlocklistAdapter,
+    },
     {
       provide: RefreshTokenRepository,
       useClass: RefreshTokenRelationalRepository,
@@ -83,6 +91,7 @@ import { TokenBlocklistPort } from './token-blocklist.port';
     AuthService,
     JwtTokenPort,
     TokenBlocklistPort,
+    TokenBlocklistEventsPort,
     JwtModule,
     SmsPort,
     OtpStorePort,

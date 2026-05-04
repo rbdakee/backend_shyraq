@@ -302,6 +302,9 @@ class FakeChildGuardianRepo extends ChildGuardianRepository {
   countApprovalRights(): Promise<number> {
     return Promise.resolve(0);
   }
+  acquireApprovalRightsLock(): Promise<void> {
+    return Promise.resolve();
+  }
   listApprovedKindergartenIdsByUserId(): Promise<string[]> {
     return Promise.resolve([]);
   }
@@ -512,6 +515,9 @@ class FakeAuthOtpStore extends OtpStorePort {
   checkRateLimit(): Promise<'ok' | 'exceeded'> {
     this.rateLimitCalls += 1;
     return Promise.resolve(this.rateLimitState);
+  }
+  checkRateLimitGeneric(): Promise<'ok' | 'exceeded'> {
+    return Promise.resolve('ok');
   }
   isLocked(): Promise<boolean> {
     return Promise.resolve(false);

@@ -177,6 +177,26 @@ class FakeGroupRepo extends GroupRepository {
     return Promise.resolve(closed);
   }
 
+  unassignMentorByStaffMember(
+    kindergartenId: string,
+    staffMemberId: string,
+    now: Date,
+  ): Promise<number> {
+    let affected = 0;
+    this.mentors = this.mentors.map((m) => {
+      if (
+        m.kindergartenId === kindergartenId &&
+        m.staffMemberId === staffMemberId &&
+        m.unassignedAt === null
+      ) {
+        affected += 1;
+        return GroupMentor.hydrate({ ...m.toState(), unassignedAt: now });
+      }
+      return m;
+    });
+    return Promise.resolve(affected);
+  }
+
   findActiveMentor(
     kindergartenId: string,
     groupId: string,
@@ -313,6 +333,7 @@ function aStaff(
     kg: string;
     isActive: boolean;
     archivedAt: Date | null;
+    role: 'admin' | 'mentor' | 'specialist' | 'reception';
   }> = {},
 ): StaffMember {
   return StaffMember.hydrate({
@@ -321,7 +342,7 @@ function aStaff(
     userId: `u-${id}`,
     fullName: `Name ${id}`,
     phone: '+77011111111',
-    role: 'mentor',
+    role: opts.role ?? 'mentor',
     specialistType: null,
     isActive: opts.isActive ?? true,
     hiredAt: T0,
@@ -499,6 +520,24 @@ describe('GroupService', () => {
     it('refuses an archived staff_member', async () => {
       const { service, staff } = makeService();
       staff.put(aStaff('s-1', { archivedAt: T0 }));
+      const g = await service.create(KG, { name: 'A', capacity: 10 });
+      await expect(
+        service.assignMentor(KG, g.id, 's-1'),
+      ).rejects.toBeInstanceOf(MentorNotEligibleError);
+    });
+
+    it('refuses a staff_member whose role is not mentor (e.g. admin)', async () => {
+      const { service, staff } = makeService();
+      staff.put(aStaff('s-1', { role: 'admin' }));
+      const g = await service.create(KG, { name: 'A', capacity: 10 });
+      await expect(
+        service.assignMentor(KG, g.id, 's-1'),
+      ).rejects.toBeInstanceOf(MentorNotEligibleError);
+    });
+
+    it('refuses a staff_member whose role is reception (not mentor)', async () => {
+      const { service, staff } = makeService();
+      staff.put(aStaff('s-1', { role: 'reception' }));
       const g = await service.create(KG, { name: 'A', capacity: 10 });
       await expect(
         service.assignMentor(KG, g.id, 's-1'),

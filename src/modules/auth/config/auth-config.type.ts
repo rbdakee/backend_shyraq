@@ -9,6 +9,8 @@ export type AuthConfig = {
   rateLimitOtpRequestWindowSec: number;
   rateLimitSuperAdminLoginLimit: number;
   rateLimitSuperAdminLoginWindowSec: number;
+  rateLimitParentLinkLimit: number;
+  rateLimitParentLinkWindowSec: number;
   otpTestPhones: string;
   otpTestCode: string;
 };

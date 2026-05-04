@@ -311,7 +311,9 @@ describe('B6 parent onboarding (e2e)', () => {
       { role: 'parent', kindergarten_id: null, group_id: null },
     ]);
 
-    // Y links by IIN as nanny — pending_approval row created.
+    // Y links by IIN as nanny — pending_approval row created. Response is a
+    // minimal ack: only guardian {id, status, role, can_pickup} + pending=true.
+    // No child personal data until primary approves.
     const link = await request(server)
       .post('/api/v1/parent/children/link')
       .set('Authorization', `Bearer ${yInitial.access_token}`)
@@ -319,6 +321,10 @@ describe('B6 parent onboarding (e2e)', () => {
       .expect(201);
     expect(link.body.guardian.status).toBe('pending_approval');
     expect(link.body.guardian.role).toBe('nanny');
+    expect(link.body.pending).toBe(true);
+    expect(link.body.child).toBeUndefined();
+    expect(link.body.guardian.user_id).toBeUndefined();
+    expect(link.body.guardian.kindergarten_id).toBeUndefined();
     const yGuardianId = link.body.guardian.id as string;
 
     // Primary X sees the pending row.
@@ -429,11 +435,11 @@ describe('B6 parent onboarding (e2e)', () => {
       .send({ iin, role: 'secondary' });
     expect(res.status).toBe(409);
     expect(res.body.error).toBe('multiple_children_for_iin');
-    expect(Array.isArray(res.body.details?.kindergartenIds)).toBe(true);
-    expect(res.body.details.kindergartenIds).toHaveLength(2);
-    expect(res.body.details.kindergartenIds).toEqual(
-      expect.arrayContaining([a.kgId, b.kgId]),
-    );
+    // Information-disclosure guard: response must NOT leak the candidate
+    // kindergarten ids — that would let any authenticated caller probe
+    // IIN ↔ tenant membership across the platform via a single 409.
+    expect(res.body.details).toEqual({ iin });
+    expect(res.body.details?.kindergartenIds).toBeUndefined();
   });
 
   // ── F. Self-unlink (non-primary) ─────────────────────────────────────────

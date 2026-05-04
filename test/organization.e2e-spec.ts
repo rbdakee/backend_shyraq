@@ -313,6 +313,94 @@ describe('P4 organization endpoints (e2e)', () => {
       // ValidationPipe surfaces 422 in this app (see utils/validation-options).
       expect([400, 422]).toContain(res.status);
     });
+
+    it('F10: deactivating a mentor closes the active group_mentors row', async () => {
+      const a = await createKgWithAdmin('org-grp-f10', '+77011114203');
+
+      const grp = await request(server)
+        .post('/api/v1/groups')
+        .set('Authorization', `Bearer ${a.adminToken}`)
+        .send({ name: 'F10-Group', capacity: 10 })
+        .expect(201);
+      const groupId = grp.body.id as string;
+
+      const sm = await request(server)
+        .post('/api/v1/admin/staff')
+        .set('Authorization', `Bearer ${a.adminToken}`)
+        .send({
+          full_name: 'F10 Mentor',
+          phone: '+77011114213',
+          role: 'mentor',
+        })
+        .expect(201);
+      const staffId = sm.body.id as string;
+
+      // Assign the mentor to the group.
+      await request(server)
+        .post(`/api/v1/groups/${groupId}/mentor`)
+        .set('Authorization', `Bearer ${a.adminToken}`)
+        .send({ staff_member_id: staffId })
+        .expect(200);
+
+      // Sanity: active mentor is set.
+      const before = await request(server)
+        .get(`/api/v1/groups/${groupId}/mentor`)
+        .set('Authorization', `Bearer ${a.adminToken}`)
+        .expect(200);
+      expect(before.body.staff_member_id).toBe(staffId);
+
+      // Deactivate the staff member — F10 cascade must close the active row.
+      await request(server)
+        .post(`/api/v1/admin/staff/${staffId}/deactivate`)
+        .set('Authorization', `Bearer ${a.adminToken}`)
+        .expect(200);
+
+      // The group's active mentor must now be null.
+      const after = await request(server)
+        .get(`/api/v1/groups/${groupId}/mentor`)
+        .set('Authorization', `Bearer ${a.adminToken}`)
+        .expect(200);
+      expect(after.text === '' || after.text === 'null').toBe(true);
+    });
+
+    it('F10: archiving a mentor closes the active group_mentors row', async () => {
+      const a = await createKgWithAdmin('org-grp-f10b', '+77011114204');
+
+      const grp = await request(server)
+        .post('/api/v1/groups')
+        .set('Authorization', `Bearer ${a.adminToken}`)
+        .send({ name: 'F10b-Group', capacity: 10 })
+        .expect(201);
+      const groupId = grp.body.id as string;
+
+      const sm = await request(server)
+        .post('/api/v1/admin/staff')
+        .set('Authorization', `Bearer ${a.adminToken}`)
+        .send({
+          full_name: 'F10b Mentor',
+          phone: '+77011114214',
+          role: 'mentor',
+        })
+        .expect(201);
+      const staffId = sm.body.id as string;
+
+      await request(server)
+        .post(`/api/v1/groups/${groupId}/mentor`)
+        .set('Authorization', `Bearer ${a.adminToken}`)
+        .send({ staff_member_id: staffId })
+        .expect(200);
+
+      await request(server)
+        .post(`/api/v1/admin/staff/${staffId}/archive`)
+        .set('Authorization', `Bearer ${a.adminToken}`)
+        .expect(200);
+
+      const after = await request(server)
+        .get(`/api/v1/groups/${groupId}/mentor`)
+        .set('Authorization', `Bearer ${a.adminToken}`)
+        .expect(200);
+      expect(after.text === '' || after.text === 'null').toBe(true);
+    });
   });
 
   // ── cameras ────────────────────────────────────────────────────────────

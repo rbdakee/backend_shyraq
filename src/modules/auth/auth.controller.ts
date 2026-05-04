@@ -30,6 +30,7 @@ import { PendingRoleSelectGuard } from '@/common/guards/pending-role-select.guar
 import type { JwtPayload } from '@/common/types/jwt-payload';
 import { AuthService } from './auth.service';
 import { AuthPresenter } from './auth.presenter';
+import { JwtTokenPort } from './jwt-token.port';
 import {
   AuthResponseDto,
   OtpRequestResponseDto,
@@ -42,7 +43,10 @@ import { VerifyOtpDto } from './dto/verify-otp.dto';
 @ApiTags('Auth')
 @Controller({ path: 'auth', version: '1' })
 export class AuthController {
-  constructor(private readonly auth: AuthService) {}
+  constructor(
+    private readonly auth: AuthService,
+    private readonly jwt: JwtTokenPort,
+  ) {}
 
   @Post('otp/request')
   @Public()
@@ -146,10 +150,30 @@ export class AuthController {
   async refresh(
     @Body() dto: RefreshTokenDto,
     @Headers('x-device-id') deviceId: string | undefined,
+    @Headers('authorization') authorization: string | undefined,
     @Req() req: Request,
   ): Promise<AuthResponseDto> {
+    // Best-effort: decode (no verification) the old access token from the
+    // Authorization header so its JTI can be blocklisted immediately.
+    // Failure to decode (header absent, malformed, or already expired JWT) is
+    // silently ignored per spec — blocklist is best-effort.
+    let oldAccessJti: string | undefined;
+    let oldAccessExpUnix: number | undefined;
+    if (authorization && authorization.startsWith('Bearer ')) {
+      const token = authorization.slice(7).trim();
+      if (token.length > 0) {
+        const decoded = this.jwt.decodeWithoutVerify(token);
+        if (decoded?.jti && typeof decoded.exp === 'number') {
+          oldAccessJti = decoded.jti;
+          oldAccessExpUnix = decoded.exp;
+        }
+      }
+    }
+
     const result = await this.auth.refreshToken({
       rawRefreshToken: dto.refreshToken,
+      oldAccessJti,
+      oldAccessExpUnix,
       deviceId: deviceId && deviceId.length > 0 ? deviceId : undefined,
       ipAddress: req.ip,
     });
@@ -234,6 +258,7 @@ export class AuthController {
       userId: user.sub,
       kindergartenId: dto.kindergartenId,
       role: dto.role,
+      pendingRoleSelect: user.pending_role_select === true,
       oldAccessJti: user.jti,
       oldAccessExpUnix: user.exp,
       deviceId: deviceId && deviceId.length > 0 ? deviceId : undefined,

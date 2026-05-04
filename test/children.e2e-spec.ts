@@ -61,6 +61,20 @@ describe('P5 children & guardians (e2e)', () => {
     );
   }
 
+  /**
+   * Mints a parent JWT with NO `kindergarten_id` claim — used to exercise the
+   * F7 fix where ChildAccessGuard derives the tenant from the resolved
+   * guardian row instead of the JWT (parent freshly linked but token not yet
+   * rotated, or multi-kg parent state). KindergartenScopeGuard accepts this
+   * shape (kgId left null on req.tenant).
+   */
+  async function mintParentAccessNoKg(sub: string): Promise<string> {
+    return jwtService.signAsync(
+      { sub, role: 'parent', jti: randomUUID() },
+      { secret: jwtSecret, expiresIn: '1h' },
+    );
+  }
+
   async function seedSuperAdmin(): Promise<void> {
     const hash = await bcrypt.hash(SUPER_ADMIN_PASSWORD, 4);
     await ctx.dataSource.transaction(async (m) => {
@@ -409,6 +423,79 @@ describe('P5 children & guardians (e2e)', () => {
       .expect(200);
     expect(res.body.length).toBe(1);
     expect(res.body[0].id).toBe(c1.body.id);
+  });
+
+  it('GET /parent/children/:id returns 200 even when JWT carries no kindergarten_id (F7)', async () => {
+    // F7 regression — ChildAccessGuard pins req.tenant from the resolved
+    // approved-guardian row, so a parent whose JWT was issued without a
+    // kg-claim (multi-kg user, or freshly-linked-but-not-yet-rotated token)
+    // can still load /parent/children/:id without `tenant_required`.
+    const a = await createKgWithAdmin('children-f7-id', '+77011115077');
+    const child = await request(server)
+      .post('/api/v1/children')
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .send({ full_name: 'F7-child', date_of_birth: '2021-09-15' })
+      .expect(201);
+    const parentId = await seedUser('+77011110071');
+    await seedPrimaryGuardian({
+      kgId: a.kgId,
+      childId: child.body.id,
+      userId: parentId,
+    });
+    const tokenNoKg = await mintParentAccessNoKg(parentId);
+    const res = await request(server)
+      .get(`/api/v1/parent/children/${child.body.id}`)
+      .set('Authorization', `Bearer ${tokenNoKg}`)
+      .expect(200);
+    expect(res.body.child.id).toBe(child.body.id);
+    expect(res.body.guardians).toBeDefined();
+
+    // Stranger child id under same JWT → 403, not 400 — the guard's
+    // unhappy-path still rejects with `child_access_denied`.
+    const stranger = await request(server)
+      .post('/api/v1/children')
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .send({ full_name: 'unrelated', date_of_birth: '2021-09-15' })
+      .expect(201);
+    await request(server)
+      .get(`/api/v1/parent/children/${stranger.body.id}`)
+      .set('Authorization', `Bearer ${tokenNoKg}`)
+      .expect(403);
+  });
+
+  it('GET /parent/children fans out cross-tenant when JWT has no kindergarten_id (F7)', async () => {
+    // Same parent approved as primary in two kgs. The unscoped JWT path
+    // routes to listMyChildrenCrossTenant which returns both children.
+    const a = await createKgWithAdmin('children-f7-list-a', '+77011115078');
+    const b = await createKgWithAdmin('children-f7-list-b', '+77011115079');
+    const c1 = await request(server)
+      .post('/api/v1/children')
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .send({ full_name: 'F7-A', date_of_birth: '2021-09-15' })
+      .expect(201);
+    const c2 = await request(server)
+      .post('/api/v1/children')
+      .set('Authorization', `Bearer ${b.adminToken}`)
+      .send({ full_name: 'F7-B', date_of_birth: '2021-09-15' })
+      .expect(201);
+    const parentId = await seedUser('+77011110072');
+    await seedPrimaryGuardian({
+      kgId: a.kgId,
+      childId: c1.body.id,
+      userId: parentId,
+    });
+    await seedPrimaryGuardian({
+      kgId: b.kgId,
+      childId: c2.body.id,
+      userId: parentId,
+    });
+    const tokenNoKg = await mintParentAccessNoKg(parentId);
+    const res = await request(server)
+      .get('/api/v1/parent/children')
+      .set('Authorization', `Bearer ${tokenNoKg}`)
+      .expect(200);
+    const ids = (res.body as Array<{ id: string }>).map((c) => c.id).sort();
+    expect(ids).toEqual([c1.body.id, c2.body.id].sort());
   });
 
   it('PATCH /parent/approvals/:id/permissions persists overrides and rejects locked keys', async () => {

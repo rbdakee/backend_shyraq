@@ -4,6 +4,7 @@ export const RedisKeys = {
   rateOtp: (phone: string) => `rate:otp:${phone}`,
   tokenBlocklist: (jti: string) => `token:blocklist:${jti}`,
   rateApi: (userId: string, group: string) => `rate:api:${userId}:${group}`,
+  rateSaasLogin: (email: string) => `rate:saas:login:${email}`,
 } as const;
 
 export const RedisTtl = {

@@ -14,6 +14,17 @@ export abstract class OtpStorePort {
     windowSec: number,
   ): Promise<'ok' | 'exceeded'>;
 
+  /**
+   * Generic rate-limit check on an arbitrary Redis key. Same INCR+EXPIRE
+   * semantics as checkRateLimit but accepts any key string — used for
+   * non-OTP rate limits such as the SuperAdmin login throttle.
+   */
+  abstract checkRateLimitGeneric(
+    key: string,
+    maxPerWindow: number,
+    windowSec: number,
+  ): Promise<'ok' | 'exceeded'>;
+
   abstract isLocked(phone: string): Promise<boolean>;
 
   abstract storeCode(

@@ -327,6 +327,14 @@ export class IdentityQrService {
       );
     }
 
+    // Acquire the same per-user advisory lock as issueOrRefresh so that a
+    // concurrent user GET /users/me/qr cannot mint a fresh QR between our
+    // "read active rows" and the bulk UPDATE stamping revoked_at. Without
+    // this lock the admin revoke-all could miss a row that was inserted by
+    // the user's GET after the admin's SELECT but before the admin's UPDATE.
+    // Symmetric with the issueOrRefresh advisory-lock acquisition.
+    await this.qrRepo.acquireUserAdvisoryLock(targetUserId);
+
     const { revokedHashes } = await this.qrRepo.revokeAllByUser(
       targetUserId,
       'identity',
@@ -379,8 +387,20 @@ export class IdentityQrService {
     staffMembers: StaffMember[];
     guardians: ChildGuardian[];
   }> {
-    const staffMembers =
+    const allStaffMembers =
       await this.staffMemberRepo.findAllActiveByUserId(userId);
+
+    // When a scanning kg is known (i.e. a real staff member scanning, not
+    // super_admin), scope the staff lookup to that kg. This prevents a person
+    // who is staff in kg-B from surfacing as "staff" when scanned by kg-A
+    // staff — they should resolve as parent (or unknown) in kg-A's context.
+    // When scanningKgId === null (super_admin path), retain cross-tenant
+    // behaviour and return the first staff entry regardless of kg.
+    const staffMembers =
+      scanningKgId !== null
+        ? allStaffMembers.filter((s) => s.kindergartenId === scanningKgId)
+        : allStaffMembers;
+
     if (staffMembers.length > 0) {
       // Cross-tenant guardian read is unnecessary — staff can also be a
       // parent in some tenant, but the staff app does not need both lists

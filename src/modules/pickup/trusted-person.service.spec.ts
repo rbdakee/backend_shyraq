@@ -153,6 +153,9 @@ class FakeChildGuardianRepo extends ChildGuardianRepository {
   countApprovalRights(): Promise<number> {
     return Promise.resolve(0);
   }
+  acquireApprovalRightsLock(): Promise<void> {
+    return Promise.resolve();
+  }
   listApprovedKindergartenIdsByUserId(): Promise<string[]> {
     return Promise.resolve([]);
   }

@@ -114,6 +114,9 @@ class FakeGuardianRepo
   countApprovalRights(): Promise<number> {
     return Promise.resolve(0);
   }
+  acquireApprovalRightsLock(): Promise<void> {
+    return Promise.resolve();
+  }
   listApprovedKindergartenIdsByUserId(): Promise<string[]> {
     return Promise.resolve([]);
   }
@@ -354,6 +357,9 @@ class FakeGroupRepo extends GroupRepository {
   }
   unassignMentor(): Promise<GroupMentor | null> {
     return Promise.resolve(null);
+  }
+  unassignMentorByStaffMember(): Promise<number> {
+    return Promise.resolve(0);
   }
   findActiveMentor(): Promise<GroupMentor | null> {
     return Promise.resolve(null);

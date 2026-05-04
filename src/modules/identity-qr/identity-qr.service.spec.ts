@@ -305,6 +305,9 @@ class FakeGuardianRepo extends ChildGuardianRepository {
   countApprovalRights(): Promise<number> {
     return Promise.resolve(0);
   }
+  acquireApprovalRightsLock(): Promise<void> {
+    return Promise.resolve();
+  }
   listApprovedKindergartenIdsByUserId(): Promise<string[]> {
     return Promise.resolve([]);
   }
@@ -755,6 +758,39 @@ describe('IdentityQrService.scan — happy paths', () => {
     expect(result.role).toBe('mentor');
     expect(result.allowedActions).toEqual(['gate_entry']);
     expect(result.linkedChildren).toBeUndefined();
+  });
+
+  it('returns parent role when scanned user is staff in kg-B but parent-guardian in kg-A (scan in kg-A)', async () => {
+    // Scenario: user is staff in KG2 (not KG) and approved guardian in KG.
+    // When kg-A staff scans this user's QR, the role must resolve to 'parent'
+    // (kg-A context), not 'staff' from kg-B. Without the kg-filter fix this
+    // would incorrectly return the kg-B staff role.
+    const sut = buildSut();
+    sut.refresh.allow(STAFF_USER, DEVICE_ID);
+    sut.users.put(makeUser(PARENT_USER, 'Cross-Tenant User'));
+    sut.children.put(makeChild(CHILD_1, KG, 'Child KG-A'));
+
+    // Scanned user is staff in KG2 only (not in KG).
+    sut.staff.setActive(PARENT_USER, [
+      makeStaff(STAFF_MEMBER_ID, KG2, PARENT_USER, 'mentor'),
+    ]);
+    // Scanned user is approved guardian in KG.
+    sut.guardians.setApprovedActive(PARENT_USER, [
+      makeApprovedGuardian(CHILD_1, PARENT_USER, KG, true),
+    ]);
+
+    const issued = await sut.service.issueOrRefresh(PARENT_USER);
+    // Staff in KG scans the QR — should resolve as parent in KG, not staff from KG2.
+    const result = await sut.service.scan(
+      STAFF_USER,
+      DEVICE_ID,
+      issued.token,
+      KG,
+    );
+
+    expect(result.role).toBe('parent');
+    expect(result.linkedChildren?.map((c) => c.id)).toEqual([CHILD_1]);
+    expect(result.allowedActions).toEqual(['check_in', 'check_out']);
   });
 
   it('returns empty allowed_actions for super-admin / unknown role', async () => {

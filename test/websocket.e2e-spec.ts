@@ -20,6 +20,7 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { io as ioClient, Socket as ClientSocket } from 'socket.io-client';
 import { NotificationGateway } from '@/websocket/notification.gateway';
+import { TokenBlocklistPort } from '@/modules/auth/token-blocklist.port';
 import { createTestApp, flushRedis, TestApp, truncateAll } from './helpers/app';
 
 const SUPER_ADMIN_EMAIL = 'super-ws@shyraq.test';
@@ -408,6 +409,66 @@ describe('B9 websocket gateway (e2e)', () => {
       );
       expect(ack.rooms).not.toContain(`child:${childB}`);
       expect(ack.rooms.length).toBe(2);
+    } finally {
+      socket.disconnect();
+    }
+  });
+
+  // ── F. F15 Layer B: socket survives until JTI is blocklisted, then dies ──
+  //
+  //   Verifies the logout → Redis pub/sub → WS disconnect path. The test
+  //   bypasses the controller and writes directly to the blocklist port;
+  //   this proves the listener wiring without depending on the auth
+  //   refresh-token plumbing inside the e2e harness.
+
+  it('F15: socket disconnects with auth_error when its JTI is blocklisted (Scenario F)', async () => {
+    const a = await createKgWithAdmin('ws-f', '+77011990007');
+    const lonelyUserId = await seedUser('+77011990017');
+    const jti = randomUUID();
+    const jwt = await jwtService.signAsync(
+      {
+        sub: lonelyUserId,
+        role: 'parent',
+        kindergarten_id: a.kgId,
+        jti,
+      },
+      { secret: jwtSecret, expiresIn: '60s' },
+    );
+    const exp = Math.floor(Date.now() / 1000) + 60;
+
+    const socket = ioClient(baseUrl, {
+      path: '/ws',
+      auth: { token: jwt },
+      transports: ['websocket'],
+      forceNew: true,
+      reconnection: false,
+    });
+    try {
+      const ack = await awaitConnected(socket);
+      expect(ack.user_id).toBe(lonelyUserId);
+
+      const revokedSeen = new Promise<{ message: string }>(
+        (resolve, reject) => {
+          const t = setTimeout(() => reject(new Error('revoke_timeout')), 5000);
+          socket.once('auth_error', (msg: { message: string }) => {
+            clearTimeout(t);
+            resolve(msg);
+          });
+          socket.once('disconnect', () => {
+            clearTimeout(t);
+            resolve({ message: 'disconnected' });
+          });
+        },
+      );
+
+      // Drive blocklist directly — same code path the controller exercises.
+      const blocklist = ctx.app.get(TokenBlocklistPort);
+      await blocklist.blocklist(jti, exp);
+
+      const msg = await revokedSeen;
+      // Either the explicit auth_error (if it landed before disconnect)
+      // OR the disconnect itself proves the socket got killed.
+      expect(['session_revoked', 'disconnected']).toContain(msg.message);
     } finally {
       socket.disconnect();
     }

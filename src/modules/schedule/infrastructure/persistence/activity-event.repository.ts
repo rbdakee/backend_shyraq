@@ -31,6 +31,26 @@ export abstract class ActivityEventRepository {
     event: ActivityEvent,
   ): Promise<ActivityEvent>;
 
+  /**
+   * Conditional UPDATE that guards the `status` column against concurrent
+   * transitions. Persists the same fields as `update`, but only when the row's
+   * current `status` still equals `expectedOldStatus`. Returns `true` when
+   * exactly 1 row was affected (the caller won the race) and `false` when 0
+   * rows were affected (a concurrent transition already moved the row to a
+   * different status — the caller lost the race and the service layer should
+   * surface a 409 conflict).
+   *
+   * Used by `startEvent` / `completeEvent` / `cancelEvent` to close the
+   * read-validate-update lost-update race that simple `update` exposes
+   * (two concurrent admin clicks can both pass domain validation against the
+   * same source status, then both blindly UPDATE — last writer wins).
+   */
+  abstract updateWithExpectedStatus(
+    kindergartenId: string,
+    event: ActivityEvent,
+    expectedOldStatus: ActivityEventStatusValue,
+  ): Promise<boolean>;
+
   abstract list(
     kindergartenId: string,
     filter: ListActivityEventsFilter,

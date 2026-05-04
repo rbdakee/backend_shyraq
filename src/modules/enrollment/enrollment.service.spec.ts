@@ -35,7 +35,9 @@ import { Enrollment } from './domain/entities/enrollment.entity';
 import { EnrollmentLockedError } from './domain/errors/enrollment-locked.error';
 import { EnrollmentMissingRequiredFieldsError } from './domain/errors/enrollment-missing-required-fields.error';
 import { EnrollmentNotFoundError } from './domain/errors/enrollment-not-found.error';
+import { EnrollmentTransitionConflictError } from './domain/errors/enrollment-transition-conflict.error';
 import { InvalidEnrollmentStatusTransitionError } from './domain/errors/invalid-enrollment-status-transition.error';
+import { EnrollmentStatusValue } from './domain/value-objects/enrollment-status.vo';
 import {
   EnrollmentStatusLogEntry,
   EnrollmentStatusLogEntryDraft,
@@ -71,6 +73,12 @@ function cloneEnrollment(e: Enrollment): Enrollment {
 
 class FakeEnrollmentRepository extends EnrollmentRepository {
   rows = new Map<string, Enrollment>();
+  /**
+   * Per-id override that forces `updateWithExpectedStatus` to return false on
+   * its next invocation — used by the conflict-path test to simulate a
+   * concurrent transition having moved the row out from under us.
+   */
+  forceConflictOnce = new Set<string>();
 
   put(e: Enrollment): void {
     this.rows.set(e.id, cloneEnrollment(e));
@@ -94,6 +102,26 @@ class FakeEnrollmentRepository extends EnrollmentRepository {
     }
     this.rows.set(e.id, cloneEnrollment(e));
     return Promise.resolve(cloneEnrollment(e));
+  }
+
+  updateWithExpectedStatus(
+    kg: string,
+    e: Enrollment,
+    expectedOldStatus: EnrollmentStatusValue,
+  ): Promise<boolean> {
+    if (this.forceConflictOnce.has(e.id)) {
+      this.forceConflictOnce.delete(e.id);
+      return Promise.resolve(false);
+    }
+    const existing = this.rows.get(e.id);
+    if (!existing || existing.kindergartenId !== kg) {
+      return Promise.resolve(false);
+    }
+    if (existing.status.value !== expectedOldStatus) {
+      return Promise.resolve(false);
+    }
+    this.rows.set(e.id, cloneEnrollment(e));
+    return Promise.resolve(true);
   }
 
   list(kg: string, f: EnrollmentListFilter): Promise<EnrollmentListResult> {
@@ -253,6 +281,13 @@ class FakeGroupRepo extends GroupRepository {
     _now: Date,
   ): Promise<GroupMentor | null> {
     throw new Error('not used');
+  }
+  unassignMentorByStaffMember(
+    _kg: string,
+    _sid: string,
+    _now: Date,
+  ): Promise<number> {
+    return Promise.resolve(0);
   }
   findActiveMentor(_kg: string, _gid: string): Promise<GroupMentor | null> {
     throw new Error('not used');
@@ -886,6 +921,43 @@ describe('EnrollmentService', () => {
       expect(logRepo.rows[0].fromStatus).toBe('in_processing');
       expect(logRepo.rows[0].toStatus).toBe('card_created');
       expect(logRepo.rows[0].changedBy).toBe(STAFF_MEMBER_ID);
+    });
+
+    it('throws EnrollmentTransitionConflictError when status-guarded UPDATE returns false', async () => {
+      const {
+        service,
+        enrollmentRepo,
+        logRepo,
+        staffRepo,
+        groupRepo,
+        childService,
+      } = makeService();
+      staffRepo.put(aStaff(STAFF_MEMBER_ID, STAFF_USER_ID, KG_A));
+      groupRepo.put(aGroup(GROUP_ID, KG_A));
+      const e = await seedAtStatus(enrollmentRepo, 'in_processing', {
+        childName: 'Aliya Atayeva',
+        contactPhone: '+77011112233',
+      });
+      childService.childToReturn = aChild(CHILD_ID, KG_A);
+      childService.guardianToReturn = aGuardian();
+
+      // Simulate a concurrent transition having already moved the row.
+      enrollmentRepo.forceConflictOnce.add(e.id);
+
+      await expect(
+        service.transition(
+          KG_A,
+          e.id,
+          { toStatus: 'card_created', currentGroupId: GROUP_ID },
+          STAFF_USER_ID,
+        ),
+      ).rejects.toBeInstanceOf(EnrollmentTransitionConflictError);
+
+      // Log entry was NOT appended because the conflict aborted the flow
+      // BEFORE logRepo.append (in production this is what the ambient TX
+      // rollback also takes care of for the createChild/inviteGuardian
+      // writes that DID run before the conflict surfaced).
+      expect(logRepo.rows).toHaveLength(0);
     });
 
     it('records card_created -> archive without invoking ChildService', async () => {

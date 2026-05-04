@@ -58,8 +58,15 @@ export class ParentChildController {
     @Tenant() t: TenantContext,
     @CurrentUser() user: JwtPayload,
   ): Promise<ChildDto[]> {
-    if (!t.kgId) throw new BadRequestException('tenant_required');
-    const rows = await this.service.listMyChildren(t.kgId, user.sub);
+    // Two paths:
+    //   - kg-scoped JWT (single approved kg)  → list inside that tenant.
+    //   - unscoped JWT  (zero or multiple approved kgs) → cross-tenant fan-out
+    //     using the bypass-RLS service path. This is the same lookup
+    //     `assembleRoles` uses to decide which kgs a parent has roles in, so
+    //     scope leakage is bounded by the user's own approved-guardian rows.
+    const rows = t.kgId
+      ? await this.service.listMyChildren(t.kgId, user.sub)
+      : await this.service.listMyChildrenCrossTenant(user.sub);
     return rows.map((c) => ChildPresenter.child(c));
   }
 

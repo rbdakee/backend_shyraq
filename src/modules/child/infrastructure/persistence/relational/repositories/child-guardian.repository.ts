@@ -172,6 +172,29 @@ export class ChildGuardianRelationalRepository extends ChildGuardianRepository {
       .getCount();
   }
 
+  /**
+   * `pg_advisory_xact_lock(hashtext('approval-rights:'||kg||':'||child)::bigint)`
+   * — released at the TX boundary set up by `TenantContextInterceptor`.
+   * Two concurrent grants on the same (kg, child) serialize on this lock
+   * so the second one observes the updated count and trips
+   * MaxApprovalRightsExceededError.
+   *
+   * Outside an ambient HTTP TX (CLI / integration code) the lock is taken
+   * on the default pool manager's implicit per-statement TX and released
+   * immediately — effectively a no-op, which is fine because those code
+   * paths don't race.
+   */
+  async acquireApprovalRightsLock(
+    kindergartenId: string,
+    childId: string,
+  ): Promise<void> {
+    const m = this.manager();
+    await m.query(
+      `SELECT pg_advisory_xact_lock(hashtext('approval-rights:' || $1 || ':' || $2)::bigint)`,
+      [kindergartenId, childId],
+    );
+  }
+
   async listApprovedKindergartenIdsByUserId(userId: string): Promise<string[]> {
     return this.dataSource.transaction(async (manager) => {
       await manager.query(`SET LOCAL app.bypass_rls = 'true'`);

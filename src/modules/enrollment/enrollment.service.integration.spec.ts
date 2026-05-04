@@ -16,10 +16,12 @@
  * connection (and its GUC).
  */
 import 'reflect-metadata';
+import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
 import { DataSource } from 'typeorm';
 import { InMemoryNotificationAdapter } from '@/common/notifications/in-memory-notification.adapter';
 import { tenantStorage } from '@/database/tenant-storage';
+import { OtpStorePort, StoredOtp } from '@/modules/auth/otp-store.port';
 import { CameraEntity } from '@/modules/camera/infrastructure/persistence/relational/entities/camera.entity';
 import { ChildService } from '@/modules/child/child.service';
 import { ChildEntity } from '@/modules/child/infrastructure/persistence/relational/entities/child.entity';
@@ -201,6 +203,42 @@ describeIntegration('EnrollmentService — service-integration', () => {
     );
     const notification = new InMemoryNotificationAdapter();
     const clock = new FixedClock(new Date('2026-04-30T10:00:00.000Z'));
+    // Stub OTP store + config — only `linkChildByIin` reads them, and this
+    // suite never calls that path. Defaults match `auth.config.ts`.
+    const otpStore = new (class extends OtpStorePort {
+      checkRateLimit(): Promise<'ok' | 'exceeded'> {
+        return Promise.resolve('ok');
+      }
+      checkRateLimitGeneric(): Promise<'ok' | 'exceeded'> {
+        return Promise.resolve('ok');
+      }
+      isLocked(): Promise<boolean> {
+        return Promise.resolve(false);
+      }
+      storeCode(): Promise<void> {
+        return Promise.resolve();
+      }
+      readCode(): Promise<StoredOtp | null> {
+        return Promise.resolve(null);
+      }
+      incrementAttempts(): Promise<number> {
+        return Promise.resolve(0);
+      }
+      lockPhone(): Promise<void> {
+        return Promise.resolve();
+      }
+      clearCode(): Promise<void> {
+        return Promise.resolve();
+      }
+    })();
+    const configService = {
+      getOrThrow: (key: string): unknown => {
+        if (key === 'auth.rateLimitParentLinkLimit') return 5;
+        if (key === 'auth.rateLimitParentLinkWindowSec') return 3600;
+        throw new Error(`config_not_set: ${key}`);
+      },
+      get: (): unknown => undefined,
+    } as unknown as ConfigService;
     return new ChildService(
       childRepo,
       guardianRepo,
@@ -210,6 +248,8 @@ describeIntegration('EnrollmentService — service-integration', () => {
       notification,
       clock,
       dataSource,
+      otpStore,
+      configService,
     );
   }
 

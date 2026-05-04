@@ -91,14 +91,52 @@ export class RefreshTokenRelationalRepository extends RefreshTokenRepository {
       .execute();
   }
 
+  /**
+   * Revokes ALL active refresh tokens for `userId` across every kindergarten
+   * the user has rows in.
+   *
+   * Why this is special-cased vs other repo methods:
+   *   `refresh_tokens` has FORCE ROW LEVEL SECURITY (see migration
+   *   1777593601000-AuthAndUsersTables, policy `tenant_isolation`). Despite
+   *   architecture.md §3.5 historically describing the table as "global", it
+   *   is FORCE-RLS-protected. If we ran this UPDATE under the ambient
+   *   TenantContextInterceptor TX (which sets `app.kindergarten_id` to the
+   *   caller's tenant), only rows in the caller's kg would be touched —
+   *   leaving tokens in OTHER kindergartens for the same user_id active.
+   *   That's a real session-leak: a multi-kg user (e.g. staff in kg-A AND
+   *   kg-B, parent with approved guardian rows in two kgs) calling
+   *   `/auth/logout` would only kill the kg-A session.
+   *
+   * We therefore open a transaction off the raw datasource (`this.repo.manager`)
+   * — NOT off the ambient `tenantStorage` manager. Inside that transaction we
+   * `SET LOCAL app.bypass_rls = 'true'` (TX-scoped) and run the UPDATE so it
+   * sees every kg's rows for the user.
+   *
+   * Trade-off: the UPDATE commits independently of any outer ambient HTTP TX.
+   * If the controller throws AFTER `revokeAllByUserId` succeeds (e.g.
+   * blocklist-write failure), the revocation persists even though the outer
+   * error rolls back the rest. For logout that's the desired bias — the
+   * caller asked for "logout from all sessions"; partial-revoked is safer
+   * than partial-keep.
+   *
+   * Why a fresh-connection TX over `outerManager.transaction(...)`: the
+   * latter creates a SAVEPOINT inside the ambient TX. PostgreSQL's
+   * `RELEASE SAVEPOINT` does NOT reset GUC settings — so `SET LOCAL
+   * app.bypass_rls = 'true'` would leak past the savepoint into the rest of
+   * the request TX, defeating the tenant guard for everything that runs
+   * later in the same handler. The fresh connection isolates the bypass to
+   * exactly this UPDATE.
+   */
   async revokeAllByUserId(userId: string, now: Date): Promise<void> {
-    const manager = this.manager();
-    await manager
-      .createQueryBuilder()
-      .update(RefreshTokenEntity)
-      .set({ revoked_at: now })
-      .where('user_id = :uid AND revoked_at IS NULL', { uid: userId })
-      .execute();
+    await this.repo.manager.transaction(async (tx) => {
+      await tx.query(`SET LOCAL app.bypass_rls = 'true'`);
+      await tx
+        .createQueryBuilder()
+        .update(RefreshTokenEntity)
+        .set({ revoked_at: now })
+        .where('user_id = :uid AND revoked_at IS NULL', { uid: userId })
+        .execute();
+    });
   }
 
   /**

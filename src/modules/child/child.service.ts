@@ -1,9 +1,12 @@
 import { Inject, Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { randomUUID } from 'node:crypto';
 import { DataSource } from 'typeorm';
 import { NotificationPort } from '@/common/notifications/notification.port';
+import { AllConfigType } from '@/config/config.type';
 import { tenantStorage } from '@/database/tenant-storage';
+import { OtpStorePort } from '@/modules/auth/otp-store.port';
 import { GroupRepository } from '@/modules/group/infrastructure/persistence/group.repository';
 import { GroupNotFoundError } from '@/modules/group/domain/errors/group-not-found.error';
 import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
@@ -43,6 +46,8 @@ import { GuardianNotFoundError } from './domain/errors/guardian-not-found.error'
 import { MaxApprovalRightsExceededError } from './domain/errors/max-approval-rights-exceeded.error';
 import { MultipleChildrenForIinError } from './domain/errors/multiple-children-for-iin.error';
 import { NotPrimaryGuardianError } from './domain/errors/not-primary-guardian.error';
+import { ParentLinkRateLimitError } from './domain/errors/parent-link-rate-limit.error';
+import { PrimaryCannotSelfRevokeError } from './domain/errors/primary-cannot-self-revoke.error';
 
 export interface CreateChildInput {
   fullName: string;
@@ -128,6 +133,8 @@ export class ChildService {
     @Inject(NotificationPort) private readonly notification: NotificationPort,
     @Inject(ClockPort) private readonly clock: ClockPort,
     @InjectDataSource() private readonly dataSource: DataSource,
+    @Inject(OtpStorePort) private readonly otpStore: OtpStorePort,
+    private readonly configService: ConfigService<AllConfigType>,
   ) {}
 
   // ── Children: admin reads / writes ──────────────────────────────────────
@@ -514,6 +521,13 @@ export class ChildService {
     );
 
     if (grantApprovalRights) {
+      // Serialize concurrent grants on the same child against the ≤2 cap.
+      // The advisory lock is released at the ambient TX boundary; the
+      // count below thus observes any prior in-flight grant's write.
+      await this.guardians.acquireApprovalRightsLock(
+        kindergartenId,
+        guardian.childId,
+      );
       const current = await this.guardians.countApprovalRights(
         kindergartenId,
         guardian.childId,
@@ -574,6 +588,9 @@ export class ChildService {
       guardian.childId,
       primary,
     );
+    if (guardian.userId === primary) {
+      throw new PrimaryCannotSelfRevokeError(primary);
+    }
     guardian.revoke(primary, this.clock.now());
     await this.guardians.update(guardian);
     await this.notification.notifyGuardianRevoked({
@@ -598,12 +615,19 @@ export class ChildService {
    * approve/reject flow.
    *
    * Errors:
+   *   - per-user rate-limit exceeded → ParentLinkRateLimitError (429)
    *   - 0 candidates  → ChildNotFoundForIinError
-   *   - >1 candidates → MultipleChildrenForIinError (with kindergartenIds)
+   *   - >1 candidates → MultipleChildrenForIinError (no kindergartenIds in
+   *     payload — exposing tenant membership to an authenticated probe is
+   *     itself an information leak)
    *   - caller already has APPROVED row on the child → AlreadyLinkedToChildError
    *   - caller already has PENDING_APPROVAL row     → AlreadyPendingForChildError
    *   - caller has only a REVOKED row → fresh pending row is allowed (the
    *     partial-unique idx permits multiple revoked rows alongside one active)
+   *
+   * Rate-limit is applied BEFORE the IIN lookup so the cross-tenant probe
+   * itself is gated. Default 5 attempts / hour per authenticated user
+   * (`auth.rateLimitParentLinkLimit` / `auth.rateLimitParentLinkWindowSec`).
    *
    * TODO(refactor): split child.service.ts on parent vs admin paths — file
    * crossed ~880 lines after B6 (CLAUDE.md §8 threshold ~700). See
@@ -614,15 +638,33 @@ export class ChildService {
     input: LinkChildByIinInput,
   ): Promise<LinkChildByIinResult> {
     const callerId = UserId.parse(callerUserId);
+
+    // Rate-limit per authenticated user — gates the cross-tenant IIN probe
+    // itself, not just the success path. Without this, any caller with a
+    // valid JWT could enumerate child existence platform-wide.
+    const rlLimit = this.configService.getOrThrow(
+      'auth.rateLimitParentLinkLimit',
+      { infer: true },
+    );
+    const rlWindow = this.configService.getOrThrow(
+      'auth.rateLimitParentLinkWindowSec',
+      { infer: true },
+    );
+    const rlState = await this.otpStore.checkRateLimitGeneric(
+      `rate:parent:link:${callerId}`,
+      rlLimit,
+      rlWindow,
+    );
+    if (rlState === 'exceeded') {
+      throw new ParentLinkRateLimitError();
+    }
+
     const candidates = await this.children.findByIinCrossTenant(input.iin);
     if (candidates.length === 0) {
       throw new ChildNotFoundForIinError(input.iin);
     }
     if (candidates.length > 1) {
-      throw new MultipleChildrenForIinError(
-        input.iin,
-        candidates.map((c) => c.kindergartenId as string),
-      );
+      throw new MultipleChildrenForIinError(input.iin);
     }
     const child = candidates[0];
     const targetKgId = child.kindergartenId as string;
@@ -742,6 +784,13 @@ export class ChildService {
       primary,
     );
     if (grant && !guardian.hasApprovalRights) {
+      // Same advisory-lock guard as approveGuardian — the cap is checked
+      // again here because toggle is the second admin entry-point onto
+      // the same invariant.
+      await this.guardians.acquireApprovalRightsLock(
+        kindergartenId,
+        guardian.childId,
+      );
       const current = await this.guardians.countApprovalRights(
         kindergartenId,
         guardian.childId,
@@ -845,6 +894,24 @@ export class ChildService {
       if (child) out.push(child);
     }
     return out;
+  }
+
+  /**
+   * Cross-tenant variant for parents whose JWT has no `kindergarten_id`
+   * (multi-kg pending-role-select state, or freshly-linked parents who have
+   * not yet rotated their token after primary-approval). Both repository
+   * lookups bypass RLS via `app.bypass_rls=true` inside their own
+   * transactions; scope leakage is bounded by the user's own approved
+   * guardian rows + their child ids — no other tenant data is observable.
+   * The single-kg path (`listMyChildren`) remains the default since RLS is
+   * still enforced there.
+   */
+  async listMyChildrenCrossTenant(userId: string): Promise<Child[]> {
+    const guardians =
+      await this.guardians.findApprovedActiveByUserIdCrossTenant(userId);
+    if (guardians.length === 0) return [];
+    const childIds = Array.from(new Set(guardians.map((g) => g.childId)));
+    return this.children.findByIdsCrossTenant(childIds);
   }
 
   // ── helpers ─────────────────────────────────────────────────────────────

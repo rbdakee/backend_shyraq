@@ -7,13 +7,15 @@ const DEFAULT_LIMIT = 60;
 const DEFAULT_WINDOW_SECONDS = 60;
 
 /**
- * Fixed-window rate-limiter on `rl:qr:scan:{deviceId}`. Uses Redis
- * `INCR` + `EXPIRE` — the same pattern as `RedisOtpStoreAdapter.checkRateLimit`.
+ * Fixed-window rate-limiter on `rl:qr:scan:{deviceId}`. Uses a Redis
+ * pipeline to batch INCR + EXPIRE in one round-trip — this prevents a
+ * crash between the two commands from leaving the key without a TTL
+ * (which would permanently block the device). Both commands are always
+ * sent; resetting the TTL on an existing key is safe because it just
+ * resets it to the window boundary, preserving fixed-window semantics.
  *
- * On the first call inside a window the key is created with TTL = window;
- * subsequent calls increment until the limit. When the limit is exceeded
- * we read the remaining TTL so callers can surface a precise
- * `retryAfterSeconds` to the client.
+ * When the limit is exceeded we read the remaining TTL so callers can
+ * surface a precise `retryAfterSeconds` to the client.
  */
 @Injectable()
 export class RedisQrScanRateLimiterAdapter extends QrScanRateLimiterPort {
@@ -28,10 +30,14 @@ export class RedisQrScanRateLimiterAdapter extends QrScanRateLimiterPort {
     deviceId: string,
   ): Promise<{ ok: boolean; retryAfterSeconds: number | null }> {
     const key = `${KEY_PREFIX}${deviceId}`;
-    const next = await this.redis.incr(key);
-    if (next === 1) {
-      await this.redis.expire(key, this.windowSeconds);
-    }
+    // Pipeline batches INCR + EXPIRE in one round-trip so a crash between
+    // the two commands cannot leave the key without a TTL (permanent block).
+    const pl = this.redis.pipeline();
+    pl.incr(key);
+    pl.expire(key, this.windowSeconds);
+    const plResults = await pl.exec();
+    // plResults[0] = [error, incrResult], plResults[1] = [error, expireResult]
+    const next = (plResults?.[0]?.[1] as number | null) ?? 1;
     if (next > this.limit) {
       const ttl = await this.redis.ttl(key);
       // `TTL` returns -1 if the key has no expiry, -2 if it has been

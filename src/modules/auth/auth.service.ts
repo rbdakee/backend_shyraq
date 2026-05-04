@@ -28,6 +28,8 @@ import { OtpLockedError } from './domain/errors/otp-locked.error';
 import { OtpRateLimitedError } from './domain/errors/otp-rate-limited.error';
 import { RefreshInvalidError } from './domain/errors/refresh-invalid.error';
 import { RoleNotAvailableError } from './domain/errors/role-not-available.error';
+import { RoleSelectNotRequiredError } from './domain/errors/role-select-not-required.error';
+import { SaasLoginRateLimitError } from './domain/errors/saas-login-rate-limit.error';
 import { JwtTokenPort } from './jwt-token.port';
 import { OtpStorePort } from './otp-store.port';
 import { PasswordHasherPort } from './password-hasher.port';
@@ -73,6 +75,8 @@ export interface SelectRoleInput {
   userId: string;
   kindergartenId: string;
   role?: string;
+  /** Must be true — only JWTs issued with pending_role_select:true may call this. */
+  pendingRoleSelect: boolean;
   oldAccessJti?: string;
   oldAccessExpUnix?: number;
   deviceId?: string;
@@ -143,16 +147,28 @@ export class AuthService implements OnModuleInit {
   onModuleInit(): void {
     const csv =
       this.configService.get('auth.otpTestPhones', { infer: true }) ?? '';
-    const set = new Set(
+    const parsed = new Set(
       csv
         .split(',')
         .map((s) => s.trim())
         .filter((s) => s.length > 0),
     );
-    this.testPhones = set;
-    if (set.size > 0) {
+
+    if (process.env.NODE_ENV === 'production') {
+      if (parsed.size > 0) {
+        this.logger.warn(
+          `OTP test backdoor IGNORED (NODE_ENV=production); refusing to honour OTP_TEST_PHONES`,
+        );
+      }
+      // Treat as empty set in production — backdoor is never active.
+      this.testPhones = new Set();
+      return;
+    }
+
+    this.testPhones = parsed;
+    if (parsed.size > 0) {
       this.logger.warn(
-        `OTP test backdoor active for ${set.size} phone(s) (NODE_ENV=${process.env.NODE_ENV ?? 'unknown'})`,
+        `OTP test backdoor active for ${parsed.size} phone(s) (NODE_ENV=${process.env.NODE_ENV ?? 'unknown'})`,
       );
     }
   }
@@ -241,12 +257,24 @@ export class AuthService implements OnModuleInit {
       throw new NoActiveRolesError();
     }
 
-    const role = roles[0].role;
-    const kgId = roles[0].kindergartenId;
+    // Bind the rotated access token to the kg recorded on the ORIGINAL
+    // refresh-token row, never to an arbitrary roles[0]. A user with roles
+    // across multiple tenants (parent in kg-B + staff in kg-A) must remain
+    // scoped to whichever tenant the prior session belonged to — otherwise a
+    // refresh would silently jump tenants. If the user has lost their role
+    // in `rotated.kindergartenId` since the refresh row was issued
+    // (staff_member deactivated, guardian revoked), there is no role to
+    // re-issue against → NoActiveRolesError. The response still surfaces
+    // every current (role, kg) so the client can offer role-switch UI.
+    const rotatedKgId = rotated.kindergartenId;
+    const matched = this.pickRoleForRotation(roles, rotatedKgId);
+    if (!matched) {
+      throw new NoActiveRolesError();
+    }
     const access = await this.jwt.issueAccessToken({
       sub: user.id,
-      role,
-      kindergarten_id: kgId,
+      role: matched.role,
+      kindergarten_id: matched.kindergartenId,
     });
     return {
       accessToken: access.token,
@@ -278,6 +306,9 @@ export class AuthService implements OnModuleInit {
   // ---------------------------------------------------------------- Role-select
 
   async selectRole(input: SelectRoleInput): Promise<AuthResult> {
+    if (!input.pendingRoleSelect) {
+      throw new RoleSelectNotRequiredError();
+    }
     const staffEntries = await this.staff.findAllActiveByUserId(input.userId);
     const match = staffEntries.find(
       (s) =>
@@ -368,7 +399,26 @@ export class AuthService implements OnModuleInit {
   async superAdminLogin(
     input: SuperAdminLoginInput,
   ): Promise<SuperAdminAuthResult> {
-    const user = await this.saasUsers.findByEmail(input.email);
+    // Rate-limit per email (lowercased + trimmed) — 10 attempts per hour.
+    const normalizedEmail = input.email.toLowerCase().trim();
+    const rlLimit = this.configService.getOrThrow(
+      'auth.rateLimitSuperAdminLoginLimit',
+      { infer: true },
+    );
+    const rlWindow = this.configService.getOrThrow(
+      'auth.rateLimitSuperAdminLoginWindowSec',
+      { infer: true },
+    );
+    const rlState = await this.otpStore.checkRateLimitGeneric(
+      `rate:saas:login:${normalizedEmail}`,
+      rlLimit,
+      rlWindow,
+    );
+    if (rlState === 'exceeded') {
+      throw new SaasLoginRateLimitError();
+    }
+
+    const user = await this.saasUsers.findByEmail(normalizedEmail);
     const valid =
       user !== null &&
       user.isActive &&
@@ -580,30 +630,10 @@ export class AuthService implements OnModuleInit {
     roles: RoleView[];
     kindergartens: { id: string; name: string; slug: string }[];
   }> {
-    const staffEntries = await this.staff.findAllActiveByUserId(user.id);
-
-    if (staffEntries.length === 0) {
-      const guardianKindergartenIds =
-        await this.guardians.listApprovedKindergartenIdsByUserId(user.id);
-      if (guardianKindergartenIds.length > 0) {
-        return {
-          roles: guardianKindergartenIds.map((kgId) => ({
-            role: 'parent',
-            kindergartenId: kgId,
-            groupId: null,
-          })),
-          kindergartens: guardianKindergartenIds.map((kgId) => ({
-            id: kgId,
-            name: '',
-            slug: '',
-          })),
-        };
-      }
-      return {
-        roles: [{ role: 'parent', kindergartenId: null, groupId: null }],
-        kindergartens: [],
-      };
-    }
+    const [staffEntries, guardianKindergartenIds] = await Promise.all([
+      this.staff.findAllActiveByUserId(user.id),
+      this.guardians.listApprovedKindergartenIdsByUserId(user.id),
+    ]);
 
     const roles: RoleView[] = staffEntries.map((s) => ({
       role: s.role,
@@ -611,17 +641,76 @@ export class AuthService implements OnModuleInit {
       groupId: null,
     }));
 
-    // Deduplicate kindergarten ids; names/slugs fetched by client separately.
+    // Append parent rows for kgs where the user has approved guardian links
+    // but no staff_member row. A user who is staff in kg-A and parent in kg-B
+    // gets BOTH `{role:'admin', kg:'kg-A'}` and `{role:'parent', kg:'kg-B'}`.
+    // Same-kg dedup: prefer staff over parent (don't surface a redundant
+    // parent row when the user already has a staff role in that kg).
+    const staffKgIds = new Set(staffEntries.map((s) => s.kindergartenId));
+    for (const kgId of guardianKindergartenIds) {
+      if (!staffKgIds.has(kgId)) {
+        roles.push({ role: 'parent', kindergartenId: kgId, groupId: null });
+      }
+    }
+
+    // Empty case: no staff, no guardian — surface a parent row with null kg
+    // so the caller can still issue a token (legacy parent shape).
+    if (roles.length === 0) {
+      return {
+        roles: [{ role: 'parent', kindergartenId: null, groupId: null }],
+        kindergartens: [],
+      };
+    }
+
+    // Deduplicate kindergarten ids across staff + guardian sources.
     const seen = new Set<string>();
     const kindergartens: { id: string; name: string; slug: string }[] = [];
-    for (const s of staffEntries) {
-      if (!seen.has(s.kindergartenId)) {
-        seen.add(s.kindergartenId);
-        kindergartens.push({ id: s.kindergartenId, name: '', slug: '' });
+    for (const r of roles) {
+      if (r.kindergartenId !== null && !seen.has(r.kindergartenId)) {
+        seen.add(r.kindergartenId);
+        kindergartens.push({ id: r.kindergartenId, name: '', slug: '' });
       }
     }
 
     return { roles, kindergartens };
+  }
+
+  /**
+   * Pick the role to bind to a rotated access token.
+   *
+   * Source of truth is `rotatedKgId` — the kg recorded on the original
+   * refresh-token row, NOT the user's current full role list. This prevents
+   * a refresh from silently jumping tenants when a user has roles in
+   * multiple kindergartens (e.g. parent in kg-B + staff in kg-A).
+   *
+   * Selection rules:
+   *   - `rotatedKgId === null` → first try the legacy null-kg row (parent
+   *     who still has no guardian links). If none exists, fall through to
+   *     the first parent-with-kg role. This supports the B6 onboarding flow:
+   *     parent OTP-verifies before any guardian link → null-kg refresh
+   *     issued; later they get linked + approved → on the next refresh the
+   *     session "upgrades" into the kg they were just admitted to. The
+   *     upgrade is bounded to `parent` roles — we never let a null-kg
+   *     refresh escalate into a staff role discovered after the fact.
+   *   - `rotatedKgId !== null` → match a role with the same kindergarten.
+   *     If both staff and parent exist for that kg (rare but possible
+   *     when admins are also parents at their own kg), prefer staff for a
+   *     deterministic choice; staff carries the higher privilege.
+   *   - No match → return null; caller throws NoActiveRolesError.
+   */
+  private pickRoleForRotation(
+    roles: RoleView[],
+    rotatedKgId: string | null,
+  ): RoleView | null {
+    if (rotatedKgId === null) {
+      const nullKg = roles.find((r) => r.kindergartenId === null);
+      if (nullKg) return nullKg;
+      return roles.find((r) => r.role === 'parent') ?? null;
+    }
+    const matching = roles.filter((r) => r.kindergartenId === rotatedKgId);
+    if (matching.length === 0) return null;
+    const staff = matching.find((r) => r.role !== 'parent');
+    return staff ?? matching[0];
   }
 
   /**

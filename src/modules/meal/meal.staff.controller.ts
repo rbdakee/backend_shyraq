@@ -13,8 +13,10 @@ import {
   ApiTags,
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
+import { Roles } from '@/common/decorators/roles.decorator';
 import { JwtAuthGuard } from '@/common/guards/jwt-auth.guard';
 import { PendingRoleSelectGuard } from '@/common/guards/pending-role-select.guard';
+import { RolesGuard } from '@/common/guards/roles.guard';
 import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-context';
 import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
 import { ListMealPlansByDateQuery } from './dto/list-meal-plans.query';
@@ -33,7 +35,8 @@ function requireTenant(t: TenantContext): string {
 @ApiTags('Staff / Meal Plans')
 @ApiBearerAuth()
 @Controller({ path: 'staff/meal-plans', version: '1' })
-@UseGuards(JwtAuthGuard, PendingRoleSelectGuard)
+@UseGuards(JwtAuthGuard, PendingRoleSelectGuard, RolesGuard)
+@Roles('mentor', 'specialist', 'reception')
 export class MealStaffController {
   constructor(private readonly service: MealService) {}
 

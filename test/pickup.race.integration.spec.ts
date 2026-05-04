@@ -135,6 +135,14 @@ class FakeAuthOtpStore extends OtpStorePort {
     return Promise.resolve('ok');
   }
 
+  checkRateLimitGeneric(
+    _key: string,
+    _limit: number,
+    _windowSec: number,
+  ): Promise<'ok' | 'exceeded'> {
+    return Promise.resolve('ok');
+  }
+
   isLocked(_phone: string): Promise<boolean> {
     return Promise.resolve(false);
   }

@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, Repository } from 'typeorm';
 import { tenantStorage } from '@/database/tenant-storage';
 import { Enrollment } from '../../../../domain/entities/enrollment.entity';
+import { EnrollmentStatusValue } from '../../../../domain/value-objects/enrollment-status.vo';
 import {
   EnrollmentListFilter,
   EnrollmentListResult,
@@ -108,6 +109,42 @@ export class EnrollmentRelationalRepository extends EnrollmentRepository {
       );
     }
     return EnrollmentMapper.toDomain(row);
+  }
+
+  async updateWithExpectedStatus(
+    kindergartenId: string,
+    enrollment: Enrollment,
+    expectedOldStatus: EnrollmentStatusValue,
+  ): Promise<boolean> {
+    const m = this.manager();
+    const state = enrollment.toState();
+    // Conditional UPDATE: only commit when the row's current status still
+    // matches `expectedOldStatus`. If a concurrent transition already moved
+    // the row, `affected = 0` and the service raises
+    // EnrollmentTransitionConflictError to abort the ambient TX.
+    const result = await m
+      .getRepository(EnrollmentEntity)
+      .createQueryBuilder()
+      .update(EnrollmentEntity)
+      .set({
+        child_id: state.childId,
+        contact_name: state.contactName,
+        contact_phone: state.contactPhone,
+        child_name: state.childName,
+        child_dob: state.childDob,
+        child_iin: state.childIin,
+        status: state.status,
+        source: state.source,
+        notes: state.notes,
+        assigned_to: state.assignedTo,
+        status_changed_at: state.statusChangedAt,
+        updated_at: state.updatedAt,
+      })
+      .where('id = :id', { id: state.id })
+      .andWhere('kindergarten_id = :kg', { kg: kindergartenId })
+      .andWhere('status = :expected', { expected: expectedOldStatus })
+      .execute();
+    return (result.affected ?? 0) > 0;
   }
 
   async list(
