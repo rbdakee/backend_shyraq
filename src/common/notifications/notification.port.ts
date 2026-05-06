@@ -153,6 +153,84 @@ export interface GuardianSelfRevokedEvent {
   revokedAt: Date;
 }
 
+// ── B12 Parent-request events ──────────────────────────────────────────────
+
+/**
+ * Fired by `ParentRequestService.acceptRequest` after the conditional UPDATE
+ * succeeded. Recipient: the parent who created the request (`requesterUserId`).
+ * Nannies are excluded by the dispatcher's NANNY_ALLOWED_EVENT_KEYS gate.
+ */
+export interface ParentRequestAcceptedEvent {
+  kindergartenId: string;
+  parentRequestId: string;
+  childId: string;
+  requesterUserId: string;
+  requestType: string;
+  reviewedByStaffId: string;
+}
+
+/**
+ * Fired by `ParentRequestService.rejectRequest`. Recipient: the parent who
+ * created the request.
+ */
+export interface ParentRequestRejectedEvent {
+  kindergartenId: string;
+  parentRequestId: string;
+  childId: string;
+  requesterUserId: string;
+  requestType: string;
+  reviewedByStaffId: string;
+}
+
+/**
+ * Fired by `ParentRequestService.cancelRequest` when the parent cancels a
+ * pending request. Recipient: the staff member it was directed at (when
+ * present); otherwise the dispatcher delivers to nobody.
+ *
+ * The producer pre-resolves `recipientStaffUserId` (staff_member.user_id) so
+ * the dispatcher does not need a `StaffMemberRepository` dependency.
+ */
+export interface ParentRequestCancelledEvent {
+  kindergartenId: string;
+  parentRequestId: string;
+  childId: string;
+  requesterUserId: string;
+  requestType: string;
+  /** The staff_member id the request was addressed to, or null for `admin` recipientType. */
+  recipientStaffId: string | null;
+  /** Resolved user_id for the staff_member above; null when recipientStaffId is null. */
+  recipientStaffUserId: string | null;
+}
+
+/**
+ * Fired by `ParentRequestService.addParentMessage` / `addStaffMessage` when
+ * a thread message is posted. Recipient resolution depends on `authorRole`:
+ *   - parent author → staff (recipient_staff_id) when assigned
+ *   - staff author → requester (parent)
+ * Nannies are excluded by the nanny-policy gate.
+ *
+ * The producer pre-resolves `recipientStaffUserId` so the dispatcher does
+ * not need a `StaffMemberRepository` dependency.
+ */
+export interface ParentRequestMessageSentEvent {
+  kindergartenId: string;
+  parentRequestId: string;
+  childId: string;
+  messageId: string;
+  /** 'parent' if posted by the parent (requester); 'staff' if posted by a staff member. */
+  authorRole: 'parent' | 'staff';
+  /** Author user id (parent) or null when authored by staff. */
+  authorUserId: string | null;
+  /** Author staff_member id or null when authored by parent. */
+  authorStaffId: string | null;
+  /** Parent who created the parent_request (target when authorRole='staff'). */
+  requesterUserId: string;
+  /** Staff_member id this request was directed to (target when authorRole='parent'); null for `admin` recipientType. */
+  recipientStaffId: string | null;
+  /** Resolved user_id for `recipientStaffId`; null when no staff is assigned. */
+  recipientStaffUserId: string | null;
+}
+
 export abstract class NotificationPort {
   abstract notifyGuardianPendingApproval(
     event: GuardianPendingApprovalEvent,
@@ -205,4 +283,22 @@ export abstract class NotificationPort {
    * transition. Recipients: the child's approved guardians + the requester.
    */
   abstract notifyPickupValidated(event: PickupValidatedEvent): Promise<void>;
+
+  // ── B12 Parent-request events ──────────────────────────────────────────
+
+  abstract notifyParentRequestAccepted(
+    event: ParentRequestAcceptedEvent,
+  ): Promise<void>;
+
+  abstract notifyParentRequestRejected(
+    event: ParentRequestRejectedEvent,
+  ): Promise<void>;
+
+  abstract notifyParentRequestCancelled(
+    event: ParentRequestCancelledEvent,
+  ): Promise<void>;
+
+  abstract notifyParentRequestMessageSent(
+    event: ParentRequestMessageSentEvent,
+  ): Promise<void>;
 }

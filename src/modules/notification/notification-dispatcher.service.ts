@@ -378,6 +378,86 @@ const TEMPLATES: Record<string, EventTemplate> = {
       }),
     };
   },
+
+  // ── B12 Parent-request events ─────────────────────────────────────────
+  // Generic Russian copy — clients render type-specific UI from `requestType`
+  // in the data payload. Nannies do NOT receive request.* (excluded by the
+  // NANNY_ALLOWED_EVENT_KEYS gate — they only get attendance.* + pickup.*).
+
+  'request.accepted': ({ payload }) => ({
+    titleI18n: {
+      ru: 'Заявка принята',
+      kk: 'Өтінім қабылданды',
+      en: 'Request accepted',
+    },
+    bodyI18n: {
+      ru: 'Сотрудник принял вашу заявку.',
+      kk: 'Қызметкер сіздің өтініміңізді қабылдады.',
+      en: 'Your request was accepted by the staff.',
+    },
+    data: stringMap({
+      parentRequestId: payload.parentRequestId,
+      childId: payload.childId,
+      requestType: payload.requestType,
+      reviewedByStaffId: payload.reviewedByStaffId,
+    }),
+  }),
+
+  'request.rejected': ({ payload }) => ({
+    titleI18n: {
+      ru: 'Заявка отклонена',
+      kk: 'Өтінім қабылданбады',
+      en: 'Request rejected',
+    },
+    bodyI18n: {
+      ru: 'Сотрудник отклонил вашу заявку.',
+      kk: 'Қызметкер сіздің өтініміңізді қабылдамады.',
+      en: 'Your request was rejected by the staff.',
+    },
+    data: stringMap({
+      parentRequestId: payload.parentRequestId,
+      childId: payload.childId,
+      requestType: payload.requestType,
+      reviewedByStaffId: payload.reviewedByStaffId,
+    }),
+  }),
+
+  'request.cancelled': ({ payload }) => ({
+    titleI18n: {
+      ru: 'Заявка отменена',
+      kk: 'Өтінім жойылды',
+      en: 'Request cancelled',
+    },
+    bodyI18n: {
+      ru: 'Родитель отменил заявку.',
+      kk: 'Ата-ана өтінімді жойды.',
+      en: 'The parent cancelled the request.',
+    },
+    data: stringMap({
+      parentRequestId: payload.parentRequestId,
+      childId: payload.childId,
+      requestType: payload.requestType,
+    }),
+  }),
+
+  'request.message_sent': ({ payload }) => ({
+    titleI18n: {
+      ru: 'Новое сообщение по заявке',
+      kk: 'Өтінім бойынша жаңа хабарлама',
+      en: 'New message on request',
+    },
+    bodyI18n: {
+      ru: 'Открыть, чтобы прочитать и ответить.',
+      kk: 'Оқу және жауап беру үшін ашыңыз.',
+      en: 'Open to read and reply.',
+    },
+    data: stringMap({
+      parentRequestId: payload.parentRequestId,
+      childId: payload.childId,
+      messageId: payload.messageId,
+      authorRole: payload.authorRole,
+    }),
+  }),
 };
 
 const RECIPIENT_RESOLVERS: Record<string, RecipientResolver> = {
@@ -402,6 +482,24 @@ const RECIPIENT_RESOLVERS: Record<string, RecipientResolver> = {
   // child activity to an account that no longer has access.
   'pickup.otp_sent': resolvePickupOtpSentRecipients,
   'pickup.validated': resolvePickupValidatedRecipients,
+  // ── B12 Parent-request events ──────────────────────────────────────────
+  // For request.accepted / request.rejected the payload already names the
+  // requester (parent who created the parent_request) and that's the only
+  // recipient. We re-validate the guardian-link before delivery to avoid
+  // leaking request decisions to a parent who has since been revoked
+  // (mirrors the T7-5 MEDIUM#4 pattern from pickup.otp_sent).
+  'request.accepted': resolveParentRequestRequesterRecipients,
+  'request.rejected': resolveParentRequestRequesterRecipients,
+  // request.cancelled goes to the assigned staff member (recipient_staff_id
+  // resolved to user_id by the producer). When the request was directed at
+  // `admin` (recipientStaffId=null), we don't fan out to the whole admin
+  // pool from here — the admin's inbox view picks it up on the next list
+  // refresh. (B22 may extend with kg-wide admin push if desired.)
+  'request.cancelled': resolveParentRequestCancelledRecipients,
+  // request.message_sent fans out based on authorRole: parent→staff or
+  // staff→parent. Parent recipient is re-validated against the
+  // guardian-link to close the same stale-recipient hole.
+  'request.message_sent': resolveParentRequestMessageRecipients,
 };
 
 async function resolveByChildGuardians(
@@ -494,6 +592,82 @@ function resolveSelfFromField(fieldName: string): RecipientResolver {
     const userId = stringField(event.payload, fieldName);
     return Promise.resolve({ userIds: [userId], nannyUserIds: new Set() });
   };
+}
+
+/**
+ * Recipient resolver for `request.accepted` / `request.rejected` — only the
+ * parent who created the parent_request receives the notification, and only
+ * if they are STILL an approved-active guardian on the child at dispatch
+ * time. Mirrors the pickup.otp_sent stale-recipient gate (T7-5 MEDIUM#4).
+ */
+async function resolveParentRequestRequesterRecipients(
+  event: OutboxEvent,
+  deps: { guardianRepo: ChildGuardianRepository },
+): Promise<ResolvedRecipients> {
+  const requesterId = stringField(event.payload, 'requesterUserId');
+  const childId = stringField(event.payload, 'childId');
+  const link = await deps.guardianRepo.findApprovedActiveByUserAndChild(
+    event.kindergartenId,
+    childId,
+    requesterId,
+  );
+  if (link === null) {
+    return { userIds: [], nannyUserIds: new Set() };
+  }
+  return { userIds: [requesterId], nannyUserIds: new Set() };
+}
+
+/**
+ * Recipient resolver for `request.cancelled` — fans out to the staff member
+ * the request was directed at (by user_id). When the request was directed at
+ * `admin` (recipientStaffId=null) we deliver to nobody from the dispatcher;
+ * admin views surface the row directly via list endpoints.
+ */
+function resolveParentRequestCancelledRecipients(
+  event: OutboxEvent,
+): Promise<ResolvedRecipients> {
+  const recipientUserId = event.payload.recipientStaffUserId;
+  if (typeof recipientUserId !== 'string' || recipientUserId.length === 0) {
+    return Promise.resolve({ userIds: [], nannyUserIds: new Set() });
+  }
+  return Promise.resolve({
+    userIds: [recipientUserId],
+    nannyUserIds: new Set(),
+  });
+}
+
+/**
+ * Recipient resolver for `request.message_sent` — direction depends on
+ * `authorRole`:
+ *   - 'parent' author → notify the assigned staff (recipientStaffUserId)
+ *   - 'staff'  author → notify the requester parent (re-validated)
+ * Nannies are excluded by the nanny-policy gate; the parent re-validation
+ * closes the stale-recipient hole.
+ */
+async function resolveParentRequestMessageRecipients(
+  event: OutboxEvent,
+  deps: { guardianRepo: ChildGuardianRepository },
+): Promise<ResolvedRecipients> {
+  const authorRole = stringField(event.payload, 'authorRole');
+  if (authorRole === 'parent') {
+    const recipientUserId = event.payload.recipientStaffUserId;
+    if (typeof recipientUserId !== 'string' || recipientUserId.length === 0) {
+      return { userIds: [], nannyUserIds: new Set() };
+    }
+    return { userIds: [recipientUserId], nannyUserIds: new Set() };
+  }
+  // staff author → requester parent (with guardian re-validation)
+  const requesterId = stringField(event.payload, 'requesterUserId');
+  const childId = stringField(event.payload, 'childId');
+  const link = await deps.guardianRepo.findApprovedActiveByUserAndChild(
+    event.kindergartenId,
+    childId,
+    requesterId,
+  );
+  if (link === null) {
+    return { userIds: [], nannyUserIds: new Set() };
+  }
+  return { userIds: [requesterId], nannyUserIds: new Set() };
 }
 
 function stringMap(input: Record<string, unknown>): Record<string, string> {

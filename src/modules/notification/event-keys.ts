@@ -31,6 +31,11 @@ export const CANONICAL_EVENT_KEYS = [
   'discount.activated',
   'request.reviewed',
   'request.message_replied',
+  // ── B12 Parent-request lifecycle events ───────────────────────────────
+  'request.accepted',
+  'request.rejected',
+  'request.cancelled',
+  'request.message_sent',
   'face.enrolled',
   'fiscal.retry_failed',
 ] as const;

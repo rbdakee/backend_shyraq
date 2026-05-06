@@ -10,6 +10,10 @@ import {
   GuardianRevokedEvent,
   GuardianSelfRevokedEvent,
   NotificationPort,
+  ParentRequestAcceptedEvent,
+  ParentRequestCancelledEvent,
+  ParentRequestMessageSentEvent,
+  ParentRequestRejectedEvent,
   PermissionsUpdatedEvent,
   PickupOtpSentEvent,
   PickupValidatedEvent,
@@ -173,6 +177,61 @@ export class OutboxNotificationAdapter extends NotificationPort {
       trustedPersonName: event.trustedPersonName,
       attendanceEventId: event.attendanceEventId,
       validatedAt: event.validatedAt.toISOString(),
+    });
+  }
+
+  // ── B12 Parent-request events ────────────────────────────────────────────
+
+  notifyParentRequestAccepted(
+    event: ParentRequestAcceptedEvent,
+  ): Promise<void> {
+    return this.enqueue(event.kindergartenId, 'request.accepted', {
+      parentRequestId: event.parentRequestId,
+      childId: event.childId,
+      requesterUserId: event.requesterUserId,
+      requestType: event.requestType,
+      reviewedByStaffId: event.reviewedByStaffId,
+    });
+  }
+
+  notifyParentRequestRejected(
+    event: ParentRequestRejectedEvent,
+  ): Promise<void> {
+    return this.enqueue(event.kindergartenId, 'request.rejected', {
+      parentRequestId: event.parentRequestId,
+      childId: event.childId,
+      requesterUserId: event.requesterUserId,
+      requestType: event.requestType,
+      reviewedByStaffId: event.reviewedByStaffId,
+    });
+  }
+
+  notifyParentRequestCancelled(
+    event: ParentRequestCancelledEvent,
+  ): Promise<void> {
+    return this.enqueue(event.kindergartenId, 'request.cancelled', {
+      parentRequestId: event.parentRequestId,
+      childId: event.childId,
+      requesterUserId: event.requesterUserId,
+      requestType: event.requestType,
+      recipientStaffId: event.recipientStaffId,
+      recipientStaffUserId: event.recipientStaffUserId,
+    });
+  }
+
+  notifyParentRequestMessageSent(
+    event: ParentRequestMessageSentEvent,
+  ): Promise<void> {
+    return this.enqueue(event.kindergartenId, 'request.message_sent', {
+      parentRequestId: event.parentRequestId,
+      childId: event.childId,
+      messageId: event.messageId,
+      authorRole: event.authorRole,
+      authorUserId: event.authorUserId,
+      authorStaffId: event.authorStaffId,
+      requesterUserId: event.requesterUserId,
+      recipientStaffId: event.recipientStaffId,
+      recipientStaffUserId: event.recipientStaffUserId,
     });
   }
 

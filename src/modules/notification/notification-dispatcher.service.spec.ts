@@ -1149,6 +1149,11 @@ describe('NotificationDispatcher', () => {
       // ── B11 Pickup OTP ─────────────────────────────────────────────────
       'pickup.otp_sent',
       'pickup.validated',
+      // ── B12 Parent-request lifecycle ───────────────────────────────────
+      'request.accepted',
+      'request.rejected',
+      'request.cancelled',
+      'request.message_sent',
     ];
 
     it.each(COVERED_KEYS)(

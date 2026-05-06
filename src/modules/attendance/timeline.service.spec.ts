@@ -242,6 +242,18 @@ class FakeNotificationPort extends NotificationPort {
   notifyPickupValidated(): Promise<void> {
     return Promise.resolve();
   }
+  notifyParentRequestAccepted(): Promise<void> {
+    return Promise.resolve();
+  }
+  notifyParentRequestRejected(): Promise<void> {
+    return Promise.resolve();
+  }
+  notifyParentRequestCancelled(): Promise<void> {
+    return Promise.resolve();
+  }
+  notifyParentRequestMessageSent(): Promise<void> {
+    return Promise.resolve();
+  }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────

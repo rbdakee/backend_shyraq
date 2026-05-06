@@ -10,6 +10,10 @@ import {
   GuardianRevokedEvent,
   GuardianSelfRevokedEvent,
   NotificationPort,
+  ParentRequestAcceptedEvent,
+  ParentRequestCancelledEvent,
+  ParentRequestMessageSentEvent,
+  ParentRequestRejectedEvent,
   PermissionsUpdatedEvent,
   PickupOtpSentEvent,
   PickupValidatedEvent,
@@ -98,6 +102,34 @@ export class InMemoryNotificationAdapter extends NotificationPort {
 
   notifyPickupValidated(event: PickupValidatedEvent): Promise<void> {
     this.record('pickup_validated', event);
+    return Promise.resolve();
+  }
+
+  notifyParentRequestAccepted(
+    event: ParentRequestAcceptedEvent,
+  ): Promise<void> {
+    this.record('parent_request_accepted', event);
+    return Promise.resolve();
+  }
+
+  notifyParentRequestRejected(
+    event: ParentRequestRejectedEvent,
+  ): Promise<void> {
+    this.record('parent_request_rejected', event);
+    return Promise.resolve();
+  }
+
+  notifyParentRequestCancelled(
+    event: ParentRequestCancelledEvent,
+  ): Promise<void> {
+    this.record('parent_request_cancelled', event);
+    return Promise.resolve();
+  }
+
+  notifyParentRequestMessageSent(
+    event: ParentRequestMessageSentEvent,
+  ): Promise<void> {
+    this.record('parent_request_message_sent', event);
     return Promise.resolve();
   }
 

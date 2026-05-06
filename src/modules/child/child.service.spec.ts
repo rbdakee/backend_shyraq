@@ -634,6 +634,18 @@ class FakeNotification extends NotificationPort {
   notifyPickupValidated(e: unknown): Promise<void> {
     return this.push('pickup_validated', e);
   }
+  notifyParentRequestAccepted(e: unknown): Promise<void> {
+    return this.push('parent_request_accepted', e);
+  }
+  notifyParentRequestRejected(e: unknown): Promise<void> {
+    return this.push('parent_request_rejected', e);
+  }
+  notifyParentRequestCancelled(e: unknown): Promise<void> {
+    return this.push('parent_request_cancelled', e);
+  }
+  notifyParentRequestMessageSent(e: unknown): Promise<void> {
+    return this.push('parent_request_message_sent', e);
+  }
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────
