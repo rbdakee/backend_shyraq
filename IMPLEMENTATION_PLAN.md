@@ -4,7 +4,7 @@
 
 ---
 
-## 0. v2 baseline (P0–P5 + B5–B6 complete)
+## 0. v2 baseline (P0–P5 + B5–B12 complete)
 
 Репо `backend_shyraq_v2` — TypeORM + service.ts brocoders pattern. Достиг **B4-parity** на коммите `f1d6984` (P5 children & guardians).
 
@@ -43,8 +43,144 @@
 3. **Multi-tenancy с первой строчки.** Каждый запрос идёт через `KindergartenScopeGuard` + `TenantContextInterceptor` (RLS GUC). Service.ts явно передаёт `kindergarten_id` в repo-вызовы. Cross-tenant phantom-row integration spec — обязательная часть каждой новой tenant-scoped таблицы.
 4. **Тесты — часть батча, 4 уровня.** domain-unit (POJO/VO) + service-unit (in-memory fakes) + integration-spec (real PG/Redis, gated `INTEGRATION_DB=1`) + e2e (HTTP через Supertest).
 5. **Никаких спекулятивных абстракций.** Базовые классы / generic helpers только когда есть 3+ повторений.
-6. **External integrations через port/adapter.** `abstract class` + `MockAdapter` + `RealAdapter` (с TODO, если нет credentials). Switch через env (`PAYMENT_PROVIDER=mock|halyk`).
+6. **External integrations через port/adapter — обязательно provider-agnostic.** Любой внешний сервис (SMS, push, payment, OFD, file storage, face, media-server, …) попадает в код через `abstract class <Service>Port` + `Mock<Service>Adapter`. Бизнес-логика (service.ts) **никогда** не импортирует конкретного вендора (Mobizon, Twilio, Halyk, FreedomPay, Firebase, S3, …). Switch адаптера — через env (`PUSH_PROVIDER=mock|fcm`, `SMS_PROVIDER=mock|mobizon|twilio`, `PAYMENT_PROVIDER=mock|halyk|freedompay|tiptoppay`, …) с default `mock`. Подключение реального вендора = новый адаптер-файл (1 файл, ~20-100 строк) + 1 строка в module + env-var. Бизнес-код, контроллеры, тесты — не трогаем. Подробнее см. **§1.1 Provider-agnostic policy** ниже.
 7. **Прогресс — в этом файле.** Каждый sub-task в чек-листе; отметка `[x]` ставится сразу при завершении.
+
+---
+
+## 1.1 Provider-agnostic policy (как реализуется принцип №6)
+
+**Цель:** функционал должен быть закрыт **до** того как выбран конкретный вендор любого внешнего сервиса. Когда вендор выбран — подключение делается без редактирования бизнес-логики, контроллеров, тестов и DTO. Это даёт три преимущества: (а) можно стартовать функциональные батчи прямо сейчас без блокировки на вендор-выбор; (б) можно менять вендора без переписывания кода (Halyk → FreedomPay, Mobizon → Twilio); (в) тесты гонятся против Mock-адаптеров без реальных credentials.
+
+### Pattern (template для каждого нового external service)
+
+1. **Port** — `abstract class <Service>Port` в подходящем модуле (`src/modules/<x>/` либо `src/shared-kernel/` если кросс-модульный):
+   ```ts
+   // src/modules/billing/payment-provider.port.ts
+   export interface CreatePaymentInput { invoiceId: string; amountKzt: number; returnUrl: string; }
+   export interface CreatePaymentResult { providerPaymentId: string; redirectUrl: string; }
+   export abstract class PaymentProviderPort {
+     abstract createPayment(input: CreatePaymentInput): Promise<CreatePaymentResult>;
+     abstract verifyWebhook(headers: Record<string, string>, body: unknown): Promise<{invoiceId: string; status: 'paid'|'failed'} | null>;
+     abstract refund(providerPaymentId: string, amountKzt: number): Promise<void>;
+   }
+   ```
+2. **MockAdapter** — обязательно. Возвращает детерминированные значения, логирует в `Logger`, никаких внешних HTTP-вызовов. Это default для CI / dev / demo:
+   ```ts
+   @Injectable() class MockPaymentProvider extends PaymentProviderPort { /* ... */ }
+   ```
+3. **RealAdapter — опционально на момент батча.** Если есть TODO-stub (как у `FcmPushAdapter` сегодня) — он должен **throw** с явным сообщением `<Provider> adapter not implemented; configure <ENV>=mock`. Никаких silent-no-op.
+4. **Env-switch** в module:
+   ```ts
+   {
+     provide: PaymentProviderPort,
+     useFactory: () => {
+       const p = (process.env.PAYMENT_PROVIDER ?? 'mock').toLowerCase();
+       if (p === 'halyk') return new HalykPaymentAdapter(...);
+       if (p === 'freedompay') return new FreedomPayPaymentAdapter(...);
+       return new MockPaymentProvider();
+     },
+   }
+   ```
+5. **Бизнес-код инжектит порт.** Никаких `if (provider === 'halyk')` в `service.ts`. Никаких импортов из `node_modules` вендора в `service.ts`/`controller.ts`/`dto/`. Адаптер — единственное место, где живёт вендор-specific код.
+6. **Тесты:** unit использует in-memory fake адаптера (рукописный, не Jest auto-mock); integration/e2e — `MockAdapter`.
+7. **Конфиг.** Каждый порт сопровождается `<service>.config.ts` через `registerAs(...)` (как `redis.config.ts`/`auth.config.ts`) если нужны вендор-credentials. Mock не требует конфига.
+8. **Документация.** В `env-example-relational` добавляется `<SERVICE>_PROVIDER=mock` (default) + закомментированные строки для каждого реального вендора с описанием `# <Provider>: requires <ENV_VAR_LIST>`.
+
+### Чеклист для review каждого батча, который трогает external service
+
+- [ ] Порт абстрактный? (`abstract class`, не interface — DI-токен совпадает с классом)
+- [ ] MockAdapter существует и default?
+- [ ] Env-switch реализован через `useFactory`?
+- [ ] Бизнес-код **не импортирует** вендор-specific пакеты?
+- [ ] `env-example-relational` содержит `<SERVICE>_PROVIDER=mock` с комментариями?
+- [ ] Real-adapter (если есть stub) — throws явной ошибкой при вызове?
+- [ ] Unit-тесты используют in-memory fake; e2e — Mock?
+- [ ] Документ `endpoints.md`/`architecture.md` ссылается на абстракт-порт, не на конкретный вендор?
+
+### Текущий статус ports & adapters (что уже provider-agnostic)
+
+| Сервис | Port | Mock | Real | Env-switch |
+|---|---|---|---|---|
+| SMS | `SmsPort` | `MockSmsAdapter` ✓ | — | ❌ (B22 добавит) |
+| Push | `PushNotificationPort` | `MockPushAdapter` ✓ | `FcmPushAdapter` (stub throws) | ✓ `PUSH_PROVIDER` |
+| JWT signing | `JwtTokenPort` | `JsonwebtokenJwtAdapter` ✓ | — | n/a (jsonwebtoken — не вендор-lock) |
+| Password hash | `PasswordHasherPort` | `BcryptPasswordHasherAdapter` ✓ | — | n/a |
+| OTP store | `OtpStorePort` | `RedisOtpStoreAdapter` ✓ | — | n/a (Redis — инфра, не вендор) |
+| Token blocklist | `TokenBlocklistPort` | `RedisTokenBlocklistAdapter` ✓ | — | n/a |
+| Pickup OTP store | `PickupOtpStorePort` | `RedisPickupOtpStoreAdapter` ✓ | — | n/a |
+| Parent-request OTP store | `ParentRequestOtpStorePort` | Redis adapter ✓ | — | n/a |
+| QR token cache | `QrTokenCachePort` | `RedisQrTokenCacheAdapter` ✓ | — | n/a |
+| QR scan rate-limit | `QrScanRateLimiterPort` | `RedisQrScanRateLimiterAdapter` ✓ | — | n/a |
+| Notification dispatch | `NotificationPort` | `OutboxNotificationAdapter` ✓ + `LoggingNotificationAdapter` | — | n/a |
+| WS broadcaster | `WsBroadcasterPort` | socket.io adapter ✓ | — | n/a |
+| Clock | `ClockPort` | `SystemClockAdapter` + `FixedClockAdapter` (тесты) | — | n/a |
+
+### Что появится в следующих батчах (порт + Mock — обязательно в момент батча)
+
+| Batch | Сервис | Port | Mock | Real adapter |
+|---|---|---|---|---|
+| **B13** | Payment provider | `PaymentProviderPort` | `MockPaymentProvider` | — (B14 добавит Halyk; FreedomPay/TipTopPay позже параллельно) |
+| **B15** | OFD/фискальный чек | `FiscalReceiptPort` | `MockFiscalReceiptAdapter` | — (выбор Kassa24/Rekassa/Webkassa отложен) |
+| **B17** | File storage (фото/видео для контента) | `FileStoragePort` | `LocalFileStorageAdapter` (диск) | — (S3/Yandex Object Storage адаптер позже) |
+| **B17** | Push tags (если для broadcast topics) | расширение `PushNotificationPort` | — | — |
+| **B19** | Face embeddings | `FaceEmbeddingPort` | `MockFaceEmbeddingAdapter` | edge-attached real adapter |
+| **B19** | Vector DB (Qdrant) | `FaceVectorDbPort` | `InMemoryFaceVectorDbAdapter` | Qdrant adapter |
+| **B20** | Media server (CCTV) | `MediaServerPort` | `MockMediaServerAdapter` | MediaMTX adapter |
+
+**Обязательное требование к каждому функциональному батчу:** если он касается внешнего сервиса — **порт + Mock закрываются в самом батче**. Real-adapter может ждать — функционал не ждёт.
+
+### Что отложено явно до закрытия всего функционала
+
+См. **§2.1 Phase order** ниже. До закрытия B22 **никаких real-vendor-адаптеров не пишем** (кроме случаев, когда работает Mock + Real уже подключён старым кодом — например, FCM stub останется как есть). Real-vendor PR'ы делаем после prod-ready функционала отдельным "Integrations Phase".
+
+---
+
+## 2.1 Phase order — функционал → интеграции → edge/face/cctv
+
+Решение **2026-05-07:** идём в три фазы. Каждая следующая стартует только после полного закрытия предыдущей.
+
+### Phase A — Functional completeness (текущая)
+
+Цель: закрыть **весь функционал** против Mock-адаптеров. Никаких real-vendor подключений в этой фазе. Phase A считается закрытой когда вся бизнес-логика BP §1–§13 (исключая Face/CCTV) работает end-to-end на Mock-адаптерах + B22 polish сделан.
+
+**Порядок батчей:**
+
+| # | Батч | Зависимости | Что закрывает |
+|---|---|---|---|
+| 1 | **B13** Billing & Invoices (mock) | — | BP §4 функционал |
+| 2 | **B16** Custom Discounts | B13 | BP §4.1 |
+| 3 | **B17** Content & Stories | — (⊥ B18) | BP §9 |
+| 4 | **B18** Diagnostics & Progress | — (⊥ B17) | BP §8 |
+| 5 | **B21** Lifecycle | B13 | BP §12 |
+| 6 | **B22** Polish | всё выше | i18n, security, Swagger, технический долг §5 |
+
+После B22 → **Phase A done = функционально prod-ready**. Можно демонстрировать клиенту, можно начинать пилот на одном саду с Mock-SMS / Mock-Payment (только для теста UX, не для денег).
+
+### Phase B — Real integrations
+
+Цель: подключить выбранных вендоров. Каждый PR здесь = **1 файл-адаптер + env-switch строка + entry в `env-example-relational`**. Бизнес-код не трогается (если потребовалось трогать — порт спроектирован неправильно, возвращаемся в Phase A для рефакторинга порта).
+
+| # | Батч | Что подключает | Блокер |
+|---|---|---|---|
+| — | **Real SMS adapter** | Mobizon / SMSC / Twilio / другой | выбор провайдера |
+| — | **B14** Halyk ePay (real money) | Halyk webhook + redirect flow | Halyk ePay контракт |
+| — | **B15** OFD (Fiscal) | Kassa24 / Rekassa / Webkassa | выбор ОФД |
+| — | **Дополнительные платёжки** | FreedomPay / TipTopPay (опционально, параллельно Halyk) | выбор |
+| — | **Real File Storage** | S3 / Yandex Object Storage | выбор + creds |
+| — | **Real FCM** | firebase-admin в `FcmPushAdapter` (сейчас throws) | Firebase project |
+
+После Phase B → **полностью prod-ready, можно принимать деньги, отправлять SMS, печатать чеки**.
+
+### Phase C — Edge / Face / CCTV
+
+Cloud-only функционал прода живой. Edge-стек разворачивается per kindergarten.
+
+| # | Батч | Зависимости |
+|---|---|---|
+| — | **B18.5** Edge Bootstrap | Phase A done (cloud стабилен) |
+| — | **B19** Face ID | B18.5 |
+| — | **B20** CCTV | B18.5 |
 
 ---
 
@@ -66,19 +202,26 @@
 | **B10** | **Identity QR** | BP §13 целиком | Refreshable QR в Parent/Staff app, scan endpoint, fallback при Face fail. **Demo-ready!** |
 | **B11** | **Pickup OTP & Trusted** | BP §7 целиком | Whitelist, OTP по SMS, валидация, фиксация в attendance. **Demo-ready!** |
 | **B12** | **Parent Requests** | BP §6 целиком | 5 типов заявок (`trusted_person`, `day_off`, `vacation`, `late_pickup`, `open_request`), статус-машина `pending → {accepted, rejected, cancelled}` через conditional UPDATE, двусторонний тред сообщений (`parent_request_messages` + author XOR). OTP-flow для `trusted_person` (1-стадийно: `/parent/requests/otp-request` → `/parent/requests/trusted-person`). `day_off` = ребёнок В САДУ в выходной (1-2 даты, каждая Сб/Вс); `vacation` = ребёнок НЕ ХОДИТ (date_from..date_to). Asia/Almaty TZ-aware валидаторы (shared-kernel helpers). day-of-week VO перенесена из schedule в shared-kernel. invoice_id nullable (B13 hook). Tests: unit 980 / integration 1053 (1 known B22 flake) / e2e 325 — все зелёные. **Demo-ready!** (commits `cf29827` → `48f1675`) |
-| **B13** | **Billing & Invoices (mock provider)** | BP §4 (бэк-часть) | Тарифы, assignments, cron генерации invoice 1-го числа, pro-rata, holidays, MockPaymentProvider |
-| **B14** | **Payment Provider — Halyk** | BP §4 (real money) | Подключение боевого Halyk ePay, webhook idempotency. **Demo-ready (полный BP §4 без OFD)!** |
-| **B15** | **OFD (Fiscal)** | BP §4 add-on | Интеграция с одним из ОФД, retry, QR на чек. **Demo-ready (BP §4 целиком)!** |
-| **B16** | **Custom Discounts** | BP §4.1 | Conditions engine, batch-notify, auto-apply на invoice. **Demo-ready (BP §4 расширенный)!** |
-| **B17** | **Content & Stories** | BP §9 целиком | News, Qundylyq, birthday auto-gen, group stories 24h TTL, auto-copy menu/schedule. **Demo-ready!** |
-| **B18** | **Diagnostics & Progress** | BP §8 целиком | Templates → entries → progress notes → видимость родителю. **Demo-ready!** |
-| **B18.5** | **Edge Bootstrap** | архитектура (D15) — cloud↔edge protocol | edge-agent skeleton, pairing-flow, mTLS, `edge_commands` / `edge_health` / `kindergarten_edge_credentials` tables. Super-admin создаёт kindergarten → выдаёт pairing-token → mini-PC регистрируется → cloud видит «edge online» heartbeat. Блокирует B19/B20. |
-| **B19** | **Face ID** | BP §5 (Face-часть) | Consent → enrollment → identification → check-in. **Demo-ready (BP §5 целиком)!** |
-| **B20** | **CCTV** | BP §11 целиком | MediaMTX, Nginx auth_request, локальные edge-tokens, WS-trigger при смене локации. **Demo-ready!** |
-| **B21** | **Lifecycle** | BP §12 целиком | Архивация, переводы между группами, смена ментора, пересчёт оплат. **Demo-ready!** |
-| **B22** | **Polish** | i18n, validators, security headers, Swagger финал | Production-ready hardening |
+| **B13** | **Billing & Invoices (mock provider)** | BP §4 (бэк-часть) | Тарифы, assignments, cron генерации invoice 1-го числа, pro-rata, holidays, `PaymentProviderPort` + `MockPaymentProvider`. **Phase A** |
+| **B16** | **Custom Discounts** | BP §4.1 | Conditions engine, batch-notify, auto-apply на invoice. **Phase A** |
+| **B17** | **Content & Stories** | BP §9 целиком | News, Qundylyq, birthday auto-gen, group stories 24h TTL, auto-copy menu/schedule. `FileStoragePort` + `LocalFileStorageAdapter`. **Phase A** |
+| **B18** | **Diagnostics & Progress** | BP §8 целиком | Templates → entries → progress notes → видимость родителю. **Phase A** |
+| **B21** | **Lifecycle** | BP §12 целиком | Архивация, переводы между группами, смена ментора, пересчёт оплат. **Phase A** |
+| **B22** | **Polish** | i18n, validators, security headers, Swagger финал, технический долг §5 | Production-ready hardening. **Phase A — закрывает функционал** |
+| ⏸ **B14** | **Payment Provider — Halyk** *(Phase B — отложено до закрытия B22)* | BP §4 (real money) | Real `HalykPaymentAdapter` файл подключается к существующему `PaymentProviderPort`. Бизнес-код B13 не трогается. |
+| ⏸ **B15** | **OFD (Fiscal)** *(Phase B — отложено до закрытия B22)* | BP §4 add-on | Real `<Vendor>FiscalReceiptAdapter` к существующему `FiscalReceiptPort` (порт заводится в B15 Phase-A skeleton либо в момент real-подключения). |
+| ⏸ **Real SMS** | **SMS-провайдер adapter** *(Phase B — отложено до закрытия B22)* | — | Real `<Vendor>SmsAdapter` к существующему `SmsPort`. Env-switch `SMS_PROVIDER=mock|<vendor>` добавляется в этом PR. |
+| ⏸ **Real Push** | **Firebase Admin** *(Phase B — отложено до закрытия B22)* | — | Заполнить body `FcmPushAdapter` (сейчас throws). |
+| ⏸ **Real File Storage** | **S3 / Yandex Object Storage** *(Phase B — отложено до закрытия B22)* | — | `S3FileStorageAdapter` к `FileStoragePort` из B17. |
+| ⏸ **B18.5** | **Edge Bootstrap** *(Phase C — отложено до закрытия Phase B)* | архитектура (D15) — cloud↔edge protocol | edge-agent skeleton, pairing-flow, mTLS, `edge_commands` / `edge_health` / `kindergarten_edge_credentials` tables. Блокирует B19/B20. |
+| ⏸ **B19** | **Face ID** *(Phase C — отложено)* | BP §5 (Face-часть) | Consent → enrollment → identification → check-in. Edge-attached. |
+| ⏸ **B20** | **CCTV** *(Phase C — отложено)* | BP §11 целиком | MediaMTX, Nginx auth_request, локальные edge-tokens, WS-trigger при смене локации. |
 
-**Параллелизация:** B7 ⊥ B8, B9 ⊥ B10, B17 ⊥ B18 — могут идти параллельно если есть руки. **B19 ⊥ B20** только после закрытия B18.5 (Edge Bootstrap) — оба батча зависят от уже работающего cloud↔edge канала и pairing'а.
+**Параллелизация в Phase A:** B17 ⊥ B18 — могут идти параллельно если есть руки. B13 → (B16, B21) → B22.
+
+**Параллелизация в Phase C:** B19 ⊥ B20 только после закрытия B18.5 — оба батча зависят от уже работающего cloud↔edge канала и pairing'а.
+
+**⏸ — отложенный батч:** старт по сигналу пользователя после закрытия предыдущей фазы (или явного override). Каждый ⏸-батч уже спроектирован так, что его подключение не требует изменений в бизнес-логике (см. §1.1 Provider-agnostic policy).
 
 ---
 
@@ -119,18 +262,31 @@
 - [x] **B9** — Notifications + WebSocket ✓ (commit `e704acd`)
 - [x] **B10** — Identity QR ✓ **demo-ready: BP §13** (commits `75c27b0` → `18281df`)
 - [x] **B11** — Pickup OTP & Trusted ✓ **demo-ready: BP §7** (commits `795bf9c` ← `61a6853` ← `b945304` ← `de67024` ← `031373c` ← `2365f4f` ← `2833d72` ← `5e47ed9`)
-- [~] **B12** — Parent Requests *(in progress — T0 doc-sync complete)*
-- [ ] **B13** — Billing & Invoices (mock provider)
-- [ ] **B14** — Halyk ePay (real)
-- [ ] **B15** — OFD ✓ **demo-ready: BP §4**
-- [ ] **B16** — Custom Discounts ✓ **demo-ready: BP §4 расширенный**
-- [ ] **B17** — Content & Stories ✓ **demo-ready: BP §9**
-- [ ] **B18** — Diagnostics ✓ **demo-ready: BP §8**
-- [ ] **B18.5** — Edge Bootstrap *(cloud↔edge protocol, pairing, mTLS — блокирует B19/B20)*
-- [ ] **B19** — Face ID ✓ **demo-ready: BP §5 целиком**
-- [ ] **B20** — CCTV ✓ **demo-ready: BP §11**
-- [ ] **B21** — Lifecycle ✓ **demo-ready: BP §12**
-- [ ] **B22** — Polish
+- [x] **B12** — Parent Requests ✓ **demo-ready: BP §6** (commits `cf29827` → `48f1675`)
+
+**Phase A — Functional completeness (текущая фаза, идём по порядку)**
+
+- [ ] **B13** — Billing & Invoices (mock provider) *(порт `PaymentProviderPort` + `MockPaymentProvider` обязательно в этом батче)*
+- [ ] **B17** — Content & Stories *(порт `FileStoragePort` + `LocalFileStorageAdapter` обязательно)* — может идти параллельно с B18
+- [ ] **B18** — Diagnostics & Progress — может идти параллельно с B17
+- [ ] **B16** — Custom Discounts *(требует B13)*
+- [ ] **B21** — Lifecycle *(требует B13)*
+- [ ] **B22** — Polish — i18n, security headers, Swagger финал, технический долг §5
+
+**Phase B — Real integrations (отложено до закрытия B22)**
+
+- [⏸] **Real SMS adapter** — выбор провайдера + `<Vendor>SmsAdapter` + env-switch
+- [⏸] **B14** — Halyk ePay (real) — `HalykPaymentAdapter` к `PaymentProviderPort` из B13
+- [⏸] **B15** — OFD — `<Vendor>FiscalReceiptAdapter`
+- [⏸] **Real FCM** — заполнить `FcmPushAdapter` body (сейчас throws)
+- [⏸] **Real File Storage** — `S3FileStorageAdapter` к `FileStoragePort` из B17
+- [⏸] Дополнительные платёжки (FreedomPay / TipTopPay) — параллельно Halyk если потребуется
+
+**Phase C — Edge / Face / CCTV (отложено до закрытия Phase B)**
+
+- [⏸] **B18.5** — Edge Bootstrap *(cloud↔edge protocol, pairing, mTLS — блокирует B19/B20)*
+- [⏸] **B19** — Face ID
+- [⏸] **B20** — CCTV
 
 ### Demo-able BP
 
@@ -139,7 +295,7 @@
 - [x] **BP §3** Staff & Admin Provisioning *(P3 + P4: первый admin — атомарный POST /super-admin/kindergartens; остальные staff — POST /admin/staff с role×specialist_type matrix, TX-атомарность create+mentor-assign, deactivate/activate symmetric, mentor assign/change-primary с partial-idx invariants)*
 - [ ] **BP §4** Payments
 - [x] **BP §5** Daily Operations & Attendance *(B8 manual: check-in/check-out, timeline CRUD, daily status — Face/QR/OTP-pickup deferred to B19/B10/B11)*
-- [~] **BP §6** Parent Requests *(B12 in progress)*
+- [x] **BP §6** Parent Requests *(B12: 5 типов заявок, OTP-flow для trusted_person, state-machine pending → {accepted, rejected, cancelled} через conditional UPDATE, двусторонний тред, Asia/Almaty TZ-aware валидаторы, day-of-week VO в shared-kernel, late_pickup invoice hook B13-ready)*
 - [x] **BP §7** Pickup & Trusted Person OTP *(B11: staff/parent pickup-request flow with OTP, trusted_people whitelist with is_one_time auto-deactivate, advisory-lock-protected validate, attendance integration via method='otp_pickup', notifications pickup.otp_sent + pickup.validated)*
 - [ ] **BP §8** Diagnostics & Progress
 - [ ] **BP §9** Content Management
