@@ -171,14 +171,15 @@ describe('B12 Parent Requests (e2e)', () => {
     kgId: string,
     userId: string,
     role: string,
+    specialistType?: string,
   ): Promise<string> {
     const staffId = randomUUID();
     await ctx.dataSource.transaction(async (m) => {
       await m.query(`SET LOCAL app.bypass_rls = 'true'`);
       await m.query(
-        `INSERT INTO staff_members (id, kindergarten_id, user_id, role, is_active)
-         VALUES ($1, $2, $3, $4, true)`,
-        [staffId, kgId, userId, role],
+        `INSERT INTO staff_members (id, kindergarten_id, user_id, role, specialist_type, is_active)
+         VALUES ($1, $2, $3, $4, $5, true)`,
+        [staffId, kgId, userId, role, specialistType ?? null],
       );
     });
     return staffId;
@@ -292,6 +293,7 @@ describe('B12 Parent Requests (e2e)', () => {
       a.kgId,
       specialistUserId,
       'specialist',
+      'psychologist',
     );
     const parentToken = await mintToken({
       sub: parentId,
@@ -435,7 +437,7 @@ describe('B12 Parent Requests (e2e)', () => {
         .send({
           code: '000000',
           child_id: childId,
-          full_name: 'X',
+          full_name: 'Test Person',
           phone: '+77011100033',
           relation: 'aunt',
         })
@@ -450,7 +452,7 @@ describe('B12 Parent Requests (e2e)', () => {
       .send({
         code: '000000',
         child_id: childId,
-        full_name: 'X',
+        full_name: 'Test Person',
         phone: '+77011100033',
         relation: 'aunt',
       })
@@ -811,7 +813,7 @@ describe('B12 Parent Requests (e2e)', () => {
       .post('/api/v1/parent/requests/day-off')
       .set('Authorization', `Bearer ${parentToken}`)
       .send({ child_id: childId, weekend_dates: [monday] })
-      .expect(422);
+      .expect(400);
 
     expect(res.body.error).toMatch(/weekend_date_not_weekend/);
   });
@@ -835,7 +837,7 @@ describe('B12 Parent Requests (e2e)', () => {
       .post('/api/v1/parent/requests/day-off')
       .set('Authorization', `Bearer ${parentToken}`)
       .send({ child_id: childId, weekend_dates: ['2020-01-04'] })
-      .expect(422);
+      .expect(400);
 
     expect(res.body.error).toMatch(/weekend_date_in_past/);
   });
@@ -866,7 +868,7 @@ describe('B12 Parent Requests (e2e)', () => {
       .post('/api/v1/parent/requests/day-off')
       .set('Authorization', `Bearer ${parentToken}`)
       .send({ child_id: childId, weekend_dates: saturdays })
-      .expect(400);
+      .expect(422);
   });
 
   // ── Admin list endpoint ───────────────────────────────────────────────────
