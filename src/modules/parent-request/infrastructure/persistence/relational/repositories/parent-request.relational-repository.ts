@@ -76,6 +76,17 @@ export class ParentRequestRelationalRepository extends ParentRequestRepository {
     if (filter.childId) {
       qb.andWhere('pr.childId = :cid', { cid: filter.childId });
     }
+    if (filter.groupId) {
+      // INNER JOIN children — `current_group_id` is the live group assignment.
+      // RLS on `children` is honoured because the join runs inside the same
+      // tenant transaction set up by TenantContextInterceptor.
+      qb.innerJoin(
+        'children',
+        'c',
+        'c.id = pr.child_id AND c.current_group_id = :gid',
+        { gid: filter.groupId },
+      );
+    }
     if (filter.requesterUserId) {
       qb.andWhere('pr.requesterUserId = :uid', { uid: filter.requesterUserId });
     }

@@ -33,6 +33,14 @@ export const ISO_WEEKDAY_TO_DAY: ReadonlyArray<DayOfWeekValue> = [
   'sun',
 ];
 
+/**
+ * Default timezone for date-only domain logic in B12 single-region MVP.
+ * Per-kg timezone is stored in `kindergartens.settings.timezone` but is not
+ * yet threaded through every call-site; until then date validators default
+ * to Asia/Almaty (UTC+5, no DST) which is the fixed app region.
+ */
+export const KG_DEFAULT_TIMEZONE = 'Asia/Almaty';
+
 export function dayOfWeekFromIsoWeekday(isoWeekday: number): DayOfWeekValue {
   if (!Number.isInteger(isoWeekday) || isoWeekday < 1 || isoWeekday > 7) {
     throw new Error(`isoWeekday out of range: ${isoWeekday}`);
@@ -40,9 +48,24 @@ export function dayOfWeekFromIsoWeekday(isoWeekday: number): DayOfWeekValue {
   return ISO_WEEKDAY_TO_DAY[isoWeekday - 1];
 }
 
-/** ISO weekday for a JS Date: getDay() returns 0..6 with 0=Sun; we want Mon=1..Sun=7. */
-export function isoWeekdayOf(date: Date): number {
-  const js = date.getUTCDay();
+/**
+ * ISO weekday for a JS Date in the given timezone (default: Asia/Almaty).
+ * Returns Mon=1..Sun=7. Schedule templates that operate in UTC (cron stability)
+ * pass `'UTC'` explicitly; B12 parent-request validators leave the default so
+ * date-only "is this a weekend?" checks honour the kg timezone — otherwise a
+ * Sat/Sun date in Asia/Almaty near local midnight could be misread as Fri/Mon
+ * by `getUTCDay()`.
+ *
+ * Implementation: we extract the local YYYY-MM-DD via `Intl.DateTimeFormat`
+ * and reconstruct a midnight-UTC Date — its `getUTCDay()` then reflects the
+ * intended local weekday.
+ */
+export function isoWeekdayOf(
+  date: Date,
+  timeZone: string = KG_DEFAULT_TIMEZONE,
+): number {
+  const local = startOfDayInTimezone(date, timeZone);
+  const js = local.getUTCDay();
   return js === 0 ? 7 : js;
 }
 
@@ -51,10 +74,34 @@ export function isDayOfWeek(value: string): value is DayOfWeekValue {
 }
 
 /**
- * Returns true if `date` falls on a Saturday (iso=6) or Sunday (iso=7).
- * Used by the parent-request day_off validator to ensure submitted weekend_dates
- * are actually weekend days.
+ * Returns true if `date` falls on a Saturday (iso=6) or Sunday (iso=7) in
+ * the given timezone (default Asia/Almaty).
  */
-export function isWeekendDay(date: Date): boolean {
-  return isoWeekdayOf(date) >= 6;
+export function isWeekendDay(
+  date: Date,
+  timeZone: string = KG_DEFAULT_TIMEZONE,
+): boolean {
+  return isoWeekdayOf(date, timeZone) >= 6;
+}
+
+/**
+ * Returns the midnight UTC instant whose YYYY-MM-DD matches `date` rendered
+ * in `timeZone`. Useful for date-only comparisons ("not in past") that must
+ * honour the kindergarten's local calendar instead of UTC. Default timezone
+ * Asia/Almaty (UTC+5, no DST) — see `KG_DEFAULT_TIMEZONE`.
+ *
+ * Example: at 2026-05-06T20:00:00Z (which is 2026-05-07T01:00 in Asia/Almaty)
+ * `startOfDayInTimezone(now, 'Asia/Almaty')` returns `2026-05-07T00:00:00Z`.
+ */
+export function startOfDayInTimezone(
+  date: Date,
+  timeZone: string = KG_DEFAULT_TIMEZONE,
+): Date {
+  const ymd = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date);
+  return new Date(`${ymd}T00:00:00.000Z`);
 }

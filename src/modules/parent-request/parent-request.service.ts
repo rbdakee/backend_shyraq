@@ -18,7 +18,10 @@ import { PickupRequestRepository } from '@/modules/pickup/infrastructure/persist
 import { StaffRole } from '@/modules/staff/domain/entities/staff-member.entity';
 import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
-import { isWeekendDay } from '@/shared-kernel/domain/value-objects/day-of-week.vo';
+import {
+  isWeekendDay,
+  startOfDayInTimezone,
+} from '@/shared-kernel/domain/value-objects/day-of-week.vo';
 import {
   ParentRequest,
   ParentRequestRecipientType,
@@ -311,7 +314,9 @@ export class ParentRequestService {
     );
     await this.assertCreateRateLimit(requesterUserId);
 
-    const today = startOfUtcDay(this.clock.now());
+    // Compare against today in the kg's local calendar (Asia/Almaty default)
+    // so a date-only "tomorrow" near local midnight is not rejected as past.
+    const today = startOfDayInTimezone(this.clock.now());
     const dateFrom = parseIsoDate(input.dateFrom, 'date_from');
     const dateTo = parseIsoDate(input.dateTo, 'date_to');
     if (dateFrom.getTime() < today.getTime()) {
@@ -354,7 +359,9 @@ export class ParentRequestService {
     if (!TIME_REGEX.test(input.expectedTime)) {
       throw new InvariantViolationError('parent_request_expected_time_invalid');
     }
-    const today = startOfUtcDay(this.clock.now());
+    // Compare against today in the kg's local calendar (Asia/Almaty default)
+    // so a date-only "tomorrow" near local midnight is not rejected as past.
+    const today = startOfDayInTimezone(this.clock.now());
     const date = parseIsoDate(input.date, 'date');
     if (date.getTime() < today.getTime()) {
       throw new InvariantViolationError('parent_request_date_in_past');
@@ -804,6 +811,7 @@ export class ParentRequestService {
       status: filter.status,
       requestType: filter.type,
       childId: filter.childId,
+      groupId: filter.groupId,
       limit: limit + 1,
       cursor: filter.cursor ?? undefined,
     };
@@ -843,6 +851,7 @@ export class ParentRequestService {
       status: filter.status,
       requestType: filter.type,
       childId: filter.childId,
+      groupId: filter.groupId,
       recipientType: filter.recipientType,
       limit: limit + 1,
       cursor: filter.cursor ?? undefined,
@@ -917,6 +926,19 @@ export class ParentRequestService {
    * which kg owns a child by error-shape diff) when the link is missing,
    * and `CreateRequestPermissionRequiredError` when the link exists but
    * `permissions.effective(role).create_requests !== true`.
+   *
+   * Permission model decision (B12 T8 codex H1 — 2026-05-06):
+   * `create_requests` is intentionally **TOGGLEABLE** for all roles, not
+   * locked-by-role. Per `endpoints.md §4.13` the locked column for this key
+   * is `—`, and BP §11 line 1002 specifies only that nanny *defaults* exclude
+   * `create_requests` — the locked-keys list at BP §11 line 997 names
+   * `has_approval_rights`, `prepayment`, `trusted_people_manage`, `approvals`
+   * and does NOT name `create_requests`. Primary may therefore deliberately
+   * grant it to a nanny via `PATCH .../permissions {create_requests: true}`,
+   * and the override flips this gate to allow. Notification fan-out
+   * separately whitelists nanny out of `request.*` events (see
+   * NotificationDispatcher); that is a delivery filter, not an authorization
+   * filter on the create path.
    */
   private async assertCreateRequestsAllowed(
     kindergartenId: string,
@@ -1125,12 +1147,6 @@ function parseIsoDate(s: string, fieldLabel: string): Date {
   return d;
 }
 
-function startOfUtcDay(d: Date): Date {
-  return new Date(
-    Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()),
-  );
-}
-
 function toIsoDateString(d: Date): string {
   const year = d.getUTCFullYear();
   const month = String(d.getUTCMonth() + 1).padStart(2, '0');
@@ -1153,7 +1169,9 @@ function parseAndValidateWeekendDates(rawDates: string[], now: Date): Date[] {
       'parent_request_weekend_dates_count_invalid',
     );
   }
-  const today = startOfUtcDay(now);
+  // Today + weekend-detection both honour the kg's local calendar (Asia/Almaty
+  // default) — a Saturday in Almaty must not register as Friday by UTC clock.
+  const today = startOfDayInTimezone(now);
   const dates = rawDates.map((s) => parseIsoDate(s, 'weekend_dates'));
   for (const d of dates) {
     if (d.getTime() < today.getTime()) {

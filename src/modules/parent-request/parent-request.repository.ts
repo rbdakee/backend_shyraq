@@ -22,6 +22,12 @@ export interface ListParentRequestsFilter {
   status?: ParentRequestStatus;
   requestType?: ParentRequestType;
   childId?: string;
+  /**
+   * Optional group-scoped filter. JOINs `children` and matches
+   * `child.current_group_id`. Surfaced via staff/admin list endpoints — see
+   * `ListParentRequestsQueryDto.group_id`.
+   */
+  groupId?: string;
   requesterUserId?: string;
   recipientStaffId?: string;
   recipientType?: 'admin' | 'mentor' | 'specialist';

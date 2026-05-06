@@ -154,6 +154,12 @@ class FixedClock extends ClockPort {
 class FakeParentRequestRepo extends ParentRequestRepository {
   rows = new Map<string, ParentRequest>();
   private nextId = 0;
+  /**
+   * Optional resolver mirroring the relational repo's INNER JOIN on
+   * `children.current_group_id`. Set by the harness so the in-memory list()
+   * can honour `filter.groupId`.
+   */
+  resolveChildGroupId: (childId: string) => string | null = () => null;
 
   put(pr: ParentRequest): void {
     this.rows.set(pr.id, pr);
@@ -200,6 +206,12 @@ class FakeParentRequestRepo extends ParentRequestRepository {
       if (filter.requestType && pr.requestType !== filter.requestType)
         return false;
       if (filter.childId && pr.childId !== filter.childId) return false;
+      if (
+        filter.groupId &&
+        this.resolveChildGroupId(pr.childId) !== filter.groupId
+      ) {
+        return false;
+      }
       if (
         filter.requesterUserId &&
         pr.requesterUserId !== filter.requesterUserId
@@ -825,6 +837,13 @@ function buildHarness() {
   guardianRepo.put(makeApprovedGuardian(PARENT_USER, CHILD, PRIMARY_PERMS));
   childRepo.put(makeChild());
 
+  // Mirror relational repo's INNER JOIN children on current_group_id for
+  // groupId filter (M2 from T7 codex review).
+  parentRequestRepo.resolveChildGroupId = (childId: string) => {
+    const c = childRepo.byId.get(childId);
+    return c ? (c.toState().currentGroupId ?? null) : null;
+  };
+
   staffRepo.put(
     makeStaff({ id: STAFF_MENTOR_ID, userId: STAFF_USER, role: 'mentor' }),
   );
@@ -949,6 +968,27 @@ describe('ParentRequestService', () => {
       await expect(
         h.service.sendOtpForTrustedPerson(KG, nannyUser, CHILD, PHONE),
       ).rejects.toBeInstanceOf(CreateRequestPermissionRequiredError);
+    });
+
+    it('allows nanny when primary explicitly grants create_requests=true override (H1 codex — TOGGLEABLE per docs)', async () => {
+      // Permission model decision: `create_requests` is TOGGLEABLE (not locked
+      // by role) per endpoints.md §4.13 + BP §11 line 997. Primary may grant
+      // it to a nanny; the gate honours the override. This test pins the
+      // documented behaviour so a future "lock for nanny" change must be a
+      // deliberate doc + code change, not an accidental drift.
+      const h = buildHarness();
+      const nannyUser = 'aaaaaaaa-8888-8888-8888-aaaaaaaaaaaa';
+      h.guardianRepo.put(
+        makeApprovedGuardian(
+          nannyUser,
+          CHILD,
+          { create_requests: true },
+          'nanny',
+        ),
+      );
+      await expect(
+        h.service.sendOtpForTrustedPerson(KG, nannyUser, CHILD, PHONE),
+      ).resolves.toMatchObject({ otpRef: expect.any(String) });
     });
   });
 
@@ -1133,6 +1173,21 @@ describe('ParentRequestService', () => {
       expect(pr.recipientType).toBe('admin');
       expect(pr.recipientStaffId).toBeNull();
     });
+
+    it('detects weekend in Asia/Almaty calendar across UTC midnight (M1 codex)', async () => {
+      // 2026-05-08T20:00:00Z = 2026-05-09T01:00 Asia/Almaty.
+      // 2026-05-09 is Saturday in Almaty → must accept.
+      // Under the prior `getUTCDay()` path "today" check would also need to
+      // pass — at 20:00Z on Fri the weekend date (Sat) is still future.
+      const h = buildHarness();
+      h.clock.set(new Date('2026-05-08T20:00:00.000Z'));
+      const pr = await h.service.createDayOffRequest(KG, PARENT_USER, {
+        childId: CHILD,
+        weekendDates: ['2026-05-09'],
+        comment: null,
+      });
+      expect(pr.requestType).toBe('day_off');
+    });
   });
 
   describe('createVacationRequest', () => {
@@ -1171,6 +1226,21 @@ describe('ParentRequestService', () => {
           comment: null,
         }),
       ).rejects.toBeInstanceOf(InvariantViolationError);
+    });
+
+    it('honours Asia/Almaty calendar at the UTC midnight boundary (M1 codex)', async () => {
+      // 2026-05-06T20:00:00Z = 2026-05-07T01:00 Asia/Almaty (UTC+5).
+      // Date "2026-05-07" is TODAY in Almaty (not past) — must validate.
+      // Under the old UTC-midnight gate this was rejected as past.
+      const h = buildHarness();
+      h.clock.set(new Date('2026-05-06T20:00:00.000Z'));
+      const pr = await h.service.createVacationRequest(KG, PARENT_USER, {
+        childId: CHILD,
+        dateFrom: '2026-05-07',
+        dateTo: '2026-05-10',
+        comment: null,
+      });
+      expect(pr.requestType).toBe('vacation');
     });
   });
 
@@ -1785,6 +1855,64 @@ describe('ParentRequestService', () => {
       });
       expect(adminOnly.items).toHaveLength(1);
       expect(adminOnly.items[0].recipientType).toBe('admin');
+    });
+
+    it('listForStaffInbox filters by groupId — only requests whose child belongs to the group (M2 codex)', async () => {
+      const h = buildHarness();
+      const OTHER_GROUP = 'gggggggg-9999-8888-7777-gggggggggggg';
+      // Second child in a different group, with the same primary parent.
+      h.childRepo.put(makeChild({ id: CHILD_OTHER, groupId: OTHER_GROUP }));
+      h.guardianRepo.put(makeApprovedGuardian(PARENT_USER, CHILD_OTHER));
+      h.groupRepo.putMentor(OTHER_GROUP, makeMentor(STAFF_OTHER_MENTOR_ID));
+
+      // 1 request per child — different groups.
+      await h.service.createDayOffRequest(KG, PARENT_USER, {
+        childId: CHILD,
+        weekendDates: ['2026-05-09'],
+        comment: null,
+      });
+      await h.service.createDayOffRequest(KG, PARENT_USER, {
+        childId: CHILD_OTHER,
+        weekendDates: ['2026-05-09'],
+        comment: null,
+      });
+
+      const filtered = await h.service.listForStaffInbox(
+        KG,
+        {
+          staffMemberId: STAFF_ADMIN_ID,
+          userId: 'admin',
+          role: 'admin',
+        },
+        { groupId: GROUP_ID },
+      );
+      expect(filtered.items).toHaveLength(1);
+      expect(filtered.items[0].childId).toBe(CHILD);
+    });
+
+    it('listAllForAdmin filters by groupId (M2 codex)', async () => {
+      const h = buildHarness();
+      const OTHER_GROUP = 'gggggggg-9999-8888-7777-gggggggggggg';
+      h.childRepo.put(makeChild({ id: CHILD_OTHER, groupId: OTHER_GROUP }));
+      h.guardianRepo.put(makeApprovedGuardian(PARENT_USER, CHILD_OTHER));
+      h.groupRepo.putMentor(OTHER_GROUP, makeMentor(STAFF_OTHER_MENTOR_ID));
+
+      await h.service.createDayOffRequest(KG, PARENT_USER, {
+        childId: CHILD,
+        weekendDates: ['2026-05-09'],
+        comment: null,
+      });
+      await h.service.createDayOffRequest(KG, PARENT_USER, {
+        childId: CHILD_OTHER,
+        weekendDates: ['2026-05-09'],
+        comment: null,
+      });
+
+      const filtered = await h.service.listAllForAdmin(KG, {
+        groupId: OTHER_GROUP,
+      });
+      expect(filtered.items).toHaveLength(1);
+      expect(filtered.items[0].childId).toBe(CHILD_OTHER);
     });
   });
 

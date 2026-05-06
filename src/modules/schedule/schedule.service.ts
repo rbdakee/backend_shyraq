@@ -601,7 +601,11 @@ function startOfUtcDay(d: Date): Date {
  */
 function startOfIsoWeek(d: Date): Date {
   const dayStart = startOfUtcDay(d);
-  const isoDay = isoWeekdayOf(dayStart); // 1..7
+  // Pass explicit 'UTC' — schedule cron operates in UTC for stability across
+  // server timezones; the shared-kernel default (Asia/Almaty) applies only to
+  // date-only kg-local calendar logic (e.g. parent-request day_off / vacation
+  // validators).
+  const isoDay = isoWeekdayOf(dayStart, 'UTC'); // 1..7
   return new Date(dayStart.getTime() - (isoDay - 1) * DAY_MS);
 }
 
