@@ -143,8 +143,18 @@ Enum fiscal_receipt_status {
 
 Enum refund_status {
   pending
+  approved
   processed
+  rejected
+}
+
+// B13: payment_status_v2 — used by payments table (separate from payment_status used by invoices)
+Enum payment_status_v2 {
+  initiated
+  processing
+  completed
   failed
+  refunded
 }
 
 Enum face_subject_type {
@@ -584,6 +594,7 @@ Table cameras {
 // PAYMENTS
 // ─────────────────────────────────────────
 
+// B13 — FORCE ROW LEVEL SECURITY + tenant_isolation policy on kindergarten_id
 Table payment_accounts {
   id              uuid         [pk, default: `gen_random_uuid()`]
   kindergarten_id uuid         [not null, ref: > kindergartens.id]
@@ -596,8 +607,12 @@ Table payment_accounts {
   indexes {
     (kindergarten_id, child_id) [unique]
   }
+
+  Note: 'FORCE ROW LEVEL SECURITY — tenant_isolation policy: kindergarten_id = current_setting(app.kindergarten_id)::uuid OR current_setting(app.bypass_rls) = true'
 }
 
+// B13 — FORCE ROW LEVEL SECURITY + tenant_isolation policy on kindergarten_id
+// State machine: pending → {partial, paid, overdue, refunded, cancelled}
 Table invoices {
   id                    uuid           [pk, default: `gen_random_uuid()`]
   kindergarten_id       uuid           [not null, ref: > kindergartens.id]
@@ -623,34 +638,42 @@ Table invoices {
     (kindergarten_id, due_date)
     (kindergarten_id, status)
   }
+
+  Note: 'FORCE ROW LEVEL SECURITY — tenant_isolation policy: kindergarten_id = current_setting(app.kindergarten_id)::uuid OR current_setting(app.bypass_rls) = true'
 }
 
+// B13 — FORCE ROW LEVEL SECURITY + tenant_isolation policy on kindergarten_id
+// State machine (payment_status_v2): initiated → {processing, completed, failed, refunded}
 Table payments {
-  id               uuid         [pk, default: `gen_random_uuid()`]
-  kindergarten_id  uuid         [not null, ref: > kindergartens.id]
-  invoice_id       uuid         [not null, ref: > invoices.id]
-  child_id         uuid         [not null, ref: > children.id]
-  payer_user_id    uuid         [ref: > users.id]
-  amount           decimal(12,2) [not null]
-  provider         varchar      [not null]
-  // 'halyk_epay'  — Halyk Bank ePay
+  id               uuid              [pk, default: `gen_random_uuid()`]
+  kindergarten_id  uuid              [not null, ref: > kindergartens.id]
+  invoice_id       uuid              [not null, ref: > invoices.id]
+  child_id         uuid              [not null, ref: > children.id]
+  payer_user_id    uuid              [ref: > users.id]
+  amount           decimal(12,2)     [not null]
+  provider         varchar           [not null]
+  // CHECK provider IN ('mock','halyk_epay','kaspi_pay','tiptoppay','freedom_pay','cash')
+  // 'mock'        — MockPaymentProvider (B13 default, dev/CI/demo)
+  // 'halyk_epay'  — Halyk Bank ePay (Phase B — B14)
   // 'kaspi_pay'   — Kaspi Pay API (Kaspi.kz)
   // 'tiptoppay'   — TipTopPay (любые карты)
   // 'freedom_pay' — Freedom Pay (любые карты)
   // 'cash'        — наличные (offline подтверждение)
   provider_txn_id  varchar
-  idempotency_key  varchar      [unique, not null]
-  status           varchar      [not null, default: 'initiated']
-  // 'initiated', 'processing', 'completed', 'failed', 'refunded'
+  idempotency_key  varchar           [unique, not null]
+  status           payment_status_v2 [not null, default: 'initiated']
   provider_payload jsonb
   paid_at          timestamptz
-  refund_id        uuid         [ref: > refunds.id] // если был возврат
-  created_at       timestamptz  [not null, default: `now()`]
-  updated_at       timestamptz  [not null, default: `now()`]
+  refund_id        uuid              [ref: > refunds.id] // если был возврат
+  created_at       timestamptz       [not null, default: `now()`]
+  updated_at       timestamptz       [not null, default: `now()`]
 
   indexes {
     (provider, provider_txn_id)
+    (kindergarten_id, status)
   }
+
+  Note: 'FORCE ROW LEVEL SECURITY — tenant_isolation policy: kindergarten_id = current_setting(app.kindergarten_id)::uuid OR current_setting(app.bypass_rls) = true'
 }
 
 // ─────────────────────────────────────────
@@ -679,8 +702,8 @@ Table parent_requests {
   reviewed_by         uuid                  [ref: > staff_members.id]
   reviewed_at         timestamptz
   review_note         text
-  invoice_id          uuid                  // nullable — FK → invoices.id будет добавлен в B13
-  // Note: FK parent_requests.invoice_id → invoices.id will be added in B13
+  invoice_id          uuid                  // nullable — FK → invoices.id ON DELETE SET NULL (добавлен в B13 ALTER)
+  // B13 adds: ALTER TABLE parent_requests ADD CONSTRAINT fk_parent_requests_invoice_id FOREIGN KEY (invoice_id) REFERENCES invoices(id) ON DELETE SET NULL
   created_at          timestamptz           [not null, default: `now()`]
   updated_at          timestamptz           [not null, default: `now()`]
 
@@ -914,6 +937,7 @@ Table notification_outbox {
 // BILLING — TARIFFS, HOLIDAYS, REFUNDS, LINE ITEMS
 // ─────────────────────────────────────────
 
+// B13 — FORCE ROW LEVEL SECURITY + tenant_isolation policy on kindergarten_id
 Table tariff_plans {
   id              uuid [pk, default: `gen_random_uuid()`]
   kindergarten_id uuid [not null, ref: > kindergartens.id]
@@ -940,8 +964,11 @@ Table tariff_plans {
     (kindergarten_id, is_active)
     (kindergarten_id, tariff_type)
   }
+
+  Note: 'FORCE ROW LEVEL SECURITY — tenant_isolation policy: kindergarten_id = current_setting(app.kindergarten_id)::uuid OR current_setting(app.bypass_rls) = true'
 }
 
+// B13 — FORCE ROW LEVEL SECURITY + tenant_isolation policy on kindergarten_id
 Table tariff_assignments {
   id              uuid [pk, default: `gen_random_uuid()`]
   kindergarten_id uuid [not null, ref: > kindergartens.id]
@@ -957,8 +984,11 @@ Table tariff_assignments {
   indexes {
     (child_id, valid_from)
   }
+
+  Note: 'FORCE ROW LEVEL SECURITY — tenant_isolation policy: kindergarten_id = current_setting(app.kindergarten_id)::uuid OR current_setting(app.bypass_rls) = true'
 }
 
+// B13 — FORCE ROW LEVEL SECURITY + tenant_isolation policy on kindergarten_id
 Table invoice_line_items {
   id              uuid [pk, default: `gen_random_uuid()`]
   invoice_id      uuid [not null, ref: > invoices.id]
@@ -969,21 +999,28 @@ Table invoice_line_items {
   unit_price      decimal(12,2) [not null]
   line_total      decimal(12,2) [not null]
   created_at      timestamptz [not null, default: `now()`]
+
+  Note: 'FORCE ROW LEVEL SECURITY — tenant_isolation policy: kindergarten_id = current_setting(app.kindergarten_id)::uuid OR current_setting(app.bypass_rls) = true'
 }
 
+// B13 — FORCE ROW LEVEL SECURITY + tenant_isolation policy on kindergarten_id
 Table kindergarten_holidays {
   id              uuid [pk, default: `gen_random_uuid()`]
   kindergarten_id uuid [not null, ref: > kindergartens.id]
   date            date [not null]
-  name            jsonb // {ru: "...", kz: "..."}
+  name            jsonb [not null] // {ru: "...", kz: "..."} — multilingual
   is_billable     boolean [not null, default: false]
   created_at      timestamptz [not null, default: `now()`]
 
   indexes {
     (kindergarten_id, date) [unique]
   }
+
+  Note: 'FORCE ROW LEVEL SECURITY — tenant_isolation policy: kindergarten_id = current_setting(app.kindergarten_id)::uuid OR current_setting(app.bypass_rls) = true'
 }
 
+// B13 — FORCE ROW LEVEL SECURITY + tenant_isolation policy on kindergarten_id
+// State machine: pending → {approved → processed, rejected}
 Table refunds {
   id              uuid [pk, default: `gen_random_uuid()`]
   kindergarten_id uuid [not null, ref: > kindergartens.id]
@@ -996,6 +1033,8 @@ Table refunds {
   provider_ref    varchar
   created_at      timestamptz [not null, default: `now()`]
   updated_at      timestamptz [not null, default: `now()`]
+
+  Note: 'FORCE ROW LEVEL SECURITY — tenant_isolation policy: kindergarten_id = current_setting(app.kindergarten_id)::uuid OR current_setting(app.bypass_rls) = true'
 }
 
 // ─────────────────────────────────────────

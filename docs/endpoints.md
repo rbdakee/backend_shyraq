@@ -234,6 +234,14 @@ Email + password (не OTP). Access-токен — тот же JWT HS256 (`JWT_A
 | POST | `/saas/users` | Создать SaaS-пользователя. |
 | PATCH | `/saas/users/:id` | Деактивация, смена роли. |
 
+### 1.6 Billing Operations (Super-Admin)
+
+**Auth:** `@SuperAdminScope()` (bypass RLS). Используется для ручного триггера cron и demo/test.
+
+| Метод | Путь | Назначение |
+|---|---|---|
+| POST | `/saas/billing/monthly-run` | Ручной триггер ежемесячной генерации инвойсов. Body: `{period_start: '2026-06-01', kindergarten_id?: 'uuid'}`. Если `kindergarten_id` не указан — обходит все активные садики (cross-tenant). Вызывает `monthly-billing.processor` логику напрямую без BullMQ (синхронный ответ с итогом). Идемпотентен: advisory lock per `(kg_id, period_start)` + `existsAnyForPeriod` short-circuit пропускает уже сгенерированные периоды. Response 200: `{triggered_at, period_start, kindergartens_processed: int, invoices_created: int, skipped_already_generated: int}`. Errors: 400 `invalid_period_start` (не первое число месяца). |
+
 ---
 
 ## 2. Admin API (Admin Web, роль `admin`)
@@ -402,46 +410,82 @@ Email + password (не OTP). Access-токен — тот же JWT HS256 (`JWT_A
 
 ### 2.12 Payments & Invoices (просмотр)
 
+**Auth:** `KindergartenScopeGuard` + `@Roles('admin')`.
+
 | Метод | Путь | Назначение |
 |---|---|---|
-| GET | `/admin/invoices` | Список инвойсов (фильтры: `status`, `due_date`, `child_id`, `invoice_type`). |
+| GET | `/admin/invoices` | Список инвойсов. Query: `status`, `due_date` (ISO date), `child_id` (uuid), `invoice_type` (`monthly`/`prepayment_3m`/…/`late_pickup_fee`/`other`). Response: `[{id, kindergarten_id, child_id, payment_account_id, tariff_plan_id, invoice_type, period_start, period_end, amount_due, discount_pct, discount_reason, amount_after_discount, status, due_date, description, prorated_for_days, created_at, updated_at}]`. |
 | GET | `/admin/invoices/:id` | Детали инвойса + `invoice_line_items` + связанные `payments`, `refunds`, `fiscal_receipts`, применённые `custom_discount_applications`. |
-| POST | `/admin/invoices/:id/manual-mark-paid` | Ручная отметка оплаты наличкой (`provider='cash'`). |
-| POST | `/admin/invoices/:id/cancel` | Отменить инвойс (`status='cancelled'`). |
-| POST | `/admin/invoices` | Разовое начисление (доп. услуга): создаёт `invoices` + `invoice_line_items`. |
-| GET | `/admin/payments` | Список платежей (фильтр: `provider`, `status`, `child_id`, диапазон дат). |
-| GET | `/admin/payments/:id` | Детали (включая `provider_payload`). |
+| POST | `/admin/invoices` | Разовое начисление (доп. услуга). Body: `{child_id, invoice_type, amount_due, due_date, description?, period_start?, period_end?, line_items?: [{description, tariff_plan_id?, quantity, unit_price}]}`. Response 201: invoice object. Errors: 404 `child_not_found`, 422 validation. |
+| POST | `/admin/invoices/:id/manual-mark-paid` | Ручная отметка оплаты наличкой. Создаёт `payments` с `provider='cash'`, `status='completed'`, применяет `Invoice.applyPayment`. Conditional UPDATE WHERE status IN ('pending','partial') RETURNING *; 409 `invoice_already_paid` при race. Response 200: `{invoice_id, payment_id, new_status}`. Errors: 404 `invoice_not_found`, 409 `invoice_already_paid`. |
+| POST | `/admin/invoices/:id/cancel` | Отменить инвойс. Conditional UPDATE WHERE status IN ('pending','partial') RETURNING *. Response 200: `{id, status: 'cancelled'}`. Errors: 404 `invoice_not_found`, 409 `invoice_status_invalid`. |
+| GET | `/admin/payments` | Список платежей. Query: `provider`, `status`, `child_id`, `from` (ISO date), `to` (ISO date). Response: `[{id, kindergarten_id, invoice_id, child_id, payer_user_id, amount, provider, provider_txn_id, idempotency_key, status, paid_at, created_at}]`. |
+| GET | `/admin/payments/:id` | Детали платежа (включая `provider_payload`). |
+
+**Error map (§2.12):**
+
+| HTTP | `error` | Когда |
+|---|---|---|
+| 404 | `invoice_not_found` | Инвойс не найден в kg |
+| 404 | `child_not_found` | Ребёнок не найден в kg |
+| 409 | `invoice_already_paid` | `manual-mark-paid` когда status уже `paid` |
+| 409 | `invoice_status_invalid` | `cancel` из несовместимого состояния (`paid`/`refunded`/`cancelled`) |
+| 422 | validation | Невалидные поля DTO |
 
 ### 2.13 Tariffs (Billing)
 
+**Auth:** `KindergartenScopeGuard` + `@Roles('admin')`.
+
 | Метод | Путь | Назначение |
 |---|---|---|
-| GET | `/admin/tariff-plans` | Список тарифов. |
-| POST | `/admin/tariff-plans` | Создать: `name`, `tariff_type` (monthly_base/additional_service/late_pickup/meal_upgrade), `amount`, `applies_to` (child/group/age_range), `age_min/max_months`, `group_id`, `discount_rules` (sibling/prepay_3m/6m/12m/24m опционально, benefit_category), `valid_from/until`. Админ может задать долгий горизонт предоплаты через `discount_rules.prepay_24m_pct` — используется при `POST /parent/invoices/:id/pay/prepayment` с `months=24`. |
-| PATCH | `/admin/tariff-plans/:id` | Обновить. |
-| POST | `/admin/tariff-plans/:id/deactivate` | `is_active=false`. |
-| GET | `/admin/tariff-assignments` | Назначения тарифов на детей. |
-| POST | `/admin/tariff-assignments` | Назначить тариф ребёнку: `child_id`, `tariff_plan_id`, `custom_amount` (льгота), `custom_reason`, `valid_from/until`. |
-| PATCH | `/admin/tariff-assignments/:id` | Обновить / закрыть. |
+| GET | `/admin/tariff-plans` | Список тарифов. Query: `is_active` (bool), `tariff_type`. Response: `[{id, kindergarten_id, name, description, tariff_type, amount, currency, applies_to, group_id, age_min_months, age_max_months, is_active, valid_from, valid_until, discount_rules, created_at}]`. |
+| POST | `/admin/tariff-plans` | Создать тарифный план. Body: `{name, tariff_type: 'monthly_base'\|'additional_service'\|'late_pickup'\|'meal_upgrade', amount: 120000, currency?: 'KZT', applies_to: 'child'\|'group'\|'age_range', age_min_months?, age_max_months?, group_id?, discount_rules?: {sibling_discount_pct?, prepay_3m_pct?, prepay_6m_pct?, prepay_12m_pct?, prepay_24m_pct?, benefit_category?}, valid_from: '2026-06-01', valid_until?}`. `prepay_24m_pct` опциональный — если задан, разблокирует `POST /parent/invoices/:id/pay/prepayment` с `months=24`. Response 201: tariff_plan object. Errors: 409 `tariff_plan_overlap` (non-overlapping valid_from..valid_until по kg+applies_to+group_id). |
+| PATCH | `/admin/tariff-plans/:id` | Обновить поля. Body: `{name?, description?, amount?, discount_rules?, valid_until?}`. Нельзя менять `tariff_type`/`applies_to`/`group_id` (снять — через deactivate + create new). Response 200: updated object. Errors: 404 `tariff_plan_not_found`. |
+| POST | `/admin/tariff-plans/:id/deactivate` | `is_active=false`. Не затрагивает существующие `tariff_assignments`. Response 200: `{id, is_active: false}`. Errors: 404 `tariff_plan_not_found`. |
+| GET | `/admin/tariff-assignments` | Назначения тарифов на детей. Query: `child_id`, `tariff_plan_id`, `active_on` (ISO date — фильтр по valid_from..valid_until). Response: `[{id, kindergarten_id, child_id, tariff_plan_id, custom_amount, custom_reason, valid_from, valid_until, assigned_by, created_at}]`. |
+| POST | `/admin/tariff-assignments` | Назначить тариф ребёнку. Body: `{child_id, tariff_plan_id, custom_amount?: 90000, custom_reason?: 'льгота многодетной семьи', valid_from: '2026-06-01', valid_until?}`. Защита от overlap по `(child_id, valid_from)`. Response 201: assignment object. Errors: 404 `tariff_plan_not_found`, 404 `child_not_found`, 404 `tariff_plan_inactive` (если `is_active=false`), 409 `tariff_assignment_overlap`. |
+| PATCH | `/admin/tariff-assignments/:id` | Обновить / закрыть (`valid_until=today`). Body: `{custom_amount?, custom_reason?, valid_until?}`. Response 200: updated object. Errors: 404 `tariff_assignment_not_found`. |
+
+**Error map (§2.13):**
+
+| HTTP | `error` | Когда |
+|---|---|---|
+| 404 | `tariff_plan_not_found` | Тарифный план не найден в kg |
+| 404 | `tariff_assignment_not_found` | Назначение не найдено в kg |
+| 409 | `tariff_plan_inactive` | Попытка назначить неактивный план |
+| 409 | `tariff_assignment_overlap` | Пересечение `valid_from..valid_until` для того же `child_id` |
+| 409 | `tariff_plan_overlap` | Пересечение периодов для того же kg+applies_to+group_id |
 
 ### 2.14 Kindergarten Holidays
 
+**Auth:** `KindergartenScopeGuard` + `@Roles('admin')`. Используется для pro-rata расчёта инвойсов (`is_billable=false` дни не считаются при расчёте периода).
+
 | Метод | Путь | Назначение |
 |---|---|---|
-| GET | `/admin/holidays` | Список праздников/нерабочих дней. |
-| POST | `/admin/holidays` | Создать: `date`, `name` {ru,kz}, `is_billable`. Используется для pro-rata. |
-| PATCH | `/admin/holidays/:id` | Обновить. |
-| DELETE | `/admin/holidays/:id` | Удалить. |
+| GET | `/admin/holidays` | Список праздников/нерабочих дней. Query: `year` (int), `month` (int). Response: `[{id, kindergarten_id, date, name: {ru, kz}, is_billable, created_at}]`. |
+| POST | `/admin/holidays` | Создать. Body: `{date: '2026-06-16', name: {ru: 'День Республики', kz: 'Республика күні'}, is_billable?: false}`. UNIQUE `(kindergarten_id, date)`. Response 201: holiday object. Errors: 409 `holiday_already_exists` (дублирующийся `date` в kg). |
+| PATCH | `/admin/holidays/:id` | Обновить. Body: `{name?: {ru?, kz?}, is_billable?}`. Response 200: updated object. Errors: 404 `holiday_not_found`. |
+| DELETE | `/admin/holidays/:id` | Удалить запись. Response 204 No Content. Errors: 404 `holiday_not_found`. |
 
 ### 2.15 Refunds
 
+**Auth:** `KindergartenScopeGuard` + `@Roles('admin')`. Статус-машина: `pending → approved → processed` (или `rejected` из `pending`).
+
 | Метод | Путь | Назначение |
 |---|---|---|
-| GET | `/admin/refunds` | Список возвратов (фильтр по `status`). |
-| GET | `/admin/refunds/:id` | Детали. |
-| POST | `/admin/refunds` | Создать возврат: `payment_id`, `amount`, `reason`. Статус `pending`. |
-| POST | `/admin/refunds/:id/process` | Подтвердить и обработать через провайдера. `status='processed'` или `failed`. |
-| POST | `/admin/refunds/:id/cancel` | Отменить pending возврат. |
+| GET | `/admin/refunds` | Список возвратов. Query: `status` (`pending`/`approved`/`processed`/`rejected`), `payment_id`. Response: `[{id, kindergarten_id, payment_id, invoice_id, amount, reason, status, processed_by, provider_ref, created_at, updated_at}]`. |
+| GET | `/admin/refunds/:id` | Детали возврата. |
+| POST | `/admin/refunds` | Создать возврат (`status='pending'`). Body: `{payment_id, amount: 60000, reason: 'переплата за июнь'}`. Checks: `payment.status = 'completed'`, `amount <= payment.amount`. Response 201: refund object. Errors: 404 `payment_not_found`, 409 `refund_already_processed` (если уже существует completed refund для этого payment). |
+| POST | `/admin/refunds/:id/approve` | Перевести в `approved` (первичная авторизация). Conditional UPDATE WHERE status='pending'. Response 200: `{id, status: 'approved', processed_by}`. Errors: 404 `refund_not_found`, 409 `refund_already_processed`. |
+| POST | `/admin/refunds/:id/process` | Исполнить возврат через провайдера (`PaymentProviderPort.refund`). Атомарная TX: `refund.status='processed'` + `payment.status='refunded'` + `invoice.applyRefund` + `payment_account.balance` update. Response 200: `{id, status: 'processed', provider_ref?}`. Errors: 404 `refund_not_found`, 409 `refund_already_processed` (status уже `processed`). |
+
+**Error map (§2.15):**
+
+| HTTP | `error` | Когда |
+|---|---|---|
+| 404 | `refund_not_found` | Возврат не найден в kg |
+| 404 | `payment_not_found` | Платёж не найден |
+| 409 | `refund_already_processed` | Попытка дублирующего возврата или операции над обработанным |
 
 ### 2.16 Custom Discounts
 
@@ -458,13 +502,17 @@ Email + password (не OTP). Access-токен — тот же JWT HS256 (`JWT_A
 
 ### 2.17 Fiscal Receipts (ОФД РК)
 
-| Метод | Путь | Назначение |
-|---|---|---|
-| GET | `/admin/fiscal-receipts` | Список чеков (фильтр по `status`, `provider`, `payment_id`, `fiscal_sign`). |
-| GET | `/admin/fiscal-receipts/:id` | Детали + `ofd_payload`. |
-| POST | `/admin/fiscal-receipts/:id/retry` | Ручной retry для `status='failed'`. Enqueue `fiscal:retry` (BullMQ с экспоненциальным backoff). Инкремент `retry_count`. |
-| GET | `/admin/fiscal-receipts/queue` | Очередь pending/failed с ошибками (последний `error_message`, `retry_count`). |
-| GET | `/admin/fiscal-receipts/report/monthly` | Ежемесячный отчёт по выданным чекам (totals, по провайдерам). |
+**B13:** `GET /admin/fiscal-receipts` — read-only stub. Возвращает список `fiscal_receipts` строк, созданных `MockFiscalReceiptAdapter` (все с `ofd_status='queued'`, `fiscal_sign='mock_*'`). Расширенные операции (retry, queue, report, real-provider) реализуются в **B15** (Phase B).
+
+**B15+:** полный CRUD + retry + reporting.
+
+| Метод | Путь | Назначение | Батч |
+|---|---|---|---|
+| GET | `/admin/fiscal-receipts` | Список чеков (фильтр по `status`, `provider`, `payment_id`, `fiscal_sign`). | B13 (stub) |
+| GET | `/admin/fiscal-receipts/:id` | Детали + `ofd_payload`. | B15 |
+| POST | `/admin/fiscal-receipts/:id/retry` | Ручной retry для `status='failed'`. Enqueue `fiscal:retry` (BullMQ с экспоненциальным backoff). Инкремент `retry_count`. | B15 |
+| GET | `/admin/fiscal-receipts/queue` | Очередь pending/failed с ошибками (последний `error_message`, `retry_count`). | B15 |
+| GET | `/admin/fiscal-receipts/report/monthly` | Ежемесячный отчёт по выданным чекам (totals, по провайдерам). | B15 |
 
 ### 2.18 Parent Requests (admin review)
 
@@ -787,23 +835,42 @@ Reception может работать с заявками — см. Admin API `/
 |---|---|---|
 | GET | `/parent/children/:id/invoices` | Инвойсы ребёнка (фильтр: `status`, `invoice_type`, диапазон `due_date`). `ChildAccessGuard`: доступен для `primary`/`secondary`; 403 для `nanny`. |
 | GET | `/parent/invoices/:id` | Детали + `invoice_line_items` + применённые `custom_discount_applications`. |
-| POST | `/parent/invoices/:id/pay` | Инициировать оплату текущего invoice. Body: `{provider: 'halyk_epay'\|'kaspi_pay'\|'tiptoppay'\|'freedom_pay', payment_mode: 'full'\|'partial', amount?: decimal, idempotency_key: string}`. При `partial` `amount` обязателен и должен быть < `invoice.amount_after_discount - sum(payments_completed)`. Создаёт `payments (status='initiated', idempotency_key)`, возвращает `{payment_id, redirect_url?, deeplink?}`. При `partial` после `webhook → completed` статус инвойса становится `partial`; при полном покрытии — `paid`. Доступен для `primary`/`secondary`. |
+| POST | `/parent/invoices/:id/pay` | Инициировать оплату текущего invoice. Body: `{provider: 'mock'\|'halyk_epay'\|'kaspi_pay'\|'tiptoppay'\|'freedom_pay', payment_mode: 'full'\|'partial', amount?: 60000, idempotency_key: 'uuid-v4-client-generated'}`. **`idempotency_key` обязателен** — UUID, клиент генерирует per-attempt; повторный запрос с тем же ключом возвращает тот же `payment_id` (200 без дублирующего платежа). При `partial` `amount` обязателен и должен быть < `invoice.amount_after_discount - sum(payments_completed)`. Создаёт `payments (status='initiated')`, возвращает `{payment_id, redirect_url?, deeplink?}`. При `partial` после `webhook → completed` статус инвойса становится `partial`; при полном покрытии — `paid`. Доступен для `primary`/`secondary`; 403 для `nanny`. Errors: 404 `invoice_not_found`, 409 `invoice_already_paid`, 409 `payment_idempotency_conflict` (тот же ключ, другой invoice_id), 429 rate-limit. |
 | POST | `/parent/invoices/:id/pay/prepayment` | Досрочная оплата. Body: `{months: 3\|6\|12\|24, provider, idempotency_key}`. Сервер: находит активный `tariff_assignments` ребёнка, берёт `discount_rules.prepay_{N}m_pct` (если `prepay_24m_pct` отсутствует — 400 `{error: 'prepayment_horizon_not_configured'}`), создаёт новый invoice `invoice_type='prepayment_{N}m'` с правильным `amount_after_discount`, инициирует платёж. Ответ: `{invoice_id, payment_id, redirect_url, preview: {base_amount, discount_pct, final_amount, covers_period: {from, to}}}`. Доступен только `primary`. |
 | GET | `/parent/children/:id/payment-calendar` | Календарь платежей в Kaspi-стиле. Параметры: `months_ahead=12` (1..24). Возвращает массив элементов на каждый месяц в окне: `{month: 'YYYY-MM', status: 'paid'\|'pending'\|'overdue'\|'partial'\|'projected', amount, invoice_id?, due_date, is_projection: bool, holidays_affected: int, prepayment_coverage?: {invoice_id, covers_through_month}}`. Для месяцев, где invoice уже создан (cron `billing:invoice-generate` или prepayment) — реальные данные. Для будущих месяцев — projection из активного `tariff_assignments` + `kindergarten_holidays` (pro-rata). Если месяц покрыт prepayment-invoice — `status='paid'`, `prepayment_coverage` указывает источник. Доступен для `primary`/`secondary`, **403 для `nanny`**. |
 | GET | `/parent/payments` | Мои платежи (`payer_user_id=me`). Фильтр: `status`, `provider`, `child_id`, диапазон дат. |
 | GET | `/parent/payments/:id` | Детали. |
 | GET | `/parent/payments/:id/receipt` | Фискальный чек — возвращает `{qr_url, fiscal_sign, receipt_number, issued_at}` из `fiscal_receipts`. 404 если `status != 'issued'`. |
 
+**Error map (§4.4):**
+
+| HTTP | `error` | Когда |
+|---|---|---|
+| 403 | `access_denied` | Nanny обращается к `/pay`, `/payment-calendar`, `/invoices` (view_payments=false) |
+| 404 | `invoice_not_found` | Инвойс не найден или не принадлежит ребёнку |
+| 409 | `invoice_already_paid` | Попытка оплатить уже `paid` инвойс |
+| 409 | `payment_idempotency_conflict` | `idempotency_key` уже использован для другого invoice_id |
+| 400 | `prepayment_horizon_not_configured` | `months=24` но `discount_rules.prepay_24m_pct` не задан для тарифа |
+
 ### 4.5 Payment Webhooks (провайдеры — не parent-facing, но логически здесь)
 
-Общий контракт всех webhook'ов: верификация HMAC-SHA256 по секрету провайдера → `SET NX payment:idempotency:{provider_txn_id}` TTL 86400с (если ключ уже есть — 200 no-op) → enqueue `payment:webhook` в BullMQ → ответ провайдеру в <2с. Worker в транзакции: upsert `payments`, апдейт `invoices.status`, апдейт `payment_accounts.balance`, enqueue `fiscal:issue-receipt`, push `payment.receipt_issued`.
+**Auth:** без JWT-auth (`@Public()`). Верификация через `PaymentProviderPort.verifyWebhook(headers, body)`. **Cross-tenant:** webhook содержит `provider_txn_id`, сервис ищет `payments` по `(provider, provider_txn_id)` с `bypass_rls=true` per-event TX.
+
+**Общий контракт:** верификация подписи провайдера → cross-tenant lookup payment → advisory lock per invoice → `PaymentProviderPort.verifyWebhook(headers, body)` → mark payment + `Invoice.applyPayment` → `FiscalReceiptPort.emitReceipt` → outbox events → **всегда 200** (идемпотентно; повторный webhook с уже обработанным `provider_txn_id` — no-op).
+
+**Mock:** для `MockPaymentProvider` — `verifyWebhook` принимает header `x-mock-signature: 'valid'`; любой другой → `WebhookSignatureInvalidError` (400).
 
 | Метод | Путь | Назначение |
 |---|---|---|
-| POST | `/payments/webhook/halyk` | Webhook Halyk ePay. **Production — обязательный провайдер.** |
-| POST | `/payments/webhook/kaspi` | Webhook Kaspi Pay API. **Под вопросом** — оставляем endpoint, финализация интеграции после подтверждения доступа к Kaspi Pay API (возможно уход в v2). |
-| POST | `/payments/webhook/tiptoppay` | Webhook TipTopPay. **Один из пары TipTopPay/FreedomPay** — финальный выбор до начала интеграции. |
-| POST | `/payments/webhook/freedom-pay` | Webhook Freedom Pay. **Один из пары TipTopPay/FreedomPay** — финальный выбор до начала интеграции. |
+| POST | `/webhooks/payments/:provider` | Unified webhook endpoint. `provider` ∈ `mock\|halyk_epay\|kaspi_pay\|tiptoppay\|freedom_pay`. Body: провайдер-специфичный JSON payload. Headers: провайдер-специфичная подпись (например `x-mock-signature: 'valid'` для mock; `x-halyk-signature: 'hmac-sha256-...'` для halyk — реализуется в B14). Response: 200 всегда (кроме 400 `webhook_signature_invalid` при неверной подписи). |
+
+**Предыдущие vendor-specific paths** (`/payments/webhook/halyk`, `/kaspi`, `/tiptoppay`, `/freedom-pay`) — задокументированы для будущих Phase B адаптеров; маршрутизируются через `/webhooks/payments/:provider` в B13+ или остаются как aliases в B14+.
+
+**Error map (§4.5):**
+
+| HTTP | `error` | Когда |
+|---|---|---|
+| 400 | `webhook_signature_invalid` | Подпись не прошла верификацию |
 
 ### 4.6 Trusted People & Parent Pickup Requests
 
@@ -857,7 +924,7 @@ Reception может работать с заявками — см. Admin API `/
 | POST | `/parent/requests/trusted-person` | Заявка на доверенное лицо — **одностадийно** (код + заявка в одной TX). Body (snake_case): `{code, child_id, full_name, phone, iin?, relation, photo_url?, is_one_time?, create_pickup_request?}`. Валидирует OTP в ambient TX; создаёт заявку `trusted_person`. Если `create_pickup_request=true` — также создаёт `pickup_requests` row атомарно с `parent_request_id` FK. Доступен только `primary`. |
 | POST | `/parent/requests/day-off` | Заявка на выходные — ребёнок **ОСТАЁТСЯ В САДУ**. Body: `{child_id, weekend_dates: ["YYYY-MM-DD", ...], comment?}`. 1-2 даты, каждая суббота или воскресенье; обе в одной календарной неделе. |
 | POST | `/parent/requests/vacation` | Заявка на отпуск — ребёнок **НЕ ХОДИТ В САД**. Body: `{child_id, date_from, date_to, comment?}`. `date_from ≤ date_to`, `date_from ≥ today`. |
-| POST | `/parent/requests/late-pickup` | Заявка на поздний забор. Body: `{child_id, date, expected_time, comment?}`. `expected_time` = HH:MM. `invoice_id` остаётся null в B12 — `// TODO(B13): emit late-pickup invoice on accept`. |
+| POST | `/parent/requests/late-pickup` | Заявка на поздний забор. Body: `{child_id, date, expected_time, comment?}`. `expected_time` = HH:MM. При `accept` (B13) — генерируется `late_pickup_fee` invoice и `parent_requests.invoice_id` проставляется FK. |
 | POST | `/parent/requests/open` | Открытая заявка. Body: `{child_id, recipient_type, recipient_staff_id?, subject, message, attachments?}`. `recipient_type`: `'admin' \| 'mentor' \| 'specialist'`. |
 | POST | `/parent/requests/:id/cancel` | Отмена заявки. Только `status='pending'`. Conditional UPDATE WHERE status='pending'; 409 `parent_request_already_processed` при race. |
 | POST | `/parent/requests/:id/messages` | Добавить parent message в тред. Body: `{body, attachments?}`. |
