@@ -1,0 +1,193 @@
+import { PaymentStatusInvalidError } from '../errors/payment-status-invalid.error';
+
+export type PaymentProvider =
+  | 'mock'
+  | 'halyk_epay'
+  | 'kaspi_pay'
+  | 'tiptoppay'
+  | 'freedom_pay'
+  | 'cash';
+
+export type PaymentStatus =
+  | 'initiated'
+  | 'processing'
+  | 'completed'
+  | 'failed'
+  | 'refunded';
+
+export interface PaymentState {
+  id: string;
+  kindergartenId: string;
+  invoiceId: string;
+  childId: string;
+  payerUserId: string | null;
+  amount: number;
+  provider: PaymentProvider;
+  providerTxnId: string | null;
+  idempotencyKey: string;
+  status: PaymentStatus;
+  providerPayload: Record<string, unknown> | null;
+  paidAt: Date | null;
+  refundId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/**
+ * Payment aggregate (B13). Owns the state machine
+ *
+ *   initiated  ──markProcessing──► processing
+ *   initiated  ──markCompleted──► completed   (synchronous Mock provider)
+ *   initiated  ──markFailed──► failed
+ *   processing ──markCompleted──► completed
+ *   processing ──markFailed──► failed
+ *   completed  ──markRefunded──► refunded
+ *
+ * `failed` and `refunded` are terminal.
+ *
+ * `idempotencyKey` is enforced UNIQUE on the persistence layer; the
+ * constructor only checks that the value is a non-empty string —
+ * an empty key indicates a programmer error in the calling service.
+ */
+export class Payment {
+  private constructor(private state: PaymentState) {
+    if (
+      typeof state.idempotencyKey !== 'string' ||
+      state.idempotencyKey === ''
+    ) {
+      throw new Error('Payment.idempotencyKey must be a non-empty string');
+    }
+  }
+
+  static fromState(s: PaymentState): Payment {
+    return new Payment({ ...s });
+  }
+
+  toState(): PaymentState {
+    return { ...this.state };
+  }
+
+  // ── getters ────────────────────────────────────────────────────────────
+
+  get id(): string {
+    return this.state.id;
+  }
+
+  get kindergartenId(): string {
+    return this.state.kindergartenId;
+  }
+
+  get invoiceId(): string {
+    return this.state.invoiceId;
+  }
+
+  get childId(): string {
+    return this.state.childId;
+  }
+
+  get payerUserId(): string | null {
+    return this.state.payerUserId;
+  }
+
+  get amount(): number {
+    return this.state.amount;
+  }
+
+  get provider(): PaymentProvider {
+    return this.state.provider;
+  }
+
+  get providerTxnId(): string | null {
+    return this.state.providerTxnId;
+  }
+
+  get idempotencyKey(): string {
+    return this.state.idempotencyKey;
+  }
+
+  get status(): PaymentStatus {
+    return this.state.status;
+  }
+
+  get providerPayload(): Record<string, unknown> | null {
+    return this.state.providerPayload;
+  }
+
+  get paidAt(): Date | null {
+    return this.state.paidAt;
+  }
+
+  get refundId(): string | null {
+    return this.state.refundId;
+  }
+
+  get createdAt(): Date {
+    return this.state.createdAt;
+  }
+
+  get updatedAt(): Date {
+    return this.state.updatedAt;
+  }
+
+  // ── predicates ─────────────────────────────────────────────────────────
+
+  isCompleted(): boolean {
+    return this.state.status === 'completed';
+  }
+
+  isTerminal(): boolean {
+    return this.state.status === 'failed' || this.state.status === 'refunded';
+  }
+
+  // ── transitions ────────────────────────────────────────────────────────
+
+  markProcessing(now: Date): void {
+    if (this.state.status !== 'initiated') {
+      throw new PaymentStatusInvalidError(this.state.status, 'markProcessing');
+    }
+    this.state.status = 'processing';
+    this.state.updatedAt = now;
+  }
+
+  /**
+   * Both `initiated → completed` (Mock / cash) and `processing → completed`
+   * (async provider webhook) are accepted — providers vary on whether they
+   * surface a separate processing phase.
+   */
+  markCompleted(providerTxnId: string, now: Date): void {
+    if (
+      this.state.status !== 'initiated' &&
+      this.state.status !== 'processing'
+    ) {
+      throw new PaymentStatusInvalidError(this.state.status, 'markCompleted');
+    }
+    this.state.providerTxnId = providerTxnId;
+    this.state.paidAt = now;
+    this.state.status = 'completed';
+    this.state.updatedAt = now;
+  }
+
+  markFailed(reason: string, now: Date): void {
+    if (
+      this.state.status !== 'initiated' &&
+      this.state.status !== 'processing'
+    ) {
+      throw new PaymentStatusInvalidError(this.state.status, 'markFailed');
+    }
+    this.state.status = 'failed';
+    this.state.providerPayload = {
+      ...(this.state.providerPayload ?? {}),
+      failure_reason: reason,
+    };
+    this.state.updatedAt = now;
+  }
+
+  markRefunded(refundId: string, now: Date): void {
+    if (this.state.status !== 'completed') {
+      throw new PaymentStatusInvalidError(this.state.status, 'markRefunded');
+    }
+    this.state.refundId = refundId;
+    this.state.status = 'refunded';
+    this.state.updatedAt = now;
+  }
+}
