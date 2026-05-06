@@ -286,10 +286,9 @@ describeIntegration(
     });
 
     it('refunds: KG-B scope returns zero rows for KG-A data', async () => {
-      const rows = await readRowsAsKgB(
-        `SELECT id FROM refunds WHERE id = $1`,
-        [refundA],
-      );
+      const rows = await readRowsAsKgB(`SELECT id FROM refunds WHERE id = $1`, [
+        refundA,
+      ]);
       expect(rows).toHaveLength(0);
     });
 
@@ -322,20 +321,18 @@ describeIntegration(
               mgr.query(`SELECT id FROM invoices           WHERE id = $1`, [
                 invoiceA,
               ]),
-              mgr.query(
-                `SELECT id FROM invoice_line_items WHERE id = $1`,
-                [invoiceLineItemA],
-              ),
+              mgr.query(`SELECT id FROM invoice_line_items WHERE id = $1`, [
+                invoiceLineItemA,
+              ]),
               mgr.query(`SELECT id FROM payments           WHERE id = $1`, [
                 paymentA,
               ]),
               mgr.query(`SELECT id FROM refunds            WHERE id = $1`, [
                 refundA,
               ]),
-              mgr.query(
-                `SELECT id FROM kindergarten_holidays WHERE id = $1`,
-                [holidayA],
-              ),
+              mgr.query(`SELECT id FROM kindergarten_holidays WHERE id = $1`, [
+                holidayA,
+              ]),
             ]);
             return { tp, ta, pa, inv, ili, pay, ref, kh };
           }),

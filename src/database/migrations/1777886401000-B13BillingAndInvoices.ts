@@ -280,12 +280,8 @@ export class B13BillingAndInvoices1777886401000 implements MigrationInterface {
         ON "invoices" ("payment_account_id")`,
     );
 
-    await queryRunner.query(
-      `ALTER TABLE "invoices" ENABLE ROW LEVEL SECURITY`,
-    );
-    await queryRunner.query(
-      `ALTER TABLE "invoices" FORCE ROW LEVEL SECURITY`,
-    );
+    await queryRunner.query(`ALTER TABLE "invoices" ENABLE ROW LEVEL SECURITY`);
+    await queryRunner.query(`ALTER TABLE "invoices" FORCE ROW LEVEL SECURITY`);
     await queryRunner.query(`
       CREATE POLICY tenant_isolation ON "invoices"
         USING (
@@ -379,12 +375,8 @@ export class B13BillingAndInvoices1777886401000 implements MigrationInterface {
         ON "payments" ("child_id")`,
     );
 
-    await queryRunner.query(
-      `ALTER TABLE "payments" ENABLE ROW LEVEL SECURITY`,
-    );
-    await queryRunner.query(
-      `ALTER TABLE "payments" FORCE ROW LEVEL SECURITY`,
-    );
+    await queryRunner.query(`ALTER TABLE "payments" ENABLE ROW LEVEL SECURITY`);
+    await queryRunner.query(`ALTER TABLE "payments" FORCE ROW LEVEL SECURITY`);
     await queryRunner.query(`
       CREATE POLICY tenant_isolation ON "payments"
         USING (
@@ -423,12 +415,8 @@ export class B13BillingAndInvoices1777886401000 implements MigrationInterface {
         ON "refunds" ("kindergarten_id", "status")`,
     );
 
-    await queryRunner.query(
-      `ALTER TABLE "refunds" ENABLE ROW LEVEL SECURITY`,
-    );
-    await queryRunner.query(
-      `ALTER TABLE "refunds" FORCE ROW LEVEL SECURITY`,
-    );
+    await queryRunner.query(`ALTER TABLE "refunds" ENABLE ROW LEVEL SECURITY`);
+    await queryRunner.query(`ALTER TABLE "refunds" FORCE ROW LEVEL SECURITY`);
     await queryRunner.query(`
       CREATE POLICY tenant_isolation ON "refunds"
         USING (
@@ -532,12 +520,8 @@ export class B13BillingAndInvoices1777886401000 implements MigrationInterface {
     await queryRunner.query(
       `ALTER TABLE IF EXISTS "refunds" DISABLE ROW LEVEL SECURITY`,
     );
-    await queryRunner.query(
-      `DROP INDEX IF EXISTS "idx_refunds_kg_status"`,
-    );
-    await queryRunner.query(
-      `DROP INDEX IF EXISTS "idx_refunds_payment_id"`,
-    );
+    await queryRunner.query(`DROP INDEX IF EXISTS "idx_refunds_kg_status"`);
+    await queryRunner.query(`DROP INDEX IF EXISTS "idx_refunds_payment_id"`);
     await queryRunner.query(`DROP TABLE IF EXISTS "refunds"`);
 
     // payments
@@ -550,15 +534,9 @@ export class B13BillingAndInvoices1777886401000 implements MigrationInterface {
     await queryRunner.query(
       `ALTER TABLE IF EXISTS "payments" DISABLE ROW LEVEL SECURITY`,
     );
-    await queryRunner.query(
-      `DROP INDEX IF EXISTS "idx_payments_child_id"`,
-    );
-    await queryRunner.query(
-      `DROP INDEX IF EXISTS "idx_payments_invoice_id"`,
-    );
-    await queryRunner.query(
-      `DROP INDEX IF EXISTS "idx_payments_kg_status"`,
-    );
+    await queryRunner.query(`DROP INDEX IF EXISTS "idx_payments_child_id"`);
+    await queryRunner.query(`DROP INDEX IF EXISTS "idx_payments_invoice_id"`);
+    await queryRunner.query(`DROP INDEX IF EXISTS "idx_payments_kg_status"`);
     await queryRunner.query(
       `DROP INDEX IF EXISTS "idx_payments_provider_txn_id"`,
     );
@@ -592,15 +570,9 @@ export class B13BillingAndInvoices1777886401000 implements MigrationInterface {
     await queryRunner.query(
       `DROP INDEX IF EXISTS "idx_invoices_payment_account_id"`,
     );
-    await queryRunner.query(
-      `DROP INDEX IF EXISTS "idx_invoices_kg_status"`,
-    );
-    await queryRunner.query(
-      `DROP INDEX IF EXISTS "idx_invoices_kg_due_date"`,
-    );
-    await queryRunner.query(
-      `DROP INDEX IF EXISTS "idx_invoices_child_id"`,
-    );
+    await queryRunner.query(`DROP INDEX IF EXISTS "idx_invoices_kg_status"`);
+    await queryRunner.query(`DROP INDEX IF EXISTS "idx_invoices_kg_due_date"`);
+    await queryRunner.query(`DROP INDEX IF EXISTS "idx_invoices_child_id"`);
     await queryRunner.query(`DROP TABLE IF EXISTS "invoices"`);
 
     // payment_accounts
