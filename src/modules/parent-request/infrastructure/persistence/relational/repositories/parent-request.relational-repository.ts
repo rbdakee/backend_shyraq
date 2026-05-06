@@ -111,16 +111,28 @@ export class ParentRequestRelationalRepository extends ParentRequestRepository {
     },
   ): Promise<ParentRequest | null> {
     const m = this.manager();
+    // Build the .set({...}) payload conditionally — only include reviewed_*
+    // keys when the caller explicitly passed them in the patch. Without this,
+    // `cancel` (which only carries `updatedAt`) would silently NULL out
+    // `reviewed_by/at/note` on rows that previously had them populated. M1
+    // from T5 review.
+    const setPayload: Partial<ParentRequestTypeOrmEntity> = {
+      status: nextStatus,
+      updatedAt: patch.updatedAt,
+    };
+    if (patch.reviewedBy !== undefined) {
+      setPayload.reviewedBy = patch.reviewedBy;
+    }
+    if (patch.reviewedAt !== undefined) {
+      setPayload.reviewedAt = patch.reviewedAt;
+    }
+    if (patch.reviewNote !== undefined) {
+      setPayload.reviewNote = patch.reviewNote;
+    }
     const result = await m
       .createQueryBuilder()
       .update(ParentRequestTypeOrmEntity)
-      .set({
-        status: nextStatus,
-        reviewedBy: patch.reviewedBy ?? null,
-        reviewedAt: patch.reviewedAt ?? null,
-        reviewNote: patch.reviewNote ?? null,
-        updatedAt: patch.updatedAt,
-      })
+      .set(setPayload)
       .where('id = :id', { id })
       .andWhere('kindergartenId = :kgId', { kgId: kindergartenId })
       .andWhere('status = :expected', { expected: expectedStatus })

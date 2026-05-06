@@ -599,6 +599,10 @@ function resolveSelfFromField(fieldName: string): RecipientResolver {
  * parent who created the parent_request receives the notification, and only
  * if they are STILL an approved-active guardian on the child at dispatch
  * time. Mirrors the pickup.otp_sent stale-recipient gate (T7-5 MEDIUM#4).
+ *
+ * T6 H1: when the requester is a nanny (admin override of `create_requests`
+ * permission), classify them into `nannyUserIds` so `applyNannyPolicy` drops
+ * the user before delivery — `request.*` is NOT in `NANNY_ALLOWED_EVENT_KEYS`.
  */
 async function resolveParentRequestRequesterRecipients(
   event: OutboxEvent,
@@ -614,7 +618,11 @@ async function resolveParentRequestRequesterRecipients(
   if (link === null) {
     return { userIds: [], nannyUserIds: new Set() };
   }
-  return { userIds: [requesterId], nannyUserIds: new Set() };
+  const nannyUserIds = new Set<string>();
+  if (link.toState().role === 'nanny') {
+    nannyUserIds.add(requesterId);
+  }
+  return { userIds: [requesterId], nannyUserIds };
 }
 
 /**
@@ -643,6 +651,10 @@ function resolveParentRequestCancelledRecipients(
  *   - 'staff'  author → notify the requester parent (re-validated)
  * Nannies are excluded by the nanny-policy gate; the parent re-validation
  * closes the stale-recipient hole.
+ *
+ * T6 H1: when the staff-reply requester is a nanny (admin override of
+ * `create_requests`), tag them into `nannyUserIds` so `applyNannyPolicy`
+ * drops the message — `request.*` is NOT in `NANNY_ALLOWED_EVENT_KEYS`.
  */
 async function resolveParentRequestMessageRecipients(
   event: OutboxEvent,
@@ -667,7 +679,11 @@ async function resolveParentRequestMessageRecipients(
   if (link === null) {
     return { userIds: [], nannyUserIds: new Set() };
   }
-  return { userIds: [requesterId], nannyUserIds: new Set() };
+  const nannyUserIds = new Set<string>();
+  if (link.toState().role === 'nanny') {
+    nannyUserIds.add(requesterId);
+  }
+  return { userIds: [requesterId], nannyUserIds };
 }
 
 function stringMap(input: Record<string, unknown>): Record<string, string> {

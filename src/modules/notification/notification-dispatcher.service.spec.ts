@@ -1126,6 +1126,109 @@ describe('NotificationDispatcher', () => {
     });
   });
 
+  // ── B12 T6 H1: nanny requester slips through `request.*` ───────────────
+
+  describe('parent-request nanny-requester gate (T6 H1)', () => {
+    it('drops a nanny requester from `request.accepted` (request.* is not in NANNY_ALLOWED_EVENT_KEYS)', async () => {
+      // Admin overrode `create_requests=true` for a nanny so the nanny
+      // submitted a parent-request and is now the requesterUserId on the
+      // request.accepted event. Without classification into nannyUserIds,
+      // the policy filter would let them through. After H1 fix, they are
+      // dropped silently.
+      const w = wire();
+      w.guardianRepo.setGuardiansForChild(CHILD, [
+        approvedGuardian(USER_NANNY, 'nanny'),
+      ]);
+      w.tokenRepo.set(USER_NANNY, [
+        { id: 'tn', userId: USER_NANNY, platform: 'ios', token: 'tok-n' },
+      ]);
+      const event = OutboxEvent.create(
+        {
+          id: '99999999-9999-9999-9999-99999999h111',
+          kindergartenId: KG,
+          eventKey: 'request.accepted',
+          payload: {
+            parentRequestId: 'pr-h1-1',
+            childId: CHILD,
+            requestType: 'absence',
+            requesterUserId: USER_NANNY,
+            reviewedByStaffId: 'staff-1',
+          },
+        },
+        NOW,
+      );
+
+      const result = await w.dispatcher.dispatch(event);
+
+      expect(result).toEqual({ status: 'dispatched' });
+      // No history, no push, no WS — policy dropped the nanny.
+      expect(w.notificationRepo.rows).toHaveLength(0);
+      expect(w.pushPort.calls).toHaveLength(0);
+      expect(w.ws.userBroadcasts).toHaveLength(0);
+    });
+
+    it('still delivers `request.rejected` to a parent requester (non-nanny)', async () => {
+      const w = wire();
+      w.guardianRepo.setGuardiansForChild(CHILD, [
+        approvedGuardian(USER_A, 'primary'),
+      ]);
+      w.tokenRepo.set(USER_A, [
+        { id: 'ta', userId: USER_A, platform: 'ios', token: 'tok-a' },
+      ]);
+      const event = OutboxEvent.create(
+        {
+          id: '99999999-9999-9999-9999-99999999h222',
+          kindergartenId: KG,
+          eventKey: 'request.rejected',
+          payload: {
+            parentRequestId: 'pr-h1-2',
+            childId: CHILD,
+            requestType: 'absence',
+            requesterUserId: USER_A,
+            reviewedByStaffId: 'staff-1',
+          },
+        },
+        NOW,
+      );
+
+      const result = await w.dispatcher.dispatch(event);
+
+      expect(result).toEqual({ status: 'dispatched' });
+      expect(w.notificationRepo.rows.map((r) => r.userId)).toEqual([USER_A]);
+    });
+
+    it('drops a nanny requester from `request.message_sent` when staff replies (staff→requester branch)', async () => {
+      const w = wire();
+      w.guardianRepo.setGuardiansForChild(CHILD, [
+        approvedGuardian(USER_NANNY, 'nanny'),
+      ]);
+      w.tokenRepo.set(USER_NANNY, [
+        { id: 'tn2', userId: USER_NANNY, platform: 'android', token: 'tok-n' },
+      ]);
+      const event = OutboxEvent.create(
+        {
+          id: '99999999-9999-9999-9999-99999999h333',
+          kindergartenId: KG,
+          eventKey: 'request.message_sent',
+          payload: {
+            parentRequestId: 'pr-h1-3',
+            childId: CHILD,
+            messageId: 'm-1',
+            authorRole: 'staff',
+            requesterUserId: USER_NANNY,
+          },
+        },
+        NOW,
+      );
+
+      const result = await w.dispatcher.dispatch(event);
+
+      expect(result).toEqual({ status: 'dispatched' });
+      expect(w.notificationRepo.rows).toHaveLength(0);
+      expect(w.pushPort.calls).toHaveLength(0);
+    });
+  });
+
   // ── coverage assertion (HIGH#1 guardrail) ──────────────────────────────
 
   describe('dispatcher event-key coverage', () => {

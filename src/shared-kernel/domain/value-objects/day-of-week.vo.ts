@@ -20,11 +20,10 @@ export type DayOfWeekValue = (typeof DAY_OF_WEEK_VALUES)[number];
 
 /**
  * Map iso-day numbers (1=Mon … 7=Sun) → enum value. Used by `copyWeekToNext`
- * when projecting a slot onto a concrete date.
+ * when projecting a slot onto a concrete date. Indexed by `iso - 1` so the
+ * array length matches the semantic count (7 days, no bogus index-0 slot).
  */
 export const ISO_WEEKDAY_TO_DAY: ReadonlyArray<DayOfWeekValue> = [
-  // index 0 unused (iso days are 1..7)
-  'sun',
   'mon',
   'tue',
   'wed',
@@ -38,7 +37,7 @@ export function dayOfWeekFromIsoWeekday(isoWeekday: number): DayOfWeekValue {
   if (!Number.isInteger(isoWeekday) || isoWeekday < 1 || isoWeekday > 7) {
     throw new Error(`isoWeekday out of range: ${isoWeekday}`);
   }
-  return ISO_WEEKDAY_TO_DAY[isoWeekday];
+  return ISO_WEEKDAY_TO_DAY[isoWeekday - 1];
 }
 
 /** ISO weekday for a JS Date: getDay() returns 0..6 with 0=Sun; we want Mon=1..Sun=7. */
