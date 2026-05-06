@@ -468,12 +468,16 @@ Email + password (не OTP). Access-токен — тот же JWT HS256 (`JWT_A
 
 ### 2.18 Parent Requests (admin review)
 
+**Auth:** `KindergartenScopeGuard` + `@Roles('admin')`. Видит все заявки kg (без role-фильтра).
+
 | Метод | Путь | Назначение |
 |---|---|---|
-| GET | `/admin/parent-requests` | Все заявки родителей (фильтр: `status`, `request_type`, `child_id`). Админ видит `open_request` с `recipient_type='admin'`. |
+| GET | `/admin/parent-requests` | Все заявки kg (фильтр: `status`, `request_type`, `child_id`). Без ограничения по recipient. |
 | GET | `/admin/parent-requests/:id` | Детали + `parent_request_messages`. |
-| POST | `/admin/parent-requests/:id/review` | Accept / reject / note (`reviewed_by`, `reviewed_at`, `review_note`). |
-| POST | `/admin/parent-requests/:id/messages` | Ответить в треде заявки. |
+| POST | `/admin/parent-requests/:id/accept` | Принять: body `{review_note?}`. Conditional UPDATE WHERE status='pending'; 409 при race. |
+| POST | `/admin/parent-requests/:id/reject` | Отклонить: body `{review_note?}`. Conditional UPDATE WHERE status='pending'. |
+| POST | `/admin/parent-requests/:id/messages` | Ответить в треде (staff-side message). Body: `{body, attachments?}`. |
+| GET | `/admin/parent-requests/:id/messages` | Список messages (cursor-paged). |
 
 ### 2.19 Diagnostic Templates
 
@@ -664,13 +668,16 @@ Email + password (не OTP). Access-токен — тот же JWT HS256 (`JWT_A
 
 ### 3.9 Parent Requests (staff review)
 
+**Auth:** `KindergartenScopeGuard` + `@Roles('mentor','specialist','admin')`. Role-filter: mentor видит заявки своей группы (day_off/vacation/late_pickup/trusted_person); specialist — `open_request` с `recipient_staff_id=me` или `recipient_type='specialist'`; admin — без ограничений (через admin API).
+
 | Метод | Путь | Назначение |
 |---|---|---|
-| GET | `/staff/parent-requests` | Заявки на моих детей/мою группу (фильтр: `status`, `request_type`). Mentor видит day_off/vacation/late_pickup/trusted_person для своей группы; Specialist — `open_request` с `recipient_staff_id=me` или `recipient_type='specialist'`. |
+| GET | `/staff/parent-requests` | Заявки по моей роли (фильтр: `status`, `type`, `group_id`). |
 | GET | `/staff/parent-requests/:id` | Детали + messages. |
-| POST | `/staff/parent-requests/:id/accept` | `status='accepted'` + `review_note`. |
-| POST | `/staff/parent-requests/:id/reject` | `status='rejected'` + note. |
-| POST | `/staff/parent-requests/:id/messages` | Ответить в треде. |
+| POST | `/staff/parent-requests/:id/accept` | Принять: body `{review_note?}`. Conditional UPDATE WHERE status='pending'; 409 `parent_request_already_processed` при race. |
+| POST | `/staff/parent-requests/:id/reject` | Отклонить: body `{review_note?}`. Conditional UPDATE WHERE status='pending'. |
+| POST | `/staff/parent-requests/:id/messages` | Ответить в треде (staff-side message). Body: `{body, attachments?}`. |
+| GET | `/staff/parent-requests/:id/messages` | Список messages (cursor-paged, `?cursor=`). |
 
 ### 3.10 Diagnostics (Specialist)
 
@@ -840,19 +847,35 @@ Reception может работать с заявками — см. Admin API `/
 
 ### 4.7 Parent Requests
 
+**Auth:** `KindergartenScopeGuard` + `@Roles('parent')`. Для `:id` путей — `ChildAccessGuard` проверяет принадлежность заявки. Wire-keys — snake_case (`child_id`, `weekend_dates`, `expected_time`, `is_one_time`, `create_pickup_request`, `recipient_type`, `recipient_staff_id`, `review_note`).
+
 | Метод | Путь | Назначение |
 |---|---|---|
-| GET | `/parent/requests` | Мои заявки (фильтр: `status`, `request_type`). |
+| GET | `/parent/requests` | Мои заявки (фильтр: `status`, `type`, `child_id`). |
 | GET | `/parent/requests/:id` | Детали + messages. |
-| POST | `/parent/requests/trusted-person` | Заявка на доверенное лицо: `child_id`, `trusted_person_id` (ссылка на whitelist) или inline `{full_name, phone, iin}`. Требует OTP-подтверждение родителя перед отправкой — сначала вызывается `POST /parent/requests/otp-request` (см. ниже), затем этот endpoint с полем `otp_code`. Создаёт также `pickup_requests` при необходимости. Доступен только `primary`. |
-| POST | `/parent/requests/otp-request` | Запрос OTP для подтверждения чувствительной заявки. Body: `{request_type: 'trusted_person', child_id}`. Сервер: rate-limit `rate:otp:{phone}`, генерит код, пишет Redis `otp:request-confirm:{user_id}:{request_type}` Hash `{code, attempts}` TTL 300с, отправляет SMS на телефон `users.phone`. |
-| POST | `/parent/requests/day-off` | Заявка на выходные: `child_id`, `date_from`, `date_to`, `details: {comment}`. |
-| POST | `/parent/requests/vacation` | Заявка на отпуск: `child_id`, `date_from`, `date_to`, `details: {comment}`. |
-| POST | `/parent/requests/late-pickup` | Заявка на поздний забор: `child_id`, `date_from`, `details: {expected_time}`. Создаёт `invoice` с `invoice_type='late_pickup_fee'` → после оплаты `status='pending'→'active'`. |
-| POST | `/parent/requests/open` | Открытая заявка: `child_id`, `recipient_type` (admin/mentor/specialist), `recipient_staff_id`, `details: {subject, message}`, `attachments[]`. |
-| POST | `/parent/requests/:id/cancel` | `status='cancelled'`. |
-| POST | `/parent/requests/:id/messages` | Ответить в треде. |
-| POST | `/parent/requests/confirm-otp` | Подтверждение OTP для чувствительных заявок. Body: `{request_type, otp_code}`. Читает `otp:request-confirm:{user_id}:{request_type}`; при совпадении — DEL ключа и возвращает `{confirm_token}` (подпись HMAC, TTL 60с), который клиент передаёт в `POST /parent/requests/trusted-person` в поле `confirm_token`. При 3 неверных попытках — `otp:locked:{phone}` TTL 900с. |
+| POST | `/parent/requests/otp-request` | Запрос OTP для trusted_person заявки. Body: `{child_id}`. Rate-limit `rate:otp:{phone}` (5/hour, shared с auth). Redis `otp:request:trusted-person:{userId}` TTL 300с. SMS на `users.phone`. |
+| POST | `/parent/requests/trusted-person` | Заявка на доверенное лицо — **одностадийно** (код + заявка в одной TX). Body (snake_case): `{code, child_id, full_name, phone, iin?, relation, photo_url?, is_one_time?, create_pickup_request?}`. Валидирует OTP в ambient TX; создаёт заявку `trusted_person`. Если `create_pickup_request=true` — также создаёт `pickup_requests` row атомарно с `parent_request_id` FK. Доступен только `primary`. |
+| POST | `/parent/requests/day-off` | Заявка на выходные — ребёнок **ОСТАЁТСЯ В САДУ**. Body: `{child_id, weekend_dates: ["YYYY-MM-DD", ...], comment?}`. 1-2 даты, каждая суббота или воскресенье; обе в одной календарной неделе. |
+| POST | `/parent/requests/vacation` | Заявка на отпуск — ребёнок **НЕ ХОДИТ В САД**. Body: `{child_id, date_from, date_to, comment?}`. `date_from ≤ date_to`, `date_from ≥ today`. |
+| POST | `/parent/requests/late-pickup` | Заявка на поздний забор. Body: `{child_id, date, expected_time, comment?}`. `expected_time` = HH:MM. `invoice_id` остаётся null в B12 — `// TODO(B13): emit late-pickup invoice on accept`. |
+| POST | `/parent/requests/open` | Открытая заявка. Body: `{child_id, recipient_type, recipient_staff_id?, subject, message, attachments?}`. `recipient_type`: `'admin' \| 'mentor' \| 'specialist'`. |
+| POST | `/parent/requests/:id/cancel` | Отмена заявки. Только `status='pending'`. Conditional UPDATE WHERE status='pending'; 409 `parent_request_already_processed` при race. |
+| POST | `/parent/requests/:id/messages` | Добавить parent message в тред. Body: `{body, attachments?}`. |
+| GET | `/parent/requests/:id/messages` | Список messages (cursor-paged, `?cursor=`). |
+
+**Error map (B12):**
+
+| HTTP | `error` | Когда |
+|---|---|---|
+| 404 | `parent_request_not_found` | Заявка не найдена в kg |
+| 409 | `parent_request_already_processed` | Race на conditional UPDATE (ещё один переход уже выполнен) |
+| 409 | `parent_request_status_invalid` | Попытка cancel из не-pending состояния |
+| 403 | `parent_request_forbidden` | Parent тычется в чужую заявку |
+| 403 | `create_request_permission_required` | `guardian.permissions.create_requests=false` |
+| 400 | `invalid_otp` | Код не совпал (attempts < 3) |
+| 410 | `otp_expired` | OTP TTL истёк или ключ не существует |
+| 429 | `otp_rate_limit` | `rate:otp:{phone}` превышен (5/hour) |
+| 429 | `otp_locked` | 3 неверных попытки → 900с блокировка |
 
 ### 4.8 CCTV
 

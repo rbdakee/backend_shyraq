@@ -657,31 +657,38 @@ Table payments {
 // PARENT REQUESTS
 // ─────────────────────────────────────────
 
+// B12 — FORCE ROW LEVEL SECURITY + tenant_isolation policy on kindergarten_id
 Table parent_requests {
   id                  uuid                  [pk, default: `gen_random_uuid()`]
   kindergarten_id     uuid                  [not null, ref: > kindergartens.id]
   child_id            uuid                  [not null, ref: > children.id]
-  requester_user_id   uuid                  [not null, ref: > users.id]
+  requester_user_id   uuid                  [not null, ref: > users.id]        // approved guardian с permissions.create_requests
   request_type        parent_request_type   [not null]
   status              parent_request_status [not null, default: 'pending']
-  date_from           date
-  date_to             date
+  date_from           date                                                      // vacation: start; late_pickup: дата
+  date_to             date                                                      // vacation: end (inclusive); null для остальных
   details             jsonb                 [not null, default: `{}`]
-  // trusted_person: { trusted_person_id }  (теперь ссылка на trusted_people)
-  // late_pickup:    { expected_time, fee_accepted }
-  // open_request:   { subject, message }
-  recipient_type      varchar               // 'admin' | 'mentor' | 'specialist' (для open_request)
+  // per-type payload:
+  //   trusted_person: {full_name, phone, iin?, relation, photo_url?, is_one_time?, create_pickup_request?, trusted_person_id?}
+  //   day_off:        {weekend_dates: ['YYYY-MM-DD', ...] — 1-2 даты, каждая Сб/Вс; comment?}
+  //   vacation:       {comment?}
+  //   late_pickup:    {expected_time: 'HH:MM', tariff_amount_kzt?, comment?}
+  //   open_request:   {subject, message, attachments?}
+  recipient_type      varchar(20)                                               // 'admin' | 'mentor' | 'specialist'
   recipient_staff_id  uuid                  [ref: > staff_members.id]
   reviewed_by         uuid                  [ref: > staff_members.id]
   reviewed_at         timestamptz
   review_note         text
-  invoice_id          uuid                  [ref: > invoices.id]
+  invoice_id          uuid                  // nullable — FK → invoices.id будет добавлен в B13
+  // Note: FK parent_requests.invoice_id → invoices.id will be added in B13
   created_at          timestamptz           [not null, default: `now()`]
   updated_at          timestamptz           [not null, default: `now()`]
 
   indexes {
     (kindergarten_id, status)
-    child_id
+    (child_id, created_at DESC)
+    (recipient_staff_id, status)    // WHERE recipient_staff_id IS NOT NULL (partial, добавляется в миграции)
+    (requester_user_id, created_at DESC)
   }
 }
 
@@ -1205,17 +1212,21 @@ Table trusted_people {
 // PARENT REQUEST — треды ответов (не чат!)
 // ─────────────────────────────────────────
 
+// B12 — FORCE ROW LEVEL SECURITY + tenant_isolation policy on kindergarten_id
 Table parent_request_messages {
   id                uuid [pk, default: `gen_random_uuid()`]
   kindergarten_id   uuid [not null, ref: > kindergartens.id]
-  parent_request_id uuid [not null, ref: > parent_requests.id]
-  author_staff_id   uuid [ref: > staff_members.id]
+  parent_request_id uuid [not null, ref: > parent_requests.id, delete: cascade]
+  author_user_id    uuid [ref: > users.id]          // parent author (nullable)
+  author_staff_id   uuid [ref: > staff_members.id]  // staff author (nullable)
+  // CHECK: exactly one of author_user_id / author_staff_id is NOT NULL
+  // (author_user_id IS NOT NULL)::int + (author_staff_id IS NOT NULL)::int = 1
   body              text [not null]
   attachments       text[]
   created_at        timestamptz [not null, default: `now()`]
 
   indexes {
-    parent_request_id
+    (parent_request_id, created_at ASC)
   }
 }
 

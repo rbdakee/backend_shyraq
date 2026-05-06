@@ -426,9 +426,20 @@ Worker (каждые 2с)
 | `pickup.otp_sent` | `notifyPickupOtpSent` | `user:{requesterId}` | инициатор pickup_request; SMS на `trusted_person_phone` отправляется напрямую через `SmsPort` (не через outbox-fanout на trusted person — у них нет user-записи); запись в `notification_outbox` для аудита и push инициатору. **B11 — implemented.** |
 | `pickup.validated` | `notifyPickupValidated` | `child:{childId}` | все approved guardians ребёнка + requester (`requested_by_user_id`). Nanny-policy: nanny получает `pickup.*`. **B11 — implemented.** |
 
+**B12 — planned (not yet implemented):**
+
+| event_key | Адресаты | Комнаты |
+|---|---|---|
+| `request.accepted` | requester (parent, `requester_user_id`) | `user:{requesterId}` |
+| `request.rejected` | requester (parent, `requester_user_id`) | `user:{requesterId}` |
+| `request.cancelled` | recipient staff (если `recipient_staff_id` назначен) | `user:{recipientStaffUserId}` |
+| `request.message_sent` | если автор parent → `recipient_staff_id` + admin'ы; если автор staff → requester | `user:{...}` |
+
+Nanny-policy: nanny НЕ получает `request.*` — только `attendance.*` и `pickup.*`. Impl добавляется в T3 (B12).
+
 Будущие event-ключи (добавляются по мере батчей): `payment.upcoming`, `payment.overdue`, `payment.receipt_issued` (B14), `content.story_new`, `content.news_published` (B17), `face.enrolled` (B19).
 
-**Nanny-policy:** guardian с `role='nanny'` получает только `attendance.*` и `pickup.*` — остальные ключи отбрасываются в `NotificationDispatcher` до send.
+**Nanny-policy:** guardian с `role='nanny'` получает только `attendance.*` и `pickup.*` — остальные ключи (`request.*`, `payment.*`, etc.) отбрасываются в `NotificationDispatcher` до send.
 
 ### 6.1 Edge stack (B18.5+)
 
