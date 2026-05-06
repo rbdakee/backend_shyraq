@@ -2,7 +2,7 @@ import { ApiProperty } from '@nestjs/swagger';
 import {
   DAY_OF_WEEK_VALUES,
   DayOfWeekValue,
-} from '../domain/value-objects/day-of-week.vo';
+} from '@/shared-kernel/domain/value-objects/day-of-week.vo';
 import { ActivityEventResponseDto } from './activity-event.response.dto';
 
 export class ScheduleWeekDayDto {

@@ -7,7 +7,7 @@ import {
   Matches,
   MaxLength,
 } from 'class-validator';
-import { DAY_OF_WEEK_VALUES } from '../domain/value-objects/day-of-week.vo';
+import { DAY_OF_WEEK_VALUES } from '@/shared-kernel/domain/value-objects/day-of-week.vo';
 
 const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/;
 

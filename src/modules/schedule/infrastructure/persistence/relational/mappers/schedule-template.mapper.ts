@@ -1,6 +1,6 @@
 import { ScheduleTemplate } from '../../../../domain/entities/schedule-template.entity';
 import { ScheduleTemplateSlot } from '../../../../domain/entities/schedule-template-slot.entity';
-import { DayOfWeekValue } from '../../../../domain/value-objects/day-of-week.vo';
+import { DayOfWeekValue } from '@/shared-kernel/domain/value-objects/day-of-week.vo';
 import { ScheduleTemplateEntity } from '../entities/schedule-template.entity';
 import { ScheduleTemplateSlotEntity } from '../entities/schedule-template-slot.entity';
 

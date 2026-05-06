@@ -1,5 +1,8 @@
 import { InvalidSlotTimeError } from '../errors/invalid-slot-time.error';
-import { DayOfWeekValue, isDayOfWeek } from '../value-objects/day-of-week.vo';
+import {
+  DayOfWeekValue,
+  isDayOfWeek,
+} from '@/shared-kernel/domain/value-objects/day-of-week.vo';
 
 /**
  * Plain TS view of a `schedule_template_slots` row. POJO — no TypeORM imports.

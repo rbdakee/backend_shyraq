@@ -2,7 +2,7 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   DAY_OF_WEEK_VALUES,
   DayOfWeekValue,
-} from '../domain/value-objects/day-of-week.vo';
+} from '@/shared-kernel/domain/value-objects/day-of-week.vo';
 
 export class ScheduleTemplateSlotResponseDto {
   @ApiProperty({ example: 'b1a2c3d4-0000-0000-0000-000000000001' })

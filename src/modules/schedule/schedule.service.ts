@@ -16,7 +16,7 @@ import { ActivityEventNotFoundError } from './domain/errors/activity-event-not-f
 import { EventNotDeletableError } from './domain/errors/event-not-deletable.error';
 import { EventTransitionConflictError } from './domain/errors/event-transition-conflict.error';
 import { ScheduleTemplateNotFoundError } from './domain/errors/schedule-template-not-found.error';
-import { isoWeekdayOf } from './domain/value-objects/day-of-week.vo';
+import { isoWeekdayOf } from '@/shared-kernel/domain/value-objects/day-of-week.vo';
 import { ActivityEventStatusValue } from './domain/value-objects/activity-event-status.vo';
 import {
   ActivityEventRepository,
