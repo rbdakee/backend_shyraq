@@ -277,6 +277,8 @@
 
 ### 4.1 Custom Discounts (праздничные и спец. скидки)
 
+**Demo-ready (B16).** Conditions engine, stacking, daily-expire cron, admin CRUD + state transitions, InvoiceService integration — закрыто на Mock-адаптерах в коммитах `53f17c4` → `8c2b094`.
+
 **Цель:** админ может настраивать скидки (праздники, льготы, промо) с условиями, таргетингом и автоматическим push-уведомлением родителям. Скидки вступают в силу сразу.
 
 **Actors:** Admin, Система, Родитель.
