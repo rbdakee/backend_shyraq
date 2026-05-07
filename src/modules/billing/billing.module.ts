@@ -38,6 +38,7 @@ import {
   MONTHLY_BILLING_QUEUE,
 } from './monthly-billing.processor';
 import { PaymentAccountService } from './payment-account.service';
+import { PaymentService } from './payment.service';
 import { TariffAssignmentService } from './tariff-assignment.service';
 import { TariffPlanService } from './tariff-plan.service';
 
@@ -146,6 +147,7 @@ function fiscalReceiptProvider(): Provider {
     TariffAssignmentService,
     HolidayService,
     PaymentAccountService,
+    PaymentService,
     MonthlyBillingProcessor,
     MonthlyBillingScheduler,
   ],
@@ -165,6 +167,7 @@ function fiscalReceiptProvider(): Provider {
     TariffAssignmentService,
     HolidayService,
     PaymentAccountService,
+    PaymentService,
     // Re-export the queue token via the BullMQ module so T7a's saas
     // controller can `@InjectQueue(MONTHLY_BILLING_QUEUE)` from any
     // module that imports BillingModule.
