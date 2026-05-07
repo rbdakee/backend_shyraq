@@ -1,4 +1,5 @@
 import { Module, Provider } from '@nestjs/common';
+import { BullModule } from '@nestjs/bullmq';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { DiscountEnginePort } from './infrastructure/discount-engine/discount-engine.port';
 import { MockDiscountEngine } from './infrastructure/discount-engine/mock-discount-engine.adapter';
@@ -31,6 +32,11 @@ import { TariffAssignmentTypeOrmEntity } from './infrastructure/persistence/rela
 import { TariffPlanTypeOrmEntity } from './infrastructure/persistence/relational/entities/tariff-plan.typeorm.entity';
 import { HolidayService } from './holiday.service';
 import { InvoiceService } from './invoice.service';
+import { MonthlyBillingScheduler } from './monthly-billing-scheduler.service';
+import {
+  MonthlyBillingProcessor,
+  MONTHLY_BILLING_QUEUE,
+} from './monthly-billing.processor';
 import { PaymentAccountService } from './payment-account.service';
 import { TariffAssignmentService } from './tariff-assignment.service';
 import { TariffPlanService } from './tariff-plan.service';
@@ -104,6 +110,13 @@ function fiscalReceiptProvider(): Provider {
       RefundTypeOrmEntity,
       KindergartenHolidayTypeOrmEntity,
     ]),
+    // BullMQ queue for the monthly billing cron + manual super-admin
+    // trigger. The recurring schedule is registered by
+    // `MonthlyBillingScheduler` (gated by `BILLING_MONTHLY_CRON !=
+    // 'disabled'`) at OnApplicationBootstrap; T7a's saas controller
+    // pushes one-off `MONTHLY_BILLING_MANUAL_JOB` jobs via
+    // `@InjectQueue(MONTHLY_BILLING_QUEUE)`.
+    BullModule.registerQueue({ name: MONTHLY_BILLING_QUEUE }),
   ],
   providers: [
     paymentProviderProvider(),
@@ -133,6 +146,8 @@ function fiscalReceiptProvider(): Provider {
     TariffAssignmentService,
     HolidayService,
     PaymentAccountService,
+    MonthlyBillingProcessor,
+    MonthlyBillingScheduler,
   ],
   exports: [
     PaymentProviderPort,
@@ -150,6 +165,10 @@ function fiscalReceiptProvider(): Provider {
     TariffAssignmentService,
     HolidayService,
     PaymentAccountService,
+    // Re-export the queue token via the BullMQ module so T7a's saas
+    // controller can `@InjectQueue(MONTHLY_BILLING_QUEUE)` from any
+    // module that imports BillingModule.
+    BullModule,
   ],
 })
 export class BillingModule {}
