@@ -37,6 +37,7 @@
 import 'reflect-metadata';
 import { randomUUID } from 'node:crypto';
 import { DataSource } from 'typeorm';
+import { InMemoryNotificationAdapter } from '@/common/notifications/in-memory-notification.adapter';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import {
   DiscountEnginePort,
@@ -155,6 +156,7 @@ describeIntegration(
       );
       const holidayService = new HolidayService(holidayRepo, clock);
       const discountEngine = new ZeroDiscountEngine();
+      const notifier = new InMemoryNotificationAdapter();
       return new InvoiceService(
         invoiceRepo,
         lineItemRepo,
@@ -163,6 +165,7 @@ describeIntegration(
         paymentAccountService,
         discountEngine,
         holidayService,
+        notifier,
         clock,
       );
     }

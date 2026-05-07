@@ -1,4 +1,5 @@
 import { DataSource, EntityManager } from 'typeorm';
+import { InMemoryNotificationAdapter } from '@/common/notifications/in-memory-notification.adapter';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import {
   Invoice,
@@ -22,6 +23,11 @@ import {
   PaymentStatusInvalidError,
   WebhookSignatureInvalidError,
 } from './domain/errors';
+import {
+  EmitReceiptInput,
+  EmitReceiptResult,
+  FiscalReceiptPort,
+} from './infrastructure/fiscal-receipt/fiscal-receipt.port';
 import {
   CreatePaymentInput,
   CreatePaymentResult,
@@ -375,6 +381,20 @@ class FakePaymentAccountRepo extends PaymentAccountRepository {
   }
 }
 
+class FakeFiscalReceiptPort extends FiscalReceiptPort {
+  calls: EmitReceiptInput[] = [];
+  emitImpl: (input: EmitReceiptInput) => Promise<EmitReceiptResult> = (input) =>
+    Promise.resolve({
+      fiscalSign: `mock_fiscal_${input.paymentId}`,
+      ofdStatus: 'queued' as const,
+    });
+
+  emitReceipt(input: EmitReceiptInput): Promise<EmitReceiptResult> {
+    this.calls.push(input);
+    return this.emitImpl(input);
+  }
+}
+
 class FakePaymentProvider extends PaymentProviderPort {
   createPaymentImpl: (
     input: CreatePaymentInput,
@@ -463,6 +483,8 @@ interface Harness {
   paymentAccountService: PaymentAccountService;
   paymentAccountRepo: FakePaymentAccountRepo;
   provider: FakePaymentProvider;
+  fiscal: FakeFiscalReceiptPort;
+  notifier: InMemoryNotificationAdapter;
   clock: FixedClock;
 }
 
@@ -474,6 +496,8 @@ function buildHarness(): Harness {
   const accountRepo = new FakePaymentAccountRepo();
   const accountService = new PaymentAccountService(accountRepo, clock);
   const provider = new FakePaymentProvider();
+  const fiscal = new FakeFiscalReceiptPort();
+  const notifier = new InMemoryNotificationAdapter();
   // InvoiceService.get is the only InvoiceService method PaymentService uses.
   // Provide a thin shim that delegates to invoiceRepo.findById.
   const invoiceService = {
@@ -490,6 +514,8 @@ function buildHarness(): Harness {
     invoiceService,
     accountService,
     provider,
+    fiscal,
+    notifier,
     clock,
     dataSource,
   );
@@ -501,6 +527,8 @@ function buildHarness(): Harness {
     paymentAccountService: accountService,
     paymentAccountRepo: accountRepo,
     provider,
+    fiscal,
+    notifier,
     clock,
   };
 }
@@ -1172,6 +1200,220 @@ describe('PaymentService.processWebhook', () => {
     expect((await h.paymentRepo.findById(KG_OTHER, 'pmt-B'))?.status).toBe(
       'initiated',
     );
+  });
+
+  // ── T5c: fiscal emit + outbox notifications ─────────────────────────────
+
+  it('emits fiscal receipt on successful completion', async () => {
+    const h = buildHarness();
+    h.invoiceRepo.rows.set(INVOICE, makeInvoice());
+    h.paymentAccountRepo.put(makeAccount());
+    const seeded = Payment.fromState({
+      id: 'pmt-fiscal',
+      kindergartenId: KG,
+      invoiceId: INVOICE,
+      childId: CHILD,
+      payerUserId: PAYER,
+      amount: 50000,
+      provider: 'mock',
+      providerTxnId: 'tx_fiscal',
+      idempotencyKey: 'idem-fiscal',
+      status: 'initiated',
+      providerPayload: null,
+      paidAt: null,
+      refundId: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    h.paymentRepo.rows.set(seeded.id, seeded);
+    h.invoiceRepo.setPaidSum(INVOICE, 50000);
+    h.provider.verifyWebhookImpl = () =>
+      Promise.resolve({
+        providerPaymentId: 'tx_fiscal',
+        status: 'completed',
+        raw: {},
+      });
+
+    await h.service.processWebhook({
+      provider: 'mock',
+      headers: { 'x-mock-signature': 'valid' },
+      body: {},
+    });
+
+    expect(h.fiscal.calls).toHaveLength(1);
+    expect(h.fiscal.calls[0]).toMatchObject({
+      paymentId: 'pmt-fiscal',
+      invoiceId: INVOICE,
+      kindergartenId: KG,
+      amountKzt: 50000,
+    });
+  });
+
+  it('logs fiscal failure and continues completing the payment (does not abort TX)', async () => {
+    const h = buildHarness();
+    h.invoiceRepo.rows.set(INVOICE, makeInvoice());
+    h.paymentAccountRepo.put(makeAccount());
+    h.fiscal.emitImpl = () => Promise.reject(new Error('ofd_5xx'));
+    const seeded = Payment.fromState({
+      id: 'pmt-fiscal-fail',
+      kindergartenId: KG,
+      invoiceId: INVOICE,
+      childId: CHILD,
+      payerUserId: PAYER,
+      amount: 50000,
+      provider: 'mock',
+      providerTxnId: 'tx_fiscal_fail',
+      idempotencyKey: 'idem-fiscal-fail',
+      status: 'initiated',
+      providerPayload: null,
+      paidAt: null,
+      refundId: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    h.paymentRepo.rows.set(seeded.id, seeded);
+    h.invoiceRepo.setPaidSum(INVOICE, 50000);
+    h.provider.verifyWebhookImpl = () =>
+      Promise.resolve({
+        providerPaymentId: 'tx_fiscal_fail',
+        status: 'completed',
+        raw: {},
+      });
+
+    const result = await h.service.processWebhook({
+      provider: 'mock',
+      headers: { 'x-mock-signature': 'valid' },
+      body: {},
+    });
+
+    expect(result.status).toBe('completed');
+    const after = await h.paymentRepo.findById(KG, 'pmt-fiscal-fail');
+    expect(after?.status).toBe('completed');
+    const inv = await h.invoiceRepo.findById(KG, INVOICE);
+    expect(inv?.status).toBe('paid');
+  });
+
+  it('emits payment.completed + invoice.paid outbox events when the invoice flips to paid', async () => {
+    const h = buildHarness();
+    h.invoiceRepo.rows.set(INVOICE, makeInvoice());
+    h.paymentAccountRepo.put(makeAccount());
+    const seeded = Payment.fromState({
+      id: 'pmt-evt',
+      kindergartenId: KG,
+      invoiceId: INVOICE,
+      childId: CHILD,
+      payerUserId: PAYER,
+      amount: 50000,
+      provider: 'mock',
+      providerTxnId: 'tx_evt',
+      idempotencyKey: 'idem-evt',
+      status: 'initiated',
+      providerPayload: null,
+      paidAt: null,
+      refundId: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    h.paymentRepo.rows.set(seeded.id, seeded);
+    h.invoiceRepo.setPaidSum(INVOICE, 50000);
+    h.provider.verifyWebhookImpl = () =>
+      Promise.resolve({
+        providerPaymentId: 'tx_evt',
+        status: 'completed',
+        raw: {},
+      });
+
+    await h.service.processWebhook({
+      provider: 'mock',
+      headers: { 'x-mock-signature': 'valid' },
+      body: {},
+    });
+
+    const types = h.notifier.events.map((e) => e.type);
+    expect(types).toContain('payment_completed');
+    expect(types).toContain('invoice_paid');
+  });
+
+  it('emits only payment.completed (NOT invoice.paid) when invoice transitions to partial', async () => {
+    const h = buildHarness();
+    h.invoiceRepo.rows.set(INVOICE, makeInvoice());
+    h.paymentAccountRepo.put(makeAccount());
+    const seeded = Payment.fromState({
+      id: 'pmt-evt-p',
+      kindergartenId: KG,
+      invoiceId: INVOICE,
+      childId: CHILD,
+      payerUserId: PAYER,
+      amount: 20000,
+      provider: 'mock',
+      providerTxnId: 'tx_evt_p',
+      idempotencyKey: 'idem-evt-p',
+      status: 'initiated',
+      providerPayload: null,
+      paidAt: null,
+      refundId: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    h.paymentRepo.rows.set(seeded.id, seeded);
+    h.invoiceRepo.setPaidSum(INVOICE, 20000);
+    h.provider.verifyWebhookImpl = () =>
+      Promise.resolve({
+        providerPaymentId: 'tx_evt_p',
+        status: 'completed',
+        raw: {},
+      });
+
+    await h.service.processWebhook({
+      provider: 'mock',
+      headers: { 'x-mock-signature': 'valid' },
+      body: {},
+    });
+
+    const types = h.notifier.events.map((e) => e.type);
+    expect(types).toContain('payment_completed');
+    expect(types).not.toContain('invoice_paid');
+  });
+
+  it('emits payment.failed outbox event on webhook failure', async () => {
+    const h = buildHarness();
+    h.invoiceRepo.rows.set(INVOICE, makeInvoice());
+    h.paymentAccountRepo.put(makeAccount());
+    const seeded = Payment.fromState({
+      id: 'pmt-fail-evt',
+      kindergartenId: KG,
+      invoiceId: INVOICE,
+      childId: CHILD,
+      payerUserId: PAYER,
+      amount: 50000,
+      provider: 'mock',
+      providerTxnId: 'tx_fail_evt',
+      idempotencyKey: 'idem-fail-evt',
+      status: 'initiated',
+      providerPayload: null,
+      paidAt: null,
+      refundId: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    h.paymentRepo.rows.set(seeded.id, seeded);
+    h.provider.verifyWebhookImpl = () =>
+      Promise.resolve({
+        providerPaymentId: 'tx_fail_evt',
+        status: 'failed',
+        failureReason: 'insufficient_funds',
+        raw: {},
+      });
+
+    await h.service.processWebhook({
+      provider: 'mock',
+      headers: { 'x-mock-signature': 'valid' },
+      body: {},
+    });
+
+    const types = h.notifier.events.map((e) => e.type);
+    expect(types).toContain('payment_failed');
+    expect(h.fiscal.calls).toHaveLength(0);
   });
 });
 

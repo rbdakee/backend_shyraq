@@ -646,6 +646,30 @@ class FakeNotification extends NotificationPort {
   notifyParentRequestMessageSent(e: unknown): Promise<void> {
     return this.push('parent_request_message_sent', e);
   }
+  notifyInvoiceCreated(e: unknown): Promise<void> {
+    return this.push('invoice_created', e);
+  }
+  notifyInvoicePaid(e: unknown): Promise<void> {
+    return this.push('invoice_paid', e);
+  }
+  notifyInvoiceOverdue(e: unknown): Promise<void> {
+    return this.push('invoice_overdue', e);
+  }
+  notifyInvoiceCancelled(e: unknown): Promise<void> {
+    return this.push('invoice_cancelled', e);
+  }
+  notifyPaymentCompleted(e: unknown): Promise<void> {
+    return this.push('payment_completed', e);
+  }
+  notifyPaymentFailed(e: unknown): Promise<void> {
+    return this.push('payment_failed', e);
+  }
+  notifyPaymentRefunded(e: unknown): Promise<void> {
+    return this.push('payment_refunded', e);
+  }
+  notifyRefundProcessed(e: unknown): Promise<void> {
+    return this.push('refund_processed', e);
+  }
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────

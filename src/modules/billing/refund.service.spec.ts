@@ -1,3 +1,4 @@
+import { InMemoryNotificationAdapter } from '@/common/notifications/in-memory-notification.adapter';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { InvariantViolationError } from '@/shared-kernel/domain/errors';
 import {
@@ -436,6 +437,7 @@ interface Harness {
   paymentAccountService: PaymentAccountService;
   paymentAccountRepo: FakePaymentAccountRepo;
   provider: FakePaymentProvider;
+  notifier: InMemoryNotificationAdapter;
   clock: FixedClock;
 }
 
@@ -447,6 +449,7 @@ function buildHarness(): Harness {
   const accountRepo = new FakePaymentAccountRepo();
   const accountService = new PaymentAccountService(accountRepo, clock);
   const provider = new FakePaymentProvider();
+  const notifier = new InMemoryNotificationAdapter();
   // InvoiceService.get is the only InvoiceService method RefundService uses.
   const invoiceService = {
     get: async (kg: string, id: string) => {
@@ -462,6 +465,7 @@ function buildHarness(): Harness {
     invoiceService,
     accountService,
     provider,
+    notifier,
     clock,
   );
   return {
@@ -473,6 +477,7 @@ function buildHarness(): Harness {
     paymentAccountService: accountService,
     paymentAccountRepo: accountRepo,
     provider,
+    notifier,
     clock,
   };
 }
@@ -781,5 +786,39 @@ describe('RefundService.getById / list', () => {
     const approved = await h.service.list(KG, { status: 'approved' });
     expect(approved).toHaveLength(1);
     expect(approved[0].id).toBe('r2');
+  });
+});
+
+describe('RefundService.process emissions (T5c)', () => {
+  it('emits refund.processed and payment.refunded outbox events on successful process', async () => {
+    const h = buildHarness();
+    h.paymentRepo.rows.set(PAYMENT, makePayment());
+    h.invoiceRepo.rows.set(INVOICE, makeInvoice({ status: 'paid' }));
+    h.paymentAccountRepo.put(makeAccount(50000));
+    const seeded = seedRefund(h.refundRepo, {
+      status: 'approved',
+      processedBy: ADMIN,
+    });
+
+    await h.service.process(KG, seeded.id);
+
+    const types = h.notifier.events.map((e) => e.type);
+    expect(types).toContain('refund_processed');
+    expect(types).toContain('payment_refunded');
+  });
+
+  it('does not emit on provider refund failure (refund stays approved for retry)', async () => {
+    const h = buildHarness();
+    h.paymentRepo.rows.set(PAYMENT, makePayment());
+    h.invoiceRepo.rows.set(INVOICE, makeInvoice({ status: 'paid' }));
+    h.paymentAccountRepo.put(makeAccount(50000));
+    const seeded = seedRefund(h.refundRepo, {
+      status: 'approved',
+      processedBy: ADMIN,
+    });
+    h.provider.refundImpl = () => Promise.reject(new Error('halyk_timeout'));
+
+    await expect(h.service.process(KG, seeded.id)).rejects.toThrow();
+    expect(h.notifier.events).toHaveLength(0);
   });
 });

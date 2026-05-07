@@ -38,6 +38,15 @@ export const CANONICAL_EVENT_KEYS = [
   'request.message_sent',
   'face.enrolled',
   'fiscal.retry_failed',
+  // ── B13 Billing & Invoices lifecycle events ───────────────────────────
+  'invoice.created',
+  'invoice.paid',
+  'invoice.overdue',
+  'invoice.cancelled',
+  'payment.completed',
+  'payment.failed',
+  'payment.refunded',
+  'refund.processed',
 ] as const;
 
 export type EventKey = (typeof CANONICAL_EVENT_KEYS)[number];

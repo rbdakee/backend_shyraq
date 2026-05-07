@@ -10,6 +10,14 @@ import {
   GuardianRevokedEvent,
   GuardianSelfRevokedEvent,
   NotificationPort,
+  NotifyInvoiceCancelledInput,
+  NotifyInvoiceCreatedInput,
+  NotifyInvoiceOverdueInput,
+  NotifyInvoicePaidInput,
+  NotifyPaymentCompletedInput,
+  NotifyPaymentFailedInput,
+  NotifyPaymentRefundedInput,
+  NotifyRefundProcessedInput,
   ParentRequestAcceptedEvent,
   ParentRequestCancelledEvent,
   ParentRequestMessageSentEvent,
@@ -232,6 +240,90 @@ export class OutboxNotificationAdapter extends NotificationPort {
       requesterUserId: event.requesterUserId,
       recipientStaffId: event.recipientStaffId,
       recipientStaffUserId: event.recipientStaffUserId,
+    });
+  }
+
+  // ── B13 Billing & Invoices events ──────────────────────────────────────
+
+  notifyInvoiceCreated(event: NotifyInvoiceCreatedInput): Promise<void> {
+    return this.enqueue(event.kindergartenId, 'invoice.created', {
+      invoiceId: event.invoiceId,
+      childId: event.childId,
+      invoiceType: event.invoiceType,
+      amountAfterDiscount: event.amountAfterDiscount,
+      dueDate: event.dueDate,
+      periodStart: event.periodStart.toISOString(),
+      periodEnd: event.periodEnd.toISOString(),
+    });
+  }
+
+  notifyInvoicePaid(event: NotifyInvoicePaidInput): Promise<void> {
+    return this.enqueue(event.kindergartenId, 'invoice.paid', {
+      invoiceId: event.invoiceId,
+      childId: event.childId,
+      amountAfterDiscount: event.amountAfterDiscount,
+      paidAt: event.paidAt.toISOString(),
+    });
+  }
+
+  notifyInvoiceOverdue(event: NotifyInvoiceOverdueInput): Promise<void> {
+    return this.enqueue(event.kindergartenId, 'invoice.overdue', {
+      invoiceId: event.invoiceId,
+      childId: event.childId,
+      amountAfterDiscount: event.amountAfterDiscount,
+      dueDate: event.dueDate,
+      daysOverdue: event.daysOverdue,
+    });
+  }
+
+  notifyInvoiceCancelled(event: NotifyInvoiceCancelledInput): Promise<void> {
+    return this.enqueue(event.kindergartenId, 'invoice.cancelled', {
+      invoiceId: event.invoiceId,
+      childId: event.childId,
+      reason: event.reason,
+    });
+  }
+
+  notifyPaymentCompleted(event: NotifyPaymentCompletedInput): Promise<void> {
+    return this.enqueue(event.kindergartenId, 'payment.completed', {
+      paymentId: event.paymentId,
+      childId: event.childId,
+      invoiceId: event.invoiceId,
+      amount: event.amount,
+      provider: event.provider,
+      paidAt: event.paidAt.toISOString(),
+    });
+  }
+
+  notifyPaymentFailed(event: NotifyPaymentFailedInput): Promise<void> {
+    return this.enqueue(event.kindergartenId, 'payment.failed', {
+      paymentId: event.paymentId,
+      childId: event.childId,
+      invoiceId: event.invoiceId,
+      amount: event.amount,
+      provider: event.provider,
+      failureReason: event.failureReason,
+    });
+  }
+
+  notifyPaymentRefunded(event: NotifyPaymentRefundedInput): Promise<void> {
+    return this.enqueue(event.kindergartenId, 'payment.refunded', {
+      paymentId: event.paymentId,
+      childId: event.childId,
+      invoiceId: event.invoiceId,
+      amount: event.amount,
+      refundId: event.refundId,
+    });
+  }
+
+  notifyRefundProcessed(event: NotifyRefundProcessedInput): Promise<void> {
+    return this.enqueue(event.kindergartenId, 'refund.processed', {
+      refundId: event.refundId,
+      paymentId: event.paymentId,
+      childId: event.childId,
+      invoiceId: event.invoiceId,
+      amount: event.amount,
+      processedBy: event.processedBy,
     });
   }
 

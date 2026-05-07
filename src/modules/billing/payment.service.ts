@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { DataSource } from 'typeorm';
+import { NotificationPort } from '@/common/notifications/notification.port';
 import { tenantStorage } from '@/database/tenant-storage';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import {
@@ -16,6 +17,7 @@ import {
   PaymentProviderError,
   PaymentStatusInvalidError,
 } from './domain/errors';
+import { FiscalReceiptPort } from './infrastructure/fiscal-receipt/fiscal-receipt.port';
 import {
   PaymentProviderPort,
   VerifyWebhookInput,
@@ -104,6 +106,9 @@ export class PaymentService {
     private readonly paymentAccountService: PaymentAccountService,
     @Inject(PaymentProviderPort)
     private readonly paymentProvider: PaymentProviderPort,
+    @Inject(FiscalReceiptPort)
+    private readonly fiscalReceiptPort: FiscalReceiptPort,
+    private readonly notificationPort: NotificationPort,
     @Inject(ClockPort) private readonly clock: ClockPort,
     private readonly dataSource: DataSource,
   ) {}
@@ -485,8 +490,58 @@ export class PaymentService {
       updated.amount,
     );
 
-    // TODO(T5c): emit `payment.completed` outbox event + invoke
-    // FiscalReceiptPort.emitReceipt(updated, invoice).
+    // Fiscal receipt emit — best-effort. OFD providers (B15) are async +
+    // transient by nature; refusing to settle a payment because an OFD
+    // request blipped would be the wrong trade-off. Wrap in try/catch and
+    // log; persistence of the failure for retry lands in B15 alongside
+    // the real adapter.
+    try {
+      const paidAt = updated.paidAt ?? now;
+      const receipt = await this.fiscalReceiptPort.emitReceipt({
+        paymentId: updated.id,
+        invoiceId: invoice.id,
+        kindergartenId,
+        amountKzt: updated.amount,
+        paidAt,
+        // Mock adapter ignores payer fields; B15 will wire real lookups.
+        payerName: undefined,
+        payerPhone: undefined,
+      });
+      this.logger.log(
+        `Emitted fiscal receipt ${receipt.fiscalSign} for payment ${updated.id} (status=${receipt.ofdStatus})`,
+      );
+    } catch (err) {
+      // TODO(B15): persist fiscal-failure for retry via the
+      // `fiscal.retry_failed` outbox event once the real adapter ships.
+      this.logger.warn(
+        `payment.completed: fiscal emit failed for payment=${updated.id} invoice=${invoice.id}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    // Outbox notifications — atomic with the business writes via the
+    // ambient TX (`tenantStorage` EntityManager picked up by
+    // `OutboxNotificationAdapter`). Fan-out + nanny-policy filtering happen
+    // in `NotificationDispatcher` at outbox-poll time.
+    await this.notificationPort.notifyPaymentCompleted({
+      kindergartenId,
+      paymentId: updated.id,
+      childId: invoice.childId,
+      invoiceId: invoice.id,
+      amount: updated.amount,
+      provider: updated.provider,
+      paidAt: updated.paidAt ?? now,
+    });
+    if (paidSum >= invoice.amountAfterDiscount) {
+      // Invoice transitioned to `paid` (full settlement). Partial payments
+      // skip the invoice.paid event — the invoice is in `partial`, not paid.
+      await this.notificationPort.notifyInvoicePaid({
+        kindergartenId,
+        invoiceId: invoice.id,
+        childId: invoice.childId,
+        amountAfterDiscount: invoice.amountAfterDiscount,
+        paidAt: updated.paidAt ?? now,
+      });
+    }
 
     return updated;
   }
@@ -540,7 +595,15 @@ export class PaymentService {
       }
       return after;
     }
-    // TODO(T5c): emit `payment.failed` outbox event.
+    await this.notificationPort.notifyPaymentFailed({
+      kindergartenId,
+      paymentId: updated.id,
+      childId: updated.childId,
+      invoiceId: updated.invoiceId,
+      amount: updated.amount,
+      provider: updated.provider,
+      failureReason: verified.failureReason ?? 'webhook_failed',
+    });
     return updated;
   }
 }

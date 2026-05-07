@@ -458,6 +458,195 @@ const TEMPLATES: Record<string, EventTemplate> = {
       authorRole: payload.authorRole,
     }),
   }),
+
+  // ── B13 Billing & Invoices ─────────────────────────────────────────────
+  // Generic copy keyed by amount + due date — clients render the
+  // child / invoice context from the data payload. Nannies are excluded
+  // from every billing event by `applyNannyPolicy` (NANNY_ALLOWED_EVENT_KEYS
+  // only covers attendance.* + pickup.*).
+
+  'invoice.created': ({ payload }) => {
+    const amount = formatAmount(payload.amountAfterDiscount);
+    const dueDate = asNonEmptyString(payload.dueDate) ?? '';
+    return {
+      titleI18n: {
+        ru: 'Новый счёт',
+        kk: 'Жаңа шот',
+        en: 'New invoice',
+      },
+      bodyI18n: {
+        ru: `Создан счёт на сумму ${amount} ₸ до ${dueDate}.`,
+        kk: `Жаңа шот: ${amount} ₸, ${dueDate}-ге дейін.`,
+        en: `Invoice issued: ${amount} ₸, due ${dueDate}.`,
+      },
+      data: stringMap({
+        invoiceId: payload.invoiceId,
+        childId: payload.childId,
+        invoiceType: payload.invoiceType,
+        amountAfterDiscount: payload.amountAfterDiscount,
+        dueDate: payload.dueDate,
+      }),
+    };
+  },
+
+  'invoice.paid': ({ payload }) => {
+    const amount = formatAmount(payload.amountAfterDiscount);
+    return {
+      titleI18n: {
+        ru: 'Счёт оплачен',
+        kk: 'Шот төленді',
+        en: 'Invoice paid',
+      },
+      bodyI18n: {
+        ru: `Счёт на сумму ${amount} ₸ оплачен.`,
+        kk: `Шот төленді: ${amount} ₸.`,
+        en: `Invoice ${amount} ₸ paid.`,
+      },
+      data: stringMap({
+        invoiceId: payload.invoiceId,
+        childId: payload.childId,
+        amountAfterDiscount: payload.amountAfterDiscount,
+        paidAt: payload.paidAt,
+      }),
+    };
+  },
+
+  'invoice.overdue': ({ payload }) => {
+    const amount = formatAmount(payload.amountAfterDiscount);
+    const days = String(payload.daysOverdue ?? '');
+    return {
+      titleI18n: {
+        ru: 'Счёт просрочен',
+        kk: 'Шот мерзімі өтті',
+        en: 'Invoice overdue',
+      },
+      bodyI18n: {
+        ru: `Счёт на сумму ${amount} ₸ просрочен на ${days} дн.`,
+        kk: `${amount} ₸ шот ${days} күнге кешіктірілді.`,
+        en: `Invoice ${amount} ₸ is ${days} days overdue.`,
+      },
+      data: stringMap({
+        invoiceId: payload.invoiceId,
+        childId: payload.childId,
+        amountAfterDiscount: payload.amountAfterDiscount,
+        dueDate: payload.dueDate,
+        daysOverdue: payload.daysOverdue,
+      }),
+    };
+  },
+
+  'invoice.cancelled': ({ payload }) => ({
+    titleI18n: {
+      ru: 'Счёт отменён',
+      kk: 'Шот жойылды',
+      en: 'Invoice cancelled',
+    },
+    bodyI18n: {
+      ru: 'Счёт был отменён.',
+      kk: 'Шот жойылды.',
+      en: 'The invoice was cancelled.',
+    },
+    data: stringMap({
+      invoiceId: payload.invoiceId,
+      childId: payload.childId,
+      reason: payload.reason,
+    }),
+  }),
+
+  'payment.completed': ({ payload }) => {
+    const amount = formatAmount(payload.amount);
+    const provider = asNonEmptyString(payload.provider) ?? '';
+    return {
+      titleI18n: {
+        ru: 'Оплата прошла',
+        kk: 'Төлем сәтті өтті',
+        en: 'Payment completed',
+      },
+      bodyI18n: {
+        ru: `Платёж ${amount} ₸ через ${provider} успешно обработан.`,
+        kk: `Төлем ${amount} ₸ (${provider}) сәтті өңделді.`,
+        en: `Payment ${amount} ₸ via ${provider} processed.`,
+      },
+      data: stringMap({
+        paymentId: payload.paymentId,
+        invoiceId: payload.invoiceId,
+        childId: payload.childId,
+        amount: payload.amount,
+        provider: payload.provider,
+        paidAt: payload.paidAt,
+      }),
+    };
+  },
+
+  'payment.failed': ({ payload }) => {
+    const amount = formatAmount(payload.amount);
+    return {
+      titleI18n: {
+        ru: 'Платёж не прошёл',
+        kk: 'Төлем өтпеді',
+        en: 'Payment failed',
+      },
+      bodyI18n: {
+        ru: `Платёж ${amount} ₸ не прошёл.`,
+        kk: `${amount} ₸ төлемі өтпеді.`,
+        en: `Payment ${amount} ₸ failed.`,
+      },
+      data: stringMap({
+        paymentId: payload.paymentId,
+        invoiceId: payload.invoiceId,
+        childId: payload.childId,
+        amount: payload.amount,
+        provider: payload.provider,
+        failureReason: payload.failureReason,
+      }),
+    };
+  },
+
+  'payment.refunded': ({ payload }) => {
+    const amount = formatAmount(payload.amount);
+    return {
+      titleI18n: {
+        ru: 'Платёж возвращён',
+        kk: 'Төлем қайтарылды',
+        en: 'Payment refunded',
+      },
+      bodyI18n: {
+        ru: `Платёж ${amount} ₸ возвращён.`,
+        kk: `${amount} ₸ төлемі қайтарылды.`,
+        en: `Payment ${amount} ₸ refunded.`,
+      },
+      data: stringMap({
+        paymentId: payload.paymentId,
+        invoiceId: payload.invoiceId,
+        childId: payload.childId,
+        amount: payload.amount,
+        refundId: payload.refundId,
+      }),
+    };
+  },
+
+  'refund.processed': ({ payload }) => {
+    const amount = formatAmount(payload.amount);
+    return {
+      titleI18n: {
+        ru: 'Возврат обработан',
+        kk: 'Қайтару өңделді',
+        en: 'Refund processed',
+      },
+      bodyI18n: {
+        ru: `Возврат ${amount} ₸ обработан.`,
+        kk: `${amount} ₸ қайтарылым өңделді.`,
+        en: `Refund ${amount} ₸ processed.`,
+      },
+      data: stringMap({
+        refundId: payload.refundId,
+        paymentId: payload.paymentId,
+        invoiceId: payload.invoiceId,
+        childId: payload.childId,
+        amount: payload.amount,
+      }),
+    };
+  },
 };
 
 const RECIPIENT_RESOLVERS: Record<string, RecipientResolver> = {
@@ -500,6 +689,20 @@ const RECIPIENT_RESOLVERS: Record<string, RecipientResolver> = {
   // staff→parent. Parent recipient is re-validated against the
   // guardian-link to close the same stale-recipient hole.
   'request.message_sent': resolveParentRequestMessageRecipients,
+  // ── B13 Billing & Invoices ─────────────────────────────────────────────
+  // invoice.* / payment.* / refund.* fan out to the child's approved-active
+  // guardians; nannies are dropped by the policy gate (these keys are NOT in
+  // NANNY_ALLOWED_EVENT_KEYS). The shared `resolveByChildGuardians` resolver
+  // already classifies nanny rows into `nannyUserIds` so the policy filter
+  // works correctly.
+  'invoice.created': resolveByChildGuardians,
+  'invoice.paid': resolveByChildGuardians,
+  'invoice.overdue': resolveByChildGuardians,
+  'invoice.cancelled': resolveByChildGuardians,
+  'payment.completed': resolveByChildGuardians,
+  'payment.failed': resolveByChildGuardians,
+  'payment.refunded': resolveByChildGuardians,
+  'refund.processed': resolveByChildGuardians,
 };
 
 async function resolveByChildGuardians(
@@ -697,6 +900,19 @@ function stringMap(input: Record<string, unknown>): Record<string, string> {
 
 function asNonEmptyString(v: unknown): string | undefined {
   return typeof v === 'string' && v.length > 0 ? v : undefined;
+}
+
+/**
+ * Formats a numeric amount for the body templates. Tolerates `string`
+ * payload values too — JSONB sometimes round-trips integers untouched but
+ * treats large decimals as strings; we format whichever shape arrives.
+ * Falls back to the empty string if the value is missing / unparseable so
+ * a benign template render never fails the dispatch.
+ */
+function formatAmount(v: unknown): string {
+  if (typeof v === 'number' && Number.isFinite(v)) return v.toString();
+  if (typeof v === 'string' && v.length > 0) return v;
+  return '';
 }
 
 /**

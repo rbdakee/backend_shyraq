@@ -207,4 +207,155 @@ describe('OutboxNotificationAdapter', () => {
     expect(repo.calls).toHaveLength(1);
     expect(repo.calls[0].manager).toBeUndefined();
   });
+
+  // ── B13 Billing & Invoices ───────────────────────────────────────────────
+
+  it('enqueues invoice.created with date-serialised period bounds', async () => {
+    const periodStart = new Date('2026-06-01T00:00:00.000Z');
+    const periodEnd = new Date('2026-06-30T00:00:00.000Z');
+    await adapter.notifyInvoiceCreated({
+      kindergartenId: KG,
+      invoiceId: 'inv-1',
+      childId: CHILD,
+      invoiceType: 'monthly',
+      amountAfterDiscount: 50000,
+      dueDate: '2026-06-10',
+      periodStart,
+      periodEnd,
+    });
+
+    expect(repo.calls[0].input.eventKey).toBe('invoice.created');
+    expect(repo.calls[0].input.payload).toEqual({
+      invoiceId: 'inv-1',
+      childId: CHILD,
+      invoiceType: 'monthly',
+      amountAfterDiscount: 50000,
+      dueDate: '2026-06-10',
+      periodStart: periodStart.toISOString(),
+      periodEnd: periodEnd.toISOString(),
+    });
+  });
+
+  it('enqueues invoice.paid', async () => {
+    await adapter.notifyInvoicePaid({
+      kindergartenId: KG,
+      invoiceId: 'inv-1',
+      childId: CHILD,
+      amountAfterDiscount: 50000,
+      paidAt: NOW,
+    });
+
+    expect(repo.calls[0].input.eventKey).toBe('invoice.paid');
+    expect(repo.calls[0].input.payload).toMatchObject({
+      invoiceId: 'inv-1',
+      childId: CHILD,
+      amountAfterDiscount: 50000,
+      paidAt: NOW.toISOString(),
+    });
+  });
+
+  it('enqueues invoice.cancelled with reason', async () => {
+    await adapter.notifyInvoiceCancelled({
+      kindergartenId: KG,
+      invoiceId: 'inv-1',
+      childId: CHILD,
+      reason: 'admin override',
+    });
+
+    expect(repo.calls[0].input.eventKey).toBe('invoice.cancelled');
+    expect(repo.calls[0].input.payload).toEqual({
+      invoiceId: 'inv-1',
+      childId: CHILD,
+      reason: 'admin override',
+    });
+  });
+
+  it('enqueues payment.completed', async () => {
+    await adapter.notifyPaymentCompleted({
+      kindergartenId: KG,
+      paymentId: 'pmt-1',
+      childId: CHILD,
+      invoiceId: 'inv-1',
+      amount: 50000,
+      provider: 'mock',
+      paidAt: NOW,
+    });
+
+    expect(repo.calls[0].input.eventKey).toBe('payment.completed');
+    expect(repo.calls[0].input.payload).toMatchObject({
+      paymentId: 'pmt-1',
+      invoiceId: 'inv-1',
+      childId: CHILD,
+      amount: 50000,
+      provider: 'mock',
+      paidAt: NOW.toISOString(),
+    });
+  });
+
+  it('enqueues payment.failed', async () => {
+    await adapter.notifyPaymentFailed({
+      kindergartenId: KG,
+      paymentId: 'pmt-1',
+      childId: CHILD,
+      invoiceId: 'inv-1',
+      amount: 50000,
+      provider: 'mock',
+      failureReason: 'insufficient_funds',
+    });
+
+    expect(repo.calls[0].input.eventKey).toBe('payment.failed');
+    expect(repo.calls[0].input.payload).toMatchObject({
+      paymentId: 'pmt-1',
+      invoiceId: 'inv-1',
+      childId: CHILD,
+      amount: 50000,
+      provider: 'mock',
+      failureReason: 'insufficient_funds',
+    });
+  });
+
+  it('enqueues payment.refunded + refund.processed', async () => {
+    await adapter.notifyPaymentRefunded({
+      kindergartenId: KG,
+      paymentId: 'pmt-1',
+      childId: CHILD,
+      invoiceId: 'inv-1',
+      amount: 50000,
+      refundId: 'r-1',
+    });
+    await adapter.notifyRefundProcessed({
+      kindergartenId: KG,
+      refundId: 'r-1',
+      paymentId: 'pmt-1',
+      childId: CHILD,
+      invoiceId: 'inv-1',
+      amount: 50000,
+      processedBy: USER,
+    });
+
+    expect(repo.calls.map((c) => c.input.eventKey)).toEqual([
+      'payment.refunded',
+      'refund.processed',
+    ]);
+  });
+
+  it('enqueues invoice.overdue with daysOverdue', async () => {
+    await adapter.notifyInvoiceOverdue({
+      kindergartenId: KG,
+      invoiceId: 'inv-1',
+      childId: CHILD,
+      amountAfterDiscount: 50000,
+      dueDate: '2026-06-10',
+      daysOverdue: 7,
+    });
+
+    expect(repo.calls[0].input.eventKey).toBe('invoice.overdue');
+    expect(repo.calls[0].input.payload).toMatchObject({
+      invoiceId: 'inv-1',
+      childId: CHILD,
+      amountAfterDiscount: 50000,
+      dueDate: '2026-06-10',
+      daysOverdue: 7,
+    });
+  });
 });

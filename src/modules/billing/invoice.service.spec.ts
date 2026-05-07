@@ -1,3 +1,4 @@
+import { InMemoryNotificationAdapter } from '@/common/notifications/in-memory-notification.adapter';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { Invoice, InvoiceState } from './domain/entities/invoice.entity';
 import { InvoiceLineItem } from './domain/entities/invoice-line-item.entity';
@@ -515,6 +516,7 @@ function buildSvc() {
   const accountSvc = new PaymentAccountService(accountRepo, clock);
   const holidaySvc = new HolidayService(holidayRepo, clock);
   const discount = new FakeDiscountEngine();
+  const notifier = new InMemoryNotificationAdapter();
   const svc = new InvoiceService(
     invoiceRepo,
     lineItemRepo,
@@ -523,6 +525,7 @@ function buildSvc() {
     accountSvc,
     discount,
     holidaySvc,
+    notifier,
     clock,
   );
   return {
@@ -534,6 +537,7 @@ function buildSvc() {
     accountRepo,
     holidayRepo,
     discount,
+    notifier,
     clock,
     accountSvc,
   };
@@ -1029,6 +1033,92 @@ describe('InvoiceService', () => {
       );
       const list = await svc.list(KG_OTHER);
       expect(list).toHaveLength(0);
+    });
+  });
+
+  // ── T5c: outbox emissions ───────────────────────────────────────────────
+
+  describe('notification emissions (T5c)', () => {
+    it('emits invoice.created after createOneOff', async () => {
+      const { svc, notifier } = buildSvc();
+      await svc.createOneOff(KG, {
+        childId: CHILD,
+        invoiceType: 'additional_service',
+        amountDue: 1000,
+        dueDate: new Date('2026-06-10T00:00:00.000Z'),
+        periodStart: new Date('2026-06-01T00:00:00.000Z'),
+        periodEnd: new Date('2026-06-30T00:00:00.000Z'),
+      });
+      const types = notifier.events.map((e) => e.type);
+      expect(types).toContain('invoice_created');
+    });
+
+    it('emits invoice.paid after manualMarkPaid', async () => {
+      const { svc, invoiceRepo, accountSvc, notifier } = buildSvc();
+      const account = await accountSvc.ensureForChild(KG, CHILD);
+      const id = 'inv-mp';
+      invoiceRepo.rows.set(
+        id,
+        Invoice.fromState({
+          id,
+          kindergartenId: KG,
+          childId: CHILD,
+          paymentAccountId: account.id,
+          tariffPlanId: null,
+          invoiceType: 'monthly',
+          periodStart: new Date('2026-06-01T00:00:00.000Z'),
+          periodEnd: new Date('2026-06-30T00:00:00.000Z'),
+          amountDue: 1000,
+          discountPct: null,
+          discountReason: null,
+          amountAfterDiscount: 1000,
+          status: 'pending',
+          dueDate: new Date('2026-06-10T00:00:00.000Z'),
+          description: null,
+          proratedForDays: null,
+          createdAt: NOW,
+          updatedAt: NOW,
+        }),
+      );
+      await svc.manualMarkPaid(KG, id);
+      const types = notifier.events.map((e) => e.type);
+      expect(types).toContain('invoice_paid');
+    });
+
+    it('emits invoice.cancelled after cancel', async () => {
+      const { svc, invoiceRepo, accountSvc, notifier } = buildSvc();
+      const account = await accountSvc.ensureForChild(KG, CHILD);
+      const id = 'inv-cn';
+      invoiceRepo.rows.set(
+        id,
+        Invoice.fromState({
+          id,
+          kindergartenId: KG,
+          childId: CHILD,
+          paymentAccountId: account.id,
+          tariffPlanId: null,
+          invoiceType: 'monthly',
+          periodStart: new Date('2026-06-01T00:00:00.000Z'),
+          periodEnd: new Date('2026-06-30T00:00:00.000Z'),
+          amountDue: 1000,
+          discountPct: null,
+          discountReason: null,
+          amountAfterDiscount: 1000,
+          status: 'pending',
+          dueDate: new Date('2026-06-10T00:00:00.000Z'),
+          description: null,
+          proratedForDays: null,
+          createdAt: NOW,
+          updatedAt: NOW,
+        }),
+      );
+      await svc.cancel(KG, id, 'admin-decision');
+      const types = notifier.events.map((e) => e.type);
+      expect(types).toContain('invoice_cancelled');
+      const evt = notifier.events.find((e) => e.type === 'invoice_cancelled');
+      expect((evt?.event as { reason: string | null }).reason).toBe(
+        'admin-decision',
+      );
     });
   });
 });

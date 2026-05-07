@@ -1,5 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
+import { NotificationPort } from '@/common/notifications/notification.port';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import {
   Invoice,
@@ -112,6 +113,7 @@ export class InvoiceService {
     @Inject(DiscountEnginePort)
     private readonly discountEngine: DiscountEnginePort,
     private readonly holidays: HolidayService,
+    private readonly notificationPort: NotificationPort,
     @Inject(ClockPort) private readonly clock: ClockPort,
   ) {}
 
@@ -193,7 +195,9 @@ export class InvoiceService {
       }),
     );
 
-    return this.invoices.create(invoice, lineItems);
+    const persisted = await this.invoices.create(invoice, lineItems);
+    await this.emitInvoiceCreated(persisted);
+    return persisted;
   }
 
   // ── Admin actions (state flips) ────────────────────────────────────────
@@ -248,13 +252,20 @@ export class InvoiceService {
         residual,
       );
     }
+    await this.notificationPort.notifyInvoicePaid({
+      kindergartenId,
+      invoiceId: updated.id,
+      childId: updated.childId,
+      amountAfterDiscount: updated.amountAfterDiscount,
+      paidAt: now,
+    });
     return updated;
   }
 
   async cancel(
     kindergartenId: string,
     invoiceId: string,
-    _reason?: string,
+    reason?: string,
   ): Promise<Invoice> {
     const now = this.clock.now();
     const updated = await this.invoices.markCancelledConditional(
@@ -272,6 +283,12 @@ export class InvoiceService {
       }
       throw new InvoiceStatusInvalidError(existing.status, 'cancel');
     }
+    await this.notificationPort.notifyInvoiceCancelled({
+      kindergartenId,
+      invoiceId: updated.id,
+      childId: updated.childId,
+      reason: reason ?? null,
+    });
     return updated;
   }
 
@@ -475,7 +492,9 @@ export class InvoiceService {
       lineTotal: InvoiceLineItem.compute(1, amount),
       createdAt: now,
     });
-    return this.invoices.create(invoice, [lineItem]);
+    const persisted = await this.invoices.create(invoice, [lineItem]);
+    await this.emitInvoiceCreated(persisted);
+    return persisted;
   }
 
   // ── private helpers ────────────────────────────────────────────────────
@@ -594,7 +613,33 @@ export class InvoiceService {
     };
     const lineItem = InvoiceLineItem.fromState(lineState);
 
-    return this.invoices.create(invoice, [lineItem]);
+    const persisted = await this.invoices.create(invoice, [lineItem]);
+    await this.emitInvoiceCreated(persisted);
+    return persisted;
+  }
+
+  /**
+   * Outbox event for invoice creation. Producer-side only — fan-out and
+   * nanny-policy filtering happen in `NotificationDispatcher` at outbox-poll
+   * time. Atomic with the invoice INSERT via the ambient TX.
+   *
+   * NOTE on `invoice.overdue`: there is no caller for `notifyInvoiceOverdue`
+   * yet. Marking an invoice overdue happens lazily today (no nightly cron);
+   * the dispatcher template + recipient resolver still ship in T5c so a
+   * future overdue marker (B22 polish) only needs to add the call-site.
+   * Marker: `// TODO(B22): nightly overdue marking cron`.
+   */
+  private async emitInvoiceCreated(invoice: Invoice): Promise<void> {
+    await this.notificationPort.notifyInvoiceCreated({
+      kindergartenId: invoice.kindergartenId,
+      invoiceId: invoice.id,
+      childId: invoice.childId,
+      invoiceType: invoice.invoiceType,
+      amountAfterDiscount: invoice.amountAfterDiscount,
+      dueDate: invoice.dueDate.toISOString().slice(0, 10),
+      periodStart: invoice.periodStart,
+      periodEnd: invoice.periodEnd,
+    });
   }
 }
 

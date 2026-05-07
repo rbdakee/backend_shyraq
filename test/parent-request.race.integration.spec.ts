@@ -200,6 +200,30 @@ class FakeNotifications extends NotificationPort {
   ): Promise<void> {
     return Promise.resolve();
   }
+  notifyInvoiceCreated(): Promise<void> {
+    return Promise.resolve();
+  }
+  notifyInvoicePaid(): Promise<void> {
+    return Promise.resolve();
+  }
+  notifyInvoiceOverdue(): Promise<void> {
+    return Promise.resolve();
+  }
+  notifyInvoiceCancelled(): Promise<void> {
+    return Promise.resolve();
+  }
+  notifyPaymentCompleted(): Promise<void> {
+    return Promise.resolve();
+  }
+  notifyPaymentFailed(): Promise<void> {
+    return Promise.resolve();
+  }
+  notifyPaymentRefunded(): Promise<void> {
+    return Promise.resolve();
+  }
+  notifyRefundProcessed(): Promise<void> {
+    return Promise.resolve();
+  }
 }
 
 class FixedClock implements ClockPort {

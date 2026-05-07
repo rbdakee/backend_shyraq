@@ -37,8 +37,10 @@
 import 'reflect-metadata';
 import { randomUUID } from 'node:crypto';
 import { DataSource, EntityManager } from 'typeorm';
+import { InMemoryNotificationAdapter } from '@/common/notifications/in-memory-notification.adapter';
 import { tenantStorage } from '@/database/tenant-storage';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { MockFiscalReceiptAdapter } from './infrastructure/fiscal-receipt/mock-fiscal-receipt.adapter';
 import { InvoiceRelationalRepository } from './infrastructure/persistence/relational/repositories/invoice.relational.repository';
 import { InvoiceLineItemRelationalRepository } from './infrastructure/persistence/relational/repositories/invoice-line-item.relational.repository';
 import { PaymentAccountRelationalRepository } from './infrastructure/persistence/relational/repositories/payment-account.relational.repository';
@@ -160,6 +162,7 @@ describeIntegration('PaymentService — race-integration', () => {
       clock,
     );
     const holidayService = new HolidayService(holidayRepo, clock);
+    const notifier = new InMemoryNotificationAdapter();
     const invoiceService = new InvoiceService(
       invoiceRepo,
       lineItemRepo,
@@ -168,15 +171,19 @@ describeIntegration('PaymentService — race-integration', () => {
       paymentAccountService,
       new ZeroDiscountEngine(),
       holidayService,
+      notifier,
       clock,
     );
     const provider = new MockPaymentProvider();
+    const fiscal = new MockFiscalReceiptAdapter();
     const paymentService = new PaymentService(
       paymentRepo,
       invoiceRepo,
       invoiceService,
       paymentAccountService,
       provider,
+      fiscal,
+      notifier,
       clock,
       dataSource,
     );

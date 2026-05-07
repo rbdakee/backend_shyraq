@@ -1229,6 +1229,103 @@ describe('NotificationDispatcher', () => {
     });
   });
 
+  // ── B13 Billing & Invoices nanny-policy ────────────────────────────────
+
+  describe('billing nanny-policy filter', () => {
+    it('excludes nanny guardians from invoice.paid recipients', async () => {
+      const w = wire();
+      w.guardianRepo.setGuardiansForChild(CHILD, [
+        approvedGuardian(USER_A, 'primary'),
+        approvedGuardian(USER_NANNY, 'nanny'),
+      ]);
+      w.tokenRepo.set(USER_A, [
+        { id: 'ta', userId: USER_A, platform: 'ios', token: 'tok-a' },
+      ]);
+      w.tokenRepo.set(USER_NANNY, [
+        { id: 'tn', userId: USER_NANNY, platform: 'android', token: 'tok-n' },
+      ]);
+      const event = OutboxEvent.create(
+        {
+          id: '99999999-9999-9999-9999-999999999b13',
+          kindergartenId: KG,
+          eventKey: 'invoice.paid',
+          payload: {
+            invoiceId: 'inv-1',
+            childId: CHILD,
+            amountAfterDiscount: 50000,
+            paidAt: NOW.toISOString(),
+          },
+        },
+        NOW,
+      );
+
+      const result = await w.dispatcher.dispatch(event);
+
+      expect(result).toEqual({ status: 'dispatched' });
+      // Nanny dropped — only USER_A receives the history row + push.
+      expect(w.notificationRepo.rows.map((r) => r.userId)).toEqual([USER_A]);
+      expect(w.pushPort.calls.map((c) => c.target.userId)).toEqual([USER_A]);
+    });
+
+    it('excludes nanny guardians from payment.completed recipients', async () => {
+      const w = wire();
+      w.guardianRepo.setGuardiansForChild(CHILD, [
+        approvedGuardian(USER_A, 'primary'),
+        approvedGuardian(USER_NANNY, 'nanny'),
+      ]);
+      const event = OutboxEvent.create(
+        {
+          id: '99999999-9999-9999-9999-999999999b14',
+          kindergartenId: KG,
+          eventKey: 'payment.completed',
+          payload: {
+            paymentId: 'pmt-1',
+            invoiceId: 'inv-1',
+            childId: CHILD,
+            amount: 50000,
+            provider: 'mock',
+            paidAt: NOW.toISOString(),
+          },
+        },
+        NOW,
+      );
+
+      const result = await w.dispatcher.dispatch(event);
+
+      expect(result).toEqual({ status: 'dispatched' });
+      expect(w.notificationRepo.rows.map((r) => r.userId)).toEqual([USER_A]);
+    });
+
+    it('excludes nanny guardians from refund.processed recipients', async () => {
+      const w = wire();
+      w.guardianRepo.setGuardiansForChild(CHILD, [
+        approvedGuardian(USER_A, 'primary'),
+        approvedGuardian(USER_NANNY, 'nanny'),
+      ]);
+      const event = OutboxEvent.create(
+        {
+          id: '99999999-9999-9999-9999-999999999b15',
+          kindergartenId: KG,
+          eventKey: 'refund.processed',
+          payload: {
+            refundId: 'r-1',
+            paymentId: 'pmt-1',
+            invoiceId: 'inv-1',
+            childId: CHILD,
+            amount: 50000,
+            processedBy: USER_A,
+          },
+        },
+        NOW,
+      );
+
+      const result = await w.dispatcher.dispatch(event);
+
+      expect(result).toEqual({ status: 'dispatched' });
+      expect(w.notificationRepo.rows.map((r) => r.userId)).toEqual([USER_A]);
+    });
+  });
+
   // ── coverage assertion (HIGH#1 guardrail) ──────────────────────────────
 
   describe('dispatcher event-key coverage', () => {
@@ -1257,6 +1354,15 @@ describe('NotificationDispatcher', () => {
       'request.rejected',
       'request.cancelled',
       'request.message_sent',
+      // ── B13 Billing & Invoices ─────────────────────────────────────────
+      'invoice.created',
+      'invoice.paid',
+      'invoice.overdue',
+      'invoice.cancelled',
+      'payment.completed',
+      'payment.failed',
+      'payment.refunded',
+      'refund.processed',
     ];
 
     it.each(COVERED_KEYS)(

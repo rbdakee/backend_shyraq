@@ -10,6 +10,14 @@ import {
   GuardianRevokedEvent,
   GuardianSelfRevokedEvent,
   NotificationPort,
+  NotifyInvoiceCancelledInput,
+  NotifyInvoiceCreatedInput,
+  NotifyInvoiceOverdueInput,
+  NotifyInvoicePaidInput,
+  NotifyPaymentCompletedInput,
+  NotifyPaymentFailedInput,
+  NotifyPaymentRefundedInput,
+  NotifyRefundProcessedInput,
   ParentRequestAcceptedEvent,
   ParentRequestCancelledEvent,
   ParentRequestMessageSentEvent,
@@ -130,6 +138,48 @@ export class InMemoryNotificationAdapter extends NotificationPort {
     event: ParentRequestMessageSentEvent,
   ): Promise<void> {
     this.record('parent_request_message_sent', event);
+    return Promise.resolve();
+  }
+
+  // ── B13 Billing & Invoices events ──────────────────────────────────────
+
+  notifyInvoiceCreated(event: NotifyInvoiceCreatedInput): Promise<void> {
+    this.record('invoice_created', event);
+    return Promise.resolve();
+  }
+
+  notifyInvoicePaid(event: NotifyInvoicePaidInput): Promise<void> {
+    this.record('invoice_paid', event);
+    return Promise.resolve();
+  }
+
+  notifyInvoiceOverdue(event: NotifyInvoiceOverdueInput): Promise<void> {
+    this.record('invoice_overdue', event);
+    return Promise.resolve();
+  }
+
+  notifyInvoiceCancelled(event: NotifyInvoiceCancelledInput): Promise<void> {
+    this.record('invoice_cancelled', event);
+    return Promise.resolve();
+  }
+
+  notifyPaymentCompleted(event: NotifyPaymentCompletedInput): Promise<void> {
+    this.record('payment_completed', event);
+    return Promise.resolve();
+  }
+
+  notifyPaymentFailed(event: NotifyPaymentFailedInput): Promise<void> {
+    this.record('payment_failed', event);
+    return Promise.resolve();
+  }
+
+  notifyPaymentRefunded(event: NotifyPaymentRefundedInput): Promise<void> {
+    this.record('payment_refunded', event);
+    return Promise.resolve();
+  }
+
+  notifyRefundProcessed(event: NotifyRefundProcessedInput): Promise<void> {
+    this.record('refund_processed', event);
     return Promise.resolve();
   }
 

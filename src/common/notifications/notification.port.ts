@@ -231,6 +231,94 @@ export interface ParentRequestMessageSentEvent {
   recipientStaffUserId: string | null;
 }
 
+// ── B13 Billing & Invoices events ──────────────────────────────────────────
+//
+// All eight events fan out to the child's approved-active guardians. The
+// nanny-policy gate excludes role='nanny' guardians from `invoice.*`,
+// `payment.*`, and `refund.*` keys (parent-app only — nannies see the
+// attendance/pickup surface).
+//
+// Wire format on `notification_outbox.payload` is camelCase (matches the
+// rest of the dispatcher). Display amounts/dates are rendered by the
+// dispatcher templates from the typed fields here.
+
+export interface NotifyInvoiceCreatedInput {
+  kindergartenId: string;
+  invoiceId: string;
+  childId: string;
+  invoiceType: string;
+  amountAfterDiscount: number;
+  /** ISO date `YYYY-MM-DD` (no time component). */
+  dueDate: string;
+  periodStart: Date;
+  periodEnd: Date;
+}
+
+export interface NotifyInvoicePaidInput {
+  kindergartenId: string;
+  invoiceId: string;
+  childId: string;
+  amountAfterDiscount: number;
+  paidAt: Date;
+}
+
+export interface NotifyInvoiceOverdueInput {
+  kindergartenId: string;
+  invoiceId: string;
+  childId: string;
+  amountAfterDiscount: number;
+  /** ISO date `YYYY-MM-DD`. */
+  dueDate: string;
+  daysOverdue: number;
+}
+
+export interface NotifyInvoiceCancelledInput {
+  kindergartenId: string;
+  invoiceId: string;
+  childId: string;
+  /** Free-form admin note; null if not captured. */
+  reason: string | null;
+}
+
+export interface NotifyPaymentCompletedInput {
+  kindergartenId: string;
+  paymentId: string;
+  childId: string;
+  invoiceId: string;
+  amount: number;
+  provider: string;
+  paidAt: Date;
+}
+
+export interface NotifyPaymentFailedInput {
+  kindergartenId: string;
+  paymentId: string;
+  childId: string;
+  invoiceId: string;
+  amount: number;
+  provider: string;
+  failureReason: string;
+}
+
+export interface NotifyPaymentRefundedInput {
+  kindergartenId: string;
+  paymentId: string;
+  childId: string;
+  invoiceId: string;
+  amount: number;
+  refundId: string;
+}
+
+export interface NotifyRefundProcessedInput {
+  kindergartenId: string;
+  refundId: string;
+  paymentId: string;
+  childId: string;
+  invoiceId: string;
+  amount: number;
+  processedBy: string;
+}
+
 export abstract class NotificationPort {
   abstract notifyGuardianPendingApproval(
     event: GuardianPendingApprovalEvent,
@@ -300,5 +388,35 @@ export abstract class NotificationPort {
 
   abstract notifyParentRequestMessageSent(
     event: ParentRequestMessageSentEvent,
+  ): Promise<void>;
+
+  // ── B13 Billing & Invoices ──────────────────────────────────────────────
+
+  abstract notifyInvoiceCreated(
+    event: NotifyInvoiceCreatedInput,
+  ): Promise<void>;
+
+  abstract notifyInvoicePaid(event: NotifyInvoicePaidInput): Promise<void>;
+
+  abstract notifyInvoiceOverdue(
+    event: NotifyInvoiceOverdueInput,
+  ): Promise<void>;
+
+  abstract notifyInvoiceCancelled(
+    event: NotifyInvoiceCancelledInput,
+  ): Promise<void>;
+
+  abstract notifyPaymentCompleted(
+    event: NotifyPaymentCompletedInput,
+  ): Promise<void>;
+
+  abstract notifyPaymentFailed(event: NotifyPaymentFailedInput): Promise<void>;
+
+  abstract notifyPaymentRefunded(
+    event: NotifyPaymentRefundedInput,
+  ): Promise<void>;
+
+  abstract notifyRefundProcessed(
+    event: NotifyRefundProcessedInput,
   ): Promise<void>;
 }

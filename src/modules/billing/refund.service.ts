@@ -1,5 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
+import { NotificationPort } from '@/common/notifications/notification.port';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { InvariantViolationError } from '@/shared-kernel/domain/errors';
 import { Refund, RefundState } from './domain/entities/refund.entity';
@@ -78,6 +79,7 @@ export class RefundService {
     private readonly paymentAccountService: PaymentAccountService,
     @Inject(PaymentProviderPort)
     private readonly paymentProvider: PaymentProviderPort,
+    private readonly notificationPort: NotificationPort,
     @Inject(ClockPort) private readonly clock: ClockPort,
   ) {}
 
@@ -272,9 +274,31 @@ export class RefundService {
       processed.amount,
     );
 
-    // TODO(T5c): emit `refund.processed` outbox event + invoke
-    // FiscalReceiptPort for the refund counter-receipt + nanny-policy
-    // notification filter.
+    // Outbox notifications — atomic with the business writes via the
+    // ambient TX. `refund.processed` is the per-refund row; `payment.refunded`
+    // mirrors the payment-side flip so parents see both their payment and the
+    // refund as connected events. Both are gated against nannies by the
+    // dispatcher (NANNY_ALLOWED_EVENT_KEYS excludes refund.* and payment.*).
+    //
+    // Counter-receipt OFD emission deferred to B15 (real adapter ships
+    // refund-receipt support; Mock adapter has no OFD context to mirror).
+    await this.notificationPort.notifyRefundProcessed({
+      kindergartenId,
+      refundId: processed.id,
+      paymentId: payment.id,
+      childId: invoice.childId,
+      invoiceId: invoice.id,
+      amount: processed.amount,
+      processedBy: processed.processedBy ?? '',
+    });
+    await this.notificationPort.notifyPaymentRefunded({
+      kindergartenId,
+      paymentId: payment.id,
+      childId: invoice.childId,
+      invoiceId: invoice.id,
+      amount: processed.amount,
+      refundId: processed.id,
+    });
 
     return processed;
   }

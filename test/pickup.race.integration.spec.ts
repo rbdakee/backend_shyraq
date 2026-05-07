@@ -216,6 +216,42 @@ class FakeNotifications extends NotificationPort {
   notifyPickupValidated(_e: PickupValidatedEvent): Promise<void> {
     return Promise.resolve();
   }
+  notifyParentRequestAccepted(): Promise<void> {
+    return Promise.resolve();
+  }
+  notifyParentRequestRejected(): Promise<void> {
+    return Promise.resolve();
+  }
+  notifyParentRequestCancelled(): Promise<void> {
+    return Promise.resolve();
+  }
+  notifyParentRequestMessageSent(): Promise<void> {
+    return Promise.resolve();
+  }
+  notifyInvoiceCreated(): Promise<void> {
+    return Promise.resolve();
+  }
+  notifyInvoicePaid(): Promise<void> {
+    return Promise.resolve();
+  }
+  notifyInvoiceOverdue(): Promise<void> {
+    return Promise.resolve();
+  }
+  notifyInvoiceCancelled(): Promise<void> {
+    return Promise.resolve();
+  }
+  notifyPaymentCompleted(): Promise<void> {
+    return Promise.resolve();
+  }
+  notifyPaymentFailed(): Promise<void> {
+    return Promise.resolve();
+  }
+  notifyPaymentRefunded(): Promise<void> {
+    return Promise.resolve();
+  }
+  notifyRefundProcessed(): Promise<void> {
+    return Promise.resolve();
+  }
 }
 
 class FixedClock implements ClockPort {
