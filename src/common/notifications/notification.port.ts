@@ -384,6 +384,53 @@ export interface ProgressNoteNewPayload {
   createdAt: Date;
 }
 
+// ── B17 Content & Stories events ──────────────────────────────────────
+//
+// Four content events fan out via the dispatcher's recipient resolvers:
+//   - content.news_published — guardians of `targetType` audience
+//   - content.story_new      — guardians of the group's children
+//   - content.qundylyq_new   — all kg's approved-active guardians
+//   - content.birthday       — guardians of the celebrated child
+// None of these keys are in `NANNY_ALLOWED_EVENT_KEYS`, so nannies are
+// dropped by the policy gate even when they are guardians.
+
+export interface NotifyContentNewsPublishedInput {
+  kindergartenId: string;
+  contentPostId: string;
+  targetType: 'all' | 'group' | 'child';
+  targetGroupId: string | null;
+  targetChildId: string | null;
+  titleI18n: Record<string, string> | null;
+  publishedAt: Date;
+}
+
+export interface NotifyContentStoryNewInput {
+  kindergartenId: string;
+  storyId: string;
+  groupId: string;
+  mediaUrl: string;
+  mediaType: 'image' | 'video';
+  createdBy: string;
+  createdAt: Date;
+}
+
+export interface NotifyContentQundylyqNewInput {
+  kindergartenId: string;
+  contentPostId: string;
+  titleI18n: Record<string, string> | null;
+  metadata: Record<string, unknown> | null;
+  publishedAt: Date;
+}
+
+export interface NotifyContentBirthdayInput {
+  kindergartenId: string;
+  contentPostId: string;
+  targetChildId: string;
+  childFullName: string;
+  age: number;
+  publishedAt: Date;
+}
+
 /**
  * T11 H6 — emitted by `EnrollmentService.transition` when the
  * `card_created` lax-mode catches a `TariffAssignmentNotFoundError`.
@@ -546,6 +593,50 @@ export abstract class NotificationPort {
    * Recipients: approved-active guardians of the noted child (parents only).
    */
   notifyProgressNoteNew(_event: ProgressNoteNewPayload): Promise<void> {
+    return Promise.resolve();
+  }
+
+  // ── B17 Content & Stories ───────────────────────────────────────────
+  // Non-abstract default-no-op so older test FakeNotificationPort classes
+  // keep compiling. Production `OutboxNotificationAdapter` overrides;
+  // `InMemoryNotificationAdapter` records into its events array.
+
+  /**
+   * Fired by `ContentService.publish` and the `content-publish` cron when
+   * a `content_type='news'` post flips to `published`. Recipients depend
+   * on `targetType` — see `notification-dispatcher` recipient resolver.
+   */
+  notifyContentNewsPublished(
+    _event: NotifyContentNewsPublishedInput,
+  ): Promise<void> {
+    return Promise.resolve();
+  }
+
+  /**
+   * Fired by `StoryService.create` after a mentor uploads a new group
+   * story. Recipients: guardians of children in the story's group.
+   */
+  notifyContentStoryNew(_event: NotifyContentStoryNewInput): Promise<void> {
+    return Promise.resolve();
+  }
+
+  /**
+   * Fired by `ContentService.publish` and the `content-publish` cron when
+   * a `content_type='qundylyq'` post flips to `published`. Recipients:
+   * every approved-active parent guardian in the kg.
+   */
+  notifyContentQundylyqNew(
+    _event: NotifyContentQundylyqNewInput,
+  ): Promise<void> {
+    return Promise.resolve();
+  }
+
+  /**
+   * Fired by `BirthdayGeneratorService.runDaily` (and `ContentService.publish`
+   * when an admin manually publishes a birthday post). Recipients:
+   * guardians of the celebrated child.
+   */
+  notifyContentBirthday(_event: NotifyContentBirthdayInput): Promise<void> {
     return Promise.resolve();
   }
 }

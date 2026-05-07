@@ -189,4 +189,33 @@ export abstract class ChildGuardianRepository {
   ): Promise<string[]> {
     return Promise.resolve([]);
   }
+
+  // ── B17 — Content & Stories recipient resolvers ──────────────────────
+  // Non-abstract default-no-op so older test fakes compile. The relational
+  // impl overrides with real SQL JOINs through children.
+
+  /**
+   * B17 — distinct approved-active guardian user_ids for every
+   * non-archived child whose `current_group_id = groupId`. Used by the
+   * dispatcher resolvers for `content.news_published` (target_type='group')
+   * and `content.story_new`. Excludes nanny-role guardians.
+   */
+  findApprovedUserIdsByGroup(
+    _kindergartenId: string,
+    _groupId: string,
+  ): Promise<string[]> {
+    return Promise.resolve([]);
+  }
+
+  /**
+   * B17 — distinct approved-active guardian user_ids across every
+   * non-archived child in the kindergarten. Used by the dispatcher
+   * resolvers for `content.news_published` (target_type='all') and
+   * `content.qundylyq_new`. Excludes nanny-role guardians.
+   */
+  findApprovedUserIdsByKindergarten(
+    _kindergartenId: string,
+  ): Promise<string[]> {
+    return Promise.resolve([]);
+  }
 }

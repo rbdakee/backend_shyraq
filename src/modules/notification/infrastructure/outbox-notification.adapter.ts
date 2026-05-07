@@ -11,6 +11,10 @@ import {
   GuardianRevokedEvent,
   GuardianSelfRevokedEvent,
   NotificationPort,
+  NotifyContentBirthdayInput,
+  NotifyContentNewsPublishedInput,
+  NotifyContentQundylyqNewInput,
+  NotifyContentStoryNewInput,
   NotifyDiscountActivatedInput,
   NotifyEnrollmentFirstInvoiceSkippedInput,
   NotifyInvoiceCancelledInput,
@@ -380,6 +384,53 @@ export class OutboxNotificationAdapter extends NotificationPort {
       mentorId: event.mentorId,
       notedAt: event.notedAt.toISOString(),
       createdAt: event.createdAt.toISOString(),
+    });
+  }
+
+  // ── B17 Content & Stories ──────────────────────────────────────────────
+
+  notifyContentNewsPublished(
+    event: NotifyContentNewsPublishedInput,
+  ): Promise<void> {
+    return this.enqueue(event.kindergartenId, 'content.news_published', {
+      contentPostId: event.contentPostId,
+      targetType: event.targetType,
+      targetGroupId: event.targetGroupId,
+      targetChildId: event.targetChildId,
+      titleI18n: event.titleI18n,
+      publishedAt: event.publishedAt.toISOString(),
+    });
+  }
+
+  notifyContentStoryNew(event: NotifyContentStoryNewInput): Promise<void> {
+    return this.enqueue(event.kindergartenId, 'content.story_new', {
+      storyId: event.storyId,
+      groupId: event.groupId,
+      mediaUrl: event.mediaUrl,
+      mediaType: event.mediaType,
+      createdBy: event.createdBy,
+      createdAt: event.createdAt.toISOString(),
+    });
+  }
+
+  notifyContentQundylyqNew(
+    event: NotifyContentQundylyqNewInput,
+  ): Promise<void> {
+    return this.enqueue(event.kindergartenId, 'content.qundylyq_new', {
+      contentPostId: event.contentPostId,
+      titleI18n: event.titleI18n,
+      metadata: event.metadata,
+      publishedAt: event.publishedAt.toISOString(),
+    });
+  }
+
+  notifyContentBirthday(event: NotifyContentBirthdayInput): Promise<void> {
+    return this.enqueue(event.kindergartenId, 'content.birthday', {
+      contentPostId: event.contentPostId,
+      targetChildId: event.targetChildId,
+      childFullName: event.childFullName,
+      age: event.age,
+      publishedAt: event.publishedAt.toISOString(),
     });
   }
 

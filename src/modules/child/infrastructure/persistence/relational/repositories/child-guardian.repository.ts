@@ -354,6 +354,46 @@ export class ChildGuardianRelationalRepository extends ChildGuardianRepository {
     return rows.map((r) => r.user_id);
   }
 
+  async findApprovedUserIdsByGroup(
+    kindergartenId: string,
+    groupId: string,
+  ): Promise<string[]> {
+    const rows = (await this.manager().query(
+      `SELECT DISTINCT g.user_id
+         FROM child_guardians g
+         JOIN children c
+           ON c.id = g.child_id
+          AND c.kindergarten_id = g.kindergarten_id
+        WHERE g.kindergarten_id = $1
+          AND c.current_group_id = $2
+          AND c.status <> 'archived'
+          AND g.status = 'approved'
+          AND g.revoked_at IS NULL
+          AND g.role <> 'nanny'`,
+      [kindergartenId, groupId],
+    )) as Array<{ user_id: string }>;
+    return rows.map((r) => r.user_id);
+  }
+
+  async findApprovedUserIdsByKindergarten(
+    kindergartenId: string,
+  ): Promise<string[]> {
+    const rows = (await this.manager().query(
+      `SELECT DISTINCT g.user_id
+         FROM child_guardians g
+         JOIN children c
+           ON c.id = g.child_id
+          AND c.kindergarten_id = g.kindergarten_id
+        WHERE g.kindergarten_id = $1
+          AND c.status <> 'archived'
+          AND g.status = 'approved'
+          AND g.revoked_at IS NULL
+          AND g.role <> 'nanny'`,
+      [kindergartenId],
+    )) as Array<{ user_id: string }>;
+    return rows.map((r) => r.user_id);
+  }
+
   private manager(): EntityManager {
     const ctx = tenantStorage.getStore();
     return ctx?.entityManager ?? this.repo.manager;

@@ -11,6 +11,10 @@ import {
   GuardianRevokedEvent,
   GuardianSelfRevokedEvent,
   NotificationPort,
+  NotifyContentBirthdayInput,
+  NotifyContentNewsPublishedInput,
+  NotifyContentQundylyqNewInput,
+  NotifyContentStoryNewInput,
   NotifyDiscountActivatedInput,
   NotifyEnrollmentFirstInvoiceSkippedInput,
   NotifyInvoiceCancelledInput,
@@ -208,6 +212,32 @@ export class InMemoryNotificationAdapter extends NotificationPort {
 
   notifyProgressNoteNew(event: ProgressNoteNewPayload): Promise<void> {
     this.record('progress_note_new', event);
+    return Promise.resolve();
+  }
+
+  // ── B17 Content & Stories events ──────────────────────────────────────
+
+  notifyContentNewsPublished(
+    event: NotifyContentNewsPublishedInput,
+  ): Promise<void> {
+    this.record('content_news_published', event);
+    return Promise.resolve();
+  }
+
+  notifyContentStoryNew(event: NotifyContentStoryNewInput): Promise<void> {
+    this.record('content_story_new', event);
+    return Promise.resolve();
+  }
+
+  notifyContentQundylyqNew(
+    event: NotifyContentQundylyqNewInput,
+  ): Promise<void> {
+    this.record('content_qundylyq_new', event);
+    return Promise.resolve();
+  }
+
+  notifyContentBirthday(event: NotifyContentBirthdayInput): Promise<void> {
+    this.record('content_birthday', event);
     return Promise.resolve();
   }
 

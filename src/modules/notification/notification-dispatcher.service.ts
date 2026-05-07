@@ -736,6 +736,121 @@ const TEMPLATES: Record<string, EventTemplate> = {
     }),
   }),
 
+  // ── B17 Content & Stories ───────────────────────────────────────────────
+  // Four content events fan out to either the child / group / kg-wide
+  // guardian set; resolvers below handle each shape. All four keys are
+  // OUTSIDE `NANNY_ALLOWED_EVENT_KEYS`, so nanny guardians are dropped
+  // by the policy gate even when they are linked to the child.
+
+  'content.birthday': ({ payload, enrichment }) => {
+    const childName =
+      asNonEmptyString(payload.childFullName) ?? enrichment.childName;
+    const ageRaw = payload.age;
+    const age = typeof ageRaw === 'number' ? ageRaw : Number(ageRaw ?? 0);
+    return {
+      titleI18n: {
+        ru: 'С днём рождения!',
+        kz: 'Туған күніңмен!',
+        kk: 'Туған күніңмен!',
+        en: 'Happy birthday!',
+      },
+      bodyI18n: {
+        ru: `Поздравляем ${childName} с ${age}-летием!`,
+        kz: `${childName} ${age} жасыңмен құттықтаймыз!`,
+        kk: `${childName} ${age} жасыңмен құттықтаймыз!`,
+        en: `Wishing ${childName} a happy ${age}th birthday!`,
+      },
+      data: stringMap({
+        contentPostId: payload.contentPostId,
+        childId: payload.targetChildId,
+        age: payload.age,
+      }),
+    };
+  },
+
+  'content.news_published': ({ payload }) => {
+    const titleMap = (payload.titleI18n ?? {}) as Record<string, string>;
+    const titleFallback =
+      asNonEmptyString(titleMap.ru) ??
+      asNonEmptyString(titleMap.kz) ??
+      asNonEmptyString(titleMap.kk) ??
+      asNonEmptyString(titleMap.en) ??
+      'Новая публикация';
+    return {
+      titleI18n: {
+        ru: asNonEmptyString(titleMap.ru) ?? 'Новая публикация',
+        kz: asNonEmptyString(titleMap.kz) ?? titleFallback,
+        kk:
+          asNonEmptyString(titleMap.kk) ??
+          asNonEmptyString(titleMap.kz) ??
+          titleFallback,
+        en: asNonEmptyString(titleMap.en) ?? 'New post',
+      },
+      bodyI18n: {
+        ru: 'Открыть, чтобы прочитать новость.',
+        kz: 'Жаңалықты оқу үшін ашыңыз.',
+        kk: 'Жаңалықты оқу үшін ашыңыз.',
+        en: 'Open to read the news.',
+      },
+      data: stringMap({
+        contentPostId: payload.contentPostId,
+        targetType: payload.targetType,
+        targetGroupId: payload.targetGroupId,
+        targetChildId: payload.targetChildId,
+      }),
+    };
+  },
+
+  'content.qundylyq_new': ({ payload }) => {
+    const titleMap = (payload.titleI18n ?? {}) as Record<string, string>;
+    const titleFallback =
+      asNonEmptyString(titleMap.ru) ??
+      asNonEmptyString(titleMap.kz) ??
+      asNonEmptyString(titleMap.kk) ??
+      asNonEmptyString(titleMap.en) ??
+      'Новый Qundylyq';
+    return {
+      titleI18n: {
+        ru: asNonEmptyString(titleMap.ru) ?? 'Новый Qundylyq',
+        kz: asNonEmptyString(titleMap.kz) ?? titleFallback,
+        kk:
+          asNonEmptyString(titleMap.kk) ??
+          asNonEmptyString(titleMap.kz) ??
+          titleFallback,
+        en: asNonEmptyString(titleMap.en) ?? 'New Qundylyq',
+      },
+      bodyI18n: {
+        ru: 'Месячная ценность от сада.',
+        kz: 'Айлық құндылық — балабақшадан.',
+        kk: 'Айлық құндылық — балабақшадан.',
+        en: 'Monthly value from the kindergarten.',
+      },
+      data: stringMap({
+        contentPostId: payload.contentPostId,
+      }),
+    };
+  },
+
+  'content.story_new': ({ payload }) => ({
+    titleI18n: {
+      ru: 'Новая история',
+      kz: 'Жаңа сториз',
+      kk: 'Жаңа сториз',
+      en: 'New story',
+    },
+    bodyI18n: {
+      ru: 'В группе появилась новая история — посмотрите!',
+      kz: 'Топта жаңа сториз пайда болды — қараңыз!',
+      kk: 'Топта жаңа сториз пайда болды — қараңыз!',
+      en: 'A new story is available in the group.',
+    },
+    data: stringMap({
+      storyId: payload.storyId,
+      groupId: payload.groupId,
+      mediaType: payload.mediaType,
+    }),
+  }),
+
   // T11 H6 — admin-visible signal that the first invoice was skipped on
   // enrollment.card_created because no tariff_assignment was configured.
   'enrollment.first_invoice_skipped': ({ payload }) => ({
@@ -827,6 +942,21 @@ const RECIPIENT_RESOLVERS: Record<string, RecipientResolver> = {
   // and `progress_note.*` are NOT in NANNY_ALLOWED_EVENT_KEYS.
   'diagnostic.new': resolveByChildGuardians,
   'progress_note.new': resolveByChildGuardians,
+  // ── B17 Content & Stories ─────────────────────────────────────────────
+  // - content.birthday        → guardians of `targetChildId`
+  // - content.news_published  → branches on `targetType`:
+  //     'all'    → kg-wide guardian set
+  //     'group'  → guardians of children in `targetGroupId`
+  //     'child'  → guardians of `targetChildId`
+  // - content.qundylyq_new    → kg-wide guardian set
+  // - content.story_new       → guardians of children in `groupId`
+  // None of the four keys are in NANNY_ALLOWED_EVENT_KEYS; the SQL
+  // filters in `findApprovedUserIdsBy*` already exclude nanny rows so
+  // `nannyUserIds` is always an empty Set here (no extra policy work).
+  'content.birthday': resolveContentBirthdayRecipients,
+  'content.news_published': resolveContentNewsPublishedRecipients,
+  'content.qundylyq_new': resolveContentQundylyqRecipients,
+  'content.story_new': resolveContentStoryNewRecipients,
 };
 
 async function resolveByChildGuardians(
@@ -1027,6 +1157,106 @@ async function resolveDiscountActivatedRecipients(
     childIds,
   );
   return { userIds, nannyUserIds: new Set() };
+}
+
+/**
+ * Recipient resolver for `content.birthday` — fans out to the celebrated
+ * child's approved-active guardians. Reuses `resolveByChildGuardians`
+ * but pulls `targetChildId` instead of `childId`.
+ */
+async function resolveContentBirthdayRecipients(
+  event: OutboxEvent,
+  deps: { guardianRepo: ChildGuardianRepository },
+): Promise<ResolvedRecipients> {
+  const targetChildId = stringField(event.payload, 'targetChildId');
+  const guardians = await deps.guardianRepo.findByChildId(
+    event.kindergartenId,
+    targetChildId,
+  );
+  const userIds: string[] = [];
+  const nannyUserIds = new Set<string>();
+  for (const g of guardians) {
+    const state = g.toState();
+    if (state.status !== 'approved' || state.revokedAt !== null) continue;
+    if (!userIds.includes(state.userId)) userIds.push(state.userId);
+    if (state.role === 'nanny') nannyUserIds.add(state.userId);
+  }
+  return { userIds, nannyUserIds, childId: targetChildId };
+}
+
+/**
+ * Recipient resolver for `content.news_published` — branches on
+ * `targetType`:
+ *   - 'all'    → kg-wide guardian set (parents only)
+ *   - 'group'  → guardians of children in `targetGroupId`
+ *   - 'child'  → guardians of the single `targetChildId`
+ */
+async function resolveContentNewsPublishedRecipients(
+  event: OutboxEvent,
+  deps: { guardianRepo: ChildGuardianRepository },
+): Promise<ResolvedRecipients> {
+  const targetType = stringField(event.payload, 'targetType');
+  if (targetType === 'all') {
+    const userIds = await deps.guardianRepo.findApprovedUserIdsByKindergarten(
+      event.kindergartenId,
+    );
+    return { userIds, nannyUserIds: new Set() };
+  }
+  if (targetType === 'group') {
+    const groupId = stringField(event.payload, 'targetGroupId');
+    const userIds = await deps.guardianRepo.findApprovedUserIdsByGroup(
+      event.kindergartenId,
+      groupId,
+    );
+    return { userIds, nannyUserIds: new Set(), groupId };
+  }
+  if (targetType === 'child') {
+    const childId = stringField(event.payload, 'targetChildId');
+    const guardians = await deps.guardianRepo.findByChildId(
+      event.kindergartenId,
+      childId,
+    );
+    const userIds: string[] = [];
+    const nannyUserIds = new Set<string>();
+    for (const g of guardians) {
+      const state = g.toState();
+      if (state.status !== 'approved' || state.revokedAt !== null) continue;
+      if (!userIds.includes(state.userId)) userIds.push(state.userId);
+      if (state.role === 'nanny') nannyUserIds.add(state.userId);
+    }
+    return { userIds, nannyUserIds, childId };
+  }
+  return { userIds: [], nannyUserIds: new Set() };
+}
+
+/**
+ * Recipient resolver for `content.qundylyq_new` — fans out to every
+ * approved-active parent guardian in the kg.
+ */
+async function resolveContentQundylyqRecipients(
+  event: OutboxEvent,
+  deps: { guardianRepo: ChildGuardianRepository },
+): Promise<ResolvedRecipients> {
+  const userIds = await deps.guardianRepo.findApprovedUserIdsByKindergarten(
+    event.kindergartenId,
+  );
+  return { userIds, nannyUserIds: new Set() };
+}
+
+/**
+ * Recipient resolver for `content.story_new` — fans out to guardians of
+ * children in the story's group.
+ */
+async function resolveContentStoryNewRecipients(
+  event: OutboxEvent,
+  deps: { guardianRepo: ChildGuardianRepository },
+): Promise<ResolvedRecipients> {
+  const groupId = stringField(event.payload, 'groupId');
+  const userIds = await deps.guardianRepo.findApprovedUserIdsByGroup(
+    event.kindergartenId,
+    groupId,
+  );
+  return { userIds, nannyUserIds: new Set(), groupId };
 }
 
 async function resolveParentRequestMessageRecipients(
