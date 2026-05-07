@@ -323,7 +323,8 @@
    - Проверка условий (composable AND/OR) против `{child, invoice, payment_context}`
    - Проверка таргета и лимитов
    - Если матч → negative `invoice_line_items` + `INSERT custom_discount_applications` + `UPDATE used_count`
-5. При истечении `valid_until` → cron `discount:expire` → `status='expired'`.
+5. При истечении `valid_until` → daily cron `discount:expire` (`0 3 * * *` Asia/Almaty) → `status='expired'`. Ручной триггер: `POST /saas/billing/discount-expire-run`.
+6. Статус-машина: `draft → active → paused ↔ active | cancelled; active/paused → expired` (по cron). Пауза: `status='paused'` — скидка не применяется при генерации инвойсов. Возобновление: `POST /admin/custom-discounts/:id/resume` → `status='active'` (только из `paused`). Отмена: `status='cancelled'` (финал, не обратим). Скидки применяются только к НОВЫМ инвойсам после активации (backfill не производится).
 
 ### Где появляется
 

@@ -241,6 +241,7 @@ Email + password (не OTP). Access-токен — тот же JWT HS256 (`JWT_A
 | Метод | Путь | Назначение |
 |---|---|---|
 | POST | `/saas/billing/monthly-run` | Ручной триггер ежемесячной генерации инвойсов. Body: `{period_start: '2026-06-01', kindergarten_id?: 'uuid'}`. Если `kindergarten_id` не указан — обходит все активные садики (cross-tenant). Вызывает `monthly-billing.processor` логику напрямую без BullMQ (синхронный ответ с итогом). Идемпотентен: advisory lock per `(kg_id, period_start)` + `existsAnyForPeriod` short-circuit пропускает уже сгенерированные периоды. Response 200: `{triggered_at, period_start, kindergartens_processed: int, invoices_created: int, skipped_already_generated: int}`. Errors: 400 `invalid_period_start` (не первое число месяца). |
+| POST | `/saas/billing/discount-expire-run` | Ручной триггер `discount:expire` процессора (B16). Body: `{kindergarten_id?: 'uuid'}`. Истекает `status='active'` скидки, у которых `valid_until < NOW()` → `status='expired'`. Синхронный ответ. Response 200: `{triggered_at, expired_count: int}`. |
 
 ---
 
@@ -497,6 +498,7 @@ Email + password (не OTP). Access-токен — тот же JWT HS256 (`JWT_A
 | PATCH | `/admin/custom-discounts/:id` | Обновить (только для `draft`). |
 | POST | `/admin/custom-discounts/:id/activate` | `status='active'`. Если `notify_on_activation` — enqueue `discount:notify` (push всем target-родителям). |
 | POST | `/admin/custom-discounts/:id/pause` | `status='paused'`. |
+| POST | `/admin/custom-discounts/:id/resume` | `status='active'` (из `paused`). Расширение сверх базового §2.16: paused → active resume transition. |
 | POST | `/admin/custom-discounts/:id/cancel` | `status='cancelled'`. |
 | GET | `/admin/custom-discounts/:id/applications` | Лог применений (`custom_discount_applications` с `invoice_id`, `child_id`, `amount_applied`). |
 
