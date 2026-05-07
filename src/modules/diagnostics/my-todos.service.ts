@@ -34,14 +34,24 @@ function dateOnlyAlmaty(d: Date): string {
  * Used as the staleness cutoff: a child is "needs diagnostic" iff their
  * latest entry's `assessment_date` is older than `today - 6 months`, OR
  * they have never been assessed.
+ *
+ * Clamps to the last day of the target month so end-of-month inputs don't
+ * roll into the next month (e.g. today=Dec 31 → Jun 30, NOT Jul 1; today=
+ * Aug 29 in a non-leap year → Feb 28, NOT Mar 1). JavaScript's
+ * `Date.UTC(yy, mm, dd)` happily overflows on out-of-range `dd`, so we
+ * compute the last valid day of the target month explicitly via
+ * `Date.UTC(yy, mm + 1, 0)`.
  */
-function sixMonthsAgoAlmaty(today: Date): Date {
+export function sixMonthsAgoAlmaty(today: Date): Date {
   const todayStr = dateOnlyAlmaty(today);
   // Parse the YYYY-MM-DD components and decrement the month by 6.
   const [yy, mm, dd] = todayStr.split('-').map((s) => parseInt(s, 10));
-  const newMonth = mm - 6;
-  const date = new Date(Date.UTC(yy, newMonth - 1, dd));
-  return date;
+  // 0-indexed JS month for the target: (mm - 1) - 6 = mm - 7.
+  // `Date.UTC(yy, (mm - 7) + 1, 0)` returns the last day of the target month
+  // because day=0 rolls back into the previous month's last day.
+  const lastDayOfTargetMonth = new Date(Date.UTC(yy, mm - 6, 0)).getUTCDate();
+  const targetDay = Math.min(dd, lastDayOfTargetMonth);
+  return new Date(Date.UTC(yy, mm - 7, targetDay));
 }
 
 /** Whole days between two YYYY-MM-DD calendar dates. */

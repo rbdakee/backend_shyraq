@@ -24,14 +24,34 @@ export class UpdateDiagnosticTemplateDto {
 
   @ApiProperty({
     example: {
-      fields: [
-        { key: 'articulation_score', label: 'Артикуляция', type: 'number' },
-        { key: 'vocabulary_score', label: 'Словарный запас', type: 'number' },
-        { key: 'notes', label: 'Примечания', type: 'text' },
+      sections: [
+        {
+          title: 'Речь',
+          fields: [
+            {
+              key: 'articulation_score',
+              label: 'Артикуляция',
+              type: 'number',
+              required: true,
+            },
+            {
+              key: 'vocabulary_score',
+              label: 'Словарный запас',
+              type: 'number',
+              required: false,
+            },
+            {
+              key: 'notes',
+              label: 'Примечания',
+              type: 'text',
+              required: false,
+            },
+          ],
+        },
       ],
     },
     description:
-      'Replacement schema. Service bumps version if the schema deeply differs from the previous one.',
+      'Replacement schema. Must follow `{ sections: [{ title, fields: [{ key, label, type, required }] }] }`. Service bumps version if the schema deeply differs from the previous one.',
     required: false,
   })
   @IsOptional()

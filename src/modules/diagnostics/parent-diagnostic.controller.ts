@@ -25,6 +25,7 @@ import type { JwtPayload } from '@/common/types/jwt-payload';
 import { ChildGuardianRepository } from '@/modules/child/infrastructure/persistence/child-guardian.repository';
 import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-context';
 import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
+import { NannyNoDiagnosticsAccessError } from './domain/errors/nanny-no-diagnostics-access.error';
 import { ListDiagnosticEntriesQueryDto } from './dto/list-diagnostic-entries-query.dto';
 import { ListProgressNotesQueryDto } from './dto/list-progress-notes-query.dto';
 import {
@@ -217,7 +218,7 @@ export class ParentDiagnosticController {
     }
     const effective = guardian.permissions.effective(guardian.role);
     if (!effective.view_diagnostics) {
-      throw new ForbiddenException('nanny_no_diagnostics_access');
+      throw new NannyNoDiagnosticsAccessError();
     }
   }
 }

@@ -31,13 +31,28 @@ export class CreateDiagnosticTemplateDto {
 
   @ApiProperty({
     example: {
-      fields: [
-        { key: 'articulation_score', label: 'Артикуляция', type: 'number' },
-        { key: 'notes', label: 'Примечания', type: 'text' },
+      sections: [
+        {
+          title: 'Речь',
+          fields: [
+            {
+              key: 'articulation_score',
+              label: 'Артикуляция',
+              type: 'number',
+              required: true,
+            },
+            {
+              key: 'notes',
+              label: 'Примечания',
+              type: 'text',
+              required: false,
+            },
+          ],
+        },
       ],
     },
     description:
-      'JSON schema for entry data. The service validates the shape (must have `fields` array with `key`+`label`+`type`).',
+      'JSON schema for entry data. Must be `{ sections: [{ title: string, fields: [{ key, label, type, required }] }] }` (validator: `validateTemplateSchemaShape`).',
   })
   @IsObject()
   schema!: Record<string, unknown>;

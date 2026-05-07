@@ -1,6 +1,6 @@
 import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
-import { MyTodosService } from './my-todos.service';
+import { MyTodosService, sixMonthsAgoAlmaty } from './my-todos.service';
 import {
   DiagnosticEntryListResult,
   DiagnosticEntryRepository,
@@ -222,5 +222,55 @@ describe('MyTodosService', () => {
       true,
     );
     expect(result.childrenNeedingDiagnostic).toHaveLength(1);
+  });
+});
+
+describe('sixMonthsAgoAlmaty', () => {
+  // Helper: build a Date that, when formatted in Asia/Almaty (UTC+5), yields
+  // exactly the given calendar date. Almaty has no DST, so any UTC instant
+  // 5h–18h on that calendar day formats to the same YYYY-MM-DD. Noon UTC
+  // (12:00Z) → 17:00 Almaty same date — safe across all months.
+  function almatyDate(yyyy: number, mm: number, dd: number): Date {
+    return new Date(Date.UTC(yyyy, mm - 1, dd, 12, 0, 0));
+  }
+
+  // sixMonthsAgoAlmaty returns a UTC midnight Date representing the cutoff
+  // calendar day. We compare via the UTC components (the function constructs
+  // the date with Date.UTC(...,targetDay) so YYYY-MM-DD comes out cleanly).
+  function format(d: Date): string {
+    const y = d.getUTCFullYear();
+    const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(d.getUTCDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+
+  it('today=2025-12-31 → cutoff=2025-06-30 (NOT 2025-07-01)', () => {
+    expect(format(sixMonthsAgoAlmaty(almatyDate(2025, 12, 31)))).toBe(
+      '2025-06-30',
+    );
+  });
+
+  it('today=2025-05-31 → cutoff=2024-11-30', () => {
+    expect(format(sixMonthsAgoAlmaty(almatyDate(2025, 5, 31)))).toBe(
+      '2024-11-30',
+    );
+  });
+
+  it('today=2025-08-30 → cutoff=2025-02-28 (non-leap year clamp)', () => {
+    expect(format(sixMonthsAgoAlmaty(almatyDate(2025, 8, 30)))).toBe(
+      '2025-02-28',
+    );
+  });
+
+  it('today=2024-08-29 → cutoff=2024-02-29 (leap year)', () => {
+    expect(format(sixMonthsAgoAlmaty(almatyDate(2024, 8, 29)))).toBe(
+      '2024-02-29',
+    );
+  });
+
+  it('today=2025-08-29 → cutoff=2025-02-28 (non-leap year)', () => {
+    expect(format(sixMonthsAgoAlmaty(almatyDate(2025, 8, 29)))).toBe(
+      '2025-02-28',
+    );
   });
 });

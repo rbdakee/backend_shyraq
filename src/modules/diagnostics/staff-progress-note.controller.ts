@@ -80,12 +80,25 @@ export class StaffProgressNoteController {
   @ApiForbiddenResponse({ description: 'Role not allowed.' })
   async list(
     @Tenant() t: TenantContext,
+    @CurrentUser() user: JwtPayload,
     @Query() query: ListProgressNotesQueryDto,
   ): Promise<ProgressNoteListResponseDto> {
     const kgId = requireTenant(t);
+    // Non-admin callers always see their own notes — `mentor_id` query param
+    // is admin-only. Force filter to caller's staff_member_id for non-admins.
+    const isAdmin = user.role === 'admin';
+    let effectiveMentorId: string | undefined = query.mentor_id;
+    if (!isAdmin) {
+      const staffMember =
+        await this.staffMembers.findActiveByUserAndKindergarten(user.sub, kgId);
+      if (!staffMember) {
+        throw new NotFoundException('staff_member_not_found');
+      }
+      effectiveMentorId = staffMember.id;
+    }
     const result = await this.service.listByKgFiltered(kgId, {
       childId: query.child_id,
-      mentorId: query.mentor_id,
+      mentorId: effectiveMentorId,
       from: query.from ? new Date(query.from) : undefined,
       to: query.to ? new Date(query.to) : undefined,
       cursor: query.cursor,

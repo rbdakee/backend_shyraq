@@ -840,9 +840,10 @@ Templates create/update/deactivate — `/admin/diagnostic-templates` (admin role
 | HTTP | code | Когда |
 |---|---|---|
 | 400 | `diagnostic_entry_data_invalid` | `data` не соответствует `template.schema`; body включает `details: {path, expected, actual}` |
+| 404 | `not_found` | POST — `child_id` не найден или принадлежит другому kg (`ChildNotFoundError`); message: `child not found: <id>` |
 | 404 | `diagnostic_template_not_found` | `template_id` не найден или вне kg |
 | 409 | `diagnostic_template_inactive` | Шаблон деактивирован (`is_active=false`) |
-| 422 | `assessment_date_in_future` | `assessment_date > CURRENT_DATE` |
+| 400 | `assessment_date_in_future` | `assessment_date > CURRENT_DATE` |
 | 403 | `diagnostic_entry_not_authored_by_you` | PATCH — caller не является автором записи |
 | 403 | `staff_member_must_have_specialist_type` | `GET /staff/my-todos` — caller не имеет `specialist_type` и не передал `?specialist_type=` |
 
@@ -862,6 +863,7 @@ Templates create/update/deactivate — `/admin/diagnostic-templates` (admin role
 | HTTP | code | Когда |
 |---|---|---|
 | 403 | `progress_note_not_authored_by_you` | PATCH/DELETE — caller не является автором (не admin) |
+| 404 | `not_found` | POST — `child_id` не найден или принадлежит другому kg (`ChildNotFoundError`); message: `child not found: <id>` |
 | 404 | `progress_note_not_found` | Заметка не найдена или вне kg |
 
 ### 3.12 Group Stories (Mentor) — B17

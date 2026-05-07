@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import { NotificationPort } from '@/common/notifications/notification.port';
+import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
+import { ChildNotFoundError } from '@/modules/child/domain/errors/child-not-found.error';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { DiagnosticTemplateRepository } from './diagnostic-template.repository';
 import {
@@ -34,6 +36,7 @@ export class DiagnosticEntryService {
   constructor(
     private readonly templates: DiagnosticTemplateRepository,
     private readonly entries: DiagnosticEntryRepository,
+    private readonly children: ChildRepository,
     private readonly notification: NotificationPort,
     private readonly clock: ClockPort,
   ) {}
@@ -44,15 +47,31 @@ export class DiagnosticEntryService {
    * `diagnostic.new` for guardian fan-out via the dispatcher.
    *
    * Errors:
+   *   404 `not_found` (child)             — bad childId / cross-tenant child.
+   *                                          (`ChildNotFoundError` extends
+   *                                          `NotFoundError` whose code is the
+   *                                          generic `not_found`; message body:
+   *                                          `child not found: <id>`).
    *   404 `diagnostic_template_not_found` — bad templateId / cross-tenant.
    *   409 `diagnostic_template_inactive`  — template is deactivated.
    *   400 `diagnostic_entry_data_invalid` — data violates template schema.
    *   400 `assessment_date_in_future`     — entity invariant.
+   *
+   * Tenant-scoped child existence check is service-side defense-in-depth
+   * against cross-tenant child_id reference (see B18 T7 review). RLS already
+   * blocks reading the child row across tenants, but `children` does not yet
+   * have a composite UNIQUE `(kindergarten_id, id)` to enforce a same-tenant
+   * FK from `diagnostic_entries.child_id` (deferred to B22). Until then the
+   * service-layer guard is the single line of defense.
    */
   async create(
     kgId: string,
     input: CreateDiagnosticEntryInput,
   ): Promise<DiagnosticEntry> {
+    const child = await this.children.findById(kgId, input.childId);
+    if (child === null) {
+      throw new ChildNotFoundError(input.childId);
+    }
     const template = await this.templates.findById(kgId, input.templateId);
     if (template === null) {
       throw new DiagnosticTemplateNotFoundError(input.templateId);

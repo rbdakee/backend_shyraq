@@ -416,6 +416,21 @@ describe('B18 Diagnostics & Progress (e2e)', () => {
             (t) => t.id === id,
           ),
         ).toBe(false);
+
+        // Regression (T6-H1): GET without ?is_active filter MUST include the
+        // deactivated template. The previous transform `value === 'true'`
+        // collapsed an omitted query param to `false`, silently filtering to
+        // inactive-only. Now `undefined` survives the transform and the
+        // service treats it as "no filter".
+        const allListRes = await request(server)
+          .get('/api/v1/admin/diagnostic-templates')
+          .set('Authorization', `Bearer ${adminToken}`)
+          .expect(200);
+        expect(
+          (allListRes.body.items as Array<{ id: string }>).some(
+            (t) => t.id === id,
+          ),
+        ).toBe(true);
       },
     );
   });
@@ -1363,5 +1378,124 @@ describe('B18 Diagnostics & Progress (e2e)', () => {
         );
       },
     );
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // Scenario L — Cross-tenant child reference on POST /staff/diagnostic-entries
+  // ══════════════════════════════════════════════════════════════════════════════
+
+  describe('Scenario L: Cross-tenant child_id on POST diagnostic-entries → 404', () => {
+    it(
+      'kg-A specialist POSTs an entry with child_id from kg-B → 404 not_found ' +
+        '(service-side ChildNotFoundError ownership guard; T7-HIGH#1). ' +
+        'ChildNotFoundError extends NotFoundError with the generic `not_found` ' +
+        'code; the message body carries `child not found: <id>`.',
+      async () => {
+        const kgA = await createKgWithAdmin('xtnt-l-a', '+77010100201');
+        const kgB = await createKgWithAdmin('xtnt-l-b', '+77010100202');
+
+        // kg-A: template + specialist
+        const templateA = await createTemplate(kgA.adminToken, {
+          specialist_type: 'psychologist',
+        });
+        const specAUserId = await seedUser('+77010100203');
+        await seedStaffMember(
+          kgA.kgId,
+          specAUserId,
+          'specialist',
+          'psychologist',
+        );
+        const specAToken = await mintToken({
+          sub: specAUserId,
+          role: 'specialist',
+          kindergartenId: kgA.kgId,
+        });
+
+        // kg-B: a child the kg-A specialist must NOT be allowed to reference
+        const childB = await createChild(kgB.adminToken);
+
+        const res = await request(server)
+          .post('/api/v1/staff/diagnostic-entries')
+          .set('Authorization', `Bearer ${specAToken}`)
+          .send({
+            child_id: childB,
+            template_id: templateA.id,
+            assessment_date: isoToday(),
+            data: validEntryData(),
+          })
+          .expect(404);
+
+        expect(res.body.error).toBe('not_found');
+        // Service must reject before touching the templates table — the response
+        // must not surface a template-related error code.
+        expect(res.body.error).not.toBe('diagnostic_template_not_found');
+      },
+    );
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // Scenario M — Cross-tenant child reference on POST /staff/progress-notes
+  // ══════════════════════════════════════════════════════════════════════════════
+
+  describe('Scenario M: Cross-tenant child_id on POST progress-notes → 404', () => {
+    it(
+      'kg-A mentor POSTs a note with child_id from kg-B → 404 not_found ' +
+        '(service-side ChildNotFoundError ownership guard; T7-HIGH#2)',
+      async () => {
+        const kgA = await createKgWithAdmin('xtnt-m-a', '+77010100211');
+        const kgB = await createKgWithAdmin('xtnt-m-b', '+77010100212');
+
+        // kg-A: mentor
+        const mentorAUserId = await seedUser('+77010100213');
+        await seedStaffMember(kgA.kgId, mentorAUserId, 'mentor');
+        const mentorAToken = await mintToken({
+          sub: mentorAUserId,
+          role: 'mentor',
+          kindergartenId: kgA.kgId,
+        });
+
+        // kg-B: a child the kg-A mentor must NOT be allowed to reference
+        const childB = await createChild(kgB.adminToken);
+
+        const res = await request(server)
+          .post('/api/v1/staff/progress-notes')
+          .set('Authorization', `Bearer ${mentorAToken}`)
+          .send({
+            child_id: childB,
+            body: 'Cross-tenant attempt',
+          })
+          .expect(404);
+
+        expect(res.body.error).toBe('not_found');
+      },
+    );
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // Scenario N — Mentor 403 on staff-diagnostic-templates (T6-M5 regression)
+  // ══════════════════════════════════════════════════════════════════════════════
+
+  describe('Scenario N: Mentor 403 on /staff/diagnostic-templates', () => {
+    it('mentor GET /staff/diagnostic-templates → 403 (admin + specialist only)', async () => {
+      const { kgId, adminToken } = await createKgWithAdmin(
+        'tpl-n',
+        '+77010100221',
+      );
+      // Create a template so the listing has something to gate on.
+      await createTemplate(adminToken, { specialist_type: 'psychologist' });
+
+      const mentorUserId = await seedUser('+77010100222');
+      await seedStaffMember(kgId, mentorUserId, 'mentor');
+      const mentorToken = await mintToken({
+        sub: mentorUserId,
+        role: 'mentor',
+        kindergartenId: kgId,
+      });
+
+      await request(server)
+        .get('/api/v1/staff/diagnostic-templates')
+        .set('Authorization', `Bearer ${mentorToken}`)
+        .expect(403);
+    });
   });
 });

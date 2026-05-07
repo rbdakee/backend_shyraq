@@ -107,12 +107,26 @@ export class StaffDiagnosticEntryController {
   @ApiForbiddenResponse({ description: 'Role not allowed.' })
   async list(
     @Tenant() t: TenantContext,
+    @CurrentUser() user: JwtPayload,
     @Query() query: ListDiagnosticEntriesQueryDto,
   ): Promise<DiagnosticEntryListResponseDto> {
     const kgId = requireTenant(t);
+    // Non-admin callers always see their own entries — `specialist_id` query
+    // param is admin-only. We force the filter to caller's staff_member_id
+    // for non-admins (per docs/endpoints.md §3.10).
+    const isAdmin = user.role === 'admin';
+    let effectiveSpecialistId: string | undefined = query.specialist_id;
+    if (!isAdmin) {
+      const staffMember =
+        await this.staffMembers.findActiveByUserAndKindergarten(user.sub, kgId);
+      if (!staffMember) {
+        throw new NotFoundException('staff_member_not_found');
+      }
+      effectiveSpecialistId = staffMember.id;
+    }
     const result = await this.service.listByKgFiltered(kgId, {
       childId: query.child_id,
-      specialistId: query.specialist_id,
+      specialistId: effectiveSpecialistId,
       templateId: query.template_id,
       from: query.from ? new Date(query.from) : undefined,
       to: query.to ? new Date(query.to) : undefined,

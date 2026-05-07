@@ -46,12 +46,16 @@ function requireTenant(t: TenantContext): string {
  * (prevents a speech_therapist from viewing psychologist templates).
  * Admin callers may pass `?all=true` to bypass the filter, or omit it to
  * see all templates by default.
+ *
+ * Mentor role is intentionally excluded — mentors author progress notes,
+ * not diagnostic entries, so they have no need to see diagnostic templates
+ * (BP §8.3). Admin + specialist only.
  */
 @ApiTags('Staff / Diagnostics — Templates')
 @ApiBearerAuth()
 @Controller({ path: 'staff/diagnostic-templates', version: '1' })
 @UseGuards(RolesGuard)
-@Roles('admin', 'mentor', 'specialist')
+@Roles('admin', 'specialist')
 export class StaffDiagnosticTemplateController {
   constructor(
     private readonly service: DiagnosticTemplateService,

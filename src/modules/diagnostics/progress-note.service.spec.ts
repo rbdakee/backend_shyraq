@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { InMemoryNotificationAdapter } from '@/common/notifications/in-memory-notification.adapter';
+import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
+import { ChildNotFoundError } from '@/modules/child/domain/errors/child-not-found.error';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { ProgressNoteService } from './progress-note.service';
 import {
@@ -68,6 +70,19 @@ class FakeNoteRepo extends ProgressNoteRepository {
   }
 }
 
+class FakeChildRepo {
+  rows = new Map<string, { id: string; kgId: string }>();
+
+  putActive(kgId: string, id: string): void {
+    this.rows.set(`${kgId}:${id}`, { id, kgId });
+  }
+
+  findById(kgId: string, id: string): Promise<unknown> {
+    const row = this.rows.get(`${kgId}:${id}`);
+    return Promise.resolve(row ? { id: row.id } : null);
+  }
+}
+
 function buildNote(
   overrides: Partial<{
     id: string;
@@ -92,13 +107,21 @@ function buildNote(
 
 describe('ProgressNoteService', () => {
   let repo: FakeNoteRepo;
+  let children: FakeChildRepo;
   let notification: InMemoryNotificationAdapter;
   let service: ProgressNoteService;
 
   beforeEach(() => {
     repo = new FakeNoteRepo();
+    children = new FakeChildRepo();
+    children.putActive(KG, CHILD);
     notification = new InMemoryNotificationAdapter();
-    service = new ProgressNoteService(repo, notification, new FakeClock());
+    service = new ProgressNoteService(
+      repo,
+      children as unknown as ChildRepository,
+      notification,
+      new FakeClock(),
+    );
   });
 
   describe('create', () => {
@@ -117,6 +140,18 @@ describe('ProgressNoteService', () => {
         noteId: n.id,
         mentorId: MENTOR_A,
       });
+    });
+
+    it('throws 404 when child does not belong to the kg (cross-tenant guard)', async () => {
+      const foreignChildId = randomUUID();
+      await expect(
+        service.create(KG, {
+          childId: foreignChildId,
+          mentorId: MENTOR_A,
+          body: 'Made progress today',
+        }),
+      ).rejects.toBeInstanceOf(ChildNotFoundError);
+      expect(notification.events).toHaveLength(0);
     });
 
     it('rejects empty body', async () => {

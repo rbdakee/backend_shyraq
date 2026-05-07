@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { InMemoryNotificationAdapter } from '@/common/notifications/in-memory-notification.adapter';
+import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
+import { ChildNotFoundError } from '@/modules/child/domain/errors/child-not-found.error';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { DiagnosticEntryService } from './diagnostic-entry.service';
 import {
@@ -67,6 +69,21 @@ class FakeTemplateRepo extends DiagnosticTemplateRepository {
     _filters: ListDiagnosticTemplatesFilter,
   ): Promise<DiagnosticTemplateListResult> {
     return Promise.resolve({ items: [], nextCursor: null });
+  }
+}
+
+class FakeChildRepo {
+  rows = new Map<string, { id: string; kgId: string }>();
+
+  putActive(kgId: string, id: string): void {
+    this.rows.set(`${kgId}:${id}`, { id, kgId });
+  }
+
+  // Only the methods MyTodosService / DiagnosticEntryService / ProgressNoteService
+  // depend on are stubbed; the rest fall through `unknown as ChildRepository`.
+  findById(kgId: string, id: string): Promise<unknown> {
+    const row = this.rows.get(`${kgId}:${id}`);
+    return Promise.resolve(row ? { id: row.id } : null);
   }
 }
 
@@ -191,6 +208,7 @@ function buildEntry(template: DiagnosticTemplate): DiagnosticEntry {
 describe('DiagnosticEntryService', () => {
   let templates: FakeTemplateRepo;
   let entries: FakeEntryRepo;
+  let children: FakeChildRepo;
   let notification: InMemoryNotificationAdapter;
   let clock: FakeClock;
   let service: DiagnosticEntryService;
@@ -198,11 +216,14 @@ describe('DiagnosticEntryService', () => {
   beforeEach(() => {
     templates = new FakeTemplateRepo();
     entries = new FakeEntryRepo();
+    children = new FakeChildRepo();
+    children.putActive(KG, CHILD);
     notification = new InMemoryNotificationAdapter();
     clock = new FakeClock();
     service = new DiagnosticEntryService(
       templates,
       entries,
+      children as unknown as ChildRepository,
       notification,
       clock,
     );
@@ -247,6 +268,23 @@ describe('DiagnosticEntryService', () => {
         specialistType: 'psychologist',
         assessmentDate: '2026-05-01',
       });
+    });
+
+    it('throws 404 when child does not belong to the kg (cross-tenant guard)', async () => {
+      const tmpl = buildTemplate();
+      templates.put(tmpl);
+      const foreignChildId = randomUUID();
+      await expect(
+        service.create(KG, {
+          childId: foreignChildId,
+          templateId: tmpl.id,
+          specialistId: STAFF_A,
+          assessmentDate: TODAY,
+          data: { mood: 3 },
+        }),
+      ).rejects.toBeInstanceOf(ChildNotFoundError);
+      expect(entries.createdInOrder).toHaveLength(0);
+      expect(notification.events).toHaveLength(0);
     });
 
     it('throws 404 when template does not exist', async () => {

@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import { NotificationPort } from '@/common/notifications/notification.port';
+import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
+import { ChildNotFoundError } from '@/modules/child/domain/errors/child-not-found.error';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import {
   ListProgressNotesFilter,
@@ -26,6 +28,7 @@ export interface CreateProgressNoteInput {
 export class ProgressNoteService {
   constructor(
     private readonly notes: ProgressNoteRepository,
+    private readonly children: ChildRepository,
     private readonly notification: NotificationPort,
     private readonly clock: ClockPort,
   ) {}
@@ -34,11 +37,20 @@ export class ProgressNoteService {
    * Create a new progress note. The entity invariant rejects empty body
    * and `notedAt > now + 5min`. Emits `progress_note.new` for guardian
    * fan-out via the dispatcher.
+   *
+   * Tenant-scoped child existence check is service-side defense-in-depth
+   * against cross-tenant child_id reference (see B18 T7 review). The DB-side
+   * composite UNIQUE `(kindergarten_id, id)` on `children` plus a same-tenant
+   * FK from `progress_notes.child_id` is deferred to B22.
    */
   async create(
     kgId: string,
     input: CreateProgressNoteInput,
   ): Promise<ProgressNote> {
+    const child = await this.children.findById(kgId, input.childId);
+    if (child === null) {
+      throw new ChildNotFoundError(input.childId);
+    }
     const now = this.clock.now();
     const state: ProgressNoteState = {
       id: randomUUID(),
