@@ -997,7 +997,7 @@ describe('EnrollmentService', () => {
       expect(inv.enrollmentDate).toEqual(T0);
     });
 
-    it('rolls back transition when first-invoice generation throws (no tariff)', async () => {
+    it('completes transition (lax mode) when first-invoice generation throws TariffAssignmentNotFoundError (no tariff yet)', async () => {
       const {
         service,
         enrollmentRepo,
@@ -1017,6 +1017,42 @@ describe('EnrollmentService', () => {
       childService.guardianToReturn = aGuardian();
       invoiceService.errorToThrow = new TariffAssignmentNotFoundError(CHILD_ID);
 
+      // Lax mode: tariff_assignment requires child_id which only exists after
+      // createChild in this same TX, so on the very first card_created
+      // transition there cannot be an assignment. The hook logs + skips
+      // instead of rolling back, allowing the admin to attach a tariff
+      // post-creation and let the next monthly cron generate the invoice.
+      const result = await service.transition(
+        KG_A,
+        e.id,
+        { toStatus: 'card_created', currentGroupId: GROUP_ID },
+        STAFF_USER_ID,
+      );
+      expect(result.enrollment.status.value).toBe('card_created');
+      expect(invoiceService.generateFirstInvoiceCalls).toHaveLength(1);
+      expect(logRepo.rows).toHaveLength(1);
+    });
+
+    it('rolls back transition when first-invoice generation throws an unexpected error', async () => {
+      const {
+        service,
+        enrollmentRepo,
+        logRepo,
+        staffRepo,
+        groupRepo,
+        childService,
+        invoiceService,
+      } = makeService();
+      staffRepo.put(aStaff(STAFF_MEMBER_ID, STAFF_USER_ID, KG_A));
+      groupRepo.put(aGroup(GROUP_ID, KG_A));
+      const e = await seedAtStatus(enrollmentRepo, 'in_processing', {
+        childName: 'Aliya Atayeva',
+        contactPhone: '+77011112233',
+      });
+      childService.childToReturn = aChild(CHILD_ID, KG_A);
+      childService.guardianToReturn = aGuardian();
+      invoiceService.errorToThrow = new Error('unexpected db error');
+
       await expect(
         service.transition(
           KG_A,
@@ -1024,12 +1060,9 @@ describe('EnrollmentService', () => {
           { toStatus: 'card_created', currentGroupId: GROUP_ID },
           STAFF_USER_ID,
         ),
-      ).rejects.toBeInstanceOf(TariffAssignmentNotFoundError);
+      ).rejects.toThrow('unexpected db error');
 
-      // The error propagates BEFORE the conditional UPDATE / log append.
-      // In production, ambient TX rollback unwinds createChild/inviteGuardian
-      // writes too; here we just assert nothing was committed past the
-      // invoice failure point.
+      // Non-TariffAssignmentNotFoundError still propagates → ambient TX rollback.
       expect(invoiceService.generateFirstInvoiceCalls).toHaveLength(1);
       expect(logRepo.rows).toHaveLength(0);
     });

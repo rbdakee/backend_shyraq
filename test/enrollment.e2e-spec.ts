@@ -380,13 +380,35 @@ describe('B5 enrollment leads (e2e)', () => {
 
   // ── card_created with tariff pre-assigned → first invoice auto-generated ──
 
-  it('auto-generates a monthly invoice when card_created fires and a tariff assignment exists (B13 T4c hook)', async () => {
+  it('completes card_created in lax mode without a pre-assigned tariff (B13 T4c hook)', async () => {
+    // The B13 T4c hook calls invoiceService.generateFirstInvoice inside the
+    // ambient TX. tariff_assignment requires child_id, which only exists
+    // *after* createChild in this same TX, so a fresh transition cannot have
+    // an assignment in place. Lax mode: the hook logs + skips, the
+    // transition completes, and the admin can attach a tariff afterwards
+    // (next monthly cron picks up the child).
     const a = await createKgWithAdmin('enr-5b', '+77011113012');
     const grp = await request(server)
       .post('/api/v1/groups')
       .set('Authorization', `Bearer ${a.adminToken}`)
       .send({ name: 'Aralar B', capacity: 20 })
       .expect(201);
+
+    // Seed a monthly tariff plan up-front so the post-creation assignment
+    // step has something to bind to.
+    const planRes = await request(server)
+      .post('/api/v1/admin/tariff-plans')
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .send({
+        name: 'Enrollment Test Plan B',
+        tariff_type: 'monthly',
+        amount: 50000,
+        applies_to: 'all_children',
+        valid_from: new Date().toISOString().slice(0, 10),
+        discount_rules: {},
+      })
+      .expect(201);
+    const planId = planRes.body.id as string;
 
     // Create enrollment → move to in_processing → card_created.
     const create = await request(server)
@@ -406,16 +428,35 @@ describe('B5 enrollment leads (e2e)', () => {
       .send({ toStatus: 'in_processing' })
       .expect(200);
 
-    // Transition to card_created. T4c hook fires inside this request's
-    // ambient TX and may or may not find an active tariff assignment for
-    // the child (child is created atomically in this transition). Accept
-    // 200 (hook skipped gracefully or succeeded) or 409/422 (strict mode).
     const cardRes = await request(server)
       .post(`/api/v1/admin/enrollments/${create.body.id}/transition`)
       .set('Authorization', `Bearer ${a.adminToken}`)
-      .send({ toStatus: 'card_created', currentGroupId: grp.body.id });
+      .send({ toStatus: 'card_created', currentGroupId: grp.body.id })
+      .expect(200);
 
-    expect([200, 409, 422]).toContain(cardRes.status);
+    const childId = cardRes.body.enrollment.childId as string;
+    expect(childId).toEqual(expect.any(String));
+
+    // No invoice yet (hook ran in lax mode and skipped — no pre-assignment).
+    const initialInvoices = await request(server)
+      .get(`/api/v1/admin/invoices?child_id=${childId}`)
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .expect(200);
+    expect(Array.isArray(initialInvoices.body)).toBe(true);
+    expect((initialInvoices.body as unknown[]).length).toBe(0);
+
+    // Admin attaches a tariff after card_created. Subsequent monthly-cron
+    // runs will generate invoices for this child; the assignment endpoint
+    // itself just persists the row.
+    await request(server)
+      .post('/api/v1/admin/tariff-assignments')
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .send({
+        child_id: childId,
+        tariff_plan_id: planId,
+        valid_from: new Date().toISOString().slice(0, 10),
+      })
+      .expect(201);
   });
 
   // ── invalid transition ────────────────────────────────────────────────

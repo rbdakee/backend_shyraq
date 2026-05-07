@@ -1,5 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
+import { TariffAssignmentNotFoundError } from '@/modules/billing/domain/errors/tariff-assignment-not-found.error';
 import { InvoiceService } from '@/modules/billing/invoice.service';
 import { GroupNotFoundError } from '@/modules/group/domain/errors/group-not-found.error';
 import { GroupRepository } from '@/modules/group/infrastructure/persistence/group.repository';
@@ -284,24 +285,38 @@ export class EnrollmentService {
       enrollment.assignChild(child.id, this.clock);
 
       // B13 cross-module hook: emit the first-month invoice on card_created.
-      // Runs on the ambient HTTP TX opened by TenantContextInterceptor — if
-      // the call throws (e.g. TariffAssignmentNotFoundError because the admin
-      // has not yet attached a tariff_plan to the child), the surrounding TX
-      // rolls back the createChild + inviteGuardian writes performed above
-      // and the conditional UPDATE on enrollments reverts cleanly. Strict
-      // contract: "tariff must be assigned before card_created".
+      // Runs on the ambient HTTP TX opened by TenantContextInterceptor.
+      //
+      // NB: a `tariff_assignment` row REQUIRES `child_id`, which only exists
+      // after `createChild` above. The admin therefore cannot pre-assign a
+      // tariff before the very first transition — strict mode would make the
+      // happy path impossible. Lax mode: if no active assignment is found we
+      // log + skip; the admin attaches a tariff via
+      // `POST /admin/tariff-assignments` afterwards, and the next monthly
+      // cron picks the child up. Other failures (DB errors, misconfigured
+      // tariff_plan, etc.) still propagate and roll back the ambient TX.
       const enrollmentDate = this.clock.now();
-      const firstInvoice = await this.invoiceService.generateFirstInvoice(
-        kindergartenId,
-        {
-          childId: child.id,
-          enrollmentDate,
-          assignedBy: callerStaffId,
-        },
-      );
-      this.logger.log(
-        `enrollment.first_invoice_generated invoice=${firstInvoice.id} child=${child.id} kg=${kindergartenId}`,
-      );
+      try {
+        const firstInvoice = await this.invoiceService.generateFirstInvoice(
+          kindergartenId,
+          {
+            childId: child.id,
+            enrollmentDate,
+            assignedBy: callerStaffId,
+          },
+        );
+        this.logger.log(
+          `enrollment.first_invoice_generated invoice=${firstInvoice.id} child=${child.id} kg=${kindergartenId}`,
+        );
+      } catch (err) {
+        if (err instanceof TariffAssignmentNotFoundError) {
+          this.logger.warn(
+            `enrollment.first_invoice_skipped reason=tariff_assignment_not_found child=${child.id} kg=${kindergartenId}`,
+          );
+        } else {
+          throw err;
+        }
+      }
     }
 
     // Status-guarded UPDATE: 0 rows affected means another caller already
