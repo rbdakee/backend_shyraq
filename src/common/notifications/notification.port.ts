@@ -351,6 +351,39 @@ export interface NotifyDiscountActivatedInput {
   notificationBody: Record<string, string> | null;
 }
 
+// ── B18 Diagnostics & Progress events ─────────────────────────────────
+//
+// Both events fan out through the dispatcher's recipient resolvers
+// (see `notification-dispatcher.service.ts` RECIPIENT_RESOLVERS):
+//   - diagnostic.new      — guardians of the assessed child.
+//   - progress_note.new   — guardians of the noted child.
+// Neither key is in `NANNY_ALLOWED_EVENT_KEYS`, so nannies are dropped
+// by the policy gate even when they are guardians.
+
+export interface DiagnosticNewPayload {
+  kindergartenId: string;
+  childId: string;
+  entryId: string;
+  templateId: string;
+  /** Snapshot of the template's display name at emit time. */
+  templateName: string;
+  specialistId: string;
+  /** Snapshot of the template's specialist_type at emit time. */
+  specialistType: string;
+  /** ISO calendar date `YYYY-MM-DD`. */
+  assessmentDate: string;
+  createdAt: Date;
+}
+
+export interface ProgressNoteNewPayload {
+  kindergartenId: string;
+  childId: string;
+  noteId: string;
+  mentorId: string;
+  notedAt: Date;
+  createdAt: Date;
+}
+
 /**
  * T11 H6 — emitted by `EnrollmentService.transition` when the
  * `card_created` lax-mode catches a `TariffAssignmentNotFoundError`.
@@ -491,6 +524,28 @@ export abstract class NotificationPort {
    * (parents only — `discount.*` is not in `NANNY_ALLOWED_EVENT_KEYS`).
    */
   notifyDiscountActivated(_event: NotifyDiscountActivatedInput): Promise<void> {
+    return Promise.resolve();
+  }
+
+  // ── B18 Diagnostics & Progress ──────────────────────────────────────
+  // Non-abstract default-no-op so older test FakeNotificationPort classes
+  // keep compiling. Production `OutboxNotificationAdapter` overrides;
+  // `InMemoryNotificationAdapter` records into its events array.
+
+  /**
+   * Fired by `DiagnosticEntryService.create` after a specialist authors a
+   * new entry. Recipients: approved-active guardians of the assessed
+   * child (parents only — `diagnostic.*` is NOT in NANNY_ALLOWED_EVENT_KEYS).
+   */
+  notifyDiagnosticNew(_event: DiagnosticNewPayload): Promise<void> {
+    return Promise.resolve();
+  }
+
+  /**
+   * Fired by `ProgressNoteService.create` after a mentor logs a new note.
+   * Recipients: approved-active guardians of the noted child (parents only).
+   */
+  notifyProgressNoteNew(_event: ProgressNoteNewPayload): Promise<void> {
     return Promise.resolve();
   }
 }

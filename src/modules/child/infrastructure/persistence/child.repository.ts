@@ -148,4 +148,41 @@ export abstract class ChildRepository {
   ): Promise<string[]> {
     return Promise.resolve([]);
   }
+
+  // ── B17 — Birthday content generator helper ──────────────────────────
+  // Non-abstract default-no-op to keep older test fakes compiling.
+
+  /**
+   * Returns non-archived children in the kg whose `date_of_birth` matches
+   * `(month, day)` regardless of year. Used by the B17 birthday-generation
+   * cron to populate `content.birthday` posts at 07:00 Asia/Almaty daily.
+   *
+   * `month` is 1-based (1=Jan ... 12=Dec). The relational impl filters
+   * via `EXTRACT(MONTH FROM date_of_birth) = $month AND
+   * EXTRACT(DAY FROM date_of_birth) = $day`.
+   */
+  listActiveByBirthdayMonthDay(
+    _kindergartenId: string,
+    _month: number,
+    _day: number,
+  ): Promise<Child[]> {
+    return Promise.resolve([]);
+  }
+
+  // ── B18 — MyTodosService helper ──────────────────────────────────────
+  // Non-abstract default-no-op so older test fakes compile without
+  // declaring an empty stub.
+
+  /**
+   * Returns the lightweight `{ id, fullName }` shape for every non-archived
+   * child in the kg. Used by `MyTodosService.getMyTodos` to enumerate the
+   * universe of children that need a fresh diagnostic — joined client-side
+   * against the latest-entry-per-child map. Order: by `full_name ASC` for
+   * stable presentation in the staff-app digest.
+   */
+  listActiveLightByKg(
+    _kindergartenId: string,
+  ): Promise<Array<{ id: string; fullName: string }>> {
+    return Promise.resolve([]);
+  }
 }

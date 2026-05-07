@@ -6,3 +6,4 @@ export { DiagnosticEntryDataInvalidError } from './diagnostic-entry-data-invalid
 export { DiagnosticEntryNotAuthoredByYouError } from './diagnostic-entry-not-authored-by-you.error';
 export { ProgressNoteNotFoundError } from './progress-note-not-found.error';
 export { ProgressNoteNotAuthoredByYouError } from './progress-note-not-authored-by-you.error';
+export { StaffMemberMustHaveSpecialistTypeError } from './staff-member-must-have-specialist-type.error';

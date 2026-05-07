@@ -4,6 +4,7 @@ import {
   AttendanceCheckOutEvent,
   ChildTransferredEvent,
   DailyStatusChangedEvent,
+  DiagnosticNewPayload,
   GuardianApprovedEvent,
   GuardianPendingApprovalEvent,
   GuardianRejectedEvent,
@@ -27,6 +28,7 @@ import {
   PermissionsUpdatedEvent,
   PickupOtpSentEvent,
   PickupValidatedEvent,
+  ProgressNoteNewPayload,
   TimelineEntryCreatedEvent,
 } from './notification.port';
 
@@ -194,6 +196,18 @@ export class InMemoryNotificationAdapter extends NotificationPort {
 
   notifyDiscountActivated(event: NotifyDiscountActivatedInput): Promise<void> {
     this.record('discount_activated', event);
+    return Promise.resolve();
+  }
+
+  // ── B18 Diagnostics & Progress events ─────────────────────────────────
+
+  notifyDiagnosticNew(event: DiagnosticNewPayload): Promise<void> {
+    this.record('diagnostic_new', event);
+    return Promise.resolve();
+  }
+
+  notifyProgressNoteNew(event: ProgressNoteNewPayload): Promise<void> {
+    this.record('progress_note_new', event);
     return Promise.resolve();
   }
 

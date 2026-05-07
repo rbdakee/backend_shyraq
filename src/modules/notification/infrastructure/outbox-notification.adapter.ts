@@ -4,6 +4,7 @@ import {
   AttendanceCheckOutEvent,
   ChildTransferredEvent,
   DailyStatusChangedEvent,
+  DiagnosticNewPayload,
   GuardianApprovedEvent,
   GuardianPendingApprovalEvent,
   GuardianRejectedEvent,
@@ -27,6 +28,7 @@ import {
   PermissionsUpdatedEvent,
   PickupOtpSentEvent,
   PickupValidatedEvent,
+  ProgressNoteNewPayload,
   TimelineEntryCreatedEvent,
 } from '@/common/notifications/notification.port';
 import { tenantStorage } from '@/database/tenant-storage';
@@ -353,6 +355,31 @@ export class OutboxNotificationAdapter extends NotificationPort {
       targetChildIds: event.targetChildIds,
       notificationTitle: event.notificationTitle,
       notificationBody: event.notificationBody,
+    });
+  }
+
+  // ── B18 Diagnostics & Progress ────────────────────────────────────────
+
+  notifyDiagnosticNew(event: DiagnosticNewPayload): Promise<void> {
+    return this.enqueue(event.kindergartenId, 'diagnostic.new', {
+      childId: event.childId,
+      entryId: event.entryId,
+      templateId: event.templateId,
+      templateName: event.templateName,
+      specialistId: event.specialistId,
+      specialistType: event.specialistType,
+      assessmentDate: event.assessmentDate,
+      createdAt: event.createdAt.toISOString(),
+    });
+  }
+
+  notifyProgressNoteNew(event: ProgressNoteNewPayload): Promise<void> {
+    return this.enqueue(event.kindergartenId, 'progress_note.new', {
+      childId: event.childId,
+      noteId: event.noteId,
+      mentorId: event.mentorId,
+      notedAt: event.notedAt.toISOString(),
+      createdAt: event.createdAt.toISOString(),
     });
   }
 

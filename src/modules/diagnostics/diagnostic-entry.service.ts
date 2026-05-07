@@ -1,0 +1,159 @@
+import { randomUUID } from 'node:crypto';
+import { Injectable } from '@nestjs/common';
+import { NotificationPort } from '@/common/notifications/notification.port';
+import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { DiagnosticTemplateRepository } from './diagnostic-template.repository';
+import {
+  DiagnosticEntryListResult,
+  DiagnosticEntryRepository,
+  ListDiagnosticEntriesFilter,
+} from './diagnostic-entry.repository';
+import {
+  DiagnosticEntry,
+  DiagnosticEntryState,
+  DiagnosticEntryUpdatePatch,
+} from './domain/entities/diagnostic-entry.entity';
+import { DiagnosticEntryNotFoundError } from './domain/errors/diagnostic-entry-not-found.error';
+import { DiagnosticTemplateInactiveError } from './domain/errors/diagnostic-template-inactive.error';
+import { DiagnosticTemplateNotFoundError } from './domain/errors/diagnostic-template-not-found.error';
+import { validateEntryData } from './domain/schema-validators';
+
+export interface CreateDiagnosticEntryInput {
+  childId: string;
+  templateId: string;
+  specialistId: string;
+  assessmentDate: Date;
+  data: Record<string, unknown>;
+  summary?: string | null;
+  recommendations?: string | null;
+  attachments?: string[];
+}
+
+@Injectable()
+export class DiagnosticEntryService {
+  constructor(
+    private readonly templates: DiagnosticTemplateRepository,
+    private readonly entries: DiagnosticEntryRepository,
+    private readonly notification: NotificationPort,
+    private readonly clock: ClockPort,
+  ) {}
+
+  /**
+   * Create a new entry against an existing, active template. Validates the
+   * `data` payload against `template.schema` BEFORE persisting, then emits
+   * `diagnostic.new` for guardian fan-out via the dispatcher.
+   *
+   * Errors:
+   *   404 `diagnostic_template_not_found` — bad templateId / cross-tenant.
+   *   409 `diagnostic_template_inactive`  — template is deactivated.
+   *   400 `diagnostic_entry_data_invalid` — data violates template schema.
+   *   400 `assessment_date_in_future`     — entity invariant.
+   */
+  async create(
+    kgId: string,
+    input: CreateDiagnosticEntryInput,
+  ): Promise<DiagnosticEntry> {
+    const template = await this.templates.findById(kgId, input.templateId);
+    if (template === null) {
+      throw new DiagnosticTemplateNotFoundError(input.templateId);
+    }
+    if (!template.isActive) {
+      throw new DiagnosticTemplateInactiveError(input.templateId);
+    }
+    validateEntryData(template.schema, input.data);
+
+    const now = this.clock.now();
+    const state: DiagnosticEntryState = {
+      id: randomUUID(),
+      kindergartenId: kgId,
+      childId: input.childId,
+      templateId: input.templateId,
+      specialistId: input.specialistId,
+      assessmentDate: input.assessmentDate,
+      data: input.data,
+      summary: input.summary ?? null,
+      recommendations: input.recommendations ?? null,
+      attachments: Array.isArray(input.attachments) ? input.attachments : [],
+      createdAt: now,
+      updatedAt: now,
+    };
+    const entry = DiagnosticEntry.fromState(state, now);
+    const persisted = await this.entries.create(entry);
+
+    // Emit AFTER successful insert. The outbox row commits atomically with
+    // the business INSERT thanks to the ambient TX from
+    // `TenantContextInterceptor`; if the dispatcher is not yet wired this
+    // is still safe — the row sits in `notification_outbox` until the
+    // poller picks it up.
+    await this.notification.notifyDiagnosticNew({
+      kindergartenId: kgId,
+      childId: persisted.childId,
+      entryId: persisted.id,
+      templateId: persisted.templateId,
+      templateName: template.name,
+      specialistId: persisted.specialistId,
+      specialistType: template.specialistType,
+      assessmentDate: persisted.assessmentDate.toISOString().slice(0, 10),
+      createdAt: persisted.createdAt,
+    });
+
+    return persisted;
+  }
+
+  /**
+   * PATCH entry. Author-only (`assertAuthoredBy` throws 403 on mismatch);
+   * admin override is handled at the controller layer (T4) by passing the
+   * caller's specialist_member_id == entry.specialistId so the assertion
+   * passes for admins too. If `data` is patched, re-validate against the
+   * template stored on the entry (NOT a new templateId — entries are bound
+   * to a single template per BP §8.4).
+   */
+  async update(
+    kgId: string,
+    id: string,
+    callerStaffMemberId: string,
+    patch: DiagnosticEntryUpdatePatch,
+  ): Promise<DiagnosticEntry> {
+    const existing = await this.entries.findById(kgId, id);
+    if (existing === null) {
+      throw new DiagnosticEntryNotFoundError(id);
+    }
+    existing.assertAuthoredBy(callerStaffMemberId);
+
+    if (patch.data !== undefined) {
+      const template = await this.templates.findById(kgId, existing.templateId);
+      if (template === null) {
+        // Should be unreachable — FK + RLS guarantee the template exists.
+        // Surface as 404 if it ever hits.
+        throw new DiagnosticTemplateNotFoundError(existing.templateId);
+      }
+      validateEntryData(template.schema, patch.data);
+    }
+
+    const updated = existing.update(patch, this.clock.now());
+    return this.entries.update(updated);
+  }
+
+  async getById(kgId: string, id: string): Promise<DiagnosticEntry> {
+    const existing = await this.entries.findById(kgId, id);
+    if (existing === null) {
+      throw new DiagnosticEntryNotFoundError(id);
+    }
+    return existing;
+  }
+
+  async listByChild(
+    kgId: string,
+    childId: string,
+    filters: { from?: Date; to?: Date; cursor?: string; limit: number },
+  ): Promise<DiagnosticEntryListResult> {
+    return this.entries.list(kgId, { ...filters, childId });
+  }
+
+  async listByKgFiltered(
+    kgId: string,
+    filters: ListDiagnosticEntriesFilter,
+  ): Promise<DiagnosticEntryListResult> {
+    return this.entries.list(kgId, filters);
+  }
+}

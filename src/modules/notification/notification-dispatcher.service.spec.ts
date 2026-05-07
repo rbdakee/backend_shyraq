@@ -1365,6 +1365,9 @@ describe('NotificationDispatcher', () => {
       'refund.processed',
       // ── B16 Custom Discounts ───────────────────────────────────────────
       'discount.activated',
+      // ── B18 Diagnostics & Progress ─────────────────────────────────────
+      'diagnostic.new',
+      'progress_note.new',
     ];
 
     it.each(COVERED_KEYS)(

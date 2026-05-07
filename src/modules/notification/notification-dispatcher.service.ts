@@ -689,6 +689,53 @@ const TEMPLATES: Record<string, EventTemplate> = {
     };
   },
 
+  // ── B18 Diagnostics & Progress ────────────────────────────────────────
+  // Both events fan out to the child's approved-active guardians (parents
+  // only — neither key is in NANNY_ALLOWED_EVENT_KEYS).
+
+  'diagnostic.new': ({ payload, enrichment }) => {
+    const templateName =
+      asNonEmptyString(payload.templateName) ?? 'диагностики';
+    return {
+      titleI18n: {
+        ru: 'Новая диагностика',
+        kk: 'Жаңа диагностика',
+        en: 'New diagnostic',
+      },
+      bodyI18n: {
+        ru: `Специалист добавил диагностику «${templateName}» для ${enrichment.childName}.`,
+        kk: `Маман ${enrichment.childName} баласы үшін «${templateName}» диагностикасын қосты.`,
+        en: `A specialist added the "${templateName}" diagnostic for ${enrichment.childName}.`,
+      },
+      data: stringMap({
+        entryId: payload.entryId,
+        childId: payload.childId,
+        templateId: payload.templateId,
+        templateName: payload.templateName,
+        specialistType: payload.specialistType,
+        assessmentDate: payload.assessmentDate,
+      }),
+    };
+  },
+
+  'progress_note.new': ({ payload, enrichment }) => ({
+    titleI18n: {
+      ru: 'Новая запись прогресса',
+      kk: 'Жаңа даму жазбасы',
+      en: 'New progress note',
+    },
+    bodyI18n: {
+      ru: `Ментор добавил запись о развитии ${enrichment.childName}.`,
+      kk: `Ментор ${enrichment.childName} баласының дамуы туралы жазба қосты.`,
+      en: `Mentor added a development note for ${enrichment.childName}.`,
+    },
+    data: stringMap({
+      noteId: payload.noteId,
+      childId: payload.childId,
+      notedAt: payload.notedAt,
+    }),
+  }),
+
   // T11 H6 — admin-visible signal that the first invoice was skipped on
   // enrollment.card_created because no tariff_assignment was configured.
   'enrollment.first_invoice_skipped': ({ payload }) => ({
@@ -773,6 +820,13 @@ const RECIPIENT_RESOLVERS: Record<string, RecipientResolver> = {
   // across those children via a single multi-child query (parents only —
   // nanny role excluded at the SQL level).
   'discount.activated': resolveDiscountActivatedRecipients,
+  // ── B18 Diagnostics & Progress ────────────────────────────────────────
+  // Both events fan out to the assessed/noted child's approved-active
+  // guardians. `resolveByChildGuardians` already classifies nannies into
+  // `nannyUserIds`; the policy gate then drops them since `diagnostic.*`
+  // and `progress_note.*` are NOT in NANNY_ALLOWED_EVENT_KEYS.
+  'diagnostic.new': resolveByChildGuardians,
+  'progress_note.new': resolveByChildGuardians,
 };
 
 async function resolveByChildGuardians(

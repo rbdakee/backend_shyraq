@@ -290,6 +290,26 @@ export class ChildRelationalRepository extends ChildRepository {
     return rows.map((r) => r.id);
   }
 
+  // ── B17 — Birthday content generator helper ──────────────────────────
+
+  async listActiveByBirthdayMonthDay(
+    kindergartenId: string,
+    month: number,
+    day: number,
+  ): Promise<Child[]> {
+    const rows = await this.manager()
+      .getRepository(ChildEntity)
+      .createQueryBuilder('c')
+      .where('c.kindergarten_id = :kg', { kg: kindergartenId })
+      .andWhere(`c.status <> 'archived'`)
+      .andWhere('c.date_of_birth IS NOT NULL')
+      .andWhere('EXTRACT(MONTH FROM c.date_of_birth) = :m', { m: month })
+      .andWhere('EXTRACT(DAY FROM c.date_of_birth) = :d', { d: day })
+      .orderBy('c.id', 'ASC')
+      .getMany();
+    return rows.map((r) => ChildMapper.toDomain(r));
+  }
+
   async listActiveIdsInKgInAgeRange(
     kindergartenId: string,
     fromMonths: number,
@@ -313,6 +333,22 @@ export class ChildRelationalRepository extends ChildRepository {
       [kindergartenId, now, fromMonths, toMonths],
     )) as Array<{ id: string }>;
     return rows.map((r) => r.id);
+  }
+
+  // ── B18 — MyTodosService helper ──────────────────────────────────────
+
+  async listActiveLightByKg(
+    kindergartenId: string,
+  ): Promise<Array<{ id: string; fullName: string }>> {
+    const rows = (await this.manager().query(
+      `SELECT id, full_name
+         FROM children
+        WHERE kindergarten_id = $1
+          AND status <> 'archived'
+        ORDER BY full_name ASC, id ASC`,
+      [kindergartenId],
+    )) as Array<{ id: string; full_name: string }>;
+    return rows.map((r) => ({ id: r.id, fullName: r.full_name }));
   }
 
   private manager(): EntityManager {
