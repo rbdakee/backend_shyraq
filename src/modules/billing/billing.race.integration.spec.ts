@@ -238,7 +238,7 @@ describeIntegration(
             `INSERT INTO tariff_assignments
                (id, kindergarten_id, child_id, tariff_plan_id, valid_from, assigned_by)
              VALUES ($1, $2, $3, $4, '2025-01-01', $5)`,
-            [assignmentId, kgId, childId, planId, staffId],
+            [assignmentId, kgId, childId, planId, userId],
           );
           // Pre-create payment accounts so the service's
           // `ensureForChild` hits the existing-row path. This avoids

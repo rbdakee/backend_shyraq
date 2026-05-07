@@ -116,12 +116,12 @@ describeIntegration(
           [tariffPlanA, kgA],
         );
 
-        // tariff_assignments
+        // tariff_assignments — assigned_by is users.id (per B13BillingFkFix migration)
         await m.query(
           `INSERT INTO tariff_assignments
              (id, kindergarten_id, child_id, tariff_plan_id, valid_from, assigned_by)
            VALUES ($1, $2, $3, $4, '2025-01-01', $5)`,
-          [tariffAssignmentA, kgA, childA, tariffPlanA, staffA],
+          [tariffAssignmentA, kgA, childA, tariffPlanA, userA],
         );
 
         // payment_accounts
