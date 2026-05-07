@@ -13,6 +13,7 @@ import { InvoiceLineItemRepository } from './infrastructure/persistence/invoice-
 import { KindergartenHolidayRepository } from './infrastructure/persistence/kindergarten-holiday.repository';
 import { PaymentAccountRepository } from './infrastructure/persistence/payment-account.repository';
 import { PaymentRepository } from './infrastructure/persistence/payment.repository';
+import { RefundRepository } from './infrastructure/persistence/refund.repository';
 import { TariffAssignmentRepository } from './infrastructure/persistence/tariff-assignment.repository';
 import { TariffPlanRepository } from './infrastructure/persistence/tariff-plan.repository';
 import { InvoiceRelationalRepository } from './infrastructure/persistence/relational/repositories/invoice.relational.repository';
@@ -20,6 +21,7 @@ import { InvoiceLineItemRelationalRepository } from './infrastructure/persistenc
 import { KindergartenHolidayRelationalRepository } from './infrastructure/persistence/relational/repositories/kindergarten-holiday.relational.repository';
 import { PaymentAccountRelationalRepository } from './infrastructure/persistence/relational/repositories/payment-account.relational.repository';
 import { PaymentRelationalRepository } from './infrastructure/persistence/relational/repositories/payment.relational.repository';
+import { RefundRelationalRepository } from './infrastructure/persistence/relational/repositories/refund.relational.repository';
 import { TariffAssignmentRelationalRepository } from './infrastructure/persistence/relational/repositories/tariff-assignment.relational.repository';
 import { TariffPlanRelationalRepository } from './infrastructure/persistence/relational/repositories/tariff-plan.relational.repository';
 import { InvoiceTypeOrmEntity } from './infrastructure/persistence/relational/entities/invoice.typeorm.entity';
@@ -39,6 +41,7 @@ import {
 } from './monthly-billing.processor';
 import { PaymentAccountService } from './payment-account.service';
 import { PaymentService } from './payment.service';
+import { RefundService } from './refund.service';
 import { TariffAssignmentService } from './tariff-assignment.service';
 import { TariffPlanService } from './tariff-plan.service';
 
@@ -91,13 +94,15 @@ function fiscalReceiptProvider(): Provider {
  * BillingModule (B13).
  *
  * T3 wired only ports + advisory-lock-only repository implementations.
- * T4a expands the surface to the full CRUD + auto-generation services
+ * T4a expanded the surface to the full CRUD + auto-generation services
  * (`TariffPlan`, `TariffAssignment`, `Holiday`, `PaymentAccount`,
- * `Invoice`) and registers the eight TypeORM entities with `forFeature`.
+ * `Invoice`) and registered the eight TypeORM entities with `forFeature`.
+ * T5a added `PaymentService` + `PaymentRepository`. T5b adds
+ * `RefundService` + `RefundRepository`.
  *
- * `Payment` and `Refund` entities are registered now so adjacent services
- * (T5a/T5b) can `@InjectRepository` them once they land — but their own
- * services + repositories are not yet provided.
+ * Outbox notifications + fiscal-receipt emission + nanny-policy
+ * filtering land in T5c; the admin HTTP controller for refunds is wired
+ * by T7a.
  */
 @Module({
   imports: [
@@ -129,6 +134,7 @@ function fiscalReceiptProvider(): Provider {
       useClass: InvoiceLineItemRelationalRepository,
     },
     { provide: PaymentRepository, useClass: PaymentRelationalRepository },
+    { provide: RefundRepository, useClass: RefundRelationalRepository },
     { provide: TariffPlanRepository, useClass: TariffPlanRelationalRepository },
     {
       provide: TariffAssignmentRepository,
@@ -148,6 +154,7 @@ function fiscalReceiptProvider(): Provider {
     HolidayService,
     PaymentAccountService,
     PaymentService,
+    RefundService,
     MonthlyBillingProcessor,
     MonthlyBillingScheduler,
   ],
@@ -158,6 +165,7 @@ function fiscalReceiptProvider(): Provider {
     InvoiceRepository,
     InvoiceLineItemRepository,
     PaymentRepository,
+    RefundRepository,
     TariffPlanRepository,
     TariffAssignmentRepository,
     PaymentAccountRepository,
@@ -168,6 +176,7 @@ function fiscalReceiptProvider(): Provider {
     HolidayService,
     PaymentAccountService,
     PaymentService,
+    RefundService,
     // Re-export the queue token via the BullMQ module so T7a's saas
     // controller can `@InjectQueue(MONTHLY_BILLING_QUEUE)` from any
     // module that imports BillingModule.
