@@ -14,3 +14,20 @@ export { RefundAlreadyProcessedError } from './refund-already-processed.error';
 export { WebhookSignatureInvalidError } from './webhook-signature-invalid.error';
 export { PaymentAccountNotFoundError } from './payment-account-not-found.error';
 export { KindergartenHolidayAlreadyExistsError } from './kindergarten-holiday-already-exists.error';
+// B16 Custom Discounts
+export { CustomDiscountNotFoundError } from './custom-discount-not-found.error';
+export { CustomDiscountStatusInvalidError } from './custom-discount-status-invalid.error';
+export {
+  CustomDiscountConditionsInvalidError,
+  type CustomDiscountConditionsInvalidReason,
+} from './custom-discount-conditions-invalid.error';
+export {
+  CustomDiscountTargetInvalidError,
+  type CustomDiscountTargetInvalidReason,
+} from './custom-discount-target-invalid.error';
+export { CustomDiscountAmountInvalidError } from './custom-discount-amount-invalid.error';
+export {
+  CustomDiscountMaxUsesExceededError,
+  type CustomDiscountMaxUsesLimitType,
+} from './custom-discount-max-uses-exceeded.error';
+export { CustomDiscountValidityInvalidError } from './custom-discount-validity-invalid.error';
