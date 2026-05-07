@@ -84,8 +84,25 @@ RATE_LIMIT_SUPER_ADMIN_LOGIN_WINDOW_SEC=3600
 
 # --- Providers (all default to mock until real credentials added) ---
 SMS_PROVIDER=mock
+
+# --- Billing & payments (B13) ---
+# PAYMENT_PROVIDER selects the payment-provider adapter wired into BillingModule.
+# Default 'mock' — synchronous in-memory mock for dev/test/demo. Real providers
+# (Halyk ePay, Kaspi, FreedomPay, TipTopPay) come in B14 / Phase B; configure
+# their credentials below.
 PAYMENT_PROVIDER=mock
+# Halyk ePay: requires merchant credentials when PAYMENT_PROVIDER=halyk.
+# HALYK_MERCHANT_ID=
+# HALYK_API_KEY=
+
+# FISCAL_PROVIDER selects the OFD fiscal-receipt adapter.
+# Default 'mock' — logs receipts and returns a deterministic fiscal sign so
+# tests can assert receipt emission without standing up a real OFD. Real
+# providers (Kassa24 / Rekassa / Webkassa) come in B15 / Phase B.
+FISCAL_PROVIDER=mock
+# Legacy alias kept for existing deployments — superseded by FISCAL_PROVIDER.
 OFD_PROVIDER=mock
+
 FACE_PROVIDER=mock
 
 # --- Multi-tenancy (RLS) ---

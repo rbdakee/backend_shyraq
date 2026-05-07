@@ -19,6 +19,7 @@ import { RedisModule } from './redis/redis.module';
 import { HealthModule } from './modules/health/health.module';
 import { AttendanceModule } from './modules/attendance/attendance.module';
 import { AuthModule } from './modules/auth/auth.module';
+import { BillingModule } from './modules/billing/billing.module';
 import { CameraModule } from './modules/camera/camera.module';
 import { ChildModule } from './modules/child/child.module';
 import { EnrollmentModule } from './modules/enrollment/enrollment.module';
@@ -108,6 +109,7 @@ const resolveI18nPath = (): string => {
     AttendanceModule,
     PickupModule,
     ParentRequestModule,
+    BillingModule,
   ],
   providers: [
     // The interceptor establishes a tenant-scoped TypeORM transaction (with
