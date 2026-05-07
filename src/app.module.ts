@@ -3,6 +3,7 @@ import { existsSync } from 'fs';
 import path from 'path';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
+import { BullModule } from '@nestjs/bullmq';
 import { ScheduleModule as NestScheduleModule } from '@nestjs/schedule';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { HeaderResolver, I18nModule } from 'nestjs-i18n';
@@ -80,6 +81,33 @@ const resolveI18nPath = (): string => {
       ],
       imports: [ConfigModule],
       inject: [ConfigService],
+    }),
+    // BullMQ root connection (B13 T7a wiring fix): BillingModule registers a
+    // BullMQ queue (`billing-monthly`) and a Processor worker. BullModule
+    // requires `forRoot/forRootAsync` to be called once in the root module so
+    // the shared Redis connection pool is available to all
+    // `registerQueue`/`@Processor` consumers. Without this the Worker throws
+    // "Worker requires a connection" on app init in both the API process and
+    // the e2e test suite. The WorkerModule already carries this config for
+    // the separate worker process; the API process (AppModule) needs it too.
+    BullModule.forRootAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService<AllConfigType>) => {
+        const host = configService.getOrThrow('redis.host', { infer: true });
+        const port = configService.getOrThrow('redis.port', { infer: true });
+        const password = configService.get('redis.password', { infer: true });
+        return {
+          connection: {
+            host,
+            port,
+            password: password ? password : undefined,
+            // BullMQ requires `maxRetriesPerRequest: null` so blocking
+            // commands (XREAD/XREADGROUP) do not time out on idle queues.
+            maxRetriesPerRequest: null,
+          },
+        };
+      },
     }),
     // @nestjs/schedule enables the @Cron decorator pickup at app bootstrap.
     // After B9 T6, the weekly-rollout cron migrated to BullMQ (worker

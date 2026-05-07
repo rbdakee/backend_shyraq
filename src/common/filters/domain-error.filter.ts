@@ -2,6 +2,7 @@ import {
   ArgumentsHost,
   Catch,
   ExceptionFilter,
+  HttpException,
   HttpStatus,
 } from '@nestjs/common';
 import type { Response } from 'express';
@@ -73,6 +74,23 @@ export class DomainErrorFilter implements ExceptionFilter {
     if (host.getType() !== 'http') throw exception;
     const ctx = host.switchToHttp();
     const res = ctx.getResponse<Response>();
+
+    // Pass NestJS HttpExceptions (ForbiddenException, UnauthorizedException,
+    // BadRequestException, etc.) through with their own serialised body so
+    // controllers that throw `new ForbiddenException('nanny_cannot_view')` get
+    // the standard { statusCode, message, error } response format.
+    if (exception instanceof HttpException) {
+      const httpStatus = exception.getStatus();
+      const httpBody = exception.getResponse();
+      if (typeof httpBody === 'object' && httpBody !== null) {
+        res.status(httpStatus).json(httpBody);
+      } else {
+        res
+          .status(httpStatus)
+          .json({ statusCode: httpStatus, message: String(httpBody) });
+      }
+      return;
+    }
 
     const status = this.statusFor(exception);
     if (status === null) {

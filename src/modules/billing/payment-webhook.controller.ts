@@ -1,5 +1,4 @@
 import {
-  Body,
   Controller,
   Headers,
   HttpCode,
@@ -7,7 +6,9 @@ import {
   Logger,
   Param,
   Post,
+  Req,
 } from '@nestjs/common';
+import type { Request } from 'express';
 import { ApiBody, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Public } from '@/common/decorators/public.decorator';
 import { Payment, PaymentProvider } from './domain/entities/payment.entity';
@@ -64,8 +65,14 @@ export class PaymentWebhookController {
   async webhook(
     @Param('provider') provider: string,
     @Headers() headers: Record<string, string | string[] | undefined>,
-    @Body() body: PaymentWebhookDto,
+    // @Req() is used instead of @Body() to bypass the global
+    // ValidationPipe's `whitelist: true` which would strip ALL properties
+    // from `PaymentWebhookDto` (index-signature only, no decorated fields).
+    // Provider payloads are arbitrary JSON validated by `verifyWebhook`;
+    // stripping properties here would break signature verification.
+    @Req() req: Request,
   ): Promise<WebhookAckDto> {
+    const body = req.body as PaymentWebhookDto;
     if (!isKnownProvider(provider)) {
       // Don't 404 — provider integrations may probe new paths during
       // onboarding and we'd rather log and ack than trigger retry storms.
