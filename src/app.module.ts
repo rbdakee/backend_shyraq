@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { existsSync } from 'fs';
 import path from 'path';
 import { ConfigModule, ConfigService } from '@nestjs/config';
+import { ServeStaticModule } from '@nestjs/serve-static';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { BullModule } from '@nestjs/bullmq';
 import { ScheduleModule as NestScheduleModule } from '@nestjs/schedule';
@@ -21,6 +22,7 @@ import { HealthModule } from './modules/health/health.module';
 import { AttendanceModule } from './modules/attendance/attendance.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { BillingModule } from './modules/billing/billing.module';
+import { ContentModule } from './modules/content/content.module';
 import { DiagnosticsModule } from './modules/diagnostics/diagnostics.module';
 import { CameraModule } from './modules/camera/camera.module';
 import { ChildModule } from './modules/child/child.module';
@@ -139,7 +141,14 @@ const resolveI18nPath = (): string => {
     PickupModule,
     ParentRequestModule,
     BillingModule,
+    ContentModule,
     DiagnosticsModule,
+    ServeStaticModule.forRoot({
+      rootPath: process.env.FILE_STORAGE_LOCAL_DIR
+        ? path.resolve(process.env.FILE_STORAGE_LOCAL_DIR)
+        : path.join(process.cwd(), 'uploads'),
+      serveRoot: '/static',
+    }),
   ],
   providers: [
     // The interceptor establishes a tenant-scoped TypeORM transaction (with

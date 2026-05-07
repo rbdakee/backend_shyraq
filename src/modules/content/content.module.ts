@@ -5,10 +5,14 @@ import { ChildModule } from '@/modules/child/child.module';
 import { GroupModule } from '@/modules/group/group.module';
 import { FileStoragePort } from '@/shared-kernel/storage/file-storage.port';
 import { LocalFileStorageAdapter } from '@/shared-kernel/storage/adapters/local-file-storage.adapter';
+import { AdminContentController } from './admin-content.controller';
 import { ContentRepository } from './content.repository';
 import { ContentService } from './content.service';
 import { ContentFeedService } from './content-feed.service';
 import { GroupStoryRepository } from './group-story.repository';
+import { ParentContentController } from './parent-content.controller';
+import { SaasContentController } from './saas-content.controller';
+import { StaffStoriesController } from './staff-stories.controller';
 import { StoryService } from './story.service';
 import { BirthdayGeneratorService } from './birthday-generator.service';
 import { ContentPostRelationalEntity } from './infrastructure/persistence/relational/entities/content-post.relational-entity';
@@ -74,6 +78,12 @@ function fileStorageProvider(): Provider {
     BullModule.registerQueue({ name: STORY_CLEANUP_QUEUE }),
     ChildModule,
     GroupModule,
+  ],
+  controllers: [
+    AdminContentController,
+    StaffStoriesController,
+    ParentContentController,
+    SaasContentController,
   ],
   providers: [
     fileStorageProvider(),
