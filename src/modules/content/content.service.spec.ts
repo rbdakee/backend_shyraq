@@ -531,6 +531,32 @@ describe('ContentService.update', () => {
     expect(updated.title).toBe('b');
   });
 
+  it('PATCH with only title preserves body and target_group_id (B17 T8 HIGH#1)', async () => {
+    const { service, groupRepo } = buildService();
+    groupRepo.groups.set(GROUP, { kg: KG });
+    const created = await service.create(
+      KG,
+      {
+        contentType: 'news',
+        targetType: 'group',
+        targetGroupId: GROUP,
+        title: 'orig title',
+        body: 'orig body',
+      },
+      USER,
+    );
+    // Only `title` is in the patch; service must NOT clobber body or
+    // target shape because controller no longer sends keys that are
+    // absent in DTO.
+    const updated = await service.update(KG, created.id, {
+      title: 'new title',
+    });
+    expect(updated.title).toBe('new title');
+    expect(updated.body).toBe('orig body');
+    expect(updated.targetType).toBe('group');
+    expect(updated.targetGroupId).toBe(GROUP);
+  });
+
   it('re-validates target on patch (cross-tenant defense)', async () => {
     const { service, groupRepo } = buildService();
     const created = await service.create(

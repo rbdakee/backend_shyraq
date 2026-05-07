@@ -29,6 +29,16 @@ import {
   PickupValidatedEvent,
   TimelineEntryCreatedEvent,
 } from '@/common/notifications/notification.port';
+import { Child } from '@/modules/child/domain/entities/child.entity';
+import { ChildGuardian } from '@/modules/child/domain/entities/child-guardian.entity';
+import {
+  ChildGroupHistoryRecord,
+  ChildListFilters,
+  ChildRepository,
+  PageRequest,
+  PageResult,
+} from '@/modules/child/infrastructure/persistence/child.repository';
+import { ChildGuardianRepository } from '@/modules/child/infrastructure/persistence/child-guardian.repository';
 import { Group } from '@/modules/group/domain/entities/group.entity';
 import { GroupMentor } from '@/modules/group/domain/entities/group-mentor.entity';
 import {
@@ -108,6 +118,7 @@ class FakeStoryRepo extends GroupStoryRepository {
 
 class FakeGroupRepo extends GroupRepository {
   groups = new Map<string, { kg: string }>();
+  mentorAssignments = new Set<string>(); // key = `${kg}:${userId}:${groupId}`
   create(_kg: string, _input: CreateGroupInput): Promise<Group> {
     throw new Error('not used');
   }
@@ -145,6 +156,120 @@ class FakeGroupRepo extends GroupRepository {
     return Promise.resolve([]);
   }
   findActiveMentorAssignmentsByUserIdCrossTenant(): Promise<GroupMentor[]> {
+    return Promise.resolve([]);
+  }
+  isUserActiveMentorForGroup(
+    kg: string,
+    userId: string,
+    groupId: string,
+  ): Promise<boolean> {
+    return Promise.resolve(
+      this.mentorAssignments.has(`${kg}:${userId}:${groupId}`),
+    );
+  }
+}
+
+class FakeChildRepo extends ChildRepository {
+  children = new Map<string, { kg: string; groupId: string | null }>();
+  create(): Promise<void> {
+    return Promise.resolve();
+  }
+  findById(kg: string, id: string): Promise<Child | null> {
+    const e = this.children.get(id);
+    if (!e || e.kg !== kg) return Promise.resolve(null);
+    return Promise.resolve({
+      toState() {
+        return {
+          id,
+          kindergartenId: kg,
+          fullName: 'Child',
+          dateOfBirth: new Date('2020-01-01'),
+          currentGroupId: e.groupId,
+          status: 'active',
+        };
+      },
+    } as unknown as Child);
+  }
+  findByKindergartenAndIin(): Promise<Child | null> {
+    return Promise.resolve(null);
+  }
+  update(): Promise<void> {
+    return Promise.resolve();
+  }
+  list(
+    _kg: string,
+    _filters: ChildListFilters,
+    _page: PageRequest,
+  ): Promise<PageResult<Child>> {
+    return Promise.resolve({ items: [], total: 0 });
+  }
+  countActiveByGroup(): Promise<number> {
+    return Promise.resolve(0);
+  }
+  recordGroupTransfer(): Promise<void> {
+    return Promise.resolve();
+  }
+  listGroupHistory(): Promise<ChildGroupHistoryRecord[]> {
+    return Promise.resolve([]);
+  }
+  findByIinCrossTenant(): Promise<Child[]> {
+    return Promise.resolve([]);
+  }
+  findByIdsCrossTenant(): Promise<Child[]> {
+    return Promise.resolve([]);
+  }
+}
+
+class FakeChildGuardianRepo extends ChildGuardianRepository {
+  guardians: ChildGuardian[] = [];
+  create(): Promise<void> {
+    return Promise.resolve();
+  }
+  findById(): Promise<ChildGuardian | null> {
+    return Promise.resolve(null);
+  }
+  findByChildId(): Promise<ChildGuardian[]> {
+    return Promise.resolve([]);
+  }
+  findActiveByChildAndUser(): Promise<ChildGuardian | null> {
+    return Promise.resolve(null);
+  }
+  findApprovedByChildAndUserCrossTenant(): Promise<ChildGuardian | null> {
+    return Promise.resolve(null);
+  }
+  findByIdCrossTenant(): Promise<ChildGuardian | null> {
+    return Promise.resolve(null);
+  }
+  findPendingForPrimary(): Promise<ChildGuardian[]> {
+    return Promise.resolve([]);
+  }
+  update(): Promise<void> {
+    return Promise.resolve();
+  }
+  countApprovalRights(): Promise<number> {
+    return Promise.resolve(0);
+  }
+  acquireApprovalRightsLock(): Promise<void> {
+    return Promise.resolve();
+  }
+  listApprovedKindergartenIdsByUserId(): Promise<string[]> {
+    return Promise.resolve([]);
+  }
+  findApprovedByUser(_kg: string, userId: string): Promise<ChildGuardian[]> {
+    return Promise.resolve(
+      this.guardians.filter((g) => g.toState().userId === userId),
+    );
+  }
+  findPendingPrimaryByUserIdCrossTenant(): Promise<ChildGuardian[]> {
+    return Promise.resolve([]);
+  }
+  findApprovedActivePickupGuardian(): Promise<ChildGuardian | null> {
+    return Promise.resolve(null);
+  }
+  findApprovedActiveByUserAndChild(): Promise<ChildGuardian | null> {
+    return Promise.resolve(null);
+  }
+  findApprovedActiveByUserIdCrossTenant(): Promise<ChildGuardian[]> {
     return Promise.resolve([]);
   }
 }
@@ -272,6 +397,8 @@ function buildService() {
   const fileStorage = new FakeFileStorage();
   const notification = new FakeNotificationPort();
   const clock = new FakeClock();
+  const childRepo = new FakeChildRepo();
+  const guardianRepo = new FakeChildGuardianRepo();
   groupRepo.groups.set(GROUP, { kg: KG });
   const service = new StoryService(
     storyRepo,
@@ -280,8 +407,19 @@ function buildService() {
     notification,
     fakeDataSource,
     clock,
+    childRepo,
+    guardianRepo,
   );
-  return { service, storyRepo, groupRepo, fileStorage, notification, clock };
+  return {
+    service,
+    storyRepo,
+    groupRepo,
+    fileStorage,
+    notification,
+    clock,
+    childRepo,
+    guardianRepo,
+  };
 }
 
 function seedExpired(repo: FakeStoryRepo, id: string): GroupStory {
@@ -459,5 +597,134 @@ describe('StoryService.listActiveByGroup', () => {
     });
     const list = await service.listActiveByGroup(KG, GROUP);
     expect(list).toHaveLength(1);
+  });
+});
+
+describe('StoryService.create — mentor scope (B17 T8 HIGH#3)', () => {
+  it('rejects mentor when not assigned to the group', async () => {
+    const { service } = buildService();
+    await expect(
+      service.create(
+        KG,
+        GROUP,
+        AUTHOR,
+        {
+          buffer: Buffer.from('img'),
+          mimetype: 'image/jpeg',
+          originalname: 'p.jpg',
+        },
+        { userId: AUTHOR, role: 'mentor' },
+      ),
+    ).rejects.toBeInstanceOf(ForbiddenActionError);
+  });
+
+  it('allows mentor when assigned to the group', async () => {
+    const { service, groupRepo } = buildService();
+    groupRepo.mentorAssignments.add(`${KG}:${AUTHOR}:${GROUP}`);
+    const story = await service.create(
+      KG,
+      GROUP,
+      AUTHOR,
+      {
+        buffer: Buffer.from('img'),
+        mimetype: 'image/jpeg',
+        originalname: 'p.jpg',
+      },
+      { userId: AUTHOR, role: 'mentor' },
+    );
+    expect(story.id).toBeDefined();
+  });
+
+  it('allows admin without group-assignment check', async () => {
+    const { service } = buildService();
+    const story = await service.create(
+      KG,
+      GROUP,
+      AUTHOR,
+      {
+        buffer: Buffer.from('img'),
+        mimetype: 'image/jpeg',
+        originalname: 'p.jpg',
+      },
+      { userId: AUTHOR, role: 'admin' },
+    );
+    expect(story.id).toBeDefined();
+  });
+});
+
+describe('StoryService.incrementViews — parent scope (B17 T8 MEDIUM#1)', () => {
+  it('rejects parent who is not a guardian of any child in the story group', async () => {
+    const { service, storyRepo } = buildService();
+    const created = await service.create(KG, GROUP, AUTHOR, {
+      buffer: Buffer.from('img'),
+      mimetype: 'image/jpeg',
+      originalname: 'p.jpg',
+    });
+    expect(storyRepo.stories.has(created.id)).toBe(true);
+    await expect(
+      service.incrementViews(KG, created.id, {
+        userId: OTHER,
+        role: 'parent',
+      }),
+    ).rejects.toBeInstanceOf(ForbiddenActionError);
+  });
+
+  it('allows parent who has an approved-active guardian for a child in the story group', async () => {
+    const { service, childRepo, guardianRepo } = buildService();
+    const created = await service.create(KG, GROUP, AUTHOR, {
+      buffer: Buffer.from('img'),
+      mimetype: 'image/jpeg',
+      originalname: 'p.jpg',
+    });
+    const CHILD_X = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee';
+    const GUARDIAN_ID = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
+    childRepo.children.set(CHILD_X, { kg: KG, groupId: GROUP });
+    const guardian = ChildGuardian.hydrate({
+      id: GUARDIAN_ID,
+      kindergartenId: KG,
+      childId: CHILD_X,
+      userId: OTHER,
+      role: 'primary',
+      status: 'approved',
+      hasApprovalRights: true,
+      approvedBy: null,
+      approvedAt: null,
+      revokedBy: null,
+      revokedAt: null,
+      canPickup: true,
+      permissions: {},
+      permissionsUpdatedBy: null,
+      permissionsUpdatedAt: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    guardianRepo.guardians.push(guardian);
+    await expect(
+      service.incrementViews(KG, created.id, {
+        userId: OTHER,
+        role: 'parent',
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('admin/mentor bypass parent guardian check', async () => {
+    const { service } = buildService();
+    const created = await service.create(KG, GROUP, AUTHOR, {
+      buffer: Buffer.from('img'),
+      mimetype: 'image/jpeg',
+      originalname: 'p.jpg',
+    });
+    await expect(
+      service.incrementViews(KG, created.id, {
+        userId: OTHER,
+        role: 'admin',
+      }),
+    ).resolves.toBeUndefined();
+    await expect(
+      service.incrementViews(KG, created.id, {
+        userId: AUTHOR,
+        role: 'mentor',
+      }),
+    ).resolves.toBeUndefined();
   });
 });

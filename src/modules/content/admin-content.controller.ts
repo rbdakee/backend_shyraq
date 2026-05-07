@@ -46,6 +46,8 @@ import { UpdateContentDto } from './dto/admin/update-content.dto';
 import { ContentListResponseDto } from './dto/responses/content-list-response.dto';
 import { ContentPostResponseDto } from './dto/responses/content-post-response.dto';
 import { UploadMediaResponseDto } from './dto/responses/upload-media-response.dto';
+import { FileUploadError } from './domain/errors/file-upload.error';
+import { MediaTypeInvalidError } from './domain/errors/media-type-invalid.error';
 import type {
   ContentTargetType,
   ContentType,
@@ -54,9 +56,40 @@ import type {
 
 const TENANT_REQUIRED = 'tenant_required';
 
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // 10 MB
+const MAX_VIDEO_BYTES = 100 * 1024 * 1024; // 100 MB
+
 function requireTenant(t: TenantContext): string {
   if (!t.kgId) throw new BadRequestException(TENANT_REQUIRED);
   return t.kgId;
+}
+
+/**
+ * B17 T8 MEDIUM#2 — defence-in-depth pre-buffer MIME-aware size caps.
+ * The Multer `limits.fileSize` cap is set to 100 MB so video uploads pass,
+ * but we want a tighter 10 MB cap for `image/*` to bound RAM use under
+ * abuse (5 × 95 MB image-MIME uploads otherwise allocate ~475 MB).
+ *
+ * Multer's memory storage already buffered the file fully by this point,
+ * but rejecting here still shields downstream code (and S3/Yandex egress
+ * in Phase B). Real defense remains the controller-level interceptor
+ * `limits.fileSize`; this is the per-MIME refinement.
+ */
+function assertFileWithinPerMimeCap(file: Express.Multer.File): void {
+  const mt = (file.mimetype ?? '').toLowerCase();
+  if (mt.startsWith('image/')) {
+    if (file.size > MAX_IMAGE_BYTES) {
+      throw new FileUploadError('file_too_large', 'image_over_10mb');
+    }
+    return;
+  }
+  if (mt.startsWith('video/')) {
+    if (file.size > MAX_VIDEO_BYTES) {
+      throw new FileUploadError('file_too_large', 'video_over_100mb');
+    }
+    return;
+  }
+  throw new MediaTypeInvalidError(mt);
 }
 
 /**
@@ -114,6 +147,7 @@ export class AdminContentController {
     @UploadedFiles() files?: Express.Multer.File[],
   ): Promise<ContentPostResponseDto> {
     const kgId = requireTenant(t);
+    for (const file of files ?? []) assertFileWithinPerMimeCap(file);
     const mediaUrls: string[] = [];
     for (const file of files ?? []) {
       const result = await this.service.uploadMedia(kgId, {
@@ -235,6 +269,7 @@ export class AdminContentController {
     @UploadedFiles() files?: Express.Multer.File[],
   ): Promise<ContentPostResponseDto> {
     const kgId = requireTenant(t);
+    for (const file of files ?? []) assertFileWithinPerMimeCap(file);
     const newMediaUrls: string[] = [];
     for (const file of files ?? []) {
       const result = await this.service.uploadMedia(kgId, {
@@ -245,23 +280,38 @@ export class AdminContentController {
       newMediaUrls.push(result.url);
     }
 
+    // Spread-conditional pattern: only include keys the client actually sent,
+    // so undefined DTO fields don't clobber existing values via
+    // `'key' in payload` checks in the entity update method (B17 T8 HIGH#1).
     const patch: Parameters<ContentService['update']>[2] = {
-      title: dto.title,
-      body: dto.body,
-      titleI18n: dto.title_i18n as LocalisedText | null | undefined,
-      bodyI18n: dto.body_i18n as LocalisedText | null | undefined,
-      metadata: dto.metadata,
-      expiresAt: dto.expires_at
-        ? new Date(dto.expires_at)
-        : (dto.expires_at as null | undefined),
-      targetType: dto.target_type as ContentTargetType | undefined,
-      targetGroupId: dto.target_group_id,
-      targetChildId: dto.target_child_id,
+      ...(dto.title !== undefined ? { title: dto.title } : {}),
+      ...(dto.body !== undefined ? { body: dto.body } : {}),
+      ...(dto.title_i18n !== undefined
+        ? { titleI18n: dto.title_i18n as LocalisedText | null }
+        : {}),
+      ...(dto.body_i18n !== undefined
+        ? { bodyI18n: dto.body_i18n as LocalisedText | null }
+        : {}),
+      ...(dto.metadata !== undefined ? { metadata: dto.metadata } : {}),
+      ...(dto.expires_at !== undefined
+        ? {
+            expiresAt:
+              dto.expires_at !== null ? new Date(dto.expires_at) : null,
+          }
+        : {}),
+      ...(dto.target_type !== undefined
+        ? { targetType: dto.target_type as ContentTargetType }
+        : {}),
+      ...(dto.target_group_id !== undefined
+        ? { targetGroupId: dto.target_group_id }
+        : {}),
+      ...(dto.target_child_id !== undefined
+        ? { targetChildId: dto.target_child_id }
+        : {}),
       ...(dto.scheduled_for !== undefined
         ? {
-            scheduledFor: dto.scheduled_for
-              ? new Date(dto.scheduled_for)
-              : null,
+            scheduledFor:
+              dto.scheduled_for !== null ? new Date(dto.scheduled_for) : null,
           }
         : {}),
     };
@@ -386,6 +436,7 @@ export class AdminContentController {
     if (!file) {
       throw new BadRequestException('file_required');
     }
+    assertFileWithinPerMimeCap(file);
     const result = await this.service.uploadMedia(kgId, {
       buffer: file.buffer,
       mimetype: file.mimetype,

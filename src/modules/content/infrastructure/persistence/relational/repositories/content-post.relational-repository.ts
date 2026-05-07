@@ -238,6 +238,19 @@ export class ContentPostRelationalRepository extends ContentRepository {
     return rows.map((r) => ContentPostMapper.toDomain(r));
   }
 
+  async acquireBirthdayAdvisoryLock(
+    kindergartenId: string,
+    childId: string,
+    date: Date,
+  ): Promise<void> {
+    const isoDate = toIsoDate(date);
+    const m = this.manager();
+    await m.query(
+      `SELECT pg_advisory_xact_lock(hashtext('birthday:' || $1 || ':' || $2 || ':' || $3)::bigint)`,
+      [kindergartenId, childId, isoDate],
+    );
+  }
+
   async existsBirthdayForChildOnDate(
     kindergartenId: string,
     childId: string,

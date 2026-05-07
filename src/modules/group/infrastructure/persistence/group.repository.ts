@@ -117,4 +117,23 @@ export abstract class GroupRepository {
     userId: string,
     kindergartenId?: string,
   ): Promise<GroupMentor[]>;
+
+  /**
+   * B17 T8 HIGH#3/HIGH#4 — kg-scoped predicate "is this user currently
+   * the active mentor of this group?". Joins `group_mentors` with
+   * `staff_members` on `staff_member_id` and filters on `user_id` +
+   * active assignment (`unassigned_at IS NULL`). Used by
+   * `StaffStoriesController` and `StoryService` to enforce that mentor
+   * actors can only operate on their own assigned groups.
+   *
+   * Defaults to `false` so older test fakes compile; the relational impl
+   * overrides with a real SQL JOIN.
+   */
+  isUserActiveMentorForGroup(
+    _kindergartenId: string,
+    _userId: string,
+    _groupId: string,
+  ): Promise<boolean> {
+    return Promise.resolve(false);
+  }
 }

@@ -27,8 +27,9 @@ export type FileUploadErrorReason =
  * 400 — invalid or failed file upload. Maps to BAD_REQUEST via
  * DomainErrorFilter (InvariantViolationError → 400).
  *
- * The wire `code` is always `file_upload_failed`; the specific reason is in
- * `details.reason`.
+ * The wire `code` is always `file_upload_error`; the specific reason is in
+ * `details.reason`. (B17 T8 fix-pass: docs §2.10/§3.12 advertise
+ * `file_upload_error` — the slug here is now the canonical code.)
  */
 export class FileUploadError extends InvariantViolationError {
   public readonly details: {
@@ -37,7 +38,7 @@ export class FileUploadError extends InvariantViolationError {
   };
 
   constructor(reason: FileUploadErrorReason, cause?: string) {
-    super('file_upload_failed');
+    super('file_upload_error');
     this.details = cause === undefined ? { reason } : { reason, cause };
   }
 }

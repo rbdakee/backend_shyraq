@@ -114,4 +114,28 @@ export abstract class ContentRepository {
     childId: string,
     date: Date,
   ): Promise<boolean>;
+
+  /**
+   * B17 T8 HIGH#5 — per-(kg, child, calendar-date) advisory lock keyed by
+   * `pg_advisory_xact_lock(hashtext('birthday:'||kg||':'||childId||':'||yyyy-mm-dd))`.
+   * Held until the surrounding TX boundary so concurrent
+   * `BirthdayGeneratorService.runDaily` invocations (cron + manual saas
+   * trigger, or two cron ticks before persistence) serialize on the
+   * check-then-insert sequence and observe each other's writes.
+   *
+   * Outside an ambient HTTP TX (CLI / direct invocation) the lock is taken
+   * on the default pool's implicit per-statement TX and released
+   * immediately — effectively a no-op, which is fine because those code
+   * paths don't race.
+   *
+   * Default-no-op so older test fakes compile; the relational impl
+   * overrides with the real SQL.
+   */
+  acquireBirthdayAdvisoryLock(
+    _kindergartenId: string,
+    _childId: string,
+    _date: Date,
+  ): Promise<void> {
+    return Promise.resolve();
+  }
 }

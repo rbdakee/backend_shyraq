@@ -29,6 +29,9 @@ import {
   ApiTags,
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
+import { ForbiddenActionError } from '@/shared-kernel/domain/errors';
+import { FileUploadError } from './domain/errors/file-upload.error';
+import { MediaTypeInvalidError } from './domain/errors/media-type-invalid.error';
 import { Roles } from '@/common/decorators/roles.decorator';
 import { RolesGuard } from '@/common/guards/roles.guard';
 import { CurrentUser } from '@/common/decorators/current-user.decorator';
@@ -46,9 +49,34 @@ import { StoryListResponseDto } from './dto/responses/story-list-response.dto';
 
 const TENANT_REQUIRED = 'tenant_required';
 
+const STAFF_MAX_IMAGE_BYTES = 10 * 1024 * 1024; // 10 MB
+const STAFF_MAX_VIDEO_BYTES = 100 * 1024 * 1024; // 100 MB
+
 function requireTenant(t: TenantContext): string {
   if (!t.kgId) throw new BadRequestException(TENANT_REQUIRED);
   return t.kgId;
+}
+
+/**
+ * B17 T8 MEDIUM#2 — pre-buffer MIME-aware size cap (mirror of the helper
+ * in admin-content.controller.ts). Rejects image/* > 10 MB before
+ * service-layer processing.
+ */
+function assertStoryFileWithinPerMimeCap(file: Express.Multer.File): void {
+  const mt = (file.mimetype ?? '').toLowerCase();
+  if (mt.startsWith('image/')) {
+    if (file.size > STAFF_MAX_IMAGE_BYTES) {
+      throw new FileUploadError('file_too_large', 'image_over_10mb');
+    }
+    return;
+  }
+  if (mt.startsWith('video/')) {
+    if (file.size > STAFF_MAX_VIDEO_BYTES) {
+      throw new FileUploadError('file_too_large', 'video_over_100mb');
+    }
+    return;
+  }
+  throw new MediaTypeInvalidError(mt);
 }
 
 /**
@@ -107,12 +135,19 @@ export class StaffStoriesController {
     if (!file) {
       throw new BadRequestException('file_required');
     }
-    const story = await this.storyService.create(kgId, dto.group_id, user.sub, {
-      buffer: file.buffer,
-      mimetype: file.mimetype,
-      originalname: file.originalname,
-      caption: dto.caption ?? null,
-    });
+    assertStoryFileWithinPerMimeCap(file);
+    const story = await this.storyService.create(
+      kgId,
+      dto.group_id,
+      user.sub,
+      {
+        buffer: file.buffer,
+        mimetype: file.mimetype,
+        originalname: file.originalname,
+        caption: dto.caption ?? null,
+      },
+      { userId: user.sub, role: user.role as string },
+    );
     return ContentPresenter.groupStory(story);
   }
 
@@ -135,8 +170,22 @@ export class StaffStoriesController {
     const kgId = requireTenant(t);
     const role = user.role as string;
 
-    // Single-group filter shortcut
+    // Single-group filter shortcut. Admin bypass; mentor must be actively
+    // assigned to the requested group (B17 T8 HIGH#4).
     if (query.group_id) {
+      if (role === 'mentor') {
+        const isAssigned = await this.groupRepo.isUserActiveMentorForGroup(
+          kgId,
+          user.sub,
+          query.group_id,
+        );
+        if (!isAssigned) {
+          throw new ForbiddenActionError(
+            'mentor_not_assigned_to_group',
+            'Mentor is not assigned to this group',
+          );
+        }
+      }
       const stories = await this.storyService.listActiveByGroup(
         kgId,
         query.group_id,
@@ -231,10 +280,14 @@ export class StaffStoriesController {
   @Roles('mentor', 'admin', 'parent')
   async view(
     @Tenant() t: TenantContext,
+    @CurrentUser() user: JwtPayload,
     @Param('id', new ParseUUIDPipe()) id: string,
   ): Promise<{ views: number }> {
     const kgId = requireTenant(t);
-    await this.storyService.incrementViews(kgId, id);
+    await this.storyService.incrementViews(kgId, id, {
+      userId: user.sub,
+      role: user.role as string,
+    });
     // Re-fetch to return the updated views count.
     const story = await this.storyRepo.findById(kgId, id);
     return { views: story?.views ?? 0 };

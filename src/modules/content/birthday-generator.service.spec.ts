@@ -61,6 +61,14 @@ class FakeClock extends ClockPort {
 class FakeContentRepo extends ContentRepository {
   posts: ContentPost[] = [];
   existsById = new Set<string>();
+  lockCalls: Array<{ kg: string; childId: string; date: Date }> = [];
+  /**
+   * B17 T8 HIGH#5 — when set, the next call to `existsBirthdayForChildOnDate`
+   * for `childId` will return `false` THEN `true` on the second call. Used to
+   * simulate the inside-lock re-check observing a prior winner's INSERT.
+   */
+  flipExistsAfterLock = new Set<string>();
+  private existsCallsByChild = new Map<string, number>();
   create(p: ContentPost): Promise<ContentPost> {
     this.posts.push(p);
     return Promise.resolve(p);
@@ -94,7 +102,22 @@ class FakeContentRepo extends ContentRepository {
     childId: string,
     _date: Date,
   ): Promise<boolean> {
+    const calls = (this.existsCallsByChild.get(childId) ?? 0) + 1;
+    this.existsCallsByChild.set(childId, calls);
+    if (this.flipExistsAfterLock.has(childId)) {
+      // First call → false (let the outer flow proceed); second call (inside
+      // the lock) → true (a prior winner just committed).
+      return Promise.resolve(calls >= 2);
+    }
     return Promise.resolve(this.existsById.has(childId));
+  }
+  acquireBirthdayAdvisoryLock(
+    kg: string,
+    childId: string,
+    date: Date,
+  ): Promise<void> {
+    this.lockCalls.push({ kg, childId, date });
+    return Promise.resolve();
   }
 }
 
@@ -332,6 +355,33 @@ describe('BirthdayGeneratorService.runDaily', () => {
     const r = await service.runDaily(KG, today);
     // Just one — primary set already includes Feb-29; no double-emit.
     expect(r.generatedCount).toBe(1);
+  });
+
+  it('acquires per-(kg, child, date) advisory lock before insert (B17 T8 HIGH#5)', async () => {
+    const { service, childRepo, contentRepo } = buildService();
+    const child = makeChild('child-lock', new Date('2020-05-07T00:00:00.000Z'));
+    childRepo.byMonthDay.set('5-7', [child]);
+    await service.runDaily(KG, NOW);
+    expect(contentRepo.lockCalls).toHaveLength(1);
+    expect(contentRepo.lockCalls[0]).toMatchObject({
+      kg: KG,
+      childId: 'child-lock',
+    });
+    expect(contentRepo.posts).toHaveLength(1);
+  });
+
+  it('skips when prior winner committed inside the lock (race-safe re-check)', async () => {
+    const { service, childRepo, contentRepo } = buildService();
+    const child = makeChild('race-child', new Date('2020-05-07T00:00:00.000Z'));
+    childRepo.byMonthDay.set('5-7', [child]);
+    contentRepo.flipExistsAfterLock.add('race-child');
+    const r = await service.runDaily(KG, NOW);
+    // First exists call (pre-lock) returns false → enter lock branch.
+    // Second exists call (inside lock) returns true → skip; no INSERT.
+    expect(r.generatedCount).toBe(0);
+    expect(r.skippedCount).toBe(1);
+    expect(contentRepo.posts).toHaveLength(0);
+    expect(contentRepo.lockCalls).toHaveLength(1);
   });
 
   it('continues across multiple children even when one fails', async () => {

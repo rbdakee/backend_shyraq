@@ -247,6 +247,27 @@ export class GroupRelationalRepository extends GroupRepository {
     return rows.map((r) => GroupMentorMapper.toDomain(r));
   }
 
+  async isUserActiveMentorForGroup(
+    kindergartenId: string,
+    userId: string,
+    groupId: string,
+  ): Promise<boolean> {
+    const count = await this.manager()
+      .getRepository(GroupMentorEntity)
+      .createQueryBuilder('m')
+      .innerJoin(
+        'staff_members',
+        's',
+        's.id = m.staff_member_id AND s.user_id = :uid',
+        { uid: userId },
+      )
+      .where('m.kindergarten_id = :kg', { kg: kindergartenId })
+      .andWhere('m.group_id = :g', { g: groupId })
+      .andWhere('m.unassigned_at IS NULL')
+      .getCount();
+    return count > 0;
+  }
+
   async findActiveMentorAssignmentsByUserIdCrossTenant(
     userId: string,
     kindergartenId?: string,

@@ -3,6 +3,8 @@ import { extname } from 'node:path';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { NotificationPort } from '@/common/notifications/notification.port';
+import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
+import { ChildGuardianRepository } from '@/modules/child/infrastructure/persistence/child-guardian.repository';
 import { GroupRepository } from '@/modules/group/infrastructure/persistence/group.repository';
 import { GroupNotFoundError } from '@/modules/group/domain/errors/group-not-found.error';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
@@ -59,6 +61,8 @@ export class StoryService {
     private readonly notificationPort: NotificationPort,
     private readonly dataSource: DataSource,
     @Inject(ClockPort) private readonly clock: ClockPort,
+    private readonly childRepo: ChildRepository,
+    private readonly childGuardianRepo: ChildGuardianRepository,
   ) {}
 
   async create(
@@ -66,9 +70,27 @@ export class StoryService {
     groupId: string,
     createdBy: string,
     media: StoryCreateInput,
+    actor?: { userId: string; role: string },
   ): Promise<GroupStory> {
     const group = await this.groupRepo.findById(kindergartenId, groupId);
     if (!group) throw new GroupNotFoundError(groupId);
+
+    // B17 T8 HIGH#3 — mentor must be actively assigned to this group; admin
+    // bypasses. Other roles (super_admin/system) also bypass when actor is
+    // not provided (cron / batch callers without an HTTP actor).
+    if (actor && actor.role === 'mentor') {
+      const isAssigned = await this.groupRepo.isUserActiveMentorForGroup(
+        kindergartenId,
+        actor.userId,
+        groupId,
+      );
+      if (!isAssigned) {
+        throw new ForbiddenActionError(
+          'mentor_not_assigned_to_group',
+          'Mentor is not assigned to this group',
+        );
+      }
+    }
 
     if (!media.buffer || media.buffer.length === 0) {
       throw new FileUploadError('upload_failed', 'empty_buffer');
@@ -159,11 +181,42 @@ export class StoryService {
     return this.storyRepo.listActiveByGroup(kindergartenId, groupId, now);
   }
 
-  async incrementViews(kindergartenId: string, storyId: string): Promise<void> {
+  async incrementViews(
+    kindergartenId: string,
+    storyId: string,
+    actor?: { userId: string; role: string },
+  ): Promise<void> {
     const story = await this.storyRepo.findById(kindergartenId, storyId);
     if (!story) throw new GroupStoryNotFoundError(storyId);
     const now = this.clock.now();
     story.assertNotExpired(now);
+
+    // B17 T8 MEDIUM#1 — parent must be an approved-active guardian of a
+    // child whose current_group_id matches story.groupId. Admin/mentor
+    // bypass. (Mentor's own kg-scope guard runs in the controller — we
+    // don't re-check assignment here.)
+    if (actor && actor.role === 'parent') {
+      const guardians = await this.childGuardianRepo.findApprovedByUser(
+        kindergartenId,
+        actor.userId,
+      );
+      const childIds = guardians.map((g) => g.toState().childId);
+      let allowed = false;
+      for (const childId of childIds) {
+        const child = await this.childRepo.findById(kindergartenId, childId);
+        if (child && child.toState().currentGroupId === story.groupId) {
+          allowed = true;
+          break;
+        }
+      }
+      if (!allowed) {
+        throw new ForbiddenActionError(
+          'parent_not_in_story_group',
+          'Parent is not a guardian of any child in this story group',
+        );
+      }
+    }
+
     await this.storyRepo.incrementViews(kindergartenId, storyId);
   }
 

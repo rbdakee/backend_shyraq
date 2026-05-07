@@ -74,17 +74,38 @@ export class BirthdayGeneratorService {
     let skipped = 0;
     for (const child of allChildren) {
       const childState = child.toState();
-      const exists = await this.contentRepo.existsBirthdayForChildOnDate(
+      // B17 T8 HIGH#5: cheap pre-lock probe so the common idempotent case
+      // (already exists, no race) skips the lock + retry overhead. The
+      // authoritative check-then-insert sequence still runs inside the
+      // advisory lock to defend against concurrency.
+      const existsFast = await this.contentRepo.existsBirthdayForChildOnDate(
         kindergartenId,
         childState.id,
         today,
       );
-      if (exists) {
+      if (existsFast) {
         skipped += 1;
         continue;
       }
       try {
-        await this.runInTenantTx(kindergartenId, async () => {
+        const created = await this.runInTenantTx(kindergartenId, async () => {
+          // B17 T8 HIGH#5 — per-(kg, child, date) advisory lock serializes
+          // concurrent runs (cron + manual saas trigger, or two ticks).
+          // Held for the TX so the in-flight INSERT is visible before the
+          // lock is released.
+          await this.contentRepo.acquireBirthdayAdvisoryLock(
+            kindergartenId,
+            childState.id,
+            today,
+          );
+          // Re-check inside the lock — the prior winner committed an
+          // INSERT that we now observe.
+          const exists = await this.contentRepo.existsBirthdayForChildOnDate(
+            kindergartenId,
+            childState.id,
+            today,
+          );
+          if (exists) return false;
           const post = ContentPost.createBirthday({
             id: randomUUID(),
             kindergartenId,
@@ -112,8 +133,10 @@ export class BirthdayGeneratorService {
             age: computeAge(childState.dateOfBirth, today),
             publishedAt: today,
           });
+          return true;
         });
-        generated += 1;
+        if (created) generated += 1;
+        else skipped += 1;
       } catch (err) {
         this.logger.warn(
           `birthday_gen_failed kg=${kindergartenId} child=${childState.id}: ${(err as Error).message}`,
