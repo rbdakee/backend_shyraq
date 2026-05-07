@@ -839,11 +839,10 @@ describe('B17 Content & Stories (e2e)', () => {
       'mentor sees stories only for their group; ' +
         'admin sees stories from all groups',
       async () => {
-        const {
-          kgId,
-          userId: adminUserId,
-          adminToken,
-        } = await createKgWithAdmin('cnt-i', '+77050100081');
+        const { kgId, adminToken } = await createKgWithAdmin(
+          'cnt-i',
+          '+77050100081',
+        );
 
         const groupA = await createGroup(adminToken, 'Group IA');
         const groupB = await createGroup(adminToken, 'Group IB');
