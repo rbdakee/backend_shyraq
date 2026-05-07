@@ -273,6 +273,7 @@
 - **Провайдер-агностичность (B13):** платёжный провайдер скрыт за `PaymentProviderPort` (абстрактный класс). В B13 реализован `MockPaymentProvider` (детерминированный, без внешних HTTP-вызовов). Реальные провайдеры (Halyk ePay, TipTopPay, FreedomPay) подключаются в Phase B без изменений бизнес-логики (`PAYMENT_PROVIDER=mock|halyk|tiptoppay|freedompay`, default `mock`). Аналогично `FiscalReceiptPort` + `MockFiscalReceiptAdapter` (B13); реальный OFD — B15.
 - **Хук enrollment → первый инвойс:** при переходе enrollment в `card_created` (BP §1) система автоматически вызывает `BillingService.generateFirstInvoice(kgId, childId, enrollmentDate)` в ambient TX. Закрывает `TODO(B13)` в `EnrollmentService.transition()`.
 - **Хук late_pickup → инвойс:** при `accept` заявки типа `late_pickup` (BP §6) система вызывает `BillingService.generateLatePickupInvoice(kgId, childId, parentRequestId)` и проставляет `parent_requests.invoice_id`. Закрывает `TODO(B13)` в `ParentRequestService.accept()`.
+- **B13 demo-ready (Phase A):** функционал §4 (без §4.1) закрыт на Mock-адаптерах в коммите `df1c9af`. Тарифы, invoice CRUD, monthly cron, parent pay (full / partial / prepayment 3/6/12/24 м), webhook flow, refund flow (pending → approved → processed), pro-rata holidays. Provider-agnostic ports готовы — реальный Halyk ePay подключается одной строкой через `PAYMENT_PROVIDER=halyk` в B14 / Phase B. Реальный ОФД — через `FISCAL_PROVIDER=<vendor>` в B15.
 
 ### 4.1 Custom Discounts (праздничные и спец. скидки)
 
