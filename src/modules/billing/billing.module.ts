@@ -32,6 +32,13 @@ import { PaymentTypeOrmEntity } from './infrastructure/persistence/relational/en
 import { RefundTypeOrmEntity } from './infrastructure/persistence/relational/entities/refund.typeorm.entity';
 import { TariffAssignmentTypeOrmEntity } from './infrastructure/persistence/relational/entities/tariff-assignment.typeorm.entity';
 import { TariffPlanTypeOrmEntity } from './infrastructure/persistence/relational/entities/tariff-plan.typeorm.entity';
+import { AdminFiscalReceiptController } from './admin-fiscal-receipt.controller';
+import { AdminHolidayController } from './admin-holiday.controller';
+import { AdminInvoiceController } from './admin-invoice.controller';
+import { AdminPaymentController } from './admin-payment.controller';
+import { AdminRefundController } from './admin-refund.controller';
+import { AdminTariffAssignmentController } from './admin-tariff-assignment.controller';
+import { AdminTariffPlanController } from './admin-tariff-plan.controller';
 import { HolidayService } from './holiday.service';
 import { InvoiceService } from './invoice.service';
 import { MonthlyBillingScheduler } from './monthly-billing-scheduler.service';
@@ -42,6 +49,7 @@ import {
 import { PaymentAccountService } from './payment-account.service';
 import { PaymentService } from './payment.service';
 import { RefundService } from './refund.service';
+import { SaasBillingController } from './saas-billing.controller';
 import { TariffAssignmentService } from './tariff-assignment.service';
 import { TariffPlanService } from './tariff-plan.service';
 
@@ -123,6 +131,19 @@ function fiscalReceiptProvider(): Provider {
     // pushes one-off `MONTHLY_BILLING_MANUAL_JOB` jobs via
     // `@InjectQueue(MONTHLY_BILLING_QUEUE)`.
     BullModule.registerQueue({ name: MONTHLY_BILLING_QUEUE }),
+  ],
+  controllers: [
+    // Admin-side surface (KindergartenScopeGuard + RolesGuard@admin).
+    AdminTariffPlanController,
+    AdminTariffAssignmentController,
+    AdminInvoiceController,
+    AdminPaymentController,
+    AdminRefundController,
+    AdminHolidayController,
+    AdminFiscalReceiptController,
+    // Super-admin trigger (SuperAdminScope + RolesGuard@super_admin/support).
+    SaasBillingController,
+    // T7b adds: ParentInvoiceController, PaymentWebhookController.
   ],
   providers: [
     paymentProviderProvider(),
