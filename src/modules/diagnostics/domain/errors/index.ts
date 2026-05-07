@@ -7,3 +7,4 @@ export { DiagnosticEntryNotAuthoredByYouError } from './diagnostic-entry-not-aut
 export { ProgressNoteNotFoundError } from './progress-note-not-found.error';
 export { ProgressNoteNotAuthoredByYouError } from './progress-note-not-authored-by-you.error';
 export { StaffMemberMustHaveSpecialistTypeError } from './staff-member-must-have-specialist-type.error';
+export { NannyNoDiagnosticsAccessError } from './nanny-no-diagnostics-access.error';

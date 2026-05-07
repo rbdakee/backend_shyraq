@@ -1,13 +1,20 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ChildModule } from '@/modules/child/child.module';
+import { StaffModule } from '@/modules/staff/staff.module';
+import { AdminDiagnosticTemplateController } from './admin-diagnostic-template.controller';
 import { DiagnosticEntryService } from './diagnostic-entry.service';
 import { DiagnosticEntryRepository } from './diagnostic-entry.repository';
 import { DiagnosticTemplateService } from './diagnostic-template.service';
 import { DiagnosticTemplateRepository } from './diagnostic-template.repository';
 import { MyTodosService } from './my-todos.service';
+import { ParentDiagnosticController } from './parent-diagnostic.controller';
 import { ProgressNoteService } from './progress-note.service';
 import { ProgressNoteRepository } from './progress-note.repository';
+import { StaffDiagnosticEntryController } from './staff-diagnostic-entry.controller';
+import { StaffDiagnosticTemplateController } from './staff-diagnostic-template.controller';
+import { StaffMyTodosController } from './staff-my-todos.controller';
+import { StaffProgressNoteController } from './staff-progress-note.controller';
 import { DiagnosticEntryRelationalEntity } from './infrastructure/persistence/relational/entities/diagnostic-entry.entity';
 import { DiagnosticTemplateRelationalEntity } from './infrastructure/persistence/relational/entities/diagnostic-template.entity';
 import { ProgressNoteRelationalEntity } from './infrastructure/persistence/relational/entities/progress-note.entity';
@@ -18,13 +25,13 @@ import { ProgressNoteRelationalRepository } from './infrastructure/persistence/r
 /**
  * DiagnosticsModule (B18) — wires the four services + 3 abstract repository
  * ports → relational adapters. Imports `ChildModule` for `ChildRepository`
- * (used by `MyTodosService.listActiveLightByKg`). `ClockPort` resolves via
- * the @Global SharedKernelModule. T4 expands the surface with controllers
- * + DTOs and registers `DiagnosticsModule` in `app.module.ts`.
+ * (used by `MyTodosService.listActiveLightByKg`) and `ChildGuardianRepository`
+ * (used by `ParentDiagnosticController`). Imports `StaffModule` for
+ * `StaffMemberRepository` (used by all staff controllers to resolve
+ * caller → staff_member_id).
  *
- * `NotificationPort` is supplied at the application root (app.module wires
- * it to either `OutboxNotificationAdapter` for production or
- * `InMemoryNotificationAdapter` for tests). We do NOT bind it here.
+ * `ClockPort` resolves via the @Global `SharedKernelModule`.
+ * `NotificationPort` is supplied at the application root.
  */
 @Module({
   imports: [
@@ -34,6 +41,15 @@ import { ProgressNoteRelationalRepository } from './infrastructure/persistence/r
       ProgressNoteRelationalEntity,
     ]),
     ChildModule,
+    StaffModule,
+  ],
+  controllers: [
+    AdminDiagnosticTemplateController,
+    StaffDiagnosticTemplateController,
+    StaffDiagnosticEntryController,
+    StaffProgressNoteController,
+    StaffMyTodosController,
+    ParentDiagnosticController,
   ],
   providers: [
     {
