@@ -1,4 +1,5 @@
 import { Module, Provider } from '@nestjs/common';
+import { TypeOrmModule } from '@nestjs/typeorm';
 import { DiscountEnginePort } from './infrastructure/discount-engine/discount-engine.port';
 import { MockDiscountEngine } from './infrastructure/discount-engine/mock-discount-engine.adapter';
 import { FiscalReceiptPort } from './infrastructure/fiscal-receipt/fiscal-receipt.port';
@@ -7,19 +8,38 @@ import { HalykPaymentProvider } from './infrastructure/payment-provider/halyk-pa
 import { MockPaymentProvider } from './infrastructure/payment-provider/mock-payment-provider.adapter';
 import { PaymentProviderPort } from './infrastructure/payment-provider/payment-provider.port';
 import { InvoiceRepository } from './infrastructure/persistence/invoice.repository';
+import { InvoiceLineItemRepository } from './infrastructure/persistence/invoice-line-item.repository';
+import { KindergartenHolidayRepository } from './infrastructure/persistence/kindergarten-holiday.repository';
+import { PaymentAccountRepository } from './infrastructure/persistence/payment-account.repository';
 import { PaymentRepository } from './infrastructure/persistence/payment.repository';
+import { TariffAssignmentRepository } from './infrastructure/persistence/tariff-assignment.repository';
+import { TariffPlanRepository } from './infrastructure/persistence/tariff-plan.repository';
 import { InvoiceRelationalRepository } from './infrastructure/persistence/relational/repositories/invoice.relational.repository';
+import { InvoiceLineItemRelationalRepository } from './infrastructure/persistence/relational/repositories/invoice-line-item.relational.repository';
+import { KindergartenHolidayRelationalRepository } from './infrastructure/persistence/relational/repositories/kindergarten-holiday.relational.repository';
+import { PaymentAccountRelationalRepository } from './infrastructure/persistence/relational/repositories/payment-account.relational.repository';
 import { PaymentRelationalRepository } from './infrastructure/persistence/relational/repositories/payment.relational.repository';
+import { TariffAssignmentRelationalRepository } from './infrastructure/persistence/relational/repositories/tariff-assignment.relational.repository';
+import { TariffPlanRelationalRepository } from './infrastructure/persistence/relational/repositories/tariff-plan.relational.repository';
+import { InvoiceTypeOrmEntity } from './infrastructure/persistence/relational/entities/invoice.typeorm.entity';
+import { InvoiceLineItemTypeOrmEntity } from './infrastructure/persistence/relational/entities/invoice-line-item.typeorm.entity';
+import { KindergartenHolidayTypeOrmEntity } from './infrastructure/persistence/relational/entities/kindergarten-holiday.typeorm.entity';
+import { PaymentAccountTypeOrmEntity } from './infrastructure/persistence/relational/entities/payment-account.typeorm.entity';
+import { PaymentTypeOrmEntity } from './infrastructure/persistence/relational/entities/payment.typeorm.entity';
+import { RefundTypeOrmEntity } from './infrastructure/persistence/relational/entities/refund.typeorm.entity';
+import { TariffAssignmentTypeOrmEntity } from './infrastructure/persistence/relational/entities/tariff-assignment.typeorm.entity';
+import { TariffPlanTypeOrmEntity } from './infrastructure/persistence/relational/entities/tariff-plan.typeorm.entity';
+import { HolidayService } from './holiday.service';
+import { InvoiceService } from './invoice.service';
+import { PaymentAccountService } from './payment-account.service';
+import { TariffAssignmentService } from './tariff-assignment.service';
+import { TariffPlanService } from './tariff-plan.service';
 
 /**
  * Picks the payment-provider adapter based on `process.env.PAYMENT_PROVIDER`.
  * Defaults to `mock`. `halyk` resolves to the B14 stub which throws on every
  * call — running with `PAYMENT_PROVIDER=halyk` is intentionally loud so a
  * misconfigured deployment fails before silently dropping payments.
- *
- * Phase B will add `kaspi` / `tiptoppay` / `freedompay` branches alongside
- * Halyk. Bootstrapping a new vendor is one branch + one adapter file — the
- * business code (`payment.service`, controllers, DTOs) is untouched.
  */
 function paymentProviderProvider(): Provider {
   return {
@@ -63,32 +83,73 @@ function fiscalReceiptProvider(): Provider {
 /**
  * BillingModule (B13).
  *
- * T3 wires only ports + adapters + advisory-lock-only repository
- * implementations. CRUD + service layer + controllers + DTOs arrive in
- * T4–T7. The module is registered in `AppModule` now so the DI graph
- * compiles end-to-end before T4 lands — service classes added later inject
- * the already-exported ports without further wiring changes.
+ * T3 wired only ports + advisory-lock-only repository implementations.
+ * T4a expands the surface to the full CRUD + auto-generation services
+ * (`TariffPlan`, `TariffAssignment`, `Holiday`, `PaymentAccount`,
+ * `Invoice`) and registers the eight TypeORM entities with `forFeature`.
  *
- * `DiscountEnginePort` does not currently need an env-switch (B13 ships
- * only the Mock impl). B16 will introduce a `RuleBasedDiscountEngine` and
- * a `DISCOUNT_ENGINE` env var at that point — until then `useClass` is
- * preferable to a single-branch `useFactory` (no boilerplate, no risk of
- * silent typo on an unset env var).
+ * `Payment` and `Refund` entities are registered now so adjacent services
+ * (T5a/T5b) can `@InjectRepository` them once they land — but their own
+ * services + repositories are not yet provided.
  */
 @Module({
+  imports: [
+    TypeOrmModule.forFeature([
+      TariffPlanTypeOrmEntity,
+      TariffAssignmentTypeOrmEntity,
+      PaymentAccountTypeOrmEntity,
+      InvoiceTypeOrmEntity,
+      InvoiceLineItemTypeOrmEntity,
+      PaymentTypeOrmEntity,
+      RefundTypeOrmEntity,
+      KindergartenHolidayTypeOrmEntity,
+    ]),
+  ],
   providers: [
     paymentProviderProvider(),
     { provide: DiscountEnginePort, useClass: MockDiscountEngine },
     fiscalReceiptProvider(),
     { provide: InvoiceRepository, useClass: InvoiceRelationalRepository },
+    {
+      provide: InvoiceLineItemRepository,
+      useClass: InvoiceLineItemRelationalRepository,
+    },
     { provide: PaymentRepository, useClass: PaymentRelationalRepository },
+    { provide: TariffPlanRepository, useClass: TariffPlanRelationalRepository },
+    {
+      provide: TariffAssignmentRepository,
+      useClass: TariffAssignmentRelationalRepository,
+    },
+    {
+      provide: PaymentAccountRepository,
+      useClass: PaymentAccountRelationalRepository,
+    },
+    {
+      provide: KindergartenHolidayRepository,
+      useClass: KindergartenHolidayRelationalRepository,
+    },
+    InvoiceService,
+    TariffPlanService,
+    TariffAssignmentService,
+    HolidayService,
+    PaymentAccountService,
   ],
   exports: [
     PaymentProviderPort,
     DiscountEnginePort,
     FiscalReceiptPort,
     InvoiceRepository,
+    InvoiceLineItemRepository,
     PaymentRepository,
+    TariffPlanRepository,
+    TariffAssignmentRepository,
+    PaymentAccountRepository,
+    KindergartenHolidayRepository,
+    InvoiceService,
+    TariffPlanService,
+    TariffAssignmentService,
+    HolidayService,
+    PaymentAccountService,
   ],
 })
 export class BillingModule {}

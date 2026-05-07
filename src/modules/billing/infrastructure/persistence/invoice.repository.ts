@@ -1,10 +1,32 @@
+import { EntityManager } from 'typeorm';
+import {
+  Invoice,
+  InvoiceStatus,
+  InvoiceType,
+} from '../../domain/entities/invoice.entity';
+import { InvoiceLineItem } from '../../domain/entities/invoice-line-item.entity';
+
+export interface ListInvoicesFilter {
+  status?: InvoiceStatus;
+  /** ISO date `YYYY-MM-DD`. Filters `due_date <= dueDate`. */
+  dueDate?: string;
+  childId?: string;
+  invoiceType?: InvoiceType;
+  /** ISO date `YYYY-MM-DD`. Filters `period_start >= periodStart`. */
+  periodStart?: string;
+  /** ISO date `YYYY-MM-DD`. Filters `period_end <= periodEnd`. */
+  periodEnd?: string;
+}
+
 /**
  * Persistence port for the Invoice aggregate (B13).
  *
- * T3 declares only the advisory-lock method needed by the monthly billing
- * processor. Full CRUD + state-flip methods (`create`, `findById`,
- * `listByKindergarten`, conditional-UPDATE `markPaid` / `cancel`, etc.) are
- * added in T4 alongside the TypeORM entity + mapper.
+ * T3 declared only `acquireMonthlyGenerationAdvisoryLock`. T4a adds the full
+ * CRUD surface plus the conditional-UPDATE state-flip helpers used by
+ * `InvoiceService` (markPaid / markPartial / markCancelled / markRefunded /
+ * markOverdue). Each conditional method returns the updated `Invoice` on
+ * success or `null` if the row was already in a different state — the
+ * service maps `null` to a domain error.
  *
  * Tenant-scoped: the relational impl participates in the ambient tenant TX
  * established by `TenantContextInterceptor`, so RLS filters rows
@@ -12,18 +34,105 @@
  */
 export abstract class InvoiceRepository {
   /**
+   * Atomic INSERT of an invoice plus its line items in a single TX. If a
+   * caller-provided `manager` is supplied (e.g. cron processor running
+   * inside `dataSource.transaction(em => …)`) it is used; otherwise the
+   * relational impl falls back to the ambient tenant manager from
+   * `tenantStorage`.
+   */
+  abstract create(
+    invoice: Invoice,
+    lineItems: InvoiceLineItem[],
+    manager?: EntityManager,
+  ): Promise<Invoice>;
+
+  abstract findById(
+    kindergartenId: string,
+    id: string,
+  ): Promise<Invoice | null>;
+
+  abstract list(
+    kindergartenId: string,
+    filter: ListInvoicesFilter,
+  ): Promise<Invoice[]>;
+
+  abstract findByChildId(
+    kindergartenId: string,
+    childId: string,
+    filter?: Omit<ListInvoicesFilter, 'childId'>,
+  ): Promise<Invoice[]>;
+
+  /**
+   * Returns `true` iff the kindergarten already has at least one invoice
+   * whose `period_start` matches the canonical first-of-month date. Used by
+   * the monthly cron to short-circuit when a previous run already generated
+   * invoices for `(kg, periodStart)` — paired with the advisory lock for
+   * defence-in-depth (B7 idempotency pattern).
+   */
+  abstract existsAnyForPeriod(
+    kindergartenId: string,
+    periodStart: Date,
+  ): Promise<boolean>;
+
+  /**
+   * Sums `payments.amount` for the given invoice across rows where
+   * `status='completed'`. Used by `InvoiceService.manualMarkPaid` and by
+   * webhook handlers (T5a) to reconstruct the running paid total before
+   * calling `Invoice.applyPayment`.
+   */
+  abstract getPaidSumForInvoice(
+    kindergartenId: string,
+    invoiceId: string,
+  ): Promise<number>;
+
+  /**
+   * Conditional UPDATE: `SET status='paid', updated_at=$now WHERE id=$id AND
+   * kindergarten_id=$kg AND status IN ('pending','partial','overdue')
+   * RETURNING *`. Returns the hydrated domain on success, `null` on
+   * 0-rows.
+   */
+  abstract markPaidConditional(
+    kindergartenId: string,
+    id: string,
+    now: Date,
+  ): Promise<Invoice | null>;
+
+  /** Same shape as `markPaidConditional` but flips `→ partial`. */
+  abstract markPartialConditional(
+    kindergartenId: string,
+    id: string,
+    now: Date,
+  ): Promise<Invoice | null>;
+
+  /** Same shape; flips `→ cancelled` from pending|partial|overdue. */
+  abstract markCancelledConditional(
+    kindergartenId: string,
+    id: string,
+    now: Date,
+  ): Promise<Invoice | null>;
+
+  /** Same shape; flips `→ refunded` from paid|partial. */
+  abstract markRefundedConditional(
+    kindergartenId: string,
+    id: string,
+    now: Date,
+  ): Promise<Invoice | null>;
+
+  /**
+   * Same shape; flips `→ overdue` only from `pending`. Used by an
+   * eventual `OverdueInvoicesProcessor` (deferred) and by manual
+   * super-admin tooling.
+   */
+  abstract markOverdueConditional(
+    kindergartenId: string,
+    id: string,
+    now: Date,
+  ): Promise<Invoice | null>;
+
+  /**
    * Acquires `pg_advisory_xact_lock(hashtext('billing:monthly:'||kgId||':'||YYYY-MM))`.
    * Released automatically when the surrounding TX commits or rolls back.
-   *
-   * Used by the monthly-billing processor (T4b) to serialise concurrent
-   * generation runs for the same `(kindergartenId, periodStart)`. Without
-   * the lock two parallel cron firings (BullMQ retry, manual super-admin
-   * trigger overlapping with the scheduled run) could each iterate the
-   * same set of `tariff_assignments` and double-insert invoices.
-   *
-   * MUST be called inside an ambient TX — outside one Postgres releases
-   * the lock at the implicit per-statement boundary, which makes the call
-   * a no-op. Safe for CLI / non-HTTP code paths (those don't race).
+   * See T3 docstring on the relational impl for full rationale.
    */
   abstract acquireMonthlyGenerationAdvisoryLock(
     kindergartenId: string,
