@@ -105,6 +105,18 @@ OFD_PROVIDER=mock
 
 FACE_PROVIDER=mock
 
+# --- File storage (B17) ---
+# FILE_STORAGE_PROVIDER selects the FileStoragePort adapter for media uploads
+# (content_posts.media_urls, group_stories.media_url).
+# 'local' | 's3' | 'yandex'. Real S3/Yandex Object Storage adapters — Phase B (after B22).
+FILE_STORAGE_PROVIDER=local
+# S3-compatible: requires credentials when FILE_STORAGE_PROVIDER=s3 or yandex.
+# FILE_STORAGE_BUCKET=
+# FILE_STORAGE_REGION=
+# FILE_STORAGE_ACCESS_KEY=
+# FILE_STORAGE_SECRET_KEY=
+# FILE_STORAGE_ENDPOINT=   # Yandex Object Storage: https://storage.yandexcloud.net
+
 # --- Multi-tenancy (RLS) ---
 # DB role used by app — must NOT have BYPASSRLS. SuperAdmin queries use a separate role.
 # DATABASE_USERNAME above is the regular tenant-scoped role.

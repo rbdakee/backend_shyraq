@@ -10,7 +10,7 @@ Shyraq — multi-tenant SaaS для управления детскими сад
 - Primary DB: **PostgreSQL 17**
 - Cache / OTP / queue (B9+): **Redis 7** (ioredis)
 - API: **REST** + **WebSocket** (B9+)
-- File Storage: **S3-совместимое** (B17+)
+- File Storage: **`LocalFileStorageAdapter`** (B17, диск; S3/Yandex — Phase B)
 - Multi-tenancy: **PostgreSQL Row Level Security** + явная передача `kindergarten_id` (defense-in-depth)
 
 Источники истины:
@@ -82,6 +82,7 @@ src/modules/<x>/
 | `TokenBlocklistPort` | `RedisTokenBlocklist` | JWT JTI blocklist (logout, role-select rotation) |
 | `NotificationPort` | `LoggingNotificationAdapter` | Push/email уведомления (B9 заменит на BullMQ + FCM/APNS + WS) |
 | `ClockPort` | `SystemClock` (prod) / `FixedClock` (test) | `now()` — testable |
+| `FileStoragePort` | `LocalFileStorageAdapter` (default, B17) | Загрузка/чтение/удаление медиа-файлов. Mock — хранит на диске `/uploads/<kg_id>/<yyyy-mm>/<uuid>.<ext>`, раздаёт через `ServeStaticModule` по `/static/<kg_id>/<yyyy-mm>/<filename>`. Real S3/Yandex adapters — Phase B. Env-switch: `FILE_STORAGE_PROVIDER=local\|s3\|yandex` (default `local`). |
 
 Регистрация в `<x>.module.ts`:
 
@@ -350,6 +351,9 @@ Naming convention — `it('returns ...')` / `it('throws ...')` / `it('rejects ..
 | `notification-outbox-poll` | worker (repeatable) | каждые 2с | Забирает `pending` строки из `notification_outbox`, fan-out'ит через `NotificationDispatcher`, помечает `dispatched`/`failed` |
 | `weekly-rollout` | worker (repeatable) | раз в неделю (Пн 00:00 kg-TZ) | Авто-копирование расписания/меню на следующую неделю |
 | (future) `billing-cron` | worker | ежесуточно | Биллинг, OFD-fiscalization — B14+ |
+| `birthday-generation` | worker (repeatable) | `0 7 * * *` Asia/Almaty | B17: создаёт `content_posts` (type='birthday') для именинников, идемпотентно |
+| `story-cleanup` | worker (repeatable) | ежечасно | B17: удаляет истёкшие `group_stories` (`expires_at <= NOW()`), вызывает `FileStoragePort.delete` |
+| `content-publish` | worker (repeatable) | каждые 5 минут | B17: условный UPDATE `content_posts` `scheduled → published` для `scheduled_for <= NOW()` |
 
 `@nestjs/schedule` удаляется в B9 (заменён BullMQ). BullMQ даёт бесплатный distributed lock через Redis `BZPOPMIN` — только один worker-инстанс выполняет job в момент времени.
 
@@ -437,7 +441,18 @@ Worker (каждые 2с)
 
 Nanny-policy: nanny НЕ получает `request.*` — только `attendance.*` и `pickup.*`. Impl добавляется в T3 (B12).
 
-Будущие event-ключи (добавляются по мере батчей): `payment.upcoming`, `payment.overdue`, `payment.receipt_issued` (B14), `content.story_new`, `content.news_published` (B17), `face.enrolled` (B19).
+**B17 — Content & Stories (реализуется в B17 T3):**
+
+| event_key | NotificationPort метод | Адресаты | Примечание |
+|---|---|---|---|
+| `content.news_published` | `notifyContentNewsPublished` | guardians по `target_type`: `all` → все дети kg; `group` → дети группы; `child` → ребёнок | Nanny НЕ получает |
+| `content.story_new` | `notifyContentStoryNew` | guardians детей группы | Nanny НЕ получает |
+| `content.qundylyq_new` | `notifyContentQundylyqNew` | все guardians детей kg | Nanny НЕ получает |
+| `content.birthday` | `notifyContentBirthday` | guardians именинника (`target_child_id`) | Nanny НЕ получает |
+
+Event keys зарезервированы в `src/modules/notification/event-keys.ts` (lines 27-30). Методы `NotificationPort` — default-no-op concrete methods (backward-compat с существующими test fakes). `OutboxNotificationAdapter` override'ит все 4 метода.
+
+Будущие event-ключи (добавляются по мере батчей): `payment.upcoming`, `payment.overdue`, `payment.receipt_issued` (B14), `face.enrolled` (B19).
 
 **Nanny-policy:** guardian с `role='nanny'` получает только `attendance.*` и `pickup.*` — остальные ключи (`request.*`, `payment.*`, etc.) отбрасываются в `NotificationDispatcher` до send.
 

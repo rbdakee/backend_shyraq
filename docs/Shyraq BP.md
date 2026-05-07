@@ -734,6 +734,8 @@ DTOs на уровне контроллера используют **snake_case*
 3. Система сохраняет и публикует новость.
 4. Новость появляется в ленте у нужной аудитории в `Parent App`.
 
+**Статус-машина публикации:** `content_posts.status` проходит путь `draft → scheduled → published` (только вперёд; `published` — терминальный статус). Удаление разрешено только из `draft`. `PATCH` (редактирование) — только из `draft` или `scheduled`. Переход `draft → scheduled` задаётся через `POST /admin/content/:id/schedule` с `scheduled_for` (ISO timestamp); cron-процессор `content-publish` каждые 5 минут переводит посты с `scheduled_for <= NOW()` в `published`. Немедленная публикация — `POST /admin/content/:id/publish` (из `draft` или `scheduled`).
+
 ### 9.2 Обновление меню
 
 **Структура данных:** одна запись `meal_plans` = один день (`date`) для всего садика или конкретной группы (`group_id`, nullable). К каждому `meal_plan` привязаны `meal_items` по типу приёма пищи: `breakfast`, `snack_am`, `lunch`, `snack_pm`, `dinner`. Каждое блюдо имеет: `dish_name {ru, kz}`, `description {ru, kz}`, `allergens[]`, `calories`, `photo_url`.
@@ -803,15 +805,19 @@ DTOs на уровне контроллера используют **snake_case*
 2. Администратор открывает список дней рождения.
 3. Администратор публикует запланированный поздравительный пост.
     1. Публикуется в день рождения ребенка
-    2. Автогенерация и публикация при отсутствии запланированного поста
+    2. Автогенерация и публикация при отсутствии запланированного поста: cron-задача `birthday-generation` запускается ежедневно в **07:00 Asia/Almaty**, делает выборку активных детей с `birth_date` совпадающей по месяцу и дню с текущей датой, и создаёт `content_posts` с `content_type='birthday'`. Идемпотентность обеспечивается проверкой: если `metadata.child_id = X` уже существует в `content_posts` за сегодня — пост не создаётся повторно.
 4. Родители видят поздравление в ленте.
 
 ### 9.6 Stories группы
 
 1. Mentor снимает фото или видео и добавляет описание в `Staff App`.
 2. Mentor публикует `stories` для активной группы.
-3. Система сохраняет `stories` с сроком жизни 24 часа.
+3. Система сохраняет `stories` с сроком жизни 24 часа (`expires_at = created_at + 24h`). Cron-задача `story-cleanup` запускается **ежечасно** и удаляет строки с `expires_at <= NOW()`. При удалении вызывается `FileStoragePort.delete(media_url)` для освобождения дискового / объектного хранилища (опционально: S3-lifecycle rule 48h как дополнительная страховка в Phase B).
 4. Родители этой группы видят `stories` в своей ленте.
+
+### 9.7 File Storage
+
+Медиа-вложения (`content_posts.media_urls[]`, `group_stories.media_url`) загружаются через абстрактный порт `FileStoragePort` (см. IMPLEMENTATION_PLAN.md §1.1 и architecture.md §1.3). По умолчанию (Phase A) используется **`LocalFileStorageAdapter`**: файлы записываются на диск по пути `/uploads/<kg_id>/<yyyy-mm>/<uuid>.<ext>` и раздаются NestJS `ServeStaticModule` по URL `/static/<kg_id>/<yyyy-mm>/<filename>`. Переключение хранилища — через env-переменную `FILE_STORAGE_PROVIDER` (`local` | `s3` | `yandex`; default `local`). Реальные адаптеры S3 / Yandex Object Storage — **Phase B** (откладываются до закрытия B22 согласно provider-agnostic policy). Бизнес-логика не зависит от конкретного вендора — адаптер подключается без правки `content.service.ts` / `story.service.ts`.
 
 ### Result
 

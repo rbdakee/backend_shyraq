@@ -243,6 +243,16 @@ Email + password (не OTP). Access-токен — тот же JWT HS256 (`JWT_A
 | POST | `/saas/billing/monthly-run` | Ручной триггер ежемесячной генерации инвойсов. Body: `{period_start: '2026-06-01', kindergarten_id?: 'uuid'}`. Если `kindergarten_id` не указан — обходит все активные садики (cross-tenant). Вызывает `monthly-billing.processor` логику напрямую без BullMQ (синхронный ответ с итогом). Идемпотентен: advisory lock per `(kg_id, period_start)` + `existsAnyForPeriod` short-circuit пропускает уже сгенерированные периоды. Response 200: `{triggered_at, period_start, kindergartens_processed: int, invoices_created: int, skipped_already_generated: int}`. Errors: 400 `invalid_period_start` (не первое число месяца). |
 | POST | `/saas/billing/discount-expire-run` | Ручной триггер `discount:expire` процессора (B16). Body: `{kindergarten_id?: 'uuid'}`. Истекает `status='active'` скидки, у которых `valid_until < NOW()` → `status='expired'`. Синхронный ответ. Response 200: `{triggered_at, expired_count: int}`. |
 
+### 1.7 Content Operations (Super-Admin) — B17
+
+**Auth:** `@SuperAdminScope()` (bypass RLS). Ручные триггеры cron-задач контента.
+
+| Метод | Путь | Назначение |
+|---|---|---|
+| POST | `/saas/content/birthday-run` | Ручной триггер `birthday-generation` процессора. Body: `{kindergarten_id?: 'uuid', date?: 'YYYY-MM-DD'}`. Если `kindergarten_id` не указан — обходит все активные садики. `date` — дата генерации (default: today в Asia/Almaty). Идемпотентен: пропускает если уже существует пост с `metadata.child_id = X` за эту дату. Response 200: `{triggered_at, kindergartens_processed: int, posts_created: int, posts_skipped: int}`. |
+| POST | `/saas/content/story-cleanup-run` | Ручной триггер `story-cleanup` процессора. Body: `{kindergarten_id?: 'uuid'}`. Удаляет `group_stories` с `expires_at <= NOW()`, вызывает `FileStoragePort.delete` для каждого. Response 200: `{triggered_at, deleted_count: int}`. |
+| POST | `/saas/content/publish-scheduled-run` | Ручной триггер `content-publish` процессора. Body: `{kindergarten_id?: 'uuid'}`. Публикует `content_posts` с `status='scheduled'` и `scheduled_for <= NOW()`. Response 200: `{triggered_at, published_count: int}`. |
+
 ---
 
 ## 2. Admin API (Admin Web, роль `admin`)
@@ -387,27 +397,105 @@ Email + password (не OTP). Access-токен — тот же JWT HS256 (`JWT_A
 
 **Error codes (§2.9):** `meal_plan_not_found`(404), `meal_plan_already_exists`(409), `meal_item_not_found`(404), `invalid_meal_type`(400), `group_not_found`(404).
 
-### 2.10 Content
+### 2.10 Content (B17)
 
-| Метод | Путь | Назначение |
+**Auth:** `KindergartenScopeGuard` + `@Roles('admin')`.
+
+**ENUMs:** `content_type`: `news` | `menu` | `schedule_pub` | `qundylyq` | `birthday`. `content_target_type`: `all` | `group` | `child`. `content_status`: `draft` | `scheduled` | `published`.
+
+**Инвариант таргетинга:** `target_type='child'` ⇒ `target_child_id` обязателен; `target_type='group'` ⇒ `target_group_id` обязателен; `target_type='all'` ⇒ оба поля null.
+
+**Статус-машина:** `draft → scheduled → published` (только вперёд; `published` терминальный; удаление только из `draft`).
+
+| Метод | Путь | Auth | Назначение |
+|---|---|---|---|
+| POST | `/admin/content` | admin | Создать черновик. `multipart/form-data`. |
+| GET | `/admin/content` | admin | Список постов с фильтрами + cursor-пагинация. |
+| GET | `/admin/content/:id` | admin | Детали поста. |
+| PATCH | `/admin/content/:id` | admin | Обновить (только `draft` / `scheduled`). `multipart/form-data`. |
+| DELETE | `/admin/content/:id` | admin | Удалить (только `draft`). |
+| POST | `/admin/content/:id/publish` | admin | Немедленная публикация (`draft` или `scheduled` → `published`). |
+| POST | `/admin/content/:id/schedule` | admin | Запланировать публикацию (`draft` → `scheduled`). |
+
+**`POST /admin/content` — тело запроса (`multipart/form-data`):**
+
+| Поле | Тип | Обязательно | Пример |
+|---|---|---|---|
+| `content_type` | `news\|menu\|schedule_pub\|qundylyq\|birthday` | да | `"news"` |
+| `target_type` | `all\|group\|child` | да | `"group"` |
+| `target_group_id` | uuid | если `target_type='group'` | `"c1d2e3f4-..."` |
+| `target_child_id` | uuid | если `target_type='child'` | `"a1b2c3d4-..."` |
+| `title_i18n` | JSON string `{ru, kz}` | нет | `"{\"ru\":\"Новость\",\"kz\":\"Жаңалық\"}"` |
+| `body_i18n` | JSON string `{ru, kz}` | нет | `"{\"ru\":\"Текст\",\"kz\":\"Мәтін\"}"` |
+| `scheduled_for` | ISO timestamp | нет (нужен для schedule) | `"2026-06-01T07:00:00+05:00"` |
+| `metadata` | JSON string | нет | `"{\"theme\":\"spring\"}"` |
+| `file` | file (image/video) | нет | — |
+
+**`POST /admin/content` — ответ 201:**
+
+```json
+{
+  "id": "uuid",
+  "kindergarten_id": "uuid",
+  "content_type": "news",
+  "target_type": "group",
+  "target_group_id": "uuid",
+  "target_child_id": null,
+  "title_i18n": { "ru": "Новость", "kz": "Жаңалық" },
+  "body_i18n": { "ru": "Текст", "kz": "Мәтін" },
+  "media_urls": [],
+  "metadata": null,
+  "scheduled_for": null,
+  "published_at": null,
+  "status": "draft",
+  "created_by": "uuid",
+  "created_at": "2026-06-01T07:00:00.000Z",
+  "updated_at": "2026-06-01T07:00:00.000Z"
+}
+```
+
+**`GET /admin/content` — query-параметры:**
+
+| Параметр | Тип | Назначение |
 |---|---|---|
-| GET | `/admin/content` | Список постов (фильтр: `content_type`, `status`, `target_type`). |
-| POST | `/admin/content` | Создать пост (news/qundylyq/schedule_pub/birthday): `title_i18n`, `body_i18n`, `media_urls[]`, `target_type` (all/group/child), `target_group_id` / `target_child_id`, `scheduled_for` (опц. — отложенная публикация), `status`. |
-| GET | `/admin/content/:id` | Детали. |
-| PATCH | `/admin/content/:id` | Обновить. |
-| POST | `/admin/content/:id/publish` | `status='published'`, `published_at=NOW()`. Broadcast push в target-аудиторию. |
-| DELETE | `/admin/content/:id` | Удалить (или `status='draft'`). |
-| GET | `/admin/content/birthdays/upcoming` | Ближайшие дни рождения детей. |
-| POST | `/admin/content/birthdays/:childId/schedule` | Запланировать поздравительный пост (cron `content:birthday-gen` автосоздаёт при отсутствии). |
+| `content_type` | enum | Фильтр по типу |
+| `status` | enum | Фильтр по статусу |
+| `target_type` | enum | Фильтр по таргетингу |
+| `target_group_id` | uuid | Фильтр по группе |
+| `target_child_id` | uuid | Фильтр по ребёнку |
+| `scheduled_from` | ISO date | Начало диапазона `scheduled_for` |
+| `scheduled_to` | ISO date | Конец диапазона `scheduled_for` |
+| `published_from` | ISO date | Начало диапазона `published_at` |
+| `published_to` | ISO date | Конец диапазона `published_at` |
+| `cursor` | string | Cursor-пагинация (last seen `id`) |
+| `limit` | int | Default 20, max 100 |
+
+**`POST /admin/content/:id/schedule` — тело:**
+
+```json
+{ "scheduled_for": "2026-06-05T07:00:00+05:00" }
+```
+
+Ответ 200: обновлённый объект поста. Errors: 404 `content_post_not_found`, 409 `content_post_status_invalid` (не в `draft`), 422 validation.
+
+**Error map (§2.10):**
+
+| HTTP | `error` | Когда |
+|---|---|---|
+| 400 | `file_upload_error` | Ошибка при сохранении файла через `FileStoragePort` |
+| 400 | `media_type_invalid` | MIME-тип не `image/*` и не `video/*` |
+| 404 | `content_post_not_found` | Пост не найден в kg |
+| 409 | `content_post_status_invalid` | Переход из несовместимого статуса (`PATCH` из `published`, `DELETE` из `scheduled`/`published`) |
+| 422 | `content_target_invalid` | `target_type='child'` без `target_child_id` или `target_type='group'` без `target_group_id` |
+| 422 | validation | Невалидные поля DTO |
 
 ### 2.11 Qundylyq (подтип content)
 
-Используются `/admin/content` с `content_type='qundylyq'`. Выделенные helpers:
+Qundylyq реализуется как `content_posts` с `content_type='qundylyq'`. Используются те же endpoints `POST /admin/content`, `PATCH /admin/content/:id`, `POST /admin/content/:id/publish`. Дополнительный helper:
 
-| Метод | Путь | Назначение |
-|---|---|---|
-| GET | `/admin/qundylyq/current` | Текущий активный Qundylyq (тема месяца). |
-| POST | `/admin/qundylyq` | Публикация новой темы месяца. |
+| Метод | Путь | Auth | Назначение |
+|---|---|---|---|
+| GET | `/admin/qundylyq/current` | admin | Текущий активный Qundylyq (тема месяца, `status='published'`, последний по `published_at`). Response: content_post объект или `null`. |
 
 ### 2.12 Payments & Invoices (просмотр)
 
@@ -531,13 +619,15 @@ Email + password (не OTP). Access-токен — тот же JWT HS256 (`JWT_A
 
 ### 2.19 Diagnostic Templates
 
+Управление шаблонами — только admin. Специалисты читают шаблоны через `/staff/diagnostic-templates` (§3.10, read-only).
+
 | Метод | Путь | Назначение |
 |---|---|---|
-| GET | `/admin/diagnostic-templates` | Список шаблонов (фильтр по `specialist_type`). |
-| POST | `/admin/diagnostic-templates` | Создать: `specialist_type`, `name`, `schema` JSONB (sections → fields с required/type). |
+| GET | `/admin/diagnostic-templates` | Список шаблонов. Query: `specialist_type?`, `is_active?`. |
+| POST | `/admin/diagnostic-templates` | Создать: body `{specialist_type, name, description?, schema}`. Schema JSONB: `{sections: [{title, fields: [{key, label, type, required, options?, min?, max?}]}]}`. `type`: `text\|number\|boolean\|select\|multiselect\|date\|scale`. |
 | GET | `/admin/diagnostic-templates/:id` | Подробности. |
-| PATCH | `/admin/diagnostic-templates/:id` | Обновить (auto-bump `version`). |
-| POST | `/admin/diagnostic-templates/:id/deactivate` | `is_active=false`. |
+| PATCH | `/admin/diagnostic-templates/:id` | Обновить (auto-bump `version` при изменении `schema`). |
+| POST | `/admin/diagnostic-templates/:id/deactivate` | `is_active=false`. Существующие записи против этого шаблона сохраняются. |
 
 ### 2.20 Face ID Management
 
@@ -731,32 +821,87 @@ Email + password (не OTP). Access-токен — тот же JWT HS256 (`JWT_A
 
 ### 3.10 Diagnostics (Specialist)
 
+**Auth:** `KindergartenScopeGuard` + `@Roles('mentor','specialist','admin')`.
+
+Templates create/update/deactivate — `/admin/diagnostic-templates` (admin role only, §2.19).
+
 | Метод | Путь | Назначение |
 |---|---|---|
-| GET | `/staff/diagnostic-templates` | Шаблоны моей специализации (фильтр: `specialist_type=my_type`, `is_active=true`). |
+| GET | `/staff/diagnostic-templates` | Шаблоны (read-only). Query: `specialist_type` — staff defaults to caller's type; admin may pass `?all=true` to bypass. `is_active?` filter (default: all). Response: paginated list. |
 | GET | `/staff/diagnostic-templates/:id` | Схема для заполнения. |
-| GET | `/staff/diagnostic-entries` | Мои заполненные диагностики (фильтр: `child_id`). |
-| POST | `/staff/diagnostic-entries` | Создать: `child_id`, `template_id`, `assessment_date`, `data` (соответствие `schema`), `summary`, `recommendations`, `attachments[]`. |
-| GET | `/staff/diagnostic-entries/:id` | Детали. |
-| PATCH | `/staff/diagnostic-entries/:id` | Обновить (только автор-specialist). |
-| GET | `/staff/my-todos` | Задачи specialist'а: дети, которым нужна новая диагностика. |
+| GET | `/staff/diagnostic-entries` | Диагностики kg. Query: `child_id?: uuid`, `specialist_id?: uuid` (admin only — staff defaults to caller), `template_id?: uuid`, `from?: date`, `to?: date`, `cursor?`, `limit?` (default 20, max 100). Response: cursor-paged. |
+| POST | `/staff/diagnostic-entries` | Создать. Body: `{child_id, template_id, assessment_date (date ≤ today), data (jsonb), summary?, recommendations?, attachments?: string[]}`. Response 201 full entry. |
+| GET | `/staff/diagnostic-entries/:id` | Детали — включает computed `template_name`, `template_version`, `specialist_name`. |
+| PATCH | `/staff/diagnostic-entries/:id` | Обновить. Body: subset of `{data, summary, recommendations, attachments}`. Author-only (`specialist_id` = caller's `staff_member_id`). Re-validates `data` against original `template.schema` if `data` provided. |
+| GET | `/staff/my-todos` | Задачи specialist'а: дети, которым нужна новая диагностика. Query: `specialist_type?` (admin override; staff without specialist_type → 403). Algorithm: all active children in kg × latest entry where `template.specialist_type = caller.specialist_type` — child included if no prior entry OR `latest_assessment_date + 6 months < CURRENT_DATE` (Asia/Almaty). Response: `{children_needing_diagnostic: [{child_id, child_name, last_assessment_date?: date\|null, days_since_last: number\|null}]}`. |
+
+**Error map (§3.10):**
+
+| HTTP | code | Когда |
+|---|---|---|
+| 400 | `diagnostic_entry_data_invalid` | `data` не соответствует `template.schema`; body включает `details: {path, expected, actual}` |
+| 404 | `diagnostic_template_not_found` | `template_id` не найден или вне kg |
+| 409 | `diagnostic_template_inactive` | Шаблон деактивирован (`is_active=false`) |
+| 422 | `assessment_date_in_future` | `assessment_date > CURRENT_DATE` |
+| 403 | `diagnostic_entry_not_authored_by_you` | PATCH — caller не является автором записи |
+| 403 | `staff_member_must_have_specialist_type` | `GET /staff/my-todos` — caller не имеет `specialist_type` и не передал `?specialist_type=` |
 
 ### 3.11 Progress Notes (Mentor)
 
-| Метод | Путь | Назначение |
-|---|---|---|
-| GET | `/staff/progress-notes` | Мои заметки (фильтр: `child_id`). |
-| POST | `/staff/progress-notes` | Создать: `child_id`, `body`, `media_urls[]`, `noted_at`. |
-| PATCH | `/staff/progress-notes/:id` | Обновить. |
-| DELETE | `/staff/progress-notes/:id` | Удалить. |
-
-### 3.12 Group Stories (Mentor)
+**Auth:** `KindergartenScopeGuard` + `@Roles('mentor','specialist','admin')`.
 
 | Метод | Путь | Назначение |
 |---|---|---|
-| GET | `/staff/stories` | Stories моей группы (активные, `expires_at > NOW()`). |
-| POST | `/staff/stories` | Опубликовать: `group_id`, `media_url`, `media_type` (image/video), `caption`. Авто `expires_at = created_at + 24h`. |
-| DELETE | `/staff/stories/:id` | Удалить досрочно. |
+| GET | `/staff/progress-notes` | Заметки прогресса. Query: `child_id?: uuid`, `mentor_id?: uuid` (admin only — staff defaults to caller), `from?: date`, `to?: date`, `cursor?`, `limit?` (default 20, max 100). Response: cursor-paged. |
+| POST | `/staff/progress-notes` | Создать. Body: `{child_id, body (non-empty trimmed), media_urls?: string[], noted_at?: timestamptz (default now, ≤ now + 5 min skew)}`. Response 201 full note. |
+| PATCH | `/staff/progress-notes/:id` | Обновить. Body: subset of `{body, media_urls}`. Author-only (`mentor_id` = caller's `staff_member_id`). |
+| DELETE | `/staff/progress-notes/:id` | Удалить. Author OR admin role. |
+
+**Error map (§3.11):**
+
+| HTTP | code | Когда |
+|---|---|---|
+| 403 | `progress_note_not_authored_by_you` | PATCH/DELETE — caller не является автором (не admin) |
+| 404 | `progress_note_not_found` | Заметка не найдена или вне kg |
+
+### 3.12 Group Stories (Mentor) — B17
+
+**Auth:** `KindergartenScopeGuard` + `@Roles('mentor', 'admin')`.
+
+| Метод | Путь | Назначение |
+|---|---|---|
+| POST | `/staff/stories` | Опубликовать story. `multipart/form-data`: `group_id` (uuid), `file` (image или video, обязателен), `caption?` (string). Файл загружается через `FileStoragePort`. Авто `expires_at = created_at + 24h`. Response 201: story object. Errors: 400 `file_upload_error`, 400 `media_type_invalid`, 404 `group_not_found`. |
+| GET | `/staff/stories` | Активные stories (`expires_at > NOW()`). Mentor видит свои группы; admin — все группы kg. Response 200: `[{id, group_id, created_by, media_url, media_type, caption, views, expires_at, created_at}]`. |
+| DELETE | `/staff/stories/:id` | Удалить story. Допустимо автору или admin. Вызывает `FileStoragePort.delete(media_url)`. Response 204. Errors: 404 `group_story_not_found`, 403 `access_denied`. |
+| POST | `/staff/stories/:id/view` | Инкремент `group_stories.views`. Вызывается Parent App при просмотре. Не требует `mentor`-роли — доступен для parent (см. §4.9). Response 200: `{views: int}`. Errors: 404 `group_story_not_found`, 410 `group_story_expired`. |
+
+**Story object:**
+
+```json
+{
+  "id": "uuid",
+  "kindergarten_id": "uuid",
+  "group_id": "uuid",
+  "created_by": "uuid",
+  "media_url": "/static/kg-uuid/2026-06/file-uuid.jpg",
+  "media_type": "image",
+  "caption": "Утренняя зарядка",
+  "views": 0,
+  "expires_at": "2026-06-02T09:00:00.000Z",
+  "created_at": "2026-06-01T09:00:00.000Z"
+}
+```
+
+**Error map (§3.12):**
+
+| HTTP | `error` | Когда |
+|---|---|---|
+| 400 | `file_upload_error` | Ошибка записи файла через `FileStoragePort` |
+| 400 | `media_type_invalid` | MIME не `image/*` / `video/*` |
+| 403 | `access_denied` | Попытка DELETE чужой story не admin'ом |
+| 404 | `group_not_found` | Группа не найдена в kg |
+| 404 | `group_story_not_found` | Story не найдена |
+| 410 | `group_story_expired` | Story просрочена (`expires_at <= NOW()`) |
 
 ### 3.13 Content (read-only)
 
@@ -953,25 +1098,47 @@ Reception может работать с заявками — см. Admin API `/
 | GET | `/parent/cctv/access` | Определяет камеры: `child.current_group_id → groups.current_location_id → cameras WHERE location_id=? AND is_active`. Генерит Redis `cctv:token:{user_id}:{camera_id}` TTL 3600с. Возвращает `[{camera_id, name, stream_url: "https://stream.shyraq.kz/live/{cam}/index.m3u8?token=xxx"}]`. Клиенту рекомендуется подписаться на WS-комнату `group:{group_id}:location_changed` и при получении события `location_changed` перезапросить этот endpoint. Доступен для `primary`/`secondary`; **403 для `nanny`**. |
 | GET | `/cctv/validate` | Внутренний endpoint для Nginx `auth_request`. Читает `cctv:token:{user_id}:{camera_id}`, сравнивает с `?token=`. Возвращает 200/403. Не вызывается клиентами. |
 
-### 4.9 Content Feed
+### 4.9 Content Feed — B17
+
+**Auth:** `ChildAccessGuard` + `@Roles('parent')`. JWT-аутентификация; tenant резолвится из ребёнка.
 
 | Метод | Путь | Назначение |
 |---|---|---|
-| GET | `/parent/feed` | Лента: news, qundylyq, birthdays, targeted posts (all / group / child). Локализовано по `users.locale`. |
-| GET | `/parent/content/news` | Только новости. |
-| GET | `/parent/content/qundylyq/current` | Текущий Qundylyq (тема месяца). |
+| GET | `/parent/children/:id/content` | Агрегированная лента для ребёнка: `news` + `qundylyq` + `birthday` (targeted `all`/`group`/`child`) + `menu` + `schedule_pub` — только `status='published'`. Cursor-пагинация. Query: `cursor?`, `limit?` (default 20). Локализовано по `users.locale`. Response: `[{id, content_type, title_i18n, body_i18n, media_urls, metadata, published_at, target_type}]`. Errors: 404 `child_not_found`, 403 `access_denied`. |
+| GET | `/parent/children/:id/stories` | Активные stories группы ребёнка (`expires_at > NOW()`). Response: `[{id, group_id, media_url, media_type, caption, views, expires_at, created_at}]`. Errors: 404 `child_not_found`, 403 `access_denied`. |
+| POST | `/staff/stories/:id/view` | Инкремент `group_stories.views`. Доступен родителям; вызывается автоматически при просмотре story в Parent App. Response 200: `{views: int}`. Errors: 404 `group_story_not_found`, 410 `group_story_expired`. |
+| GET | `/parent/feed` | Устаревший endpoint (сохранён для обратной совместимости). Лента: news, qundylyq, birthdays, targeted posts (all / group / child). Локализовано по `users.locale`. Предпочтительный path — `GET /parent/children/:id/content`. |
+| GET | `/parent/content/news` | Только новости садика (все kg ребёнка). |
+| GET | `/parent/content/qundylyq/current` | Текущий Qundylyq (тема месяца, `status='published'`, последний по `published_at`). |
 | GET | `/parent/children/:id/menu` | Меню на период. Query: `date_from`, `date_to` (ISO date, обязательны). Возвращает `meal_plans` группы ребёнка (приоритет) или общего садика за период с вложенными `meal_items`. Response: `[{date, items: [{meal_type, dish_name: {ru,kz}, description?, allergens?, calories?, photo_url?}]}]`. Errors: 404 `child_not_found`, 403 `access_denied`. |
 | GET | `/parent/children/:id/schedule` | Расписание группы ребёнка. Query: `date_from`, `date_to` (ISO date, обязательны). Возвращает `activity_events` группы за период. Response: `[{id, activity_name, starts_at, ends_at, status, location_id?, notes?}]`. Errors: 404 `child_not_found`, 403 `access_denied`. |
-| GET | `/parent/children/:id/stories` | Активные stories группы (`expires_at > NOW()`). |
-| POST | `/parent/stories/:id/view` | Инкремент `group_stories.views`. |
+
+**Error map (§4.9):**
+
+| HTTP | `error` | Когда |
+|---|---|---|
+| 403 | `access_denied` | Guardian не approved/активен или `revoked_at` не null |
+| 404 | `child_not_found` | Ребёнок не найден или нет guardian-связи |
+| 410 | `group_story_expired` | Story просрочена при попытке `view` |
 
 ### 4.10 Diagnostics & Progress (read)
 
+**Gate:** `view_diagnostics` permission (§4.13). Nanny → 403 `nanny_no_diagnostics_access` на всех трёх эндпоинтах.
+
+Архивированные (деактивированные) шаблоны НЕ блокируют видимость прошлых записей, созданных по этим шаблонам — родитель видит все исторические записи.
+
 | Метод | Путь | Назначение |
 |---|---|---|
-| GET | `/parent/children/:id/diagnostics` | Диагностики ребёнка (все специалисты, пагинация по дате). |
-| GET | `/parent/children/:id/diagnostics/:entryId` | Детали: `data`, `summary`, `recommendations`, `attachments`. |
-| GET | `/parent/children/:id/progress-notes` | Заметки прогресса от mentor. |
+| GET | `/parent/children/:id/diagnostics` | Диагностики ребёнка (все специалисты). Query: `cursor?`, `limit?` (default 20, max 100), `from?: date`, `to?: date`. Пагинация по `assessment_date DESC`. |
+| GET | `/parent/children/:id/diagnostics/:entryId` | Детали: `data`, `summary`, `recommendations`, `attachments`, `template_name`, `template_version`. Errors: 404 `diagnostic_entry_not_found`. |
+| GET | `/parent/children/:id/progress-notes` | Заметки прогресса от mentor. Query: `cursor?`, `limit?` (default 20, max 100), `from?: date`, `to?: date`. Пагинация по `noted_at DESC`. |
+
+**Error map (§4.10):**
+
+| HTTP | code | Когда |
+|---|---|---|
+| 403 | `nanny_no_diagnostics_access` | Guardian role = nanny |
+| 404 | `diagnostic_entry_not_found` | `entryId` не найден или вне доступного scope ребёнка |
 
 ### 4.11 Face ID (parent-side)
 
@@ -1000,7 +1167,7 @@ effective[perm] = child_guardians.permissions[perm] ?? DEFAULT_FOR_ROLE[role][pe
 | `view_timeline` | ✅ | ✅ | ✅ | — | GET children/:id, timeline, attendance, daily-status, menu, schedule, stories |
 | `view_payments` | ✅ | ✅ | ❌ | — | GET invoices, payments, receipt, payment-calendar |
 | `pay_invoices` | ✅ | ✅ | ❌ | — | POST invoices/:id/pay (monthly/partial) |
-| `view_diagnostics` | ✅ | ✅ | ❌ | — | GET diagnostics, progress-notes |
+| `view_diagnostics` | ✅ | ✅ | ❌ | — | GET diagnostics, progress-notes. Включает progress_notes (единая permission). |
 | `view_content` | ✅ | ✅ | ❌ | — | GET feed, content/* |
 | `view_cctv` | ✅ | ✅ | ❌ | — | GET /parent/cctv/access |
 | `receive_push_non_pickup` | ✅ | ✅ | ❌ | — | Все push/WS кроме `attendance.*`, `pickup.*` |
