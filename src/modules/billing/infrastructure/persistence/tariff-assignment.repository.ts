@@ -102,4 +102,22 @@ export abstract class TariffAssignmentRepository {
     kindergartenId: string,
     childId: string,
   ): Promise<void>;
+
+  /**
+   * B16 — returns the IDs of every child in the kg with an ACTIVE
+   * tariff_assignment (validFrom <= now AND (validUntil IS NULL OR
+   * validUntil >= now)) for any of `tariffPlanIds`. Used by
+   * `DiscountTargetResolver` for the `targetType='tariff_types'` discount
+   * target. Empty input returns `[]` without a query.
+   *
+   * Default no-op so older test fakes keep compiling — the relational
+   * impl overrides with the real query.
+   */
+  listActiveChildIdsByTariffPlanIds(
+    _kindergartenId: string,
+    _tariffPlanIds: string[],
+    _now: Date,
+  ): Promise<string[]> {
+    return Promise.resolve([]);
+  }
 }

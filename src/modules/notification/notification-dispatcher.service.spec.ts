@@ -1363,6 +1363,8 @@ describe('NotificationDispatcher', () => {
       'payment.failed',
       'payment.refunded',
       'refund.processed',
+      // ── B16 Custom Discounts ───────────────────────────────────────────
+      'discount.activated',
     ];
 
     it.each(COVERED_KEYS)(

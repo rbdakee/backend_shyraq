@@ -7,6 +7,8 @@ import {
 import { randomUUID } from 'node:crypto';
 import { NotificationPort } from '@/common/notifications/notification.port';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
+import { ChildGuardianRepository } from '@/modules/child/infrastructure/persistence/child-guardian.repository';
 import {
   Invoice,
   InvoiceState,
@@ -25,7 +27,16 @@ import { InvoiceNotFoundError } from './domain/errors/invoice-not-found.error';
 import { InvoiceStatusInvalidError } from './domain/errors/invoice-status-invalid.error';
 import { TariffAssignmentNotFoundError } from './domain/errors/tariff-assignment-not-found.error';
 import { TariffPlanNotFoundError } from './domain/errors/tariff-plan-not-found.error';
-import { DiscountEnginePort } from './infrastructure/discount-engine/discount-engine.port';
+import {
+  CustomDiscountSnapshot,
+  DiscountEnginePort,
+  DiscountEvaluationInput,
+  DiscountEvaluationResult,
+} from './infrastructure/discount-engine/discount-engine.port';
+import { CustomDiscountRepository } from './custom-discount.repository';
+import { CustomDiscountApplicationRepository } from './custom-discount-application.repository';
+import { DiscountTargetResolver } from './discount-target-resolver';
+import { CustomDiscount } from './domain/entities/custom-discount.entity';
 import {
   InvoiceRepository,
   ListInvoicesFilter,
@@ -146,6 +157,15 @@ export class InvoiceService {
     private readonly notificationPort: NotificationPort,
     @Inject(ClockPort) private readonly clock: ClockPort,
     private readonly payments: PaymentRepository,
+    // ── B16 deps (optional at runtime — InvoiceService instances built by
+    //    older integration specs without B16 wiring keep working with
+    //    `undefined` here; the service short-circuits the custom-discount
+    //    flow when any of these are missing.)
+    private readonly customDiscounts?: CustomDiscountRepository,
+    private readonly customDiscountApplications?: CustomDiscountApplicationRepository,
+    private readonly discountTargetResolver?: DiscountTargetResolver,
+    private readonly children?: ChildRepository,
+    private readonly childGuardians?: ChildGuardianRepository,
   ) {}
 
   // ── CRUD ───────────────────────────────────────────────────────────────
@@ -726,6 +746,14 @@ export class InvoiceService {
     const monthlyAmount = assignment.effectiveAmount(tariffPlan);
     const baseAmount = roundKzt(monthlyAmount * months);
 
+    const customCtx = await this.buildCustomDiscountInputs(
+      kindergartenId,
+      childId,
+      periodStart,
+      `prepayment_${months}m` as InvoiceType,
+      now,
+    );
+
     const discount = await this.discountEngine.evaluate({
       invoice: {
         invoiceId: 'pending',
@@ -740,7 +768,12 @@ export class InvoiceService {
         id: tariffPlan.id,
         discountRules: tariffPlan.discountRules,
       },
-      context: { prepaymentMonths: months },
+      context: {
+        prepaymentMonths: months,
+        customDiscounts: customCtx.customDiscounts,
+        childContext: customCtx.childContext ?? undefined,
+        familyContext: customCtx.familyContext ?? undefined,
+      },
     });
 
     const amountAfter = Invoice.computeAmountAfterDiscount(
@@ -788,6 +821,12 @@ export class InvoiceService {
     });
 
     const persisted = await this.invoices.create(invoice, [lineItem]);
+    await this.persistCustomDiscountApplications(
+      kindergartenId,
+      persisted,
+      lineItem,
+      discount,
+    );
     await this.emitInvoiceCreated(persisted);
     return persisted;
   }
@@ -833,6 +872,14 @@ export class InvoiceService {
       assignment.childId,
     );
 
+    const customCtx = await this.buildCustomDiscountInputs(
+      kindergartenId,
+      assignment.childId,
+      periodStart,
+      invoiceType,
+      now,
+    );
+
     const discount = await this.discountEngine.evaluate({
       invoice: {
         invoiceId: 'pending',
@@ -842,16 +889,17 @@ export class InvoiceService {
         amountDue: baseAmount,
         periodStart,
         periodEnd,
+        dueDate,
       },
       tariffPlan: {
         id: tariffPlan.id,
         discountRules: tariffPlan.discountRules,
       },
-      // TODO(B13 review): wire siblingsCount from ChildGuardianRepository
-      // (a sibling-count cross-module integration). Mock engine ignores
-      // when the field is undefined, so omitting is safe for B13.
       context: {
         prepaymentMonths,
+        customDiscounts: customCtx.customDiscounts,
+        childContext: customCtx.childContext ?? undefined,
+        familyContext: customCtx.familyContext ?? undefined,
       },
     });
 
@@ -907,6 +955,12 @@ export class InvoiceService {
     const lineItem = InvoiceLineItem.fromState(lineState);
 
     const persisted = await this.invoices.create(invoice, [lineItem]);
+    await this.persistCustomDiscountApplications(
+      kindergartenId,
+      persisted,
+      lineItem,
+      discount,
+    );
     await this.emitInvoiceCreated(persisted);
     return persisted;
   }
@@ -934,6 +988,211 @@ export class InvoiceService {
       periodEnd: invoice.periodEnd,
     });
   }
+
+  // ── B16 — custom-discount inputs + post-write applications ────────────
+
+  /**
+   * Loads + filters the kg's currently-active custom discounts down to
+   * the subset eligible for THIS (child, period) tuple. Also builds the
+   * `childContext` + `familyContext` shapes the engine needs for the
+   * conditions evaluator.
+   *
+   * Filtering chain:
+   *   1. `findActiveCustomDiscounts` — kg-wide, status='active', within validity window.
+   *   2. `discountTargetResolver.filterDiscountsForChild` — drops discounts not
+   *      targeted at this child (per targetType + conditions AST).
+   *   3. `total_max_uses` guard — drops discounts at zero remaining
+   *      capacity (used_count >= total_max_uses).
+   *   4. `max_uses_per_child` guard — drops discounts the child already
+   *      reached the per-child cap on.
+   *
+   * Returns empty `customDiscounts: []` when any required dep is
+   * missing (B13-only callers / older spec wiring).
+   */
+  private async buildCustomDiscountInputs(
+    kindergartenId: string,
+    childId: string,
+    periodStart: Date,
+    _invoiceType: InvoiceType,
+    now: Date,
+  ): Promise<{
+    customDiscounts: CustomDiscountSnapshot[];
+    childContext: DiscountEvaluationInput['context']['childContext'] | null;
+    familyContext: DiscountEvaluationInput['context']['familyContext'] | null;
+  }> {
+    if (
+      !this.customDiscounts ||
+      !this.customDiscountApplications ||
+      !this.discountTargetResolver ||
+      !this.children ||
+      !this.childGuardians
+    ) {
+      return { customDiscounts: [], childContext: null, familyContext: null };
+    }
+
+    // Step 1 — kg-wide active set.
+    const active = await this.customDiscounts.findActiveCustomDiscounts(
+      kindergartenId,
+      now,
+    );
+    const allSnapshots = active.map((d) => toSnapshot(d));
+
+    // Step 2 — targeting filter.
+    const targeted = await this.discountTargetResolver.filterDiscountsForChild(
+      kindergartenId,
+      childId,
+      allSnapshots,
+    );
+
+    // Step 3+4 — capacity guards (total_max_uses + per-child cap).
+    const eligible: CustomDiscountSnapshot[] = [];
+    for (const snap of targeted) {
+      if (snap.totalMaxUses !== null && snap.usedCount >= snap.totalMaxUses) {
+        continue;
+      }
+      if (snap.maxUsesPerChild !== null) {
+        const used =
+          await this.customDiscountApplications.countByChildAndDiscount(
+            kindergartenId,
+            childId,
+            snap.id,
+          );
+        if (used >= snap.maxUsesPerChild) continue;
+      }
+      eligible.push(snap);
+    }
+
+    // Build child + family context.
+    const child = await this.children.findById(kindergartenId, childId);
+    const childContext = child
+      ? {
+          birthDate: child.dateOfBirth,
+          ageInMonths: monthsBetween(child.dateOfBirth, now),
+          currentGroupId: child.currentGroupId ?? null,
+          // benefit_category isn't on the Child entity yet (B22+ extension);
+          // keep null until that lands so the evaluator returns false for
+          // the matching condition rather than throwing.
+          benefitCategory: null,
+        }
+      : null;
+
+    let isFirstInvoiceForChild = true;
+    let siblingsInKgCount = 0;
+    if (child) {
+      // No-cost approximation for `firstInvoice`: list any prior invoices
+      // for the child (any type) — empty list = first invoice. The
+      // existing `findByChildId` query is indexed on (kg, child_id).
+      const priors = await this.invoices.findByChildId(kindergartenId, childId);
+      isFirstInvoiceForChild = priors.length === 0;
+      siblingsInKgCount = await this.childGuardians.countSiblingsInKgForChild(
+        kindergartenId,
+        childId,
+      );
+    }
+    const familyContext = {
+      siblingsInKgCount,
+      isFirstInvoiceForChild,
+    };
+
+    // Suppress unused warning on _invoiceType — currently informational, the
+    // engine reads `invoice.invoiceType` directly from the input shape. We
+    // keep the param so callers can pass it without TS warnings, in case a
+    // future invoice-type-specific filter lands here.
+    void _invoiceType;
+    void periodStart;
+
+    return { customDiscounts: eligible, childContext, familyContext };
+  }
+
+  /**
+   * Inserts one `custom_discount_applications` ledger row per matched
+   * custom discount AND atomically increments the parent's `used_count`.
+   *
+   * Race handling (T3 §F): when `incrementUsedCount` returns `false`
+   * (total_max_uses reached between engine eval + write — should be
+   * exceedingly rare given the pre-engine capacity guard), we log+skip
+   * the application row and leave the invoice's discount line in place.
+   * Documented trade-off — the alternative is to retro-modify the
+   * already-inserted invoice, which is more dangerous than letting one
+   * over-the-cap discount slip through.
+   *
+   * Short-circuits when the B16 deps are missing — keeps older spec
+   * wiring (B13 race spec) green.
+   */
+  private async persistCustomDiscountApplications(
+    kindergartenId: string,
+    invoice: Invoice,
+    lineItem: InvoiceLineItem,
+    result: DiscountEvaluationResult,
+  ): Promise<void> {
+    if (
+      !this.customDiscounts ||
+      !this.customDiscountApplications ||
+      result.customApplicationsToWrite.length === 0
+    ) {
+      return;
+    }
+    for (const app of result.customApplicationsToWrite) {
+      const incremented = await this.customDiscounts.incrementUsedCount(
+        kindergartenId,
+        app.customDiscountId,
+        1,
+      );
+      if (!incremented) {
+        this.logger.warn(
+          `discount.max_uses_total_raced: kg=${kindergartenId} discount=${app.customDiscountId} invoice=${invoice.id} — application row skipped.`,
+        );
+        continue;
+      }
+      await this.customDiscountApplications.create({
+        kindergartenId,
+        customDiscountId: app.customDiscountId,
+        invoiceId: invoice.id,
+        invoiceLineItemId: lineItem.id,
+        childId: invoice.childId,
+        amountApplied: app.amountApplied,
+      });
+    }
+  }
+}
+
+/**
+ * Domain → engine snapshot. Mappers are short-lived per call so the
+ * transform happens inline. Mirrors the shape the engine + resolver
+ * consume.
+ */
+function toSnapshot(d: CustomDiscount): CustomDiscountSnapshot {
+  return {
+    id: d.id,
+    name: d.name,
+    discountType: d.discountType,
+    amount: d.amount,
+    conditions: d.conditions,
+    targetType: d.targetType,
+    targetIds: d.targetIds,
+    priority: d.priority,
+    stackable: d.stackable,
+    maxUsesPerChild: d.maxUsesPerChild,
+    totalMaxUses: d.totalMaxUses,
+    usedCount: d.usedCount,
+    createdAt: d.createdAt,
+  };
+}
+
+/**
+ * Approximate months-between calculator for the conditions evaluator. Uses
+ * UTC year/month diff + day-of-month adjustment so a birthday on the 30th
+ * with `now` on the 29th of the same month rolls back one month
+ * (matches PG `age()` semantics).
+ */
+function monthsBetween(from: Date, to: Date): number {
+  const years = to.getUTCFullYear() - from.getUTCFullYear();
+  const months = to.getUTCMonth() - from.getUTCMonth();
+  let total = years * 12 + months;
+  if (to.getUTCDate() < from.getUTCDate()) {
+    total -= 1;
+  }
+  return Math.max(0, total);
 }
 
 // ── pure date helpers ────────────────────────────────────────────────────

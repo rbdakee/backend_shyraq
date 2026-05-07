@@ -209,4 +209,23 @@ export class TariffAssignmentRelationalRepository extends TariffAssignmentReposi
       [scope],
     );
   }
+
+  async listActiveChildIdsByTariffPlanIds(
+    kindergartenId: string,
+    tariffPlanIds: string[],
+    now: Date,
+  ): Promise<string[]> {
+    if (tariffPlanIds.length === 0) return [];
+    const dateIso = toIsoDate(now);
+    const rows = (await this.manager().query(
+      `SELECT DISTINCT child_id
+         FROM tariff_assignments
+        WHERE kindergarten_id = $1
+          AND tariff_plan_id = ANY($2::uuid[])
+          AND valid_from <= $3
+          AND (valid_until IS NULL OR valid_until >= $3)`,
+      [kindergartenId, tariffPlanIds, dateIso],
+    )) as Array<{ child_id: string }>;
+    return rows.map((r) => r.child_id);
+  }
 }

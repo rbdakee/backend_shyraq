@@ -307,6 +307,53 @@ export class ChildGuardianRelationalRepository extends ChildGuardianRepository {
     });
   }
 
+  async countSiblingsInKgForChild(
+    kindergartenId: string,
+    childId: string,
+  ): Promise<number> {
+    // A sibling is a non-archived child in the kg sharing AT LEAST ONE
+    // approved-active guardian with the input child. We exclude the
+    // child itself from the count via `g2.child_id <> $childId`.
+    const result = (await this.manager().query(
+      `SELECT COUNT(DISTINCT g2.child_id)::int AS count
+         FROM child_guardians g1
+         JOIN child_guardians g2
+           ON g1.user_id = g2.user_id
+          AND g1.kindergarten_id = g2.kindergarten_id
+         JOIN children c2
+           ON c2.id = g2.child_id
+          AND c2.kindergarten_id = g2.kindergarten_id
+        WHERE g1.kindergarten_id = $1
+          AND g1.child_id = $2
+          AND g1.status = 'approved'
+          AND g1.revoked_at IS NULL
+          AND g2.child_id <> $2
+          AND g2.status = 'approved'
+          AND g2.revoked_at IS NULL
+          AND c2.status <> 'archived'`,
+      [kindergartenId, childId],
+    )) as Array<{ count: number }>;
+    return result[0]?.count ?? 0;
+  }
+
+  async findApprovedUserIdsBySomeChildIds(
+    kindergartenId: string,
+    childIds: string[],
+  ): Promise<string[]> {
+    if (childIds.length === 0) return [];
+    const rows = (await this.manager().query(
+      `SELECT DISTINCT user_id
+         FROM child_guardians
+        WHERE kindergarten_id = $1
+          AND child_id = ANY($2::uuid[])
+          AND status = 'approved'
+          AND revoked_at IS NULL
+          AND role <> 'nanny'`,
+      [kindergartenId, childIds],
+    )) as Array<{ user_id: string }>;
+    return rows.map((r) => r.user_id);
+  }
+
   private manager(): EntityManager {
     const ctx = tenantStorage.getStore();
     return ctx?.entityManager ?? this.repo.manager;

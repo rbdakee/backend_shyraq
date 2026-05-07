@@ -648,6 +648,41 @@ const TEMPLATES: Record<string, EventTemplate> = {
     };
   },
 
+  // ── B16 Custom Discount activation ────────────────────────────────────
+  // Fired by `CustomDiscountService.activate` when the discount has
+  // `notify_on_activation=true`. Recipient resolver fans out to the
+  // children's approved-active guardian user_ids (parents only — nanny
+  // role excluded by the resolver query). When the admin configured an
+  // i18n title/body in the catalogue, the template uses those verbatim;
+  // otherwise it falls back to a generic copy keyed by discountName.
+  'discount.activated': ({ payload }) => {
+    const tInline = payload.notificationTitle as Record<string, string> | null;
+    const bInline = payload.notificationBody as Record<string, string> | null;
+    const nameMap = (payload.discountName ?? {}) as Record<string, string>;
+    const fallbackName =
+      asNonEmptyString(nameMap.ru) ??
+      asNonEmptyString(nameMap.kk) ??
+      asNonEmptyString(nameMap.en) ??
+      'скидка';
+    const titleI18n = tInline ?? {
+      ru: 'Новая скидка доступна',
+      kk: 'Жаңа жеңілдік қолжетімді',
+      en: 'New discount available',
+    };
+    const bodyI18n = bInline ?? {
+      ru: `Скидка «${fallbackName}» теперь доступна для вашего ребёнка.`,
+      kk: `«${fallbackName}» жеңілдігі сіздің балаңызға қолжетімді.`,
+      en: `Discount "${fallbackName}" is now available for your child.`,
+    };
+    return {
+      titleI18n,
+      bodyI18n,
+      data: stringMap({
+        discountId: payload.discountId,
+      }),
+    };
+  },
+
   // T11 H6 — admin-visible signal that the first invoice was skipped on
   // enrollment.card_created because no tariff_assignment was configured.
   'enrollment.first_invoice_skipped': ({ payload }) => ({
@@ -726,6 +761,12 @@ const RECIPIENT_RESOLVERS: Record<string, RecipientResolver> = {
   // T11 H6 — recipients are pre-resolved by the producer (kg admin
   // user_ids); the dispatcher reads the array verbatim from the payload.
   'enrollment.first_invoice_skipped': resolveRecipientUserIdsFromPayload,
+  // ── B16 Custom Discount activation ─────────────────────────────────────
+  // Producer pre-resolves the target child IDs via DiscountTargetResolver;
+  // we fan out to the distinct set of approved-active guardian user_ids
+  // across those children via a single multi-child query (parents only —
+  // nanny role excluded at the SQL level).
+  'discount.activated': resolveDiscountActivatedRecipients,
 };
 
 async function resolveByChildGuardians(
@@ -902,6 +943,32 @@ function resolveParentRequestCancelledRecipients(
  * `create_requests`), tag them into `nannyUserIds` so `applyNannyPolicy`
  * drops the message — `request.*` is NOT in `NANNY_ALLOWED_EVENT_KEYS`.
  */
+/**
+ * Recipient resolver for `discount.activated` (B16). The producer pre-
+ * resolves `targetChildIds` via `DiscountTargetResolver`; we fan out
+ * to the distinct set of approved-active guardian user_ids across those
+ * children. Nannies are excluded at the SQL layer
+ * (`findApprovedUserIdsBySomeChildIds` filters `role <> 'nanny'`),
+ * so the nanny-policy gate has no further work for this key.
+ */
+async function resolveDiscountActivatedRecipients(
+  event: OutboxEvent,
+  deps: { guardianRepo: ChildGuardianRepository },
+): Promise<ResolvedRecipients> {
+  const raw = event.payload.targetChildIds;
+  const childIds = Array.isArray(raw)
+    ? raw.filter((v): v is string => typeof v === 'string' && v.length > 0)
+    : [];
+  if (childIds.length === 0) {
+    return { userIds: [], nannyUserIds: new Set() };
+  }
+  const userIds = await deps.guardianRepo.findApprovedUserIdsBySomeChildIds(
+    event.kindergartenId,
+    childIds,
+  );
+  return { userIds, nannyUserIds: new Set() };
+}
+
 async function resolveParentRequestMessageRecipients(
   event: OutboxEvent,
   deps: { guardianRepo: ChildGuardianRepository },

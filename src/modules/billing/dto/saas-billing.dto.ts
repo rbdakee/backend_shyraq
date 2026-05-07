@@ -38,3 +38,30 @@ export class TriggerMonthlyRunResponseDto {
   })
   status!: 'enqueued';
 }
+
+export class TriggerDiscountExpireRunDto {
+  @ApiProperty({
+    example: '2026-06-01T03:00:00.000Z',
+    description:
+      'Optional ISO-8601 anchor for the expire pass. Defaults to server now.',
+    required: false,
+    nullable: true,
+  })
+  @IsOptional()
+  @IsDateString()
+  now?: string | null;
+}
+
+export class TriggerDiscountExpireRunResponseDto {
+  @ApiProperty({
+    example: 'billing:discount-expire-manual:1717200000',
+    description: 'BullMQ job id for the enqueued discount-expire run.',
+  })
+  job_id!: string;
+
+  @ApiProperty({
+    example: 'enqueued',
+    description: 'Always "enqueued" on success.',
+  })
+  status!: 'enqueued';
+}

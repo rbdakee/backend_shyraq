@@ -10,6 +10,7 @@ import {
   GuardianRevokedEvent,
   GuardianSelfRevokedEvent,
   NotificationPort,
+  NotifyDiscountActivatedInput,
   NotifyEnrollmentFirstInvoiceSkippedInput,
   NotifyInvoiceCancelledInput,
   NotifyInvoiceCreatedInput,
@@ -341,6 +342,18 @@ export class OutboxNotificationAdapter extends NotificationPort {
         recipientUserIds: event.recipientUserIds,
       },
     );
+  }
+
+  // ── B16 Custom Discounts ──────────────────────────────────────────────
+
+  notifyDiscountActivated(event: NotifyDiscountActivatedInput): Promise<void> {
+    return this.enqueue(event.kindergartenId, 'discount.activated', {
+      discountId: event.discountId,
+      discountName: event.discountName,
+      targetChildIds: event.targetChildIds,
+      notificationTitle: event.notificationTitle,
+      notificationBody: event.notificationBody,
+    });
   }
 
   private async enqueue(

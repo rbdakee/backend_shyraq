@@ -320,6 +320,38 @@ export interface NotifyRefundProcessedInput {
 }
 
 /**
+ * B16 — emitted by `CustomDiscountService.activate` when a discount with
+ * `notify_on_activation=true` AND non-empty notification_title/body
+ * transitions `draft → active`. Recipients are the child guardians of the
+ * discount's resolved target set (resolved by the producer via
+ * `DiscountTargetResolver` and pre-fanned-out to user_ids by the
+ * dispatcher's `discount.activated` recipient resolver). BP §4.1: the
+ * `expire` flow stays silent — only activation surfaces a parent ping.
+ */
+export interface NotifyDiscountActivatedInput {
+  kindergartenId: string;
+  discountId: string;
+  /**
+   * Localised name of the discount (snapshot, used in the notification
+   * body when the admin omitted explicit notification copy).
+   */
+  discountName: Record<string, string>;
+  /**
+   * Pre-resolved set of children whose guardians should receive the
+   * `discount.activated` event. The dispatcher's recipient resolver
+   * fans out per-child guardians via a single multi-child query.
+   */
+  targetChildIds: string[];
+  /**
+   * Optional admin-supplied notification title / body in i18n shape.
+   * When null, the dispatcher template falls back to a generic copy
+   * keyed by the discount name.
+   */
+  notificationTitle: Record<string, string> | null;
+  notificationBody: Record<string, string> | null;
+}
+
+/**
  * T11 H6 — emitted by `EnrollmentService.transition` when the
  * `card_created` lax-mode catches a `TariffAssignmentNotFoundError`.
  * Recipients are the kindergarten's active admins (pre-resolved by the
@@ -445,4 +477,20 @@ export abstract class NotificationPort {
   abstract notifyEnrollmentFirstInvoiceSkipped(
     event: NotifyEnrollmentFirstInvoiceSkippedInput,
   ): Promise<void>;
+
+  // ── B16 Custom Discounts ──────────────────────────────────────────────
+  // Non-abstract default-no-op so older test FakeNotificationPort classes
+  // (B7..B13 specs) keep compiling. Production adapters
+  // (`OutboxNotificationAdapter`, `InMemoryNotificationAdapter`)
+  // override with the real fan-out.
+
+  /**
+   * Fired by `CustomDiscountService.activate` when the discount has
+   * `notify_on_activation=true`. The dispatcher's `discount.activated`
+   * recipient resolver fans out to the children's approved guardians
+   * (parents only — `discount.*` is not in `NANNY_ALLOWED_EVENT_KEYS`).
+   */
+  notifyDiscountActivated(_event: NotifyDiscountActivatedInput): Promise<void> {
+    return Promise.resolve();
+  }
 }

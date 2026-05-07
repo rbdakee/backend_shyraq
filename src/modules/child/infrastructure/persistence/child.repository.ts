@@ -91,4 +91,61 @@ export abstract class ChildRepository {
    * an empty array without opening a transaction.
    */
   abstract findByIdsCrossTenant(ids: string[]): Promise<Child[]>;
+
+  // ── B16 — DiscountTargetResolver helpers ──────────────────────────────
+  // These are non-abstract default-no-op methods to keep older test
+  // fakes compiling without forcing them to declare empty stubs. The
+  // relational impl overrides each with the real query. Service-layer
+  // callers (DiscountTargetResolver) treat empty-set returns as "no
+  // children targeted" — matches the intended semantics.
+
+  /**
+   * Returns the IDs of every non-archived child in the kg. Used by
+   * `DiscountTargetResolver` for the `targetType='all'` discount target.
+   * Returns IDs only (not hydrated entities) — keeps the read minimal
+   * for kgs with many children.
+   */
+  listAllActiveIdsByKg(_kindergartenId: string): Promise<string[]> {
+    return Promise.resolve([]);
+  }
+
+  /**
+   * Returns the IDs of non-archived children whose `current_group_id` is
+   * in the given list. Used by `targetType='groups'`. Empty input
+   * returns `[]` without a query.
+   */
+  listActiveIdsByGroupIds(
+    _kindergartenId: string,
+    _groupIds: string[],
+  ): Promise<string[]> {
+    return Promise.resolve([]);
+  }
+
+  /**
+   * Filters the input `ids` to those belonging to the kg AND non-archived.
+   * Used by `targetType='children'` to drop phantom (cross-tenant or
+   * archived) ids before notification fan-out. Empty input returns `[]`.
+   */
+  findActiveIdsInKg(
+    _kindergartenId: string,
+    _ids: string[],
+  ): Promise<string[]> {
+    return Promise.resolve([]);
+  }
+
+  /**
+   * Returns the IDs of non-archived children whose age in months at `now`
+   * (computed from `date_of_birth`) falls within `[fromMonths,
+   * toMonths]` inclusive. Used by `targetType='age_range'` discounts —
+   * the actual range itself lives in `discount.conditions.age_range`,
+   * the resolver pulls it out and calls this method.
+   */
+  listActiveIdsInKgInAgeRange(
+    _kindergartenId: string,
+    _fromMonths: number,
+    _toMonths: number,
+    _now: Date,
+  ): Promise<string[]> {
+    return Promise.resolve([]);
+  }
 }

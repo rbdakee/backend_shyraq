@@ -247,6 +247,74 @@ export class ChildRelationalRepository extends ChildRepository {
     });
   }
 
+  // ── B16 — DiscountTargetResolver helpers ──────────────────────────────
+
+  async listAllActiveIdsByKg(kindergartenId: string): Promise<string[]> {
+    const rows = (await this.manager().query(
+      `SELECT id FROM children
+        WHERE kindergarten_id = $1
+          AND status <> 'archived'
+        ORDER BY id`,
+      [kindergartenId],
+    )) as Array<{ id: string }>;
+    return rows.map((r) => r.id);
+  }
+
+  async listActiveIdsByGroupIds(
+    kindergartenId: string,
+    groupIds: string[],
+  ): Promise<string[]> {
+    if (groupIds.length === 0) return [];
+    const rows = (await this.manager().query(
+      `SELECT id FROM children
+        WHERE kindergarten_id = $1
+          AND status <> 'archived'
+          AND current_group_id = ANY($2::uuid[])`,
+      [kindergartenId, groupIds],
+    )) as Array<{ id: string }>;
+    return rows.map((r) => r.id);
+  }
+
+  async findActiveIdsInKg(
+    kindergartenId: string,
+    ids: string[],
+  ): Promise<string[]> {
+    if (ids.length === 0) return [];
+    const rows = (await this.manager().query(
+      `SELECT id FROM children
+        WHERE kindergarten_id = $1
+          AND status <> 'archived'
+          AND id = ANY($2::uuid[])`,
+      [kindergartenId, ids],
+    )) as Array<{ id: string }>;
+    return rows.map((r) => r.id);
+  }
+
+  async listActiveIdsInKgInAgeRange(
+    kindergartenId: string,
+    fromMonths: number,
+    toMonths: number,
+    now: Date,
+  ): Promise<string[]> {
+    // Age in months computed via PG: (year-month diff) on `date_of_birth`
+    // anchored to `$2` (now). Inclusive both ends; ages outside the
+    // window (negative or undefined) drop out via the BETWEEN guard.
+    // Uses age() + extract(year)/12 + extract(month) which truncates to
+    // whole months — close enough for B16 catalogue eligibility.
+    const rows = (await this.manager().query(
+      `SELECT id FROM children
+        WHERE kindergarten_id = $1
+          AND status <> 'archived'
+          AND date_of_birth IS NOT NULL
+          AND (
+                EXTRACT(YEAR FROM AGE($2::timestamptz, date_of_birth)) * 12
+                + EXTRACT(MONTH FROM AGE($2::timestamptz, date_of_birth))
+              ) BETWEEN $3 AND $4`,
+      [kindergartenId, now, fromMonths, toMonths],
+    )) as Array<{ id: string }>;
+    return rows.map((r) => r.id);
+  }
+
   private manager(): EntityManager {
     const ctx = tenantStorage.getStore();
     return ctx?.entityManager ?? this.repo.manager;

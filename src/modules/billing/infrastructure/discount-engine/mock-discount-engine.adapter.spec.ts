@@ -46,6 +46,7 @@ describe('MockDiscountEngine', () => {
       discountPct: null,
       discountReason: null,
       appliedRules: [],
+      customApplicationsToWrite: [],
     });
   });
 
@@ -60,6 +61,7 @@ describe('MockDiscountEngine', () => {
       discountPct: 15,
       discountReason: 'sibling_discount',
       appliedRules: ['sibling'],
+      customApplicationsToWrite: [],
     });
   });
 
@@ -86,6 +88,7 @@ describe('MockDiscountEngine', () => {
       discountPct: 10,
       discountReason: 'prepay_12m',
       appliedRules: ['prepay_12m'],
+      customApplicationsToWrite: [],
     });
   });
 
@@ -125,6 +128,7 @@ describe('MockDiscountEngine', () => {
       discountPct: null,
       discountReason: null,
       appliedRules: [],
+      customApplicationsToWrite: [],
     });
   });
 

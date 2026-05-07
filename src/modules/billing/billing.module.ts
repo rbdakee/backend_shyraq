@@ -2,6 +2,15 @@ import { Module, Provider } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ChildModule } from '@/modules/child/child.module';
+import { CustomDiscountRepository } from './custom-discount.repository';
+import { CustomDiscountApplicationRepository } from './custom-discount-application.repository';
+import { CustomDiscountService } from './custom-discount.service';
+import { DiscountTargetResolver } from './discount-target-resolver';
+import {
+  DiscountExpireProcessor,
+  DiscountExpireScheduler,
+  DISCOUNT_EXPIRE_QUEUE,
+} from './discount-expire.processor';
 import { DiscountEnginePort } from './infrastructure/discount-engine/discount-engine.port';
 import { MockDiscountEngine } from './infrastructure/discount-engine/mock-discount-engine.adapter';
 import { FiscalReceiptPort } from './infrastructure/fiscal-receipt/fiscal-receipt.port';
@@ -17,6 +26,8 @@ import { PaymentRepository } from './infrastructure/persistence/payment.reposito
 import { RefundRepository } from './infrastructure/persistence/refund.repository';
 import { TariffAssignmentRepository } from './infrastructure/persistence/tariff-assignment.repository';
 import { TariffPlanRepository } from './infrastructure/persistence/tariff-plan.repository';
+import { CustomDiscountRelationalRepository } from './infrastructure/persistence/relational/repositories/custom-discount.relational.repository';
+import { CustomDiscountApplicationRelationalRepository } from './infrastructure/persistence/relational/repositories/custom-discount-application.relational.repository';
 import { InvoiceRelationalRepository } from './infrastructure/persistence/relational/repositories/invoice.relational.repository';
 import { InvoiceLineItemRelationalRepository } from './infrastructure/persistence/relational/repositories/invoice-line-item.relational.repository';
 import { KindergartenHolidayRelationalRepository } from './infrastructure/persistence/relational/repositories/kindergarten-holiday.relational.repository';
@@ -25,6 +36,8 @@ import { PaymentRelationalRepository } from './infrastructure/persistence/relati
 import { RefundRelationalRepository } from './infrastructure/persistence/relational/repositories/refund.relational.repository';
 import { TariffAssignmentRelationalRepository } from './infrastructure/persistence/relational/repositories/tariff-assignment.relational.repository';
 import { TariffPlanRelationalRepository } from './infrastructure/persistence/relational/repositories/tariff-plan.relational.repository';
+import { CustomDiscountTypeOrmEntity } from './infrastructure/persistence/relational/entities/custom-discount.typeorm.entity';
+import { CustomDiscountApplicationTypeOrmEntity } from './infrastructure/persistence/relational/entities/custom-discount-application.typeorm.entity';
 import { InvoiceTypeOrmEntity } from './infrastructure/persistence/relational/entities/invoice.typeorm.entity';
 import { InvoiceLineItemTypeOrmEntity } from './infrastructure/persistence/relational/entities/invoice-line-item.typeorm.entity';
 import { KindergartenHolidayTypeOrmEntity } from './infrastructure/persistence/relational/entities/kindergarten-holiday.typeorm.entity';
@@ -127,6 +140,9 @@ function fiscalReceiptProvider(): Provider {
       PaymentTypeOrmEntity,
       RefundTypeOrmEntity,
       KindergartenHolidayTypeOrmEntity,
+      // ── B16 Custom Discounts ───────────────────────────────────────
+      CustomDiscountTypeOrmEntity,
+      CustomDiscountApplicationTypeOrmEntity,
     ]),
     // BullMQ queue for the monthly billing cron + manual super-admin
     // trigger. The recurring schedule is registered by
@@ -135,6 +151,10 @@ function fiscalReceiptProvider(): Provider {
     // pushes one-off `MONTHLY_BILLING_MANUAL_JOB` jobs via
     // `@InjectQueue(MONTHLY_BILLING_QUEUE)`.
     BullModule.registerQueue({ name: MONTHLY_BILLING_QUEUE }),
+    // B16 — discount-expire cron + manual trigger. Same gating + manual
+    // override pattern as the monthly run. The processor +
+    // scheduler live in `discount-expire.processor.ts`.
+    BullModule.registerQueue({ name: DISCOUNT_EXPIRE_QUEUE }),
     // T7b: ChildModule re-exports `ChildGuardianRepository` so the parent
     // controllers can re-check guardian-of-child links + nanny role gate.
     ChildModule,
@@ -180,6 +200,15 @@ function fiscalReceiptProvider(): Provider {
       provide: KindergartenHolidayRepository,
       useClass: KindergartenHolidayRelationalRepository,
     },
+    // ── B16 Custom Discounts ─────────────────────────────────────────
+    {
+      provide: CustomDiscountRepository,
+      useClass: CustomDiscountRelationalRepository,
+    },
+    {
+      provide: CustomDiscountApplicationRepository,
+      useClass: CustomDiscountApplicationRelationalRepository,
+    },
     InvoiceService,
     TariffPlanService,
     TariffAssignmentService,
@@ -187,8 +216,12 @@ function fiscalReceiptProvider(): Provider {
     PaymentAccountService,
     PaymentService,
     RefundService,
+    CustomDiscountService,
+    DiscountTargetResolver,
     MonthlyBillingProcessor,
     MonthlyBillingScheduler,
+    DiscountExpireProcessor,
+    DiscountExpireScheduler,
   ],
   exports: [
     PaymentProviderPort,
@@ -202,6 +235,8 @@ function fiscalReceiptProvider(): Provider {
     TariffAssignmentRepository,
     PaymentAccountRepository,
     KindergartenHolidayRepository,
+    CustomDiscountRepository,
+    CustomDiscountApplicationRepository,
     InvoiceService,
     TariffPlanService,
     TariffAssignmentService,
@@ -209,6 +244,8 @@ function fiscalReceiptProvider(): Provider {
     PaymentAccountService,
     PaymentService,
     RefundService,
+    CustomDiscountService,
+    DiscountTargetResolver,
     // Re-export the queue token via the BullMQ module so T7a's saas
     // controller can `@InjectQueue(MONTHLY_BILLING_QUEUE)` from any
     // module that imports BillingModule.

@@ -10,6 +10,7 @@ import {
   GuardianRevokedEvent,
   GuardianSelfRevokedEvent,
   NotificationPort,
+  NotifyDiscountActivatedInput,
   NotifyEnrollmentFirstInvoiceSkippedInput,
   NotifyInvoiceCancelledInput,
   NotifyInvoiceCreatedInput,
@@ -188,6 +189,11 @@ export class InMemoryNotificationAdapter extends NotificationPort {
     event: NotifyEnrollmentFirstInvoiceSkippedInput,
   ): Promise<void> {
     this.record('enrollment_first_invoice_skipped', event);
+    return Promise.resolve();
+  }
+
+  notifyDiscountActivated(event: NotifyDiscountActivatedInput): Promise<void> {
+    this.record('discount_activated', event);
     return Promise.resolve();
   }
 

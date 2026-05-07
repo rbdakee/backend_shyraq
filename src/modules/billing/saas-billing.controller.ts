@@ -23,6 +23,8 @@ import { Roles } from '@/common/decorators/roles.decorator';
 import { SuperAdminScope } from '@/common/decorators/super-admin-scope.decorator';
 import { RolesGuard } from '@/common/guards/roles.guard';
 import {
+  TriggerDiscountExpireRunDto,
+  TriggerDiscountExpireRunResponseDto,
   TriggerMonthlyRunDto,
   TriggerMonthlyRunResponseDto,
 } from './dto/saas-billing.dto';
@@ -31,6 +33,11 @@ import {
   MONTHLY_BILLING_QUEUE,
   MonthlyBillingJobData,
 } from './monthly-billing.processor';
+import {
+  DISCOUNT_EXPIRE_MANUAL_JOB,
+  DISCOUNT_EXPIRE_QUEUE,
+  DiscountExpireJobData,
+} from './discount-expire.processor';
 
 /**
  * SaasBillingController — super-admin / support trigger that pushes a
@@ -62,6 +69,8 @@ export class SaasBillingController {
   constructor(
     @InjectQueue(MONTHLY_BILLING_QUEUE)
     private readonly monthlyQueue: Queue<MonthlyBillingJobData>,
+    @InjectQueue(DISCOUNT_EXPIRE_QUEUE)
+    private readonly discountExpireQueue: Queue<DiscountExpireJobData>,
   ) {}
 
   @Post('monthly-run')
@@ -105,6 +114,43 @@ export class SaasBillingController {
     );
     return {
       job_id: job.id ?? `${MONTHLY_BILLING_MANUAL_JOB}:${Date.now()}`,
+      status: 'enqueued',
+    };
+  }
+
+  @Post('discount-expire-run')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @ApiOperation({
+    summary:
+      'Manually enqueue the B16 custom-discount expire pass (cross-tenant). Async — returns the BullMQ job id immediately. Used for ad-hoc cleanup or recovery from a missed cron tick.',
+  })
+  @ApiBody({ type: TriggerDiscountExpireRunDto })
+  @ApiResponse({
+    status: HttpStatus.ACCEPTED,
+    type: TriggerDiscountExpireRunResponseDto,
+    description:
+      'Job enqueued. Inspect BullMQ for completion / per-kg counts via the worker logs.',
+  })
+  @ApiBadRequestResponse({ description: 'Validation error.' })
+  @ApiUnauthorizedResponse({ description: 'Bearer missing/invalid/revoked.' })
+  @ApiForbiddenResponse({ description: 'Caller is not super_admin/support.' })
+  async triggerDiscountExpireRun(
+    @Body() body: TriggerDiscountExpireRunDto,
+  ): Promise<TriggerDiscountExpireRunResponseDto> {
+    const jobData: DiscountExpireJobData = {};
+    if (body.now) {
+      jobData.now = body.now;
+    }
+    const job = await this.discountExpireQueue.add(
+      DISCOUNT_EXPIRE_MANUAL_JOB,
+      jobData,
+      {
+        removeOnComplete: 100,
+        removeOnFail: 100,
+      },
+    );
+    return {
+      job_id: job.id ?? `${DISCOUNT_EXPIRE_MANUAL_JOB}:${Date.now()}`,
       status: 'enqueued',
     };
   }

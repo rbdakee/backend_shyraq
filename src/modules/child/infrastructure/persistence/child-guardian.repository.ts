@@ -152,4 +152,41 @@ export abstract class ChildGuardianRepository {
     childId: string,
     userId: string,
   ): Promise<ChildGuardian | null>;
+
+  // ── B16 — non-abstract defaults so older test fakes keep compiling.
+  //   The relational impl overrides each method.
+
+  /**
+   * B16 — Counts the number of OTHER non-archived children in this kg
+   * that share at least one approved-active guardian (parent) with the
+   * given child. Used by `InvoiceService` to populate the
+   * `familyContext.siblingsInKgCount` for the discount engine's
+   * sibling-rule + custom-discount conditions.
+   *
+   * Excludes the child itself from the count. Counts distinct sibling
+   * children, not pairs — a sibling shared via two parents still counts
+   * as 1.
+   */
+  countSiblingsInKgForChild(
+    _kindergartenId: string,
+    _childId: string,
+  ): Promise<number> {
+    return Promise.resolve(0);
+  }
+
+  /**
+   * B16 — fans out `targetChildIds` (from a `discount.activated` event)
+   * into the distinct set of approved-active guardian user_ids across
+   * all those children. Used by the dispatcher's recipient resolver so
+   * a single multi-child query replaces N per-child fan-out queries.
+   *
+   * Excludes nanny-role guardians (B16 BP §4.1: discount notifications
+   * are parent-only). Empty input returns `[]` without a query.
+   */
+  findApprovedUserIdsBySomeChildIds(
+    _kindergartenId: string,
+    _childIds: string[],
+  ): Promise<string[]> {
+    return Promise.resolve([]);
+  }
 }
