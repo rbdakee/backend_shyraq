@@ -46,6 +46,7 @@ import { PaymentTypeOrmEntity } from './infrastructure/persistence/relational/en
 import { RefundTypeOrmEntity } from './infrastructure/persistence/relational/entities/refund.typeorm.entity';
 import { TariffAssignmentTypeOrmEntity } from './infrastructure/persistence/relational/entities/tariff-assignment.typeorm.entity';
 import { TariffPlanTypeOrmEntity } from './infrastructure/persistence/relational/entities/tariff-plan.typeorm.entity';
+import { AdminCustomDiscountController } from './admin-custom-discount.controller';
 import { AdminFiscalReceiptController } from './admin-fiscal-receipt.controller';
 import { AdminHolidayController } from './admin-holiday.controller';
 import { AdminInvoiceController } from './admin-invoice.controller';
@@ -168,6 +169,8 @@ function fiscalReceiptProvider(): Provider {
     AdminRefundController,
     AdminHolidayController,
     AdminFiscalReceiptController,
+    // B16 Custom Discounts admin surface.
+    AdminCustomDiscountController,
     // Super-admin trigger (SuperAdminScope + RolesGuard@super_admin/support).
     SaasBillingController,
     // T7b: parent-side surface (JwtAuthGuard + Roles@parent + per-route
