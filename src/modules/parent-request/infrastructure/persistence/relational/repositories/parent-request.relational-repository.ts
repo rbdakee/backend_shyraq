@@ -6,6 +6,7 @@ import {
   ParentRequest,
   ParentRequestStatus,
 } from '../../../../domain/entities/parent-request.entity';
+import { ParentRequestNotFoundError } from '../../../../domain/errors';
 import {
   CreateParentRequestInput,
   ListParentRequestsFilter,
@@ -160,5 +161,23 @@ export class ParentRequestRelationalRepository extends ParentRequestRepository {
       where: { id, kindergartenId },
     });
     return row ? ParentRequestMapper.toDomain(row) : null;
+  }
+
+  async setInvoiceId(
+    kindergartenId: string,
+    parentRequestId: string,
+    invoiceId: string,
+  ): Promise<void> {
+    const m = this.manager();
+    const result = await m
+      .createQueryBuilder()
+      .update(ParentRequestTypeOrmEntity)
+      .set({ invoiceId })
+      .where('id = :id', { id: parentRequestId })
+      .andWhere('kindergartenId = :kgId', { kgId: kindergartenId })
+      .execute();
+    if (!result.affected) {
+      throw new ParentRequestNotFoundError(parentRequestId);
+    }
   }
 }

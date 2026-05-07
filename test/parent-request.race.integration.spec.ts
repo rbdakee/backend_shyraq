@@ -58,6 +58,7 @@ import { StaffMemberRelationalRepository } from '@/modules/staff/infrastructure/
 import { StaffMemberEntity } from '@/modules/staff/infrastructure/persistence/relational/entities/staff-member.entity';
 import { KindergartenEntity } from '@/modules/kindergarten/infrastructure/persistence/relational/entities/kindergarten.entity';
 import { UserEntity } from '@/modules/users/infrastructure/persistence/relational/entities/user.entity';
+import { InvoiceService } from '@/modules/billing/invoice.service';
 import { ChildGuardianRepository } from '@/modules/child/infrastructure/persistence/child-guardian.repository';
 import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
 import { GroupRepository } from '@/modules/group/infrastructure/persistence/group.repository';
@@ -389,6 +390,11 @@ describeIntegration(
         notifications,
         clock,
         configService,
+        // Race spec exercises only `acceptRequest(day_off)` — the
+        // late_pickup branch is the only path that calls invoiceService,
+        // so a null cast is safe here. Hitting it would surface a clear
+        // TypeError rather than a silent no-op.
+        null as unknown as InvoiceService,
       );
     }
 

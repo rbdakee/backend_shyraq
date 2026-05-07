@@ -61,4 +61,17 @@ export abstract class ParentRequestRepository {
       updatedAt: Date;
     },
   ): Promise<ParentRequest | null>;
+
+  /**
+   * Partial UPDATE that only writes `invoice_id`. Used by the B13 late_pickup
+   * hook to link a freshly-generated invoice back onto the parent_request.
+   * Throws when the row is missing (defensive — callers always look up the
+   * row first via `findById`, so a 0-row UPDATE here means concurrent
+   * deletion or a tenant-mismatch).
+   */
+  abstract setInvoiceId(
+    kindergartenId: string,
+    parentRequestId: string,
+    invoiceId: string,
+  ): Promise<void>;
 }

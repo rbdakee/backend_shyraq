@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { randomInt } from 'node:crypto';
 import { AllConfigType } from '@/config/config.type';
 import { NotificationPort } from '@/common/notifications/notification.port';
+import { InvoiceService } from '@/modules/billing/invoice.service';
 import { OtpInvalidError } from '@/modules/auth/domain/errors/otp-invalid.error';
 import { OtpExpiredError } from '@/modules/auth/domain/errors/otp-expired.error';
 import { OtpLockedError } from '@/modules/auth/domain/errors/otp-locked.error';
@@ -146,9 +147,17 @@ export interface ListParentRequestsResult {
  * window so abusing this endpoint cannot earn extra login OTP budget.
  *
  * Transactionality: side-effect writes inside `acceptRequest` (TrustedPerson
- * + optional PickupRequest creation) live on the ambient HTTP TX set up by
+ * + optional PickupRequest creation, plus the B13 late_pickup invoice
+ * emission + linkage) live on the ambient HTTP TX set up by
  * `TenantContextInterceptor` — no inner `dataSource.transaction(...)`. If
  * any side-effect throws, the conditional UPDATE rolls back cleanly.
+ *
+ * B13 contract on `accept(late_pickup)`: a `late_pickup_fee` tariff_plan must
+ * be configured for the kindergarten (or the `details.tariff_amount_kzt`
+ * fallback must be set on the parent_request) before staff accepts. If
+ * neither is present, the accept call propagates the underlying
+ * `TariffPlanNotFoundError` and the transaction rolls back — staff/admin
+ * must configure billing first, then re-accept.
  */
 @Injectable()
 export class ParentRequestService {
@@ -169,6 +178,7 @@ export class ParentRequestService {
     @Inject(NotificationPort) private readonly notifications: NotificationPort,
     @Inject(ClockPort) private readonly clock: ClockPort,
     private readonly configService: ConfigService<AllConfigType>,
+    private readonly invoiceService: InvoiceService,
   ) {}
 
   // ── OTP for trusted-person flow ───────────────────────────────────────
@@ -555,6 +565,7 @@ export class ParentRequestService {
     // Per-type side effects — all run on the ambient HTTP TX set up by
     // TenantContextInterceptor. If any throw, the surrounding TX rolls back
     // and the conditional UPDATE reverts cleanly.
+    let withInvoice: ParentRequest | null = null;
     switch (updated.requestType) {
       case 'trusted_person':
         await this.applyTrustedPersonAcceptSideEffects(updated, caller);
@@ -568,10 +579,7 @@ export class ParentRequestService {
         // accept(vacation) for the inclusive [date_from..date_to] range.
         break;
       case 'late_pickup':
-        // TODO(B13): emit late-pickup invoice on accept (tariff snapshot
-        // already lives in details.expected_time; B13 will add a
-        // late_pickup_tariff_kzt field to kindergartens and project the
-        // invoice row here).
+        withInvoice = await this.applyLatePickupAcceptSideEffects(updated);
         break;
       case 'open_request':
         // No additional side-effects beyond notify.
@@ -590,7 +598,7 @@ export class ParentRequestService {
     this.logger.log(
       `parent_request.accepted id=${updated.id} kg=${kindergartenId} type=${updated.requestType} by=${caller.staffMemberId}`,
     );
-    return updated;
+    return withInvoice ?? updated;
   }
 
   async rejectRequest(
@@ -1115,6 +1123,59 @@ export class ParentRequestService {
   }
 
   /**
+   * Side-effect for `accept(late_pickup)` (B13 cross-module hook). Calls
+   * `InvoiceService.generateLatePickupInvoice` and links the resulting
+   * invoice id back onto the parent_request row via repo.setInvoiceId, both
+   * on the ambient HTTP TX. Returns the parent_request hydrated with the
+   * fresh `invoice_id` so the caller can surface it in the response without
+   * a re-read at the controller layer.
+   *
+   * Failure modes (all roll back the ambient TX atomically):
+   *   - `TariffPlanNotFoundError('late_pickup_fee')` if no active plan AND
+   *     no `details.tariff_amount_kzt` fallback in the request.
+   *   - `ChildNotFoundError` (rare) if the child row was archived between
+   *     create and accept.
+   */
+  private async applyLatePickupAcceptSideEffects(
+    pr: ParentRequest,
+  ): Promise<ParentRequest> {
+    const expectedTime = stringDetail(pr.details, 'expected_time', '');
+    // No actual_time captured at accept-time yet (parent reports late
+    // pickup intent only). We bill the announced expected_time as the
+    // realised time — `actualTime === expectedTime` for the B13 contract.
+    // T8/B22 may revisit if attendance.check_out timestamp becomes the
+    // canonical actual_time.
+    const actualTime = expectedTime;
+    // dateFrom is set by createLatePickupRequest from input.date — that
+    // jsonb `date` field is no longer carried in `details` directly, but
+    // the entity column is the source of truth.
+    const date = pr.dateFrom ?? this.clock.now();
+    const lateFeeAmountKzt = numberDetail(pr.details, 'tariff_amount_kzt');
+
+    const invoice = await this.invoiceService.generateLatePickupInvoice(
+      pr.kindergartenId,
+      {
+        childId: pr.childId,
+        parentRequestId: pr.id,
+        expectedTime,
+        actualTime,
+        date,
+        requestedBy: pr.requesterUserId,
+        lateFeeAmountKzt,
+      },
+    );
+    await this.parentRequests.setInvoiceId(
+      pr.kindergartenId,
+      pr.id,
+      invoice.id,
+    );
+    this.logger.log(
+      `parent_request.late_pickup_invoice_generated invoice=${invoice.id} pr=${pr.id} kg=${pr.kindergartenId}`,
+    );
+    return ParentRequest.fromState({ ...pr.toState(), invoiceId: invoice.id });
+  }
+
+  /**
    * Resolve the user_id for a staff_member id, returning null when the
    * staff_member id itself is null or the row is missing. Used by the
    * notification producers to populate `recipientStaffUserId` so the
@@ -1259,4 +1320,12 @@ function booleanDetail(
 ): boolean {
   const v = details[key];
   return typeof v === 'boolean' ? v : fallback;
+}
+
+function numberDetail(
+  details: Record<string, unknown>,
+  key: string,
+): number | undefined {
+  const v = details[key];
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
 }

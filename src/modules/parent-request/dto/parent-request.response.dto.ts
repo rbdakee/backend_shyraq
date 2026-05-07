@@ -96,9 +96,10 @@ export class ParentRequestResponseDto {
   review_note!: string | null;
 
   @ApiProperty({
-    example: null,
+    example: '99999999-aaaa-bbbb-cccc-999999999999',
     nullable: true,
-    description: 'B13 hook — invoice id when accept(late_pickup) emits one.',
+    description:
+      'Invoice id linked to this request. Populated for `late_pickup` after staff accepts (B13 hook auto-emits a `late_pickup_fee` invoice and links it). `null` for every other request_type and for `late_pickup` while still `pending`.',
   })
   invoice_id!: string | null;
 

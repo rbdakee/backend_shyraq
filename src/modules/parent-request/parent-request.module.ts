@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { BillingModule } from '@/modules/billing/billing.module';
 import { ChildModule } from '@/modules/child/child.module';
 import { GroupModule } from '@/modules/group/group.module';
 import { PickupModule } from '@/modules/pickup/pickup.module';
@@ -50,6 +51,10 @@ import { AdminParentRequestController } from './admin-parent-request.controller'
     GroupModule,
     StaffModule,
     PickupModule,
+    // BillingModule exports `InvoiceService` for the B13 cross-module hook
+    // that emits a `late_pickup_fee` invoice on accept(late_pickup) and links
+    // it back via `parent_requests.invoice_id`.
+    BillingModule,
   ],
   controllers: [
     ParentParentRequestController,

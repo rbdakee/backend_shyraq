@@ -41,6 +41,12 @@ import {
   PickupValidatedEvent,
   TimelineEntryCreatedEvent,
 } from '@/common/notifications/notification.port';
+import {
+  Invoice,
+  InvoiceState,
+} from '@/modules/billing/domain/entities/invoice.entity';
+import { TariffPlanNotFoundError } from '@/modules/billing/domain/errors/tariff-plan-not-found.error';
+import { InvoiceService } from '@/modules/billing/invoice.service';
 import { OtpInvalidError } from '@/modules/auth/domain/errors/otp-invalid.error';
 import { OtpExpiredError } from '@/modules/auth/domain/errors/otp-expired.error';
 import { OtpLockedError } from '@/modules/auth/domain/errors/otp-locked.error';
@@ -257,6 +263,31 @@ class FakeParentRequestRepo extends ParentRequestRepository {
     });
     this.rows.set(id, next);
     return Promise.resolve(next);
+  }
+
+  setInvoiceIdCalls: Array<{
+    kg: string;
+    parentRequestId: string;
+    invoiceId: string;
+  }> = [];
+
+  setInvoiceId(
+    kindergartenId: string,
+    parentRequestId: string,
+    invoiceId: string,
+  ): Promise<void> {
+    this.setInvoiceIdCalls.push({
+      kg: kindergartenId,
+      parentRequestId,
+      invoiceId,
+    });
+    const pr = this.rows.get(parentRequestId);
+    if (!pr || pr.kindergartenId !== kindergartenId) {
+      return Promise.reject(new ParentRequestNotFoundError(parentRequestId));
+    }
+    const next = ParentRequest.fromState({ ...pr.toState(), invoiceId });
+    this.rows.set(parentRequestId, next);
+    return Promise.resolve();
   }
 }
 
@@ -726,6 +757,84 @@ class FakeNotificationPort extends NotificationPort {
   }
 }
 
+/**
+ * In-memory stub of InvoiceService — only `generateLatePickupInvoice` is
+ * exercised by ParentRequestService. Captures call args; either returns a
+ * deterministic Invoice POJO or throws the configured error so the
+ * accept(late_pickup) branch can exercise the rollback path.
+ */
+interface GenerateLatePickupInvoiceCall {
+  kindergartenId: string;
+  childId: string;
+  parentRequestId: string;
+  expectedTime: string;
+  actualTime: string;
+  date: Date;
+  requestedBy: string;
+  lateFeeAmountKzt: number | undefined;
+}
+
+class StubInvoiceService {
+  generateLatePickupInvoiceCalls: GenerateLatePickupInvoiceCall[] = [];
+  generateFirstInvoiceCalls: number = 0;
+  errorToThrow: Error | null = null;
+
+  generateLatePickupInvoice = (
+    kindergartenId: string,
+    input: {
+      childId: string;
+      parentRequestId: string;
+      expectedTime: string;
+      actualTime: string;
+      date: Date;
+      requestedBy: string;
+      lateFeeAmountKzt?: number;
+    },
+  ): Promise<Invoice> => {
+    this.generateLatePickupInvoiceCalls.push({
+      kindergartenId,
+      childId: input.childId,
+      parentRequestId: input.parentRequestId,
+      expectedTime: input.expectedTime,
+      actualTime: input.actualTime,
+      date: input.date,
+      requestedBy: input.requestedBy,
+      lateFeeAmountKzt: input.lateFeeAmountKzt,
+    });
+    if (this.errorToThrow) return Promise.reject(this.errorToThrow);
+    const invoiceId = `fake-invoice-id-${input.parentRequestId}`;
+    const state: InvoiceState = {
+      id: invoiceId,
+      kindergartenId,
+      childId: input.childId,
+      paymentAccountId: `pa-${input.childId}`,
+      tariffPlanId: 'tariff-late-pickup',
+      invoiceType: 'late_pickup_fee',
+      periodStart: input.date,
+      periodEnd: input.date,
+      amountDue: 5000,
+      discountPct: null,
+      discountReason: null,
+      amountAfterDiscount: 5000,
+      status: 'pending',
+      dueDate: input.date,
+      description: null,
+      proratedForDays: null,
+      createdAt: input.date,
+      updatedAt: input.date,
+    };
+    return Promise.resolve(Invoice.fromState(state));
+  };
+
+  // Not used by ParentRequestService, but present so the cast through
+  // `as unknown as InvoiceService` does not lose this method's signature
+  // for any future reuse.
+  generateFirstInvoice = (): Promise<Invoice> => {
+    this.generateFirstInvoiceCalls++;
+    return Promise.reject(new Error('not used'));
+  };
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────
 
 function makeChild(opts: { id?: string; groupId?: string | null } = {}): Child {
@@ -829,6 +938,7 @@ function buildHarness() {
   const authOtpStore = new FakeAuthOtpStore();
   const sms = new FakeSmsPort();
   const notify = new FakeNotificationPort();
+  const invoiceService = new StubInvoiceService();
 
   // Default permission set (primary): create_requests=true.
   const PRIMARY_PERMS = {}; // empty — defaults for primary include create_requests=true.
@@ -894,6 +1004,7 @@ function buildHarness() {
     notify,
     clock,
     config,
+    invoiceService as unknown as InvoiceService,
   );
 
   return {
@@ -911,6 +1022,7 @@ function buildHarness() {
     authOtpStore,
     sms,
     notify,
+    invoiceService,
     PRIMARY_PERMS,
     NANNY_PERMS,
   };
@@ -1608,7 +1720,7 @@ describe('ParentRequestService', () => {
       );
     });
 
-    it('on accept(late_pickup) emits notification but does NOT create invoice (TODO B13)', async () => {
+    it('on accept(late_pickup) generates a late_pickup invoice and links it to the parent_request (B13 hook)', async () => {
       const h = buildHarness();
       const pr = await h.service.createLatePickupRequest(KG, PARENT_USER, {
         childId: CHILD,
@@ -1627,8 +1739,114 @@ describe('ParentRequestService', () => {
         null,
       );
       expect(accepted.status).toBe('accepted');
-      expect(accepted.invoiceId).toBeNull();
+      expect(accepted.invoiceId).toBe(`fake-invoice-id-${pr.id}`);
+
+      expect(h.invoiceService.generateLatePickupInvoiceCalls).toHaveLength(1);
+      const call = h.invoiceService.generateLatePickupInvoiceCalls[0];
+      expect(call.kindergartenId).toBe(KG);
+      expect(call.childId).toBe(CHILD);
+      expect(call.parentRequestId).toBe(pr.id);
+      expect(call.expectedTime).toBe('19:30');
+      expect(call.actualTime).toBe('19:30');
+      expect(call.requestedBy).toBe(PARENT_USER);
+      expect(call.date.toISOString().slice(0, 10)).toBe('2026-05-15');
+
+      expect(h.parentRequestRepo.setInvoiceIdCalls).toHaveLength(1);
+      expect(h.parentRequestRepo.setInvoiceIdCalls[0]).toEqual({
+        kg: KG,
+        parentRequestId: pr.id,
+        invoiceId: `fake-invoice-id-${pr.id}`,
+      });
+
+      // Persisted state should also reflect the linked invoice id.
+      const reloaded = h.parentRequestRepo.rows.get(pr.id);
+      expect(reloaded?.invoiceId).toBe(`fake-invoice-id-${pr.id}`);
+
       expect(h.notify.acceptedEvents).toHaveLength(1);
+    });
+
+    it('rolls back accept(late_pickup) when invoice generation fails (no tariff)', async () => {
+      const h = buildHarness();
+      const pr = await h.service.createLatePickupRequest(KG, PARENT_USER, {
+        childId: CHILD,
+        date: '2026-05-15',
+        expectedTime: '19:30',
+        comment: null,
+      });
+      h.invoiceService.errorToThrow = new TariffPlanNotFoundError(
+        'late_pickup_fee',
+      );
+      await expect(
+        h.service.acceptRequest(
+          KG,
+          {
+            staffMemberId: STAFF_MENTOR_ID,
+            userId: STAFF_USER,
+            role: 'mentor',
+          },
+          pr.id,
+          null,
+        ),
+      ).rejects.toBeInstanceOf(TariffPlanNotFoundError);
+
+      // setInvoiceId never reached.
+      expect(h.parentRequestRepo.setInvoiceIdCalls).toHaveLength(0);
+      // acceptedEvent never dispatched.
+      expect(h.notify.acceptedEvents).toHaveLength(0);
+      // Note: in the in-memory fake the conditional UPDATE runs BEFORE the
+      // invoice call (matching real flow). In production, the ambient TX
+      // rollback unwinds that UPDATE; the fake does not simulate TX rollback
+      // — what matters is that the invoice failure path propagates and the
+      // downstream side-effects (notification + linkage) never run.
+    });
+
+    it('on accept(day_off) does NOT call the invoice service (only late_pickup triggers the B13 hook)', async () => {
+      const h = buildHarness();
+      const pr = await h.service.createDayOffRequest(KG, PARENT_USER, {
+        childId: CHILD,
+        weekendDates: ['2026-05-09'],
+        comment: null,
+      });
+      await h.service.acceptRequest(
+        KG,
+        {
+          staffMemberId: STAFF_MENTOR_ID,
+          userId: STAFF_USER,
+          role: 'mentor',
+        },
+        pr.id,
+        null,
+      );
+      expect(h.invoiceService.generateLatePickupInvoiceCalls).toHaveLength(0);
+      expect(h.parentRequestRepo.setInvoiceIdCalls).toHaveLength(0);
+    });
+
+    it('on accept(trusted_person) does NOT call the invoice service', async () => {
+      const h = buildHarness();
+      await h.otpStore.storeCode(PARENT_USER, '123456', 300);
+      const pr = await h.service.createTrustedPersonRequest(KG, PARENT_USER, {
+        code: '123456',
+        childId: CHILD,
+        fullName: 'Aigul',
+        phone: '+77079999999',
+        iin: null,
+        relation: 'aunt',
+        photoUrl: null,
+        isOneTime: false,
+        createPickupRequest: false,
+        comment: null,
+      });
+      await h.service.acceptRequest(
+        KG,
+        {
+          staffMemberId: STAFF_ADMIN_ID,
+          userId: 'aaaaaaaa-6666-6666-6666-aaaaaaaaaaaa',
+          role: 'admin',
+        },
+        pr.id,
+        null,
+      );
+      expect(h.invoiceService.generateLatePickupInvoiceCalls).toHaveLength(0);
     });
   });
 

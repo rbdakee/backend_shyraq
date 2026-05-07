@@ -6,6 +6,12 @@
  * ChildService.createChild + inviteGuardian wiring is exercised by the
  * service-integration spec sibling against a real database.
  */
+import { InvoiceService } from '@/modules/billing/invoice.service';
+import {
+  Invoice,
+  InvoiceState,
+} from '@/modules/billing/domain/entities/invoice.entity';
+import { TariffAssignmentNotFoundError } from '@/modules/billing/domain/errors/tariff-assignment-not-found.error';
 import { ChildService } from '@/modules/child/child.service';
 import { Child } from '@/modules/child/domain/entities/child.entity';
 import { ChildGuardian } from '@/modules/child/domain/entities/child-guardian.entity';
@@ -319,6 +325,62 @@ interface InviteGuardianCall {
   invitedByUserId: string;
 }
 
+interface GenerateFirstInvoiceCall {
+  kindergartenId: string;
+  childId: string;
+  enrollmentDate: Date;
+  assignedBy: string;
+}
+
+/**
+ * In-memory stub of `InvoiceService.generateFirstInvoice` — the only method
+ * EnrollmentService consumes. Captures call args and either returns a
+ * deterministic Invoice POJO or throws the configured error so the
+ * card_created branch can exercise both happy + rollback paths.
+ */
+class StubInvoiceService {
+  generateFirstInvoiceCalls: GenerateFirstInvoiceCall[] = [];
+  errorToThrow: Error | null = null;
+
+  generateFirstInvoice = (
+    kindergartenId: string,
+    input: {
+      childId: string;
+      enrollmentDate: Date;
+      assignedBy: string;
+    },
+  ): Promise<Invoice> => {
+    this.generateFirstInvoiceCalls.push({
+      kindergartenId,
+      childId: input.childId,
+      enrollmentDate: input.enrollmentDate,
+      assignedBy: input.assignedBy,
+    });
+    if (this.errorToThrow) return Promise.reject(this.errorToThrow);
+    const state: InvoiceState = {
+      id: `inv-${this.generateFirstInvoiceCalls.length}`,
+      kindergartenId,
+      childId: input.childId,
+      paymentAccountId: `pa-${input.childId}`,
+      tariffPlanId: 'tariff-1',
+      invoiceType: 'monthly',
+      periodStart: input.enrollmentDate,
+      periodEnd: input.enrollmentDate,
+      amountDue: 100000,
+      discountPct: null,
+      discountReason: null,
+      amountAfterDiscount: 100000,
+      status: 'pending',
+      dueDate: input.enrollmentDate,
+      description: null,
+      proratedForDays: null,
+      createdAt: input.enrollmentDate,
+      updatedAt: input.enrollmentDate,
+    };
+    return Promise.resolve(Invoice.fromState(state));
+  };
+}
+
 class StubChildService {
   createChildCalls: CreateChildCall[] = [];
   inviteGuardianCalls: InviteGuardianCall[] = [];
@@ -460,6 +522,7 @@ function makeService(now: Date = T0) {
   const childService = new StubChildService();
   const groupRepo = new FakeGroupRepo();
   const staffRepo = new FakeStaffRepo();
+  const invoiceService = new StubInvoiceService();
   const clock = new FixedClock(now);
   const service = new EnrollmentService(
     enrollmentRepo,
@@ -467,6 +530,7 @@ function makeService(now: Date = T0) {
     childService as unknown as ChildService,
     groupRepo,
     staffRepo,
+    invoiceService as unknown as InvoiceService,
     clock,
   );
   return {
@@ -476,6 +540,7 @@ function makeService(now: Date = T0) {
     childService,
     groupRepo,
     staffRepo,
+    invoiceService,
     clock,
   };
 }
@@ -872,7 +937,7 @@ describe('EnrollmentService', () => {
       ).rejects.toBeInstanceOf(GroupNotFoundError);
     });
 
-    it('happy-path in_processing -> card_created creates child + invites primary guardian + assigns', async () => {
+    it('happy-path in_processing -> card_created creates child + invites primary guardian + assigns + generates first invoice', async () => {
       const {
         service,
         enrollmentRepo,
@@ -880,6 +945,7 @@ describe('EnrollmentService', () => {
         staffRepo,
         groupRepo,
         childService,
+        invoiceService,
       } = makeService();
       staffRepo.put(aStaff(STAFF_MEMBER_ID, STAFF_USER_ID, KG_A));
       groupRepo.put(aGroup(GROUP_ID, KG_A));
@@ -921,6 +987,65 @@ describe('EnrollmentService', () => {
       expect(logRepo.rows[0].fromStatus).toBe('in_processing');
       expect(logRepo.rows[0].toStatus).toBe('card_created');
       expect(logRepo.rows[0].changedBy).toBe(STAFF_MEMBER_ID);
+
+      // B13 cross-module hook — first-month invoice on card_created.
+      expect(invoiceService.generateFirstInvoiceCalls).toHaveLength(1);
+      const inv = invoiceService.generateFirstInvoiceCalls[0];
+      expect(inv.kindergartenId).toBe(KG_A);
+      expect(inv.childId).toBe(CHILD_ID);
+      expect(inv.assignedBy).toBe(STAFF_MEMBER_ID);
+      expect(inv.enrollmentDate).toEqual(T0);
+    });
+
+    it('rolls back transition when first-invoice generation throws (no tariff)', async () => {
+      const {
+        service,
+        enrollmentRepo,
+        logRepo,
+        staffRepo,
+        groupRepo,
+        childService,
+        invoiceService,
+      } = makeService();
+      staffRepo.put(aStaff(STAFF_MEMBER_ID, STAFF_USER_ID, KG_A));
+      groupRepo.put(aGroup(GROUP_ID, KG_A));
+      const e = await seedAtStatus(enrollmentRepo, 'in_processing', {
+        childName: 'Aliya Atayeva',
+        contactPhone: '+77011112233',
+      });
+      childService.childToReturn = aChild(CHILD_ID, KG_A);
+      childService.guardianToReturn = aGuardian();
+      invoiceService.errorToThrow = new TariffAssignmentNotFoundError(CHILD_ID);
+
+      await expect(
+        service.transition(
+          KG_A,
+          e.id,
+          { toStatus: 'card_created', currentGroupId: GROUP_ID },
+          STAFF_USER_ID,
+        ),
+      ).rejects.toBeInstanceOf(TariffAssignmentNotFoundError);
+
+      // The error propagates BEFORE the conditional UPDATE / log append.
+      // In production, ambient TX rollback unwinds createChild/inviteGuardian
+      // writes too; here we just assert nothing was committed past the
+      // invoice failure point.
+      expect(invoiceService.generateFirstInvoiceCalls).toHaveLength(1);
+      expect(logRepo.rows).toHaveLength(0);
+    });
+
+    it('does NOT generate first invoice for transitions to non-card_created targets', async () => {
+      const { service, enrollmentRepo, staffRepo, invoiceService } =
+        makeService();
+      staffRepo.put(aStaff(STAFF_MEMBER_ID, STAFF_USER_ID, KG_A));
+      const e = await seedAtStatus(enrollmentRepo, 'in_processing');
+      await service.transition(
+        KG_A,
+        e.id,
+        { toStatus: 'waitlist' },
+        STAFF_USER_ID,
+      );
+      expect(invoiceService.generateFirstInvoiceCalls).toHaveLength(0);
     });
 
     it('throws EnrollmentTransitionConflictError when status-guarded UPDATE returns false', async () => {

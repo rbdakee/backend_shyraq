@@ -1,5 +1,6 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
+import { InvoiceService } from '@/modules/billing/invoice.service';
 import { GroupNotFoundError } from '@/modules/group/domain/errors/group-not-found.error';
 import { GroupRepository } from '@/modules/group/infrastructure/persistence/group.repository';
 import { Child } from '@/modules/child/domain/entities/child.entity';
@@ -105,12 +106,15 @@ export interface AssignEnrollmentInput {
  */
 @Injectable()
 export class EnrollmentService {
+  private readonly logger = new Logger(EnrollmentService.name);
+
   constructor(
     private readonly enrollmentRepo: EnrollmentRepository,
     private readonly logRepo: EnrollmentStatusLogRepository,
     private readonly childService: ChildService,
     private readonly groupRepo: GroupRepository,
     private readonly staffRepo: StaffMemberRepository,
+    private readonly invoiceService: InvoiceService,
     @Inject(ClockPort) private readonly clock: ClockPort,
   ) {}
 
@@ -264,7 +268,6 @@ export class EnrollmentService {
 
     let child: Child | undefined;
     if (next.equals(EnrollmentStatus.CARD_CREATED)) {
-      // TODO(B13): on card_created emit first-month invoice (BillingService.scheduleFirstInvoice)
       child = await this.childService.createChild(kindergartenId, {
         fullName: enrollment.childName!,
         iin: enrollment.childIin ?? undefined,
@@ -279,6 +282,26 @@ export class EnrollmentService {
         invitedByUserId: callerUserId,
       });
       enrollment.assignChild(child.id, this.clock);
+
+      // B13 cross-module hook: emit the first-month invoice on card_created.
+      // Runs on the ambient HTTP TX opened by TenantContextInterceptor — if
+      // the call throws (e.g. TariffAssignmentNotFoundError because the admin
+      // has not yet attached a tariff_plan to the child), the surrounding TX
+      // rolls back the createChild + inviteGuardian writes performed above
+      // and the conditional UPDATE on enrollments reverts cleanly. Strict
+      // contract: "tariff must be assigned before card_created".
+      const enrollmentDate = this.clock.now();
+      const firstInvoice = await this.invoiceService.generateFirstInvoice(
+        kindergartenId,
+        {
+          childId: child.id,
+          enrollmentDate,
+          assignedBy: callerStaffId,
+        },
+      );
+      this.logger.log(
+        `enrollment.first_invoice_generated invoice=${firstInvoice.id} child=${child.id} kg=${kindergartenId}`,
+      );
     }
 
     // Status-guarded UPDATE: 0 rows affected means another caller already

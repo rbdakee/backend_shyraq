@@ -23,6 +23,11 @@ import { InMemoryNotificationAdapter } from '@/common/notifications/in-memory-no
 import { tenantStorage } from '@/database/tenant-storage';
 import { OtpStorePort, StoredOtp } from '@/modules/auth/otp-store.port';
 import { CameraEntity } from '@/modules/camera/infrastructure/persistence/relational/entities/camera.entity';
+import {
+  Invoice,
+  InvoiceState,
+} from '@/modules/billing/domain/entities/invoice.entity';
+import { InvoiceService } from '@/modules/billing/invoice.service';
 import { ChildService } from '@/modules/child/child.service';
 import { ChildEntity } from '@/modules/child/infrastructure/persistence/relational/entities/child.entity';
 import { ChildGroupHistoryEntity } from '@/modules/child/infrastructure/persistence/relational/entities/child-group-history.entity';
@@ -268,12 +273,45 @@ describeIntegration('EnrollmentService — service-integration', () => {
       dataSource.getRepository(StaffMemberEntity),
     );
     const clock = new FixedClock(new Date('2026-04-30T10:00:00.000Z'));
+    // Stub InvoiceService — real billing tables are NOT registered in this
+    // integration spec's DataSource, so we cannot exercise the real
+    // implementation. The B13 hook on `card_created` runs but writes nothing
+    // visible to this spec; the real path is covered by `billing.e2e-spec.ts`.
+    const invoiceService = {
+      generateFirstInvoice: (
+        kgId: string,
+        input: { childId: string; enrollmentDate: Date; assignedBy: string },
+      ): Promise<Invoice> => {
+        const state: InvoiceState = {
+          id: randomUUID(),
+          kindergartenId: kgId,
+          childId: input.childId,
+          paymentAccountId: randomUUID(),
+          tariffPlanId: null,
+          invoiceType: 'monthly',
+          periodStart: input.enrollmentDate,
+          periodEnd: input.enrollmentDate,
+          amountDue: 0,
+          discountPct: null,
+          discountReason: null,
+          amountAfterDiscount: 0,
+          status: 'pending',
+          dueDate: input.enrollmentDate,
+          description: null,
+          proratedForDays: null,
+          createdAt: input.enrollmentDate,
+          updatedAt: input.enrollmentDate,
+        };
+        return Promise.resolve(Invoice.fromState(state));
+      },
+    } as unknown as InvoiceService;
     return new EnrollmentService(
       enrollmentRepo,
       logRepo,
       childService,
       groupRepo,
       staffRepo,
+      invoiceService,
       clock,
     );
   }
