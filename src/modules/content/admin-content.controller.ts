@@ -257,9 +257,13 @@ export class AdminContentController {
       targetType: dto.target_type as ContentTargetType | undefined,
       targetGroupId: dto.target_group_id,
       targetChildId: dto.target_child_id,
-      scheduledFor: dto.scheduled_for
-        ? new Date(dto.scheduled_for)
-        : (dto.scheduled_for as null | undefined),
+      ...(dto.scheduled_for !== undefined
+        ? {
+            scheduledFor: dto.scheduled_for
+              ? new Date(dto.scheduled_for)
+              : null,
+          }
+        : {}),
     };
     if (newMediaUrls.length > 0) {
       patch.mediaUrls = newMediaUrls;

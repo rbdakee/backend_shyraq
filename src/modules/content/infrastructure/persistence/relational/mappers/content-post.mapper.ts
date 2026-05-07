@@ -2,7 +2,7 @@ import {
   ContentPost,
   ContentPostState,
 } from '../../../../domain/entities/content-post.entity';
-import { ContentPostRelationalEntity } from '../entities/content-post.relational-entity';
+import { ContentPostRelationalEntity } from '../entities/content-post.typeorm.entity';
 
 export class ContentPostMapper {
   static toDomain(row: ContentPostRelationalEntity): ContentPost {

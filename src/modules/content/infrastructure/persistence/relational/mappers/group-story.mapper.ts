@@ -2,7 +2,7 @@ import {
   GroupStory,
   GroupStoryState,
 } from '../../../../domain/entities/group-story.entity';
-import { GroupStoryRelationalEntity } from '../entities/group-story.relational-entity';
+import { GroupStoryRelationalEntity } from '../entities/group-story.typeorm.entity';
 
 export class GroupStoryMapper {
   static toDomain(row: GroupStoryRelationalEntity): GroupStory {

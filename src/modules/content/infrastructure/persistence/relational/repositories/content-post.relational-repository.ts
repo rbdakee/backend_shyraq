@@ -11,7 +11,7 @@ import {
   ListContentFilters,
   TransitionStatusPatch,
 } from '../../../../content.repository';
-import { ContentPostRelationalEntity } from '../entities/content-post.relational-entity';
+import { ContentPostRelationalEntity } from '../entities/content-post.typeorm.entity';
 import { ContentPostMapper } from '../mappers/content-post.mapper';
 
 @Injectable()
@@ -175,8 +175,17 @@ export class ContentPostRelationalRepository extends ContentRepository {
        RETURNING *
     `;
 
-    const rows = (await m.query(sql, params)) as unknown[];
-    if (!Array.isArray(rows) || rows.length === 0) return null;
+    // TypeORM's `EntityManager.query()` wraps the `pg` driver response for DML
+    // statements with RETURNING as `[rowsArray, affectedCount]`. The first
+    // element is the array of returned row-objects; the second is the integer
+    // affected-row count. We extract the rows from index 0.
+    const queryResult = (await m.query(sql, params)) as unknown;
+    const rows: unknown[] = Array.isArray(queryResult)
+      ? Array.isArray(queryResult[0])
+        ? (queryResult[0] as unknown[])
+        : (queryResult as unknown[])
+      : [];
+    if (rows.length === 0) return null;
     const raw = rows[0] as Record<string, unknown>;
     const e = new ContentPostRelationalEntity();
     e.id = raw.id as string;
@@ -260,14 +269,21 @@ export class ContentPostRelationalRepository extends ContentRepository {
 }
 
 /**
- * Format a Date as `YYYY-MM-DD` in UTC. Callers that want a calendar date
- * in Asia/Almaty should pass a Date that already lives at midnight in
- * that zone (the cron processor's `runDaily` does so via `now.toLocaleDateString` semantics
- * around the dispatch boundary).
+ * Format a Date as `YYYY-MM-DD` in Asia/Almaty timezone (UTC+5, no DST).
+ * This mirrors the SQL expression `DATE(published_at AT TIME ZONE 'Asia/Almaty')`
+ * used in `existsBirthdayForChildOnDate` — both sides must agree on the
+ * calendar date so idempotency checks are consistent regardless of the UTC
+ * wall-clock time.
  */
 function toIsoDate(d: Date): string {
-  const yyyy = d.getUTCFullYear().toString().padStart(4, '0');
-  const mm = (d.getUTCMonth() + 1).toString().padStart(2, '0');
-  const dd = d.getUTCDate().toString().padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}`;
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Almaty',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(d);
+  const year = parts.find((p) => p.type === 'year')?.value ?? '0000';
+  const month = parts.find((p) => p.type === 'month')?.value ?? '01';
+  const day = parts.find((p) => p.type === 'day')?.value ?? '01';
+  return `${year}-${month}-${day}`;
 }

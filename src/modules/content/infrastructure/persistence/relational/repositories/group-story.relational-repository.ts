@@ -4,7 +4,7 @@ import { EntityManager, In, Repository } from 'typeorm';
 import { tenantStorage } from '@/database/tenant-storage';
 import { GroupStory } from '../../../../domain/entities/group-story.entity';
 import { GroupStoryRepository } from '../../../../group-story.repository';
-import { GroupStoryRelationalEntity } from '../entities/group-story.relational-entity';
+import { GroupStoryRelationalEntity } from '../entities/group-story.typeorm.entity';
 import { GroupStoryMapper } from '../mappers/group-story.mapper';
 
 @Injectable()

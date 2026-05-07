@@ -15,8 +15,8 @@ import { SaasContentController } from './saas-content.controller';
 import { StaffStoriesController } from './staff-stories.controller';
 import { StoryService } from './story.service';
 import { BirthdayGeneratorService } from './birthday-generator.service';
-import { ContentPostRelationalEntity } from './infrastructure/persistence/relational/entities/content-post.relational-entity';
-import { GroupStoryRelationalEntity } from './infrastructure/persistence/relational/entities/group-story.relational-entity';
+import { ContentPostRelationalEntity } from './infrastructure/persistence/relational/entities/content-post.typeorm.entity';
+import { GroupStoryRelationalEntity } from './infrastructure/persistence/relational/entities/group-story.typeorm.entity';
 import { ContentPostRelationalRepository } from './infrastructure/persistence/relational/repositories/content-post.relational-repository';
 import { GroupStoryRelationalRepository } from './infrastructure/persistence/relational/repositories/group-story.relational-repository';
 import {

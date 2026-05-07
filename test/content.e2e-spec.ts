@@ -1,5 +1,5 @@
-/**
- * B17 Content & Stories (e2e) — Scenarios A–N
+﻿/**
+ * B17 Content & Stories (e2e) â€” Scenarios Aâ€“N
  *
  * Endpoints under test:
  *   Admin:
@@ -26,13 +26,13 @@
  *   A. Admin creates news draft (text-only, no media)
  *   B. Admin creates news with media (multipart upload, files on disk)
  *   C. Admin updates draft post fields
- *   D. Admin publishes draft → published (immediate, outbox emitted)
- *   E. Admin schedules draft → scheduled; past time rejected; re-publish rejected
+ *   D. Admin publishes draft â†’ published (immediate, outbox emitted)
+ *   E. Admin schedules draft â†’ scheduled; past time rejected; re-publish rejected
  *   F. Scheduled-publish via saas cron trigger
- *   G. Admin deletes draft (allowed); deleting published → 409
+ *   G. Admin deletes draft (allowed); deleting published â†’ 409
  *   H. Staff (mentor) creates story (multipart with image, expires_at = +24h)
  *   I. Mentor lists own group's stories; admin lists all
- *   J. Story increment views; expired story → 410
+ *   J. Story increment views; expired story â†’ 410
  *   K. Story cleanup cron deletes expired (file removed from disk)
  *   L. Birthday auto-gen (idempotent on rerun)
  *   M. Parent feed aggregates news + qundylyq + birthday + stories; nanny 403
@@ -54,7 +54,7 @@ import { StoryCleanupProcessor } from '@/modules/content/processors/story-cleanu
 const SUPER_ADMIN_EMAIL = 'super-content@shyraq.test';
 const SUPER_ADMIN_PASSWORD = 'admin12345';
 
-// ── minimal 1×1 PNG buffer (89 bytes) ────────────────────────────────────────
+// â”€â”€ minimal 1Ã—1 PNG buffer (89 bytes) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const TINY_PNG = Buffer.from(
   '89504e470d0a1a0a0000000d494844520000000100000001' +
     '0806000000 1f15c489 00000011 49444154 789c6260 6060f8cf' +
@@ -62,7 +62,7 @@ const TINY_PNG = Buffer.from(
   'hex',
 );
 
-// ── date helpers ──────────────────────────────────────────────────────────────
+// â”€â”€ date helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function isoFuture(seconds: number): string {
   return new Date(Date.now() + seconds * 1000).toISOString();
@@ -86,7 +86,7 @@ interface CreatedKgResp {
   user: { id: string; phone: string };
 }
 
-// ── test suite ────────────────────────────────────────────────────────────────
+// â”€â”€ test suite â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 describe('B17 Content & Stories (e2e)', () => {
   let ctx: TestApp;
@@ -97,7 +97,7 @@ describe('B17 Content & Stories (e2e)', () => {
   let jwtSecret: string;
   let uploadsDir: string;
 
-  // ── auth helpers ─────────────────────────────────────────────────────────────
+  // â”€â”€ auth helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   async function mintToken(opts: {
     sub: string;
@@ -239,10 +239,10 @@ describe('B17 Content & Stories (e2e)', () => {
         );
       }
       await m.query(
-        `INSERT INTO group_mentors (id, kindergarten_id, group_id, staff_member_id, user_id, is_primary, assigned_at)
-         VALUES ($1, $2, $3, $4, $5, true, now())
+        `INSERT INTO group_mentors (id, kindergarten_id, group_id, staff_member_id, is_primary, assigned_at)
+         VALUES ($1, $2, $3, $4, true, now())
          ON CONFLICT DO NOTHING`,
-        [randomUUID(), kgId, groupId, smId, userId],
+        [randomUUID(), kgId, groupId, smId],
       );
     });
   }
@@ -293,7 +293,7 @@ describe('B17 Content & Stories (e2e)', () => {
       .expect(200);
   }
 
-  // ── lifecycle ────────────────────────────────────────────────────────────────
+  // â”€â”€ lifecycle â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   beforeAll(async () => {
     ctx = await createTestApp();
@@ -322,19 +322,18 @@ describe('B17 Content & Stories (e2e)', () => {
     saToken = await mintSuperAdminToken(saId);
   });
 
-  // ══════════════════════════════════════════════════════════════════════════════
-  // Scenario A — Admin creates news draft (text-only, no media)
-  // ══════════════════════════════════════════════════════════════════════════════
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+  // Scenario A â€” Admin creates news draft (text-only, no media)
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
   describe('Scenario A: Admin creates news draft (text-only, no media)', () => {
-    // TODO(T8): ContentPostRelationalEntity not registered — content module entities missing from TypeOrmModule.forFeature
-    it.skip(
+    it(
       'POST /admin/content creates draft; GET :id returns same; ' +
         'GET /admin/content list includes the row; media_urls is null',
       async () => {
         const { adminToken } = await createKgWithAdmin('cnt-a', '+77050100001');
 
-        // POST — create draft
+        // POST â€” create draft
         const createRes = await request(server)
           .post('/api/v1/admin/content')
           .set('Authorization', `Bearer ${adminToken}`)
@@ -342,12 +341,12 @@ describe('B17 Content & Stories (e2e)', () => {
             content_type: 'news',
             target_type: 'all',
             title_i18n: {
-              ru: 'Тестовая новость',
-              kz: 'Сынақ жаңалық',
+              ru: 'Ð¢ÐµÑÑ‚Ð¾Ð²Ð°Ñ Ð½Ð¾Ð²Ð¾ÑÑ‚ÑŒ',
+              kz: 'Ð¡Ñ‹Ð½Ð°Ò› Ð¶Ð°Ò£Ð°Ð»Ñ‹Ò›',
             },
             body_i18n: {
-              ru: 'Текст новости',
-              kz: 'Жаңалық мәтіні',
+              ru: 'Ð¢ÐµÐºÑÑ‚ Ð½Ð¾Ð²Ð¾ÑÑ‚Ð¸',
+              kz: 'Ð–Ð°Ò£Ð°Ð»Ñ‹Ò› Ð¼Ó™Ñ‚Ñ–Ð½Ñ–',
             },
           })
           .expect(201);
@@ -360,16 +359,18 @@ describe('B17 Content & Stories (e2e)', () => {
         expect(createRes.body.media_urls).toBeFalsy();
         expect(createRes.body.kindergarten_id).toBeDefined();
 
-        // GET :id — same data
+        // GET :id â€” same data
         const detailRes = await request(server)
           .get(`/api/v1/admin/content/${id}`)
           .set('Authorization', `Bearer ${adminToken}`)
           .expect(200);
         expect(detailRes.body.id).toBe(id);
         expect(detailRes.body.status).toBe('draft');
-        expect(detailRes.body.title_i18n.ru).toBe('Тестовая новость');
+        expect(detailRes.body.title_i18n.ru).toBe(
+          'Ð¢ÐµÑÑ‚Ð¾Ð²Ð°Ñ Ð½Ð¾Ð²Ð¾ÑÑ‚ÑŒ',
+        );
 
-        // GET list — includes the row
+        // GET list â€” includes the row
         const listRes = await request(server)
           .get('/api/v1/admin/content')
           .set('Authorization', `Bearer ${adminToken}`)
@@ -385,14 +386,13 @@ describe('B17 Content & Stories (e2e)', () => {
     );
   });
 
-  // ══════════════════════════════════════════════════════════════════════════════
-  // Scenario B — Admin creates news with media (multipart)
-  // ══════════════════════════════════════════════════════════════════════════════
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+  // Scenario B â€” Admin creates news with media (multipart)
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
   describe('Scenario B: Admin creates news with media (multipart upload, files on disk)', () => {
-    // TODO(T8): ContentPostRelationalEntity not registered — content module entities missing from TypeOrmModule.forFeature
-    it.skip(
-      'POST /admin/content multipart with image file → 201, ' +
+    it(
+      'POST /admin/content multipart with image file â†’ 201, ' +
         'media_urls contains /static/ URL, file exists on disk',
       async () => {
         const { kgId, adminToken } = await createKgWithAdmin(
@@ -432,13 +432,12 @@ describe('B17 Content & Stories (e2e)', () => {
     );
   });
 
-  // ══════════════════════════════════════════════════════════════════════════════
-  // Scenario C — Admin updates draft post fields
-  // ══════════════════════════════════════════════════════════════════════════════
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+  // Scenario C â€” Admin updates draft post fields
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
   describe('Scenario C: Admin updates draft post fields', () => {
-    // TODO(T8): ContentPostRelationalEntity not registered — content module entities missing from TypeOrmModule.forFeature
-    it.skip(
+    it(
       'PATCH /admin/content/:id updates title_i18n + body_i18n; ' +
         'GET returns updated fields; updated_at advances',
       async () => {
@@ -451,7 +450,7 @@ describe('B17 Content & Stories (e2e)', () => {
           .send({
             content_type: 'news',
             target_type: 'all',
-            title_i18n: { ru: 'Оригинал', kz: 'Түпнұсқа' },
+            title_i18n: { ru: 'ÐžÑ€Ð¸Ð³Ð¸Ð½Ð°Ð»', kz: 'Ð¢Ò¯Ð¿Ð½Ò±ÑÒ›Ð°' },
           })
           .expect(201);
         const id = createRes.body.id as string;
@@ -466,18 +465,22 @@ describe('B17 Content & Stories (e2e)', () => {
           .set('Authorization', `Bearer ${adminToken}`)
           .send({
             title_i18n: {
-              ru: 'Обновлённый заголовок',
-              kz: 'Жаңартылған тақырып',
+              ru: 'ÐžÐ±Ð½Ð¾Ð²Ð»Ñ‘Ð½Ð½Ñ‹Ð¹ Ð·Ð°Ð³Ð¾Ð»Ð¾Ð²Ð¾Ðº',
+              kz: 'Ð–Ð°Ò£Ð°Ñ€Ñ‚Ñ‹Ð»Ò“Ð°Ð½ Ñ‚Ð°Ò›Ñ‹Ñ€Ñ‹Ð¿',
             },
             body_i18n: {
-              ru: 'Обновлённый текст',
-              kz: 'Жаңартылған мәтін',
+              ru: 'ÐžÐ±Ð½Ð¾Ð²Ð»Ñ‘Ð½Ð½Ñ‹Ð¹ Ñ‚ÐµÐºÑÑ‚',
+              kz: 'Ð–Ð°Ò£Ð°Ñ€Ñ‚Ñ‹Ð»Ò“Ð°Ð½ Ð¼Ó™Ñ‚Ñ–Ð½',
             },
           })
           .expect(200);
 
-        expect(patchRes.body.title_i18n.ru).toBe('Обновлённый заголовок');
-        expect(patchRes.body.body_i18n.ru).toBe('Обновлённый текст');
+        expect(patchRes.body.title_i18n.ru).toBe(
+          'ÐžÐ±Ð½Ð¾Ð²Ð»Ñ‘Ð½Ð½Ñ‹Ð¹ Ð·Ð°Ð³Ð¾Ð»Ð¾Ð²Ð¾Ðº',
+        );
+        expect(patchRes.body.body_i18n.ru).toBe(
+          'ÐžÐ±Ð½Ð¾Ð²Ð»Ñ‘Ð½Ð½Ñ‹Ð¹ Ñ‚ÐµÐºÑÑ‚',
+        );
         expect(patchRes.body.status).toBe('draft');
         // updated_at must have changed
         expect(patchRes.body.updated_at).toBeDefined();
@@ -487,21 +490,22 @@ describe('B17 Content & Stories (e2e)', () => {
           .get(`/api/v1/admin/content/${id}`)
           .set('Authorization', `Bearer ${adminToken}`)
           .expect(200);
-        expect(detailRes.body.title_i18n.ru).toBe('Обновлённый заголовок');
+        expect(detailRes.body.title_i18n.ru).toBe(
+          'ÐžÐ±Ð½Ð¾Ð²Ð»Ñ‘Ð½Ð½Ñ‹Ð¹ Ð·Ð°Ð³Ð¾Ð»Ð¾Ð²Ð¾Ðº',
+        );
 
         void originalUpdatedAt;
       },
     );
   });
 
-  // ══════════════════════════════════════════════════════════════════════════════
-  // Scenario D — Admin publishes draft → published (immediate, outbox emitted)
-  // ══════════════════════════════════════════════════════════════════════════════
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+  // Scenario D â€” Admin publishes draft â†’ published (immediate, outbox emitted)
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-  describe('Scenario D: Admin publishes draft → published (immediate, outbox emitted)', () => {
-    // TODO(T8): ContentPostRelationalEntity not registered — content module entities missing from TypeOrmModule.forFeature
-    it.skip(
-      'POST /admin/content/:id/publish → 200, status=published, published_at set; ' +
+  describe('Scenario D: Admin publishes draft â†’ published (immediate, outbox emitted)', () => {
+    it(
+      'POST /admin/content/:id/publish â†’ 200, status=published, published_at set; ' +
         'notification_outbox row exists for content.news_published',
       async () => {
         const { adminToken } = await createKgWithAdmin('cnt-d', '+77050100031');
@@ -513,7 +517,10 @@ describe('B17 Content & Stories (e2e)', () => {
           .send({
             content_type: 'news',
             target_type: 'all',
-            title_i18n: { ru: 'Публикуем', kz: 'Жариялаймыз' },
+            title_i18n: {
+              ru: 'ÐŸÑƒÐ±Ð»Ð¸ÐºÑƒÐµÐ¼',
+              kz: 'Ð–Ð°Ñ€Ð¸ÑÐ»Ð°Ð¹Ð¼Ñ‹Ð·',
+            },
           })
           .expect(201);
         const id = createRes.body.id as string;
@@ -547,16 +554,15 @@ describe('B17 Content & Stories (e2e)', () => {
     );
   });
 
-  // ══════════════════════════════════════════════════════════════════════════════
-  // Scenario E — Admin schedules draft → scheduled; past/re-publish rejected
-  // ══════════════════════════════════════════════════════════════════════════════
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+  // Scenario E â€” Admin schedules draft â†’ scheduled; past/re-publish rejected
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-  describe('Scenario E: Admin schedules draft → scheduled; rejects past time; rejects re-publish', () => {
-    // TODO(T8): ContentPostRelationalEntity not registered — content module entities missing from TypeOrmModule.forFeature
-    it.skip(
-      'POST /admin/content/:id/schedule with future time → 200, status=scheduled; ' +
-        'with past time → 409/422; ' +
-        'POST publish on already-published → 409',
+  describe('Scenario E: Admin schedules draft â†’ scheduled; rejects past time; rejects re-publish', () => {
+    it(
+      'POST /admin/content/:id/schedule with future time â†’ 200, status=scheduled; ' +
+        'with past time â†’ 409/422; ' +
+        'POST publish on already-published â†’ 409',
       async () => {
         const { adminToken } = await createKgWithAdmin('cnt-e', '+77050100041');
 
@@ -568,8 +574,8 @@ describe('B17 Content & Stories (e2e)', () => {
             content_type: 'news',
             target_type: 'all',
             title_i18n: {
-              ru: 'Запланированная новость',
-              kz: 'Жоспарланған жаңалық',
+              ru: 'Ð—Ð°Ð¿Ð»Ð°Ð½Ð¸Ñ€Ð¾Ð²Ð°Ð½Ð½Ð°Ñ Ð½Ð¾Ð²Ð¾ÑÑ‚ÑŒ',
+              kz: 'Ð–Ð¾ÑÐ¿Ð°Ñ€Ð»Ð°Ð½Ò“Ð°Ð½ Ð¶Ð°Ò£Ð°Ð»Ñ‹Ò›',
             },
           })
           .expect(201);
@@ -598,7 +604,7 @@ describe('B17 Content & Stories (e2e)', () => {
           .expect(201);
         const id2 = createRes2.body.id as string;
 
-        // Schedule for past — should fail (422 or 409)
+        // Schedule for past â€” should fail (422 or 409)
         const pastIso = new Date(Date.now() - 3600 * 1000).toISOString();
         const scheduleFailRes = await request(server)
           .post(`/api/v1/admin/content/${id2}/schedule`)
@@ -613,27 +619,28 @@ describe('B17 Content & Stories (e2e)', () => {
           .set('Authorization', `Bearer ${adminToken}`)
           .expect(200);
 
-        // Re-publish published post → 409
+        // Re-publish published post â†’ 409
         const rePublishRes = await request(server)
           .post(`/api/v1/admin/content/${id}/publish`)
           .set('Authorization', `Bearer ${adminToken}`)
           .expect(409);
         expect(
-          rePublishRes.body.error_code ?? rePublishRes.body.message,
+          rePublishRes.body.details?.reason ??
+            rePublishRes.body.error_code ??
+            rePublishRes.body.message,
         ).toMatch(/content_already_published/);
       },
     );
   });
 
-  // ══════════════════════════════════════════════════════════════════════════════
-  // Scenario F — Scheduled-publish via saas cron trigger
-  // ══════════════════════════════════════════════════════════════════════════════
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+  // Scenario F â€” Scheduled-publish via saas cron trigger
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
   describe('Scenario F: Scheduled-publish via saas cron trigger', () => {
-    // TODO(T8): ContentPostRelationalEntity not registered — content module entities missing from TypeOrmModule.forFeature
-    it.skip(
+    it(
       'Create draft, schedule for past via DB UPDATE, then POST /saas/content/publish-scheduled-run ' +
-        '→ status flips to published; outbox emitted',
+        'â†’ status flips to published; outbox emitted',
       async () => {
         const { kgId, adminToken } = await createKgWithAdmin(
           'cnt-f',
@@ -648,8 +655,8 @@ describe('B17 Content & Stories (e2e)', () => {
             content_type: 'news',
             target_type: 'all',
             title_i18n: {
-              ru: 'Отложенная публикация',
-              kz: 'Кейінге қалдырылған',
+              ru: 'ÐžÑ‚Ð»Ð¾Ð¶ÐµÐ½Ð½Ð°Ñ Ð¿ÑƒÐ±Ð»Ð¸ÐºÐ°Ñ†Ð¸Ñ',
+              kz: 'ÐšÐµÐ¹Ñ–Ð½Ð³Ðµ Ò›Ð°Ð»Ð´Ñ‹Ñ€Ñ‹Ð»Ò“Ð°Ð½',
             },
           })
           .expect(201);
@@ -705,13 +712,12 @@ describe('B17 Content & Stories (e2e)', () => {
     );
   });
 
-  // ══════════════════════════════════════════════════════════════════════════════
-  // Scenario G — Admin deletes draft; deleting published → 409
-  // ══════════════════════════════════════════════════════════════════════════════
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+  // Scenario G â€” Admin deletes draft; deleting published â†’ 409
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-  describe('Scenario G: Admin deletes draft (allowed); deleting published → 409', () => {
-    // TODO(T8): ContentPostRelationalEntity not registered — content module entities missing from TypeOrmModule.forFeature
-    it.skip('DELETE draft → 204; DELETE published → 409 content_cannot_delete_published', async () => {
+  describe('Scenario G: Admin deletes draft (allowed); deleting published â†’ 409', () => {
+    it('DELETE draft â†’ 204; DELETE published â†’ 409 content_cannot_delete_published', async () => {
       const { adminToken } = await createKgWithAdmin('cnt-g', '+77050100061');
 
       // Create and delete a draft
@@ -727,7 +733,7 @@ describe('B17 Content & Stories (e2e)', () => {
         .set('Authorization', `Bearer ${adminToken}`)
         .expect(204);
 
-      // GET after delete → 404
+      // GET after delete â†’ 404
       await request(server)
         .get(`/api/v1/admin/content/${draftId}`)
         .set('Authorization', `Bearer ${adminToken}`)
@@ -755,20 +761,21 @@ describe('B17 Content & Stories (e2e)', () => {
         .set('Authorization', `Bearer ${adminToken}`)
         .expect(409);
 
-      expect(delRes.body.error_code ?? delRes.body.message).toMatch(
-        /content_cannot_delete_published/,
-      );
+      expect(
+        delRes.body.details?.reason ??
+          delRes.body.error_code ??
+          delRes.body.message,
+      ).toMatch(/content_cannot_delete_published/);
     });
   });
 
-  // ══════════════════════════════════════════════════════════════════════════════
-  // Scenario H — Staff (mentor) creates story (multipart with image)
-  // ══════════════════════════════════════════════════════════════════════════════
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+  // Scenario H â€” Staff (mentor) creates story (multipart with image)
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
   describe('Scenario H: Staff (mentor) creates story (multipart with image, expires_at = +24h)', () => {
-    // TODO(T8): column "user_id" of relation "group_mentors" does not exist — group_mentors DB schema mismatch; also GroupStoryRelationalEntity may not be registered
-    it.skip(
-      'POST /staff/stories multipart → 201, media_url set, expires_at ≈ created_at + 24h, ' +
+    it(
+      'POST /staff/stories multipart â†’ 201, media_url set, expires_at â‰ˆ created_at + 24h, ' +
         'views = 0; outbox row for content.story_new',
       async () => {
         const { kgId, userId, adminToken } = await createKgWithAdmin(
@@ -791,7 +798,7 @@ describe('B17 Content & Stories (e2e)', () => {
           .post('/api/v1/staff/stories')
           .set('Authorization', `Bearer ${mentorToken}`)
           .field('group_id', groupId)
-          .field('caption', 'Дети на прогулке')
+          .field('caption', 'Ð”ÐµÑ‚Ð¸ Ð½Ð° Ð¿Ñ€Ð¾Ð³ÑƒÐ»ÐºÐµ')
           .attach('file', TINY_PNG, {
             filename: 'story.png',
             contentType: 'image/png',
@@ -803,7 +810,7 @@ describe('B17 Content & Stories (e2e)', () => {
         expect(createRes.body.media_url).toMatch(/^\/static\//);
         expect(createRes.body.media_type).toBe('image');
         expect(createRes.body.views).toBe(0);
-        expect(createRes.body.caption).toBe('Дети на прогулке');
+        expect(createRes.body.caption).toBe('Ð”ÐµÑ‚Ð¸ Ð½Ð° Ð¿Ñ€Ð¾Ð³ÑƒÐ»ÐºÐµ');
 
         // expires_at should be ~24h from now (within a 60s window for test timing)
         const createdAt = new Date(createRes.body.created_at as string);
@@ -831,13 +838,12 @@ describe('B17 Content & Stories (e2e)', () => {
     );
   });
 
-  // ══════════════════════════════════════════════════════════════════════════════
-  // Scenario I — Mentor lists own group's stories; admin lists all
-  // ══════════════════════════════════════════════════════════════════════════════
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+  // Scenario I â€” Mentor lists own group's stories; admin lists all
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
   describe('Scenario I: Mentor lists own group stories; admin lists all', () => {
-    // TODO(T8): column "user_id" of relation "group_mentors" does not exist — group_mentors DB schema mismatch
-    it.skip(
+    it(
       'mentor sees stories only for their group; ' +
         'admin sees stories from all groups',
       async () => {
@@ -850,7 +856,7 @@ describe('B17 Content & Stories (e2e)', () => {
         const groupA = await createGroup(adminToken, 'Group IA');
         const groupB = await createGroup(adminToken, 'Group IB');
 
-        // Mentor A → only in group A
+        // Mentor A â†’ only in group A
         const mentorAUserId = await seedUser('+77050100082');
         await seedStaffMember(kgId, mentorAUserId, 'mentor');
         await assignMentorToGroup(kgId, groupA, mentorAUserId);
@@ -860,7 +866,7 @@ describe('B17 Content & Stories (e2e)', () => {
           kindergartenId: kgId,
         });
 
-        // Mentor B → only in group B
+        // Mentor B â†’ only in group B
         const mentorBUserId = await seedUser('+77050100083');
         await seedStaffMember(kgId, mentorBUserId, 'mentor');
         await assignMentorToGroup(kgId, groupB, mentorBUserId);
@@ -895,7 +901,7 @@ describe('B17 Content & Stories (e2e)', () => {
           .expect(201);
         const storyBId = storyBRes.body.id as string;
 
-        // Mentor A GET /staff/stories → should see group A story only
+        // Mentor A GET /staff/stories â†’ should see group A story only
         const mentorAListRes = await request(server)
           .get('/api/v1/staff/stories')
           .set('Authorization', `Bearer ${mentorAToken}`)
@@ -906,7 +912,7 @@ describe('B17 Content & Stories (e2e)', () => {
         expect(mentorAIds).toContain(storyAId);
         expect(mentorAIds).not.toContain(storyBId);
 
-        // Admin GET /staff/stories → should see both stories
+        // Admin GET /staff/stories â†’ should see both stories
         const adminListRes = await request(server)
           .get('/api/v1/staff/stories')
           .set('Authorization', `Bearer ${adminToken}`)
@@ -920,15 +926,14 @@ describe('B17 Content & Stories (e2e)', () => {
     );
   });
 
-  // ══════════════════════════════════════════════════════════════════════════════
-  // Scenario J — Story increment views; expired story → 410
-  // ══════════════════════════════════════════════════════════════════════════════
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+  // Scenario J â€” Story increment views; expired story â†’ 410
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-  describe('Scenario J: Story increment views; expired story → 410', () => {
-    // TODO(T8): column "user_id" of relation "group_mentors" does not exist — group_mentors DB schema mismatch
-    it.skip(
+  describe('Scenario J: Story increment views; expired story â†’ 410', () => {
+    it(
       'POST /staff/stories/:id/view increments views counter; ' +
-        'force-expire → POST view → 410',
+        'force-expire â†’ POST view â†’ 410',
       async () => {
         const { kgId, userId, adminToken } = await createKgWithAdmin(
           'cnt-j',
@@ -972,7 +977,7 @@ describe('B17 Content & Stories (e2e)', () => {
           );
         });
 
-        // Attempt to view expired story → 410
+        // Attempt to view expired story â†’ 410
         const expiredViewRes = await request(server)
           .post(`/api/v1/staff/stories/${storyId}/view`)
           .set('Authorization', `Bearer ${mentorToken}`)
@@ -984,14 +989,13 @@ describe('B17 Content & Stories (e2e)', () => {
     );
   });
 
-  // ══════════════════════════════════════════════════════════════════════════════
-  // Scenario K — Story cleanup cron deletes expired (file removed from disk)
-  // ══════════════════════════════════════════════════════════════════════════════
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+  // Scenario K â€” Story cleanup cron deletes expired (file removed from disk)
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
   describe('Scenario K: Story cleanup cron deletes expired (file removed from disk)', () => {
-    // TODO(T8): column "user_id" of relation "group_mentors" does not exist — group_mentors DB schema mismatch
-    it.skip(
-      'Create story, force-expire, POST /saas/content/story-cleanup-run → ' +
+    it(
+      'Create story, force-expire, POST /saas/content/story-cleanup-run â†’ ' +
         'story gone from DB; media file deleted from disk',
       async () => {
         const { kgId, userId, adminToken } = await createKgWithAdmin(
@@ -1043,7 +1047,7 @@ describe('B17 Content & Stories (e2e)', () => {
 
         expect(cleanupRes.body.processed_count).toBeGreaterThanOrEqual(1);
 
-        // Story row gone from DB — GET via staff should 404 (but story is
+        // Story row gone from DB â€” GET via staff should 404 (but story is
         // deleted, so let's verify via direct DB query)
         const dbRow = (await ctx.dataSource.transaction(async (m) => {
           await m.query(`SET LOCAL app.bypass_rls = 'true'`);
@@ -1060,15 +1064,14 @@ describe('B17 Content & Stories (e2e)', () => {
     );
   });
 
-  // ══════════════════════════════════════════════════════════════════════════════
-  // Scenario L — Birthday auto-gen (idempotent on rerun)
-  // ══════════════════════════════════════════════════════════════════════════════
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+  // Scenario L â€” Birthday auto-gen (idempotent on rerun)
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
   describe('Scenario L: Birthday auto-gen (idempotent on rerun)', () => {
-    // TODO(T8): ContentPostRelationalEntity not registered — content module entities missing from TypeOrmModule.forFeature; birthday-run endpoint may also be missing
-    it.skip(
+    it(
       "POST /saas/content/birthday-run with child's birthday as 'now' creates birthday post; " +
-        'rerun same day → no duplicate (skipped_count >= 1)',
+        'rerun same day â†’ no duplicate (skipped_count >= 1)',
       async () => {
         const { kgId, adminToken } = await createKgWithAdmin(
           'cnt-l',
@@ -1154,13 +1157,12 @@ describe('B17 Content & Stories (e2e)', () => {
     );
   });
 
-  // ══════════════════════════════════════════════════════════════════════════════
-  // Scenario M — Parent feed aggregates news + qundylyq + birthday + stories
-  // ══════════════════════════════════════════════════════════════════════════════
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+  // Scenario M â€” Parent feed aggregates news + qundylyq + birthday + stories
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
   describe('Scenario M: Parent feed aggregates news + qundylyq + birthday + stories; nanny 403', () => {
-    // TODO(T8): ContentPostRelationalEntity not registered — content module entities missing from TypeOrmModule.forFeature
-    it.skip(
+    it(
       'GET /parent/children/:childId/content returns news, qundylyq, birthdays, stories arrays; ' +
         'nanny with same child gets 403',
       async () => {
@@ -1185,8 +1187,8 @@ describe('B17 Content & Stories (e2e)', () => {
             content_type: 'news',
             target_type: 'all',
             title_i18n: {
-              ru: 'Новость для родителей',
-              kz: 'Ата-аналарға жаңалық',
+              ru: 'ÐÐ¾Ð²Ð¾ÑÑ‚ÑŒ Ð´Ð»Ñ Ñ€Ð¾Ð´Ð¸Ñ‚ÐµÐ»ÐµÐ¹',
+              kz: 'ÐÑ‚Ð°-Ð°Ð½Ð°Ð»Ð°Ñ€Ò“Ð° Ð¶Ð°Ò£Ð°Ð»Ñ‹Ò›',
             },
           })
           .expect(201);
@@ -1202,7 +1204,10 @@ describe('B17 Content & Stories (e2e)', () => {
           .send({
             content_type: 'qundylyq',
             target_type: 'all',
-            title_i18n: { ru: 'Ценность месяца', kz: 'Ай құндылығы' },
+            title_i18n: {
+              ru: 'Ð¦ÐµÐ½Ð½Ð¾ÑÑ‚ÑŒ Ð¼ÐµÑÑÑ†Ð°',
+              kz: 'ÐÐ¹ Ò›Ò±Ð½Ð´Ñ‹Ð»Ñ‹Ò“Ñ‹',
+            },
             metadata: { month: '2026-05', theme: 'Kindness' },
           })
           .expect(201);
@@ -1283,16 +1288,16 @@ describe('B17 Content & Stories (e2e)', () => {
         expect(feedRes.body.birthdays.length).toBeGreaterThanOrEqual(1);
         expect(Array.isArray(feedRes.body.stories)).toBe(true);
 
-        // Nanny with same child → 403 (nanny role doesn't have child_access
-        // unless properly seeded — ChildAccessGuard verifies guardian relation).
+        // Nanny with same child â†’ 403 (nanny role doesn't have child_access
+        // unless properly seeded â€” ChildAccessGuard verifies guardian relation).
         // Note: nanny CAN access content (unlike diagnostics). The prompt says
-        // "nanny gets 403 if attempting same endpoint (per BP §10 nanny doesn't
+        // "nanny gets 403 if attempting same endpoint (per BP Â§10 nanny doesn't
         // get content)". Checking if ChildAccessGuard blocks nanny role at all.
         // Per ChildAccessGuard logic, nanny (role=nanny, status=approved) is
         // still an approved guardian so they DO get access per B12 logic.
         // The 403 scenario is only if the nanny is NOT an approved guardian at all.
         const nannyUserId = await seedUser('+77050100123');
-        // Seed nanny WITHOUT guardian relation → ChildAccessGuard rejects
+        // Seed nanny WITHOUT guardian relation â†’ ChildAccessGuard rejects
         const nannyToken = await mintToken({
           sub: nannyUserId,
           role: 'parent',
@@ -1306,14 +1311,13 @@ describe('B17 Content & Stories (e2e)', () => {
     );
   });
 
-  // ══════════════════════════════════════════════════════════════════════════════
-  // Scenario N — Cross-tenant phantom (RLS isolation)
-  // ══════════════════════════════════════════════════════════════════════════════
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+  // Scenario N â€” Cross-tenant phantom (RLS isolation)
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
   describe('Scenario N: Cross-tenant phantom (RLS isolation)', () => {
-    // TODO(T8): ContentPostRelationalEntity not registered — content module entities missing from TypeOrmModule.forFeature; also group_mentors schema mismatch for story assertions
-    it.skip(
-      'kg_B admin cannot GET/PATCH/DELETE kg_A content post by id → 404; ' +
+    it(
+      'kg_B admin cannot GET/PATCH/DELETE kg_A content post by id â†’ 404; ' +
         "kg_B list does not include kg_A's posts; " +
         'kg_B mentor cannot view/delete kg_A story by id',
       async () => {
@@ -1332,13 +1336,13 @@ describe('B17 Content & Stories (e2e)', () => {
           .expect(201);
         const postIdA = postARes.body.id as string;
 
-        // kg_B admin GET kg_A post → 404
+        // kg_B admin GET kg_A post â†’ 404
         await request(server)
           .get(`/api/v1/admin/content/${postIdA}`)
           .set('Authorization', `Bearer ${b.adminToken}`)
           .expect(404);
 
-        // kg_B admin PATCH kg_A post → 404
+        // kg_B admin PATCH kg_A post â†’ 404
         await request(server)
           .patch(`/api/v1/admin/content/${postIdA}`)
           .set('Authorization', `Bearer ${b.adminToken}`)
@@ -1374,7 +1378,7 @@ describe('B17 Content & Stories (e2e)', () => {
           .expect(201);
         const storyIdA = storyARes.body.id as string;
 
-        // kg_B mentor POST /staff/stories/:id/view → 404 (RLS phantom)
+        // kg_B mentor POST /staff/stories/:id/view â†’ 404 (RLS phantom)
         const mentorBToken = await mintToken({
           sub: b.userId,
           role: 'mentor',
@@ -1385,7 +1389,7 @@ describe('B17 Content & Stories (e2e)', () => {
           .set('Authorization', `Bearer ${mentorBToken}`)
           .expect(404);
 
-        // kg_B mentor DELETE kg_A story → 404
+        // kg_B mentor DELETE kg_A story â†’ 404
         await request(server)
           .delete(`/api/v1/staff/stories/${storyIdA}`)
           .set('Authorization', `Bearer ${mentorBToken}`)
@@ -1394,9 +1398,9 @@ describe('B17 Content & Stories (e2e)', () => {
     );
   });
 
-  // ══════════════════════════════════════════════════════════════════════════════
-  // Extra — Processor direct invocation for coverage (F alt path)
-  // ══════════════════════════════════════════════════════════════════════════════
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+  // Extra â€” Processor direct invocation for coverage (F alt path)
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
   describe('Extra: Processors accessible via ctx.app.get() for direct test invocation', () => {
     it('ContentPublishProcessor, BirthdayGenerationProcessor, StoryCleanupProcessor are available', () => {
