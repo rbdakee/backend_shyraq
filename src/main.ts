@@ -15,7 +15,15 @@ import { AllConfigType } from './config/config.type';
 import { ResolvePromisesInterceptor } from './utils/serializer.interceptor';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule, { cors: true });
+  // `rawBody: true` (NestJS 10+) preserves the byte-exact request body on
+  // `req.rawBody` so webhook controllers can run HMAC verification against
+  // it (B14 Halyk ePay + future providers). The parsed JSON body remains
+  // available for normal `@Body()` usage; only webhook handlers reach for
+  // the raw buffer.
+  const app = await NestFactory.create(AppModule, {
+    cors: true,
+    rawBody: true,
+  });
   useContainer(app.select(AppModule), { fallbackOnErrors: true });
   const configService = app.get(ConfigService<AllConfigType>);
 

@@ -1,3 +1,5 @@
+import { roundKzt } from '@/shared-kernel/domain/money';
+
 export interface InvoiceLineItemState {
   id: string;
   invoiceId: string;
@@ -85,6 +87,6 @@ export class InvoiceLineItem {
   // ── pure helper ────────────────────────────────────────────────────────
 
   static compute(quantity: number, unitPrice: number): number {
-    return Math.round(quantity * unitPrice * 100) / 100;
+    return roundKzt(quantity * unitPrice);
   }
 }

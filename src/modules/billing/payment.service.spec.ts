@@ -259,7 +259,7 @@ class FakeInvoiceRepo extends InvoiceRepository {
       [...this.rows.values()].filter((i) => i.childId === childId),
     );
   }
-  existsAnyForPeriod(): Promise<boolean> {
+  existsMonthlyForPeriod(): Promise<boolean> {
     return Promise.resolve(false);
   }
   getPaidSumForInvoice(kg: string, invoiceId: string): Promise<number> {

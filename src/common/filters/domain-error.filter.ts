@@ -58,6 +58,7 @@ import { TimelineEntryNotFoundError } from '@/modules/attendance/domain/errors/t
 import { InvalidEventKeyError } from '@/modules/notification/domain/errors/invalid-event-key.error';
 import { NotificationNotFoundError } from '@/modules/notification/domain/errors/notification-not-found.error';
 import { PushTokenNotFoundError } from '@/modules/notification/domain/errors/push-token-not-found.error';
+import { PaymentProviderError } from '@/modules/billing/domain/errors/payment-provider.error';
 
 /**
  * Single source of truth for mapping AuthService / UsersService domain errors
@@ -176,6 +177,10 @@ export class DomainErrorFilter implements ExceptionFilter {
     if (err instanceof NotificationNotFoundError) return HttpStatus.NOT_FOUND;
     if (err instanceof PushTokenNotFoundError) return HttpStatus.NOT_FOUND;
     if (err instanceof InvalidEventKeyError) return HttpStatus.BAD_REQUEST;
+    // B13 Billing — payment provider failures (T11 H5).
+    // PaymentProviderError → 502 Bad Gateway; the raw provider reason is
+    // intentionally NOT propagated to the response body (only `details.provider`).
+    if (err instanceof PaymentProviderError) return HttpStatus.BAD_GATEWAY;
     if (err instanceof KindergartenNotFoundError) return HttpStatus.NOT_FOUND;
     if (err instanceof NotFoundError) return HttpStatus.NOT_FOUND;
     if (err instanceof ConflictError) return HttpStatus.CONFLICT;

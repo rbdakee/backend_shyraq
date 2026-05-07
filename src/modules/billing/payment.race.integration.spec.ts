@@ -173,6 +173,7 @@ describeIntegration('PaymentService — race-integration', () => {
       holidayService,
       notifier,
       clock,
+      paymentRepo,
     );
     const provider = new MockPaymentProvider();
     const fiscal = new MockFiscalReceiptAdapter();

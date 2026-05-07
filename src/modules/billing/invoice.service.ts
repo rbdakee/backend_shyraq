@@ -17,6 +17,7 @@ import {
   InvoiceLineItem,
   InvoiceLineItemState,
 } from './domain/entities/invoice-line-item.entity';
+import { Payment, PaymentState } from './domain/entities/payment.entity';
 import { TariffPlan } from './domain/entities/tariff-plan.entity';
 import { TariffAssignment } from './domain/entities/tariff-assignment.entity';
 import { InvoiceAlreadyPaidError } from './domain/errors/invoice-already-paid.error';
@@ -30,10 +31,12 @@ import {
   ListInvoicesFilter,
 } from './infrastructure/persistence/invoice.repository';
 import { InvoiceLineItemRepository } from './infrastructure/persistence/invoice-line-item.repository';
+import { PaymentRepository } from './infrastructure/persistence/payment.repository';
 import { TariffAssignmentRepository } from './infrastructure/persistence/tariff-assignment.repository';
 import { TariffPlanRepository } from './infrastructure/persistence/tariff-plan.repository';
 import { HolidayService } from './holiday.service';
 import { PaymentAccountService } from './payment-account.service';
+import { roundKzt, subtractKzt } from '@/shared-kernel/domain/money';
 
 const DEFAULT_DUE_DAY = 10; // monthly invoices fall due on the 10th of period
 const LATE_PICKUP_DUE_DAYS = 7;
@@ -142,6 +145,7 @@ export class InvoiceService {
     private readonly holidays: HolidayService,
     private readonly notificationPort: NotificationPort,
     @Inject(ClockPort) private readonly clock: ClockPort,
+    private readonly payments: PaymentRepository,
   ) {}
 
   // ── CRUD ───────────────────────────────────────────────────────────────
@@ -230,23 +234,41 @@ export class InvoiceService {
   // ── Admin actions (state flips) ────────────────────────────────────────
 
   /**
-   * Records an off-platform (cash) payment as a `Payment` row and flips the
-   * invoice to `paid`. Idempotent at the conditional-UPDATE level — a 0-row
-   * result is mapped to `InvoiceStatusInvalidError` (or
-   * `InvoiceAlreadyPaidError` if a follow-up read shows the row is already
-   * `paid`).
+   * Records an off-platform (cash) payment as a `Payment` row, credits the
+   * payment_account, and flips the invoice to `paid`. Idempotent at the
+   * conditional-UPDATE level — a 0-row result is mapped to
+   * `InvoiceStatusInvalidError` (or `InvoiceAlreadyPaidError` if a
+   * follow-up read shows the row is already `paid`).
    *
-   * NOTE: the `Payment` row insert is left to T5a (PaymentService). T4a
-   * fires only the invoice state flip + payment_account credit. The
-   * controller in T7 documents that callers should rely on the audit
-   * `note` until T5a's `cash` provider lands.
+   * The synthetic `Payment` row uses `provider='cash'` and a deterministic
+   * idempotency key `cash:<invoiceId>:<isoTimestamp>` so reconciliation via
+   * `GET /admin/payments` reflects the cash receipt and any subsequent
+   * refund flow can target the row (T11 C3).
    */
   async manualMarkPaid(
     kindergartenId: string,
     invoiceId: string,
-    _input: ManualMarkPaidInput = {},
+    input: ManualMarkPaidInput = {},
   ): Promise<Invoice> {
     const now = this.clock.now();
+    // Read the residual (amount-after-discount minus existing paid sum)
+    // BEFORE flipping the invoice — we'll use it as the synthetic Payment
+    // row's amount.
+    const existingForResidual = await this.invoices.findById(
+      kindergartenId,
+      invoiceId,
+    );
+    if (!existingForResidual) {
+      throw new InvoiceNotFoundError(invoiceId);
+    }
+    const priorPaidSum = await this.invoices.getPaidSumForInvoice(
+      kindergartenId,
+      invoiceId,
+    );
+    const residual = roundKzt(
+      subtractKzt(existingForResidual.amountAfterDiscount, priorPaidSum),
+    );
+
     const updated = await this.invoices.markPaidConditional(
       kindergartenId,
       invoiceId,
@@ -262,16 +284,40 @@ export class InvoiceService {
       }
       throw new InvoiceStatusInvalidError(existing.status, 'manualMarkPaid');
     }
-    // Credit the running balance ledger by the residual amount due so the
-    // parent app's "amount owed" view drops to zero. Difference between
-    // amount-after-discount and existing paid sum is added; sign convention:
-    // payments increase balance (running positive = paid in advance, running
-    // negative = arrears).
-    const paidSum = await this.invoices.getPaidSumForInvoice(
+
+    // T11 C3: synthesise a Payment row with provider='cash'. Without this
+    // GET /admin/payments would never show cash receipts, getPaidSumForInvoice
+    // would return 0 forever for cash-paid invoices, and the refund flow on
+    // those invoices would fail (no payment row to flip → refunded). The
+    // Payment row's amount is the residual at the moment of the cash
+    // receipt — partial cash payments are not supported (admins are
+    // expected to call manualMarkPaid only when full payment was received
+    // off-platform), but using the residual rather than amount_after_discount
+    // keeps the ledger correct if a partial gateway payment landed earlier.
+    const paymentAmount = residual > 0 ? residual : updated.amountAfterDiscount;
+    const paidAt = input.paidAt ?? now;
+    const cashPayment = Payment.fromState({
+      id: randomUUID(),
       kindergartenId,
-      invoiceId,
-    );
-    const residual = updated.amountAfterDiscount - paidSum;
+      invoiceId: updated.id,
+      childId: updated.childId,
+      payerUserId: input.payerUserId ?? null,
+      amount: paymentAmount,
+      provider: 'cash',
+      providerTxnId: null,
+      idempotencyKey: `cash:${updated.id}:${now.toISOString()}`,
+      status: 'completed',
+      providerPayload: {
+        note: input.note ?? null,
+        marked_by: 'admin_manual',
+      },
+      paidAt,
+      refundId: null,
+      createdAt: now,
+      updatedAt: now,
+    } as PaymentState);
+    await this.payments.create(cashPayment);
+
     if (residual > 0) {
       await this.paymentAccounts.creditFromPayment(
         kindergartenId,
@@ -279,12 +325,21 @@ export class InvoiceService {
         residual,
       );
     }
+    await this.notificationPort.notifyPaymentCompleted({
+      kindergartenId,
+      paymentId: cashPayment.id,
+      childId: updated.childId,
+      invoiceId: updated.id,
+      amount: cashPayment.amount,
+      provider: 'cash',
+      paidAt,
+    });
     await this.notificationPort.notifyInvoicePaid({
       kindergartenId,
       invoiceId: updated.id,
       childId: updated.childId,
       amountAfterDiscount: updated.amountAfterDiscount,
-      paidAt: now,
+      paidAt,
     });
     return updated;
   }
@@ -324,8 +379,9 @@ export class InvoiceService {
   /**
    * Cron-callable. Emits monthly invoices for every active tariff
    * assignment as of `periodStart`. See class-level docstring on the
-   * required ambient TX. Idempotent via advisory lock + existsAnyForPeriod
-   * short-circuit.
+   * required ambient TX. Idempotent via advisory lock + existsMonthlyForPeriod
+   * short-circuit (only `invoice_type='monthly'` rows count — prepayments
+   * and one-offs do not block re-runs).
    */
   async generateMonthly(
     kindergartenId: string,
@@ -345,7 +401,9 @@ export class InvoiceService {
       return { generated: 0, skipped: 0 };
     }
 
-    if (await this.invoices.existsAnyForPeriod(kindergartenId, periodStart)) {
+    if (
+      await this.invoices.existsMonthlyForPeriod(kindergartenId, periodStart)
+    ) {
       return { generated: 0, skipped: assignments.length };
     }
 
@@ -666,7 +724,7 @@ export class InvoiceService {
     const periodEnd = endOfMonth(addMonthsUtc(periodStart, months - 1));
 
     const monthlyAmount = assignment.effectiveAmount(tariffPlan);
-    const baseAmount = round2(monthlyAmount * months);
+    const baseAmount = roundKzt(monthlyAmount * months);
 
     const discount = await this.discountEngine.evaluate({
       invoice: {
@@ -809,9 +867,7 @@ export class InvoiceService {
       billableDays - nonBillableHolidays,
     );
     if (effectiveBillableDays !== totalDays && totalDays > 0) {
-      amountAfter =
-        Math.round(((amountAfter * effectiveBillableDays) / totalDays) * 100) /
-        100;
+      amountAfter = roundKzt((amountAfter * effectiveBillableDays) / totalDays);
       proratedForDays = effectiveBillableDays;
     }
 
@@ -915,6 +971,5 @@ function toIsoDate(d: Date): string {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
 }
 
-function round2(value: number): number {
-  return Math.round(value * 100) / 100;
-}
+// Note: legacy `round2(...)` was removed in T11 H7 — `roundKzt(...)` from
+// `@/shared-kernel/domain/money` is the canonical helper now.

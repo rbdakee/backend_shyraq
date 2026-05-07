@@ -779,6 +779,9 @@ class FakeNotificationPort extends NotificationPort {
   notifyRefundProcessed(): Promise<void> {
     return Promise.resolve();
   }
+  notifyEnrollmentFirstInvoiceSkipped(): Promise<void> {
+    return Promise.resolve();
+  }
 }
 
 /**

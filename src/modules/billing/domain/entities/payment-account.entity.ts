@@ -1,3 +1,5 @@
+import { roundKzt } from '@/shared-kernel/domain/money';
+
 export interface PaymentAccountState {
   id: string;
   kindergartenId: string;
@@ -60,7 +62,7 @@ export class PaymentAccount {
     if (!(amount > 0)) {
       throw new Error('PaymentAccount.credit: amount must be > 0');
     }
-    this.state.balance = roundMoney(this.state.balance + amount);
+    this.state.balance = roundKzt(this.state.balance + amount);
     this.state.updatedAt = now;
   }
 
@@ -68,11 +70,7 @@ export class PaymentAccount {
     if (!(amount > 0)) {
       throw new Error('PaymentAccount.debit: amount must be > 0');
     }
-    this.state.balance = roundMoney(this.state.balance - amount);
+    this.state.balance = roundKzt(this.state.balance - amount);
     this.state.updatedAt = now;
   }
-}
-
-function roundMoney(n: number): number {
-  return Math.round(n * 100) / 100;
 }

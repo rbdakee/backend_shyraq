@@ -27,16 +27,34 @@ import {
 export class MockPaymentProvider extends PaymentProviderPort {
   private readonly logger = new Logger('MockPaymentProvider');
 
+  /**
+   * In-memory idempotency cache. Keyed on `idempotencyKey`. Mirrors the
+   * behaviour of well-behaved real providers (Halyk, Stripe, …) which
+   * dedupe repeated calls with the same key. Without this dedupe the e2e
+   * suite cannot catch idempotency regressions in the service layer.
+   */
+  private readonly createPaymentCache = new Map<string, CreatePaymentResult>();
+  private readonly refundCache = new Map<string, RefundResult>();
+
   createPayment(input: CreatePaymentInput): Promise<CreatePaymentResult> {
+    const cached = this.createPaymentCache.get(input.idempotencyKey);
+    if (cached) {
+      this.logger.log(
+        `[MockPayment] createPayment idem=${input.idempotencyKey} → cache hit`,
+      );
+      return Promise.resolve(cached);
+    }
     const providerPaymentId = `mock_${input.invoiceId}_${randomBytes(8).toString('hex')}`;
     this.logger.log(
       `[MockPayment] createPayment invoice=${input.invoiceId} amount=${input.amountKzt} → ${providerPaymentId}`,
     );
-    return Promise.resolve({
+    const result: CreatePaymentResult = {
       providerPaymentId,
       redirectUrl: `https://mock.shyraq.local/pay/${providerPaymentId}`,
       status: 'completed',
-    });
+    };
+    this.createPaymentCache.set(input.idempotencyKey, result);
+    return Promise.resolve(result);
   }
 
   verifyWebhook(input: VerifyWebhookInput): Promise<VerifyWebhookResult> {
@@ -70,13 +88,22 @@ export class MockPaymentProvider extends PaymentProviderPort {
   }
 
   refund(input: RefundInput): Promise<RefundResult> {
+    const cached = this.refundCache.get(input.idempotencyKey);
+    if (cached) {
+      this.logger.log(
+        `[MockPayment] refund idem=${input.idempotencyKey} → cache hit`,
+      );
+      return Promise.resolve(cached);
+    }
     const providerRefundId = `mock_refund_${randomBytes(8).toString('hex')}`;
     this.logger.log(
       `[MockPayment] refund txn=${input.providerPaymentId} amount=${input.amountKzt} → ${providerRefundId}`,
     );
-    return Promise.resolve({
+    const result: RefundResult = {
       providerRefundId,
       status: 'processed',
-    });
+    };
+    this.refundCache.set(input.idempotencyKey, result);
+    return Promise.resolve(result);
   }
 }

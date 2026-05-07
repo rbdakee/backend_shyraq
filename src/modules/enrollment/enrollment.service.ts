@@ -1,5 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
+import { NotificationPort } from '@/common/notifications/notification.port';
 import { TariffAssignmentNotFoundError } from '@/modules/billing/domain/errors/tariff-assignment-not-found.error';
 import { InvoiceService } from '@/modules/billing/invoice.service';
 import { GroupNotFoundError } from '@/modules/group/domain/errors/group-not-found.error';
@@ -117,6 +118,7 @@ export class EnrollmentService {
     private readonly staffRepo: StaffMemberRepository,
     private readonly invoiceService: InvoiceService,
     @Inject(ClockPort) private readonly clock: ClockPort,
+    private readonly notificationPort: NotificationPort,
   ) {}
 
   /**
@@ -313,6 +315,28 @@ export class EnrollmentService {
           this.logger.warn(
             `enrollment.first_invoice_skipped reason=tariff_assignment_not_found child=${child.id} kg=${kindergartenId}`,
           );
+          // T11 H6: surface the silent skip as an admin-visible
+          // notification. Without this admins had no signal that the
+          // first invoice was missed — a kindergarten could lose weeks
+          // of billing before someone noticed in /admin/invoices.
+          const admins = await this.staffRepo.listByKindergarten(
+            kindergartenId,
+            { role: 'admin', isActive: true },
+          );
+          const recipientUserIds = Array.from(
+            new Set(
+              admins
+                .map((s) => s.toState().userId)
+                .filter((u): u is string => typeof u === 'string'),
+            ),
+          );
+          await this.notificationPort.notifyEnrollmentFirstInvoiceSkipped({
+            kindergartenId,
+            enrollmentId: enrollment.id,
+            childId: child.id,
+            reason: 'tariff_assignment_not_found',
+            recipientUserIds,
+          });
         } else {
           throw err;
         }

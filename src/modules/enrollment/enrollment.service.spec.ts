@@ -6,6 +6,7 @@
  * ChildService.createChild + inviteGuardian wiring is exercised by the
  * service-integration spec sibling against a real database.
  */
+import { InMemoryNotificationAdapter } from '@/common/notifications/in-memory-notification.adapter';
 import { InvoiceService } from '@/modules/billing/invoice.service';
 import {
   Invoice,
@@ -215,10 +216,16 @@ class FakeStaffRepo extends StaffMemberRepository {
   }
   listByKindergarten(
     kg: string,
-    _filters?: ListStaffFilters,
+    filters?: ListStaffFilters,
   ): Promise<StaffMember[]> {
     return Promise.resolve(
-      [...this.byId.values()].filter((s) => s.kindergartenId === kg),
+      [...this.byId.values()].filter((s) => {
+        if (s.kindergartenId !== kg) return false;
+        if (filters?.role && s.role !== filters.role) return false;
+        if (filters?.isActive !== undefined && s.isActive !== filters.isActive)
+          return false;
+        return true;
+      }),
     );
   }
   update(
@@ -524,6 +531,7 @@ function makeService(now: Date = T0) {
   const staffRepo = new FakeStaffRepo();
   const invoiceService = new StubInvoiceService();
   const clock = new FixedClock(now);
+  const notifier = new InMemoryNotificationAdapter();
   const service = new EnrollmentService(
     enrollmentRepo,
     logRepo,
@@ -532,11 +540,13 @@ function makeService(now: Date = T0) {
     staffRepo,
     invoiceService as unknown as InvoiceService,
     clock,
+    notifier,
   );
   return {
     service,
     enrollmentRepo,
     logRepo,
+    notifier,
     childService,
     groupRepo,
     staffRepo,
@@ -997,7 +1007,7 @@ describe('EnrollmentService', () => {
       expect(inv.enrollmentDate).toEqual(T0);
     });
 
-    it('completes transition (lax mode) when first-invoice generation throws TariffAssignmentNotFoundError (no tariff yet)', async () => {
+    it('completes transition (lax mode) when first-invoice generation throws TariffAssignmentNotFoundError (no tariff yet) and emits enrollment.first_invoice_skipped (T11 H6)', async () => {
       const {
         service,
         enrollmentRepo,
@@ -1006,6 +1016,7 @@ describe('EnrollmentService', () => {
         groupRepo,
         childService,
         invoiceService,
+        notifier,
       } = makeService();
       staffRepo.put(aStaff(STAFF_MEMBER_ID, STAFF_USER_ID, KG_A));
       groupRepo.put(aGroup(GROUP_ID, KG_A));
@@ -1031,6 +1042,21 @@ describe('EnrollmentService', () => {
       expect(result.enrollment.status.value).toBe('card_created');
       expect(invoiceService.generateFirstInvoiceCalls).toHaveLength(1);
       expect(logRepo.rows).toHaveLength(1);
+
+      const skipped = notifier.events.find(
+        (ev) => ev.type === 'enrollment_first_invoice_skipped',
+      );
+      expect(skipped).toBeDefined();
+      const payload = skipped?.event as {
+        enrollmentId: string;
+        childId: string;
+        reason: string;
+        recipientUserIds: string[];
+      };
+      expect(payload.enrollmentId).toBe(e.id);
+      expect(payload.childId).toBe(CHILD_ID);
+      expect(payload.reason).toBe('tariff_assignment_not_found');
+      expect(payload.recipientUserIds).toContain(STAFF_USER_ID);
     });
 
     it('rolls back transition when first-invoice generation throws an unexpected error', async () => {

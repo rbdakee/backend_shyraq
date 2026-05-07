@@ -47,6 +47,10 @@ export const CANONICAL_EVENT_KEYS = [
   'payment.failed',
   'payment.refunded',
   'refund.processed',
+  // ── B13 / T11 H6 — admin-visible signal when first-invoice generation
+  // skipped on enrollment.card_created because no tariff_assignment was
+  // configured. Enables admins to remediate without monitoring server logs.
+  'enrollment.first_invoice_skipped',
 ] as const;
 
 export type EventKey = (typeof CANONICAL_EVENT_KEYS)[number];

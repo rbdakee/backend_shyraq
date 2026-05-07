@@ -68,6 +68,7 @@ class FixedClock extends ClockPort {
 
 class FakeRefundRepo extends RefundRepository {
   rows = new Map<string, Refund>();
+  advisoryLockCalls: Array<{ kg: string; refundId: string }> = [];
 
   create(refund: Refund): Promise<Refund> {
     this.rows.set(refund.id, refund);
@@ -94,6 +95,29 @@ class FakeRefundRepo extends RefundRepository {
           (!filter.paymentId || r.paymentId === filter.paymentId),
       ),
     );
+  }
+  acquireRefundProcessAdvisoryLock(
+    kg: string,
+    refundId: string,
+  ): Promise<void> {
+    this.advisoryLockCalls.push({ kg, refundId });
+    return Promise.resolve();
+  }
+  getProcessedRefundsSumForInvoice(
+    kg: string,
+    invoiceId: string,
+  ): Promise<number> {
+    let sum = 0;
+    for (const r of this.rows.values()) {
+      if (
+        r.kindergartenId === kg &&
+        r.invoiceId === invoiceId &&
+        r.status === 'processed'
+      ) {
+        sum += r.amount;
+      }
+    }
+    return Promise.resolve(sum);
   }
   markApprovedConditional(
     kg: string,
@@ -232,6 +256,7 @@ class FakePaymentRepo extends PaymentRepository {
 
 class FakeInvoiceRepo extends InvoiceRepository {
   rows = new Map<string, Invoice>();
+  paidSums = new Map<string, number>();
 
   create(): Promise<Invoice> {
     return Promise.reject(new Error('not used'));
@@ -245,11 +270,11 @@ class FakeInvoiceRepo extends InvoiceRepository {
   findByChildId(): Promise<Invoice[]> {
     return Promise.resolve([]);
   }
-  existsAnyForPeriod(): Promise<boolean> {
+  existsMonthlyForPeriod(): Promise<boolean> {
     return Promise.resolve(false);
   }
-  getPaidSumForInvoice(): Promise<number> {
-    return Promise.resolve(0);
+  getPaidSumForInvoice(_kg: string, invoiceId: string): Promise<number> {
+    return Promise.resolve(this.paidSums.get(invoiceId) ?? 0);
   }
   markPaidConditional(
     _kg: string,
@@ -258,8 +283,14 @@ class FakeInvoiceRepo extends InvoiceRepository {
   ): Promise<Invoice | null> {
     return Promise.resolve(this.flip(id, ['pending', 'partial'], 'paid', now));
   }
-  markPartialConditional(): Promise<Invoice | null> {
-    return Promise.resolve(null);
+  markPartialConditional(
+    _kg: string,
+    id: string,
+    now: Date,
+  ): Promise<Invoice | null> {
+    return Promise.resolve(
+      this.flip(id, ['pending', 'overdue', 'paid'], 'partial', now),
+    );
   }
   markCancelledConditional(): Promise<Invoice | null> {
     return Promise.resolve(null);
@@ -632,6 +663,9 @@ describe('RefundService.process', () => {
     const h = buildHarness();
     h.paymentRepo.rows.set(PAYMENT, makePayment());
     h.invoiceRepo.rows.set(INVOICE, makeInvoice({ status: 'paid' }));
+    // Seed paid sum = invoice total so the post-refund effectiveNet is 0
+    // and the invoice flips to `refunded`.
+    h.invoiceRepo.paidSums.set(INVOICE, 50000);
     h.paymentAccountRepo.put(makeAccount(50000));
     const seeded = seedRefund(h.refundRepo, { status: 'approved' });
 
@@ -650,12 +684,66 @@ describe('RefundService.process', () => {
     const accountAfter = await h.paymentAccountRepo.findById(KG, ACCOUNT);
     expect(accountAfter?.balance).toBe(0); // 50000 credit - 50000 refund
 
+    // T11 H1: advisory lock acquired before provider call.
+    expect(h.refundRepo.advisoryLockCalls).toHaveLength(1);
+    expect(h.refundRepo.advisoryLockCalls[0].refundId).toBe(seeded.id);
+
     // Provider was called with the deterministic idempotency key.
     expect(h.provider.refundCalls).toHaveLength(1);
     expect(h.provider.refundCalls[0].idempotencyKey).toBe(
       `refund:${seeded.id}`,
     );
     expect(h.provider.refundCalls[0].providerPaymentId).toBe('tx_done');
+  });
+
+  it('partial refund against fully-paid invoice — invoice downgrades paid → partial (T11 C2)', async () => {
+    const h = buildHarness();
+    h.paymentRepo.rows.set(PAYMENT, makePayment({ amount: 50000 }));
+    h.invoiceRepo.rows.set(INVOICE, makeInvoice({ status: 'paid' }));
+    h.invoiceRepo.paidSums.set(INVOICE, 50000);
+    h.paymentAccountRepo.put(makeAccount(50000));
+    const seeded = seedRefund(h.refundRepo, {
+      status: 'approved',
+      amount: 20000, // partial refund
+    });
+
+    const out = await h.service.process(KG, seeded.id);
+
+    expect(out.status).toBe('processed');
+
+    // Invoice should NOT flip to refunded (effective net 30000 > 0).
+    const invoiceAfter = await h.invoiceRepo.findById(KG, INVOICE);
+    expect(invoiceAfter?.status).toBe('partial');
+
+    // Payment account debited by refund amount.
+    const accountAfter = await h.paymentAccountRepo.findById(KG, ACCOUNT);
+    expect(accountAfter?.balance).toBe(30000);
+  });
+
+  it('full refund against fully-paid invoice via partial steps — invoice flips to refunded only on full coverage (T11 C2)', async () => {
+    const h = buildHarness();
+    h.paymentRepo.rows.set(PAYMENT, makePayment({ amount: 50000 }));
+    h.invoiceRepo.rows.set(INVOICE, makeInvoice({ status: 'paid' }));
+    h.invoiceRepo.paidSums.set(INVOICE, 50000);
+    h.paymentAccountRepo.put(makeAccount(50000));
+    // Pre-existing processed refund already covers half of paidSum.
+    seedRefund(h.refundRepo, {
+      id: 'rrrrrrrr-rrrr-rrrr-rrrr-rrrrrrrrrrr1',
+      status: 'processed',
+      amount: 25000,
+      providerRef: 'mock_old',
+    });
+    const newRefund = seedRefund(h.refundRepo, {
+      id: 'rrrrrrrr-rrrr-rrrr-rrrr-rrrrrrrrrrr2',
+      status: 'approved',
+      amount: 25000, // brings cumulative refund to full coverage
+    });
+
+    await h.service.process(KG, newRefund.id);
+
+    // Now refundedSum=50000, paidSum=50000 → effectiveNet=0 → refunded.
+    const invoiceAfter = await h.invoiceRepo.findById(KG, INVOICE);
+    expect(invoiceAfter?.status).toBe('refunded');
   });
 
   it('throws PaymentProviderError when provider.refund throws (refund stays approved for retry)', async () => {

@@ -6,6 +6,7 @@ import {
   Logger,
   Param,
   Post,
+  RawBodyRequest,
   Req,
 } from '@nestjs/common';
 import type { Request } from 'express';
@@ -70,7 +71,7 @@ export class PaymentWebhookController {
     // from `PaymentWebhookDto` (index-signature only, no decorated fields).
     // Provider payloads are arbitrary JSON validated by `verifyWebhook`;
     // stripping properties here would break signature verification.
-    @Req() req: Request,
+    @Req() req: RawBodyRequest<Request>,
   ): Promise<WebhookAckDto> {
     const body = req.body as PaymentWebhookDto;
     if (!isKnownProvider(provider)) {
@@ -86,7 +87,7 @@ export class PaymentWebhookController {
         provider: provider as PaymentProvider,
         headers,
         body,
-        rawBody: extractRawBody(body),
+        rawBody: req.rawBody,
       });
       return { status: 'ok' };
     } catch (err) {
@@ -111,18 +112,6 @@ export class PaymentWebhookController {
 
 function isKnownProvider(p: string): p is PaymentProvider {
   return (KNOWN_PROVIDERS as readonly string[]).includes(p);
-}
-
-/**
- * Extract a raw `Buffer` body for providers whose signature scheme requires
- * byte-exact verification (e.g. Halyk's HMAC over the raw payload). NestJS
- * by default parses JSON into an object; mounting `bodyParser.raw()` for
- * webhooks is a follow-up B14 wiring step. Today the Mock provider does
- * not need rawBody — `verifyWebhook` accepts `undefined` and falls back to
- * the parsed `body`.
- */
-function extractRawBody(_body: PaymentWebhookDto): Buffer | undefined {
-  return undefined;
 }
 
 // Surface Payment domain in scope so tooling that walks barrel exports

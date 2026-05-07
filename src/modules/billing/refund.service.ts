@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { NotificationPort } from '@/common/notifications/notification.port';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { InvariantViolationError } from '@/shared-kernel/domain/errors';
+import { roundKzt } from '@/shared-kernel/domain/money';
 import { Refund, RefundState } from './domain/entities/refund.entity';
 import {
   PaymentNotFoundError,
@@ -99,11 +100,11 @@ export class RefundService {
     if (payment.status !== 'completed') {
       throw new PaymentStatusInvalidError(payment.status, 'create_refund');
     }
-    const amount = round2(input.amount);
+    const amount = roundKzt(input.amount);
     if (!(amount > 0)) {
       throw new InvariantViolationError('refund_amount_invalid');
     }
-    if (amount > round2(payment.amount)) {
+    if (amount > roundKzt(payment.amount)) {
       throw new InvariantViolationError('refund_amount_invalid');
     }
 
@@ -191,6 +192,27 @@ export class RefundService {
       throw new RefundAlreadyProcessedError(refund.status, 'process');
     }
 
+    // T11 H1: serialise concurrent process() clicks on the same refund row.
+    // The advisory lock is keyed on `(kg, refund.id)` and released at TX
+    // commit. Two simultaneous admin clicks both pass the findById guard;
+    // only one acquires the lock and proceeds to the provider call. The
+    // other waits, re-reads under the lock, and sees `status !== 'approved'`
+    // → throws `RefundAlreadyProcessedError`.
+    await this.refundRepo.acquireRefundProcessAdvisoryLock(
+      kindergartenId,
+      refund.id,
+    );
+    const lockedRefund = await this.refundRepo.findById(
+      kindergartenId,
+      refund.id,
+    );
+    if (!lockedRefund) {
+      throw new RefundNotFoundError(refund.id);
+    }
+    if (lockedRefund.status !== 'approved') {
+      throw new RefundAlreadyProcessedError(lockedRefund.status, 'process');
+    }
+
     const payment = await this.paymentRepo.findById(
       kindergartenId,
       refund.paymentId,
@@ -204,7 +226,8 @@ export class RefundService {
 
     // External side-effect FIRST. If it throws, the refund stays `approved`
     // and the caller can retry. Sending a deterministic idempotency key
-    // makes provider-side retry safe (mock returns same providerRefundId).
+    // makes provider-side retry safe (Mock + real adapters that honour the
+    // key return the same providerRefundId for repeated calls).
     let providerResult;
     try {
       providerResult = await this.paymentProvider.refund({
@@ -251,21 +274,62 @@ export class RefundService {
       );
     }
 
-    // 3. Flip invoice → refunded (full-refund design — see class doc).
+    // 3. Invoice flip is conditional on full-coverage (T11 C2):
+    //
+    //    Compute the running totals after THIS refund commits:
+    //       paidSum  = SUM(payments.amount WHERE status='completed')
+    //       refundedSum = SUM(refunds.amount WHERE status='processed')
+    //                     + processed.amount   (this refund just committed)
+    //       effectiveNet = paidSum - refundedSum
+    //
+    //    If effectiveNet <= 0 → invoice is fully unwound → flip to refunded.
+    //    Else → recompute invoice status from `paidSum - refundedSum` against
+    //    `amountAfterDiscount` (downgrade paid → partial when there's still
+    //    a residual unpaid balance after partial refunds).
     const invoice = await this.invoiceService.get(
       kindergartenId,
       payment.invoiceId,
     );
-    const flippedInvoice = await this.invoiceRepo.markRefundedConditional(
+    const paidSum = await this.invoiceRepo.getPaidSumForInvoice(
       kindergartenId,
       invoice.id,
-      now,
     );
-    if (!flippedInvoice) {
-      this.logger.warn(
-        `refund.process: invoice ${invoice.id} could not flip → refunded (status=${invoice.status})`,
+    const priorRefundedSum =
+      await this.refundRepo.getProcessedRefundsSumForInvoice(
+        kindergartenId,
+        invoice.id,
       );
+    const effectiveNet = roundKzt(paidSum - priorRefundedSum);
+
+    if (effectiveNet <= 0) {
+      const flippedInvoice = await this.invoiceRepo.markRefundedConditional(
+        kindergartenId,
+        invoice.id,
+        now,
+      );
+      if (!flippedInvoice) {
+        this.logger.warn(
+          `refund.process: invoice ${invoice.id} could not flip → refunded (status=${invoice.status})`,
+        );
+      }
+    } else if (effectiveNet < invoice.amountAfterDiscount) {
+      // Partial refund: invoice was paid in full but we just refunded part
+      // of it. Downgrade paid → partial so the parent's "amount owed" view
+      // reflects the new outstanding balance. Conditional UPDATE is a no-op
+      // when the invoice is already in pending/overdue/cancelled.
+      const flipped = await this.invoiceRepo.markPartialConditional(
+        kindergartenId,
+        invoice.id,
+        now,
+      );
+      if (!flipped && invoice.status === 'paid') {
+        this.logger.warn(
+          `refund.process: invoice ${invoice.id} could not downgrade paid → partial`,
+        );
+      }
     }
+    // else: effectiveNet >= amountAfterDiscount — nothing to flip; the
+    // invoice already encodes the right state (paid + reduced balance).
 
     // 4. Debit the payment_account by the refund amount.
     await this.paymentAccountService.debitForRefund(
@@ -319,8 +383,5 @@ export class RefundService {
   }
 }
 
-// ── helpers ──────────────────────────────────────────────────────────────
-
-function round2(value: number): number {
-  return Math.round(value * 100) / 100;
-}
+// Note: legacy `round2(...)` was removed in T11 H7 — `roundKzt(...)` from
+// `@/shared-kernel/domain/money` is the canonical helper now.

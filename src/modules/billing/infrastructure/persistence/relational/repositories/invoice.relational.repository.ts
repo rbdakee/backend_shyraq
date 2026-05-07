@@ -109,6 +109,9 @@ export class InvoiceRelationalRepository extends InvoiceRepository {
     if (filter.status) {
       qb.andWhere('inv.status = :status', { status: filter.status });
     }
+    if (filter.dueDateFrom) {
+      qb.andWhere('inv.due_date >= :dueFrom', { dueFrom: filter.dueDateFrom });
+    }
     if (filter.dueDate) {
       qb.andWhere('inv.due_date <= :due', { due: filter.dueDate });
     }
@@ -138,15 +141,19 @@ export class InvoiceRelationalRepository extends InvoiceRepository {
     return this.list(kindergartenId, { ...filter, childId });
   }
 
-  async existsAnyForPeriod(
+  async existsMonthlyForPeriod(
     kindergartenId: string,
     periodStart: Date,
   ): Promise<boolean> {
+    // T11 C1: filter by invoice_type='monthly' so prepayment / late_pickup_fee /
+    // additional_service / one-off invoices that happen to share the same
+    // period_start (typically first-of-month) do NOT block the cron.
     const count = await this.manager()
       .getRepository(InvoiceTypeOrmEntity)
       .createQueryBuilder('inv')
       .where('inv.kindergarten_id = :kg', { kg: kindergartenId })
       .andWhere('inv.period_start = :ps', { ps: toIsoDate(periodStart) })
+      .andWhere(`inv.invoice_type = 'monthly'`)
       .getCount();
     return count > 0;
   }

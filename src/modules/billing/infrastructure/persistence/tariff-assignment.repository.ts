@@ -86,4 +86,20 @@ export abstract class TariffAssignmentRepository {
     kindergartenId: string,
     filter?: ListTariffAssignmentsFilter,
   ): Promise<TariffAssignment[]>;
+
+  /**
+   * Acquires `pg_advisory_xact_lock(hashtext('billing:tariff-assign:'||kgId||':'||childId))`.
+   * Released automatically on TX commit / rollback.
+   *
+   * Used by `TariffAssignmentService.assign` and `update` BEFORE the
+   * `existsOverlap` SELECT so concurrent admins assigning the same child
+   * cannot both pass the overlap check and both INSERT.
+   *
+   * MUST be called inside an ambient TX — outside one the lock is
+   * released at the implicit per-statement boundary (no-op).
+   */
+  abstract acquireAssignChildAdvisoryLock(
+    kindergartenId: string,
+    childId: string,
+  ): Promise<void>;
 }

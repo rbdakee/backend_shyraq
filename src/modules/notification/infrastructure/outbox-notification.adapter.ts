@@ -10,6 +10,7 @@ import {
   GuardianRevokedEvent,
   GuardianSelfRevokedEvent,
   NotificationPort,
+  NotifyEnrollmentFirstInvoiceSkippedInput,
   NotifyInvoiceCancelledInput,
   NotifyInvoiceCreatedInput,
   NotifyInvoiceOverdueInput,
@@ -325,6 +326,21 @@ export class OutboxNotificationAdapter extends NotificationPort {
       amount: event.amount,
       processedBy: event.processedBy,
     });
+  }
+
+  notifyEnrollmentFirstInvoiceSkipped(
+    event: NotifyEnrollmentFirstInvoiceSkippedInput,
+  ): Promise<void> {
+    return this.enqueue(
+      event.kindergartenId,
+      'enrollment.first_invoice_skipped',
+      {
+        enrollmentId: event.enrollmentId,
+        childId: event.childId,
+        reason: event.reason,
+        recipientUserIds: event.recipientUserIds,
+      },
+    );
   }
 
   private async enqueue(

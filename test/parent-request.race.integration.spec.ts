@@ -224,6 +224,9 @@ class FakeNotifications extends NotificationPort {
   notifyRefundProcessed(): Promise<void> {
     return Promise.resolve();
   }
+  notifyEnrollmentFirstInvoiceSkipped(): Promise<void> {
+    return Promise.resolve();
+  }
 }
 
 class FixedClock implements ClockPort {

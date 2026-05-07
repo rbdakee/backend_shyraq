@@ -1,3 +1,4 @@
+import { roundKzt } from '@/shared-kernel/domain/money';
 import { InvoiceAlreadyPaidError } from '../errors/invoice-already-paid.error';
 import { InvoiceStatusInvalidError } from '../errors/invoice-status-invalid.error';
 
@@ -250,7 +251,6 @@ export class Invoice {
     if (discountPct === null || discountPct === 0) {
       return amountDue;
     }
-    const raw = (amountDue * (100 - discountPct)) / 100;
-    return Math.round(raw * 100) / 100;
+    return roundKzt((amountDue * (100 - discountPct)) / 100);
   }
 }

@@ -3,14 +3,20 @@ import {
   TariffAssignment,
   TariffAssignmentState,
 } from './domain/entities/tariff-assignment.entity';
+import {
+  TariffPlan,
+  TariffPlanState,
+} from './domain/entities/tariff-plan.entity';
 import { TariffAssignmentNotFoundError } from './domain/errors/tariff-assignment-not-found.error';
 import { TariffAssignmentOverlapError } from './domain/errors/tariff-assignment-overlap.error';
+import { TariffPlanNotFoundError } from './domain/errors/tariff-plan-not-found.error';
 import {
   CreateTariffAssignmentInput,
   ListTariffAssignmentsFilter,
   TariffAssignmentRepository,
   UpdateTariffAssignmentPatch,
 } from './infrastructure/persistence/tariff-assignment.repository';
+import { TariffPlanRepository } from './infrastructure/persistence/tariff-plan.repository';
 import { TariffAssignmentService } from './tariff-assignment.service';
 
 const KG = '11111111-1111-1111-1111-111111111111';
@@ -165,15 +171,81 @@ class FakeTariffAssignmentRepo extends TariffAssignmentRepository {
       }),
     );
   }
+
+  acquireAssignChildAdvisoryLock(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
+class FakeTariffPlanRepo extends TariffPlanRepository {
+  rows = new Map<string, TariffPlan>();
+
+  put(p: TariffPlan): void {
+    this.rows.set(p.id, p);
+  }
+
+  create(plan: TariffPlan): Promise<TariffPlan> {
+    this.rows.set(plan.id, plan);
+    return Promise.resolve(plan);
+  }
+  update(): Promise<TariffPlan | null> {
+    return Promise.resolve(null);
+  }
+  save(plan: TariffPlan): Promise<TariffPlan> {
+    this.rows.set(plan.id, plan);
+    return Promise.resolve(plan);
+  }
+  findById(kg: string, id: string): Promise<TariffPlan | null> {
+    const p = this.rows.get(id);
+    if (!p || p.kindergartenId !== kg) return Promise.resolve(null);
+    return Promise.resolve(p);
+  }
+  findActiveByType(): Promise<TariffPlan | null> {
+    return Promise.resolve(null);
+  }
+  list(kg: string): Promise<TariffPlan[]> {
+    return Promise.resolve(
+      [...this.rows.values()].filter((p) => p.kindergartenId === kg),
+    );
+  }
+}
+
+function planState(overrides: Partial<TariffPlanState> = {}): TariffPlanState {
+  return {
+    id: PLAN,
+    kindergartenId: KG,
+    name: 'Standard',
+    description: { ru: 'Стандарт' },
+    tariffType: 'monthly',
+    amount: 50000,
+    currency: 'KZT',
+    appliesTo: 'all_children',
+    groupId: null,
+    ageMinMonths: null,
+    ageMaxMonths: null,
+    isActive: true,
+    validFrom: new Date('2026-01-01T00:00:00.000Z'),
+    validUntil: null,
+    discountRules: {},
+    createdAt: NOW,
+    updatedAt: NOW,
+    ...overrides,
+  };
 }
 
 describe('TariffAssignmentService', () => {
   let repo: FakeTariffAssignmentRepo;
+  let planRepo: FakeTariffPlanRepo;
   let svc: TariffAssignmentService;
 
   beforeEach(() => {
     repo = new FakeTariffAssignmentRepo();
-    svc = new TariffAssignmentService(repo, new FakeClock(NOW));
+    planRepo = new FakeTariffPlanRepo();
+    // Seed the canonical plan id used across the spec so every test path
+    // passes the cross-tenant tariff_plan validation (T11 H8) without
+    // boilerplate per-test.
+    planRepo.put(TariffPlan.fromState(planState()));
+    svc = new TariffAssignmentService(repo, new FakeClock(NOW), planRepo);
   });
 
   describe('assign', () => {
@@ -222,6 +294,25 @@ describe('TariffAssignmentService', () => {
         assignedBy: STAFF,
       });
       expect(next).toBeDefined();
+    });
+
+    it('throws TariffPlanNotFoundError when tariff_plan_id is unknown to caller kg (T11 H8)', async () => {
+      // Plan exists in another kg (KG2) but caller is in KG → RLS-scoped
+      // findById returns null → not_found.
+      const KG2 = '22222222-2222-2222-2222-222222222222';
+      planRepo.put(
+        TariffPlan.fromState(
+          planState({ id: 'kg2-plan', kindergartenId: KG2 }),
+        ),
+      );
+      await expect(
+        svc.assign(KG, {
+          childId: CHILD,
+          tariffPlanId: 'kg2-plan',
+          validFrom: new Date('2026-05-01T00:00:00.000Z'),
+          assignedBy: STAFF,
+        }),
+      ).rejects.toThrow(TariffPlanNotFoundError);
     });
   });
 

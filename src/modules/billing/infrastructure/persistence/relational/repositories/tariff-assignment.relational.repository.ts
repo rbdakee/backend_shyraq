@@ -198,4 +198,15 @@ export class TariffAssignmentRelationalRepository extends TariffAssignmentReposi
     const rows = await qb.getMany();
     return rows.map(TariffAssignmentMapper.toDomain);
   }
+
+  async acquireAssignChildAdvisoryLock(
+    kindergartenId: string,
+    childId: string,
+  ): Promise<void> {
+    const scope = `billing:tariff-assign:${kindergartenId}:${childId}`;
+    await this.manager().query(
+      `SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`,
+      [scope],
+    );
+  }
 }

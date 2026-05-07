@@ -4,6 +4,7 @@ import { DataSource } from 'typeorm';
 import { NotificationPort } from '@/common/notifications/notification.port';
 import { tenantStorage } from '@/database/tenant-storage';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { roundKzt } from '@/shared-kernel/domain/money';
 import {
   Payment,
   PaymentProvider,
@@ -156,17 +157,17 @@ export class PaymentService {
       kindergartenId,
       invoice.id,
     );
-    const remaining = round2(invoice.amountAfterDiscount - paidSum);
+    const remaining = roundKzt(invoice.amountAfterDiscount - paidSum);
 
     if (input.paymentMode === 'full') {
-      if (round2(input.amount) !== remaining) {
+      if (roundKzt(input.amount) !== remaining) {
         throw new InvoiceStatusInvalidError(
           invoice.status,
           'amount_mismatch_full',
         );
       }
     } else {
-      if (input.amount <= 0 || round2(input.amount) > remaining) {
+      if (input.amount <= 0 || roundKzt(input.amount) > remaining) {
         throw new InvoiceStatusInvalidError(
           invoice.status,
           'amount_mismatch_partial',
@@ -186,7 +187,7 @@ export class PaymentService {
       invoiceId: invoice.id,
       childId: invoice.childId,
       payerUserId: input.payerUserId ?? null,
-      amount: round2(input.amount),
+      amount: roundKzt(input.amount),
       provider: input.provider,
       providerTxnId: null,
       idempotencyKey: input.idempotencyKey,
@@ -609,10 +610,6 @@ export class PaymentService {
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────
-
-function round2(value: number): number {
-  return Math.round(value * 100) / 100;
-}
 
 function readRedirectFromPayload(payment: Payment): {
   redirectUrl?: string;

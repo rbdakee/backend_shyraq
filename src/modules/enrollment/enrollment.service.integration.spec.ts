@@ -313,6 +313,7 @@ describeIntegration('EnrollmentService — service-integration', () => {
       staffRepo,
       invoiceService,
       clock,
+      new InMemoryNotificationAdapter(),
     );
   }
 

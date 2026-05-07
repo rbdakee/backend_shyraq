@@ -13,7 +13,7 @@
  *   1. Idempotency under concurrent invocations. Five callers fire
  *      `runForKindergarten(kg, periodStart)` simultaneously. The
  *      advisory lock acquired inside `InvoiceService.generateMonthly`
- *      serialises them; the `existsAnyForPeriod` short-circuit kicks in
+ *      serialises them; the `existsMonthlyForPeriod` short-circuit kicks in
  *      after the winner commits. Post-condition: exactly one invoice
  *      per active tariff_assignment (5 assignments → 5 invoices), not
  *      25 invoices.
@@ -48,12 +48,14 @@ import { InvoiceRelationalRepository } from './infrastructure/persistence/relati
 import { InvoiceLineItemRelationalRepository } from './infrastructure/persistence/relational/repositories/invoice-line-item.relational.repository';
 import { KindergartenHolidayRelationalRepository } from './infrastructure/persistence/relational/repositories/kindergarten-holiday.relational.repository';
 import { PaymentAccountRelationalRepository } from './infrastructure/persistence/relational/repositories/payment-account.relational.repository';
+import { PaymentRelationalRepository } from './infrastructure/persistence/relational/repositories/payment.relational.repository';
 import { TariffAssignmentRelationalRepository } from './infrastructure/persistence/relational/repositories/tariff-assignment.relational.repository';
 import { TariffPlanRelationalRepository } from './infrastructure/persistence/relational/repositories/tariff-plan.relational.repository';
 import { InvoiceTypeOrmEntity } from './infrastructure/persistence/relational/entities/invoice.typeorm.entity';
 import { InvoiceLineItemTypeOrmEntity } from './infrastructure/persistence/relational/entities/invoice-line-item.typeorm.entity';
 import { KindergartenHolidayTypeOrmEntity } from './infrastructure/persistence/relational/entities/kindergarten-holiday.typeorm.entity';
 import { PaymentAccountTypeOrmEntity } from './infrastructure/persistence/relational/entities/payment-account.typeorm.entity';
+import { PaymentTypeOrmEntity } from './infrastructure/persistence/relational/entities/payment.typeorm.entity';
 import { TariffAssignmentTypeOrmEntity } from './infrastructure/persistence/relational/entities/tariff-assignment.typeorm.entity';
 import { TariffPlanTypeOrmEntity } from './infrastructure/persistence/relational/entities/tariff-plan.typeorm.entity';
 import { HolidayService } from './holiday.service';
@@ -108,6 +110,7 @@ describeIntegration(
           InvoiceLineItemTypeOrmEntity,
           KindergartenHolidayTypeOrmEntity,
           PaymentAccountTypeOrmEntity,
+          PaymentTypeOrmEntity,
           TariffAssignmentTypeOrmEntity,
           TariffPlanTypeOrmEntity,
         ],
@@ -146,6 +149,10 @@ describeIntegration(
       const paymentAccountRepo = new PaymentAccountRelationalRepository(
         dataSource.getRepository(PaymentAccountTypeOrmEntity),
       );
+      const paymentRepo = new PaymentRelationalRepository(
+        dataSource,
+        dataSource.getRepository(PaymentTypeOrmEntity),
+      );
       const holidayRepo = new KindergartenHolidayRelationalRepository(
         dataSource.getRepository(KindergartenHolidayTypeOrmEntity),
       );
@@ -167,6 +174,7 @@ describeIntegration(
         holidayService,
         notifier,
         clock,
+        paymentRepo,
       );
     }
 
@@ -313,7 +321,7 @@ describeIntegration(
         // hashtext('billing:monthly:'||kgId||':'||YYYY-MM) serialises
         // them inside `InvoiceService.generateMonthly`. The first
         // committer sets up 5 invoices; subsequent callers hit the
-        // `existsAnyForPeriod` short-circuit and return
+        // `existsMonthlyForPeriod` short-circuit and return
         // `{generated: 0, skipped: 5}`.
         const results = await Promise.all(
           Array.from({ length: 5 }, () =>

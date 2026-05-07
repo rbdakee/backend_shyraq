@@ -319,6 +319,28 @@ export interface NotifyRefundProcessedInput {
   processedBy: string;
 }
 
+/**
+ * T11 H6 — emitted by `EnrollmentService.transition` when the
+ * `card_created` lax-mode catches a `TariffAssignmentNotFoundError`.
+ * Recipients are the kindergarten's active admins (pre-resolved by the
+ * producer via `StaffMemberRepository`). Without this admins had no
+ * visible signal that the auto-generated first invoice was skipped — a
+ * silent miss could lose a kindergarten weeks of billing.
+ */
+export interface NotifyEnrollmentFirstInvoiceSkippedInput {
+  kindergartenId: string;
+  enrollmentId: string;
+  childId: string;
+  reason: 'tariff_assignment_not_found';
+  /**
+   * Pre-resolved admin user_ids (NOT staff_member ids — the dispatcher
+   * fans out by user_id). Producer reads these from
+   * `StaffMemberRepository.listByKindergarten({role:'admin', isActive:true})`
+   * before emitting.
+   */
+  recipientUserIds: string[];
+}
+
 export abstract class NotificationPort {
   abstract notifyGuardianPendingApproval(
     event: GuardianPendingApprovalEvent,
@@ -418,5 +440,9 @@ export abstract class NotificationPort {
 
   abstract notifyRefundProcessed(
     event: NotifyRefundProcessedInput,
+  ): Promise<void>;
+
+  abstract notifyEnrollmentFirstInvoiceSkipped(
+    event: NotifyEnrollmentFirstInvoiceSkippedInput,
   ): Promise<void>;
 }

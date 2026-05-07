@@ -8,8 +8,15 @@ import { InvoiceLineItem } from '../../domain/entities/invoice-line-item.entity'
 
 export interface ListInvoicesFilter {
   status?: InvoiceStatus;
-  /** ISO date `YYYY-MM-DD`. Filters `due_date <= dueDate`. */
+  /**
+   * ISO date `YYYY-MM-DD`. Filters `due_date <= dueDateTo`.
+   * Kept as `dueDate` for legacy callers (T11 H2 added `dueDateFrom` as the
+   * matching lower bound; old code that only set `dueDate` continues to mean
+   * "upper bound").
+   */
   dueDate?: string;
+  /** ISO date `YYYY-MM-DD`. Filters `due_date >= dueDateFrom`. */
+  dueDateFrom?: string;
   childId?: string;
   invoiceType?: InvoiceType;
   /** ISO date `YYYY-MM-DD`. Filters `period_start >= periodStart`. */
@@ -63,13 +70,20 @@ export abstract class InvoiceRepository {
   ): Promise<Invoice[]>;
 
   /**
-   * Returns `true` iff the kindergarten already has at least one invoice
-   * whose `period_start` matches the canonical first-of-month date. Used by
-   * the monthly cron to short-circuit when a previous run already generated
-   * invoices for `(kg, periodStart)` — paired with the advisory lock for
-   * defence-in-depth (B7 idempotency pattern).
+   * Returns `true` iff the kindergarten already has at least one
+   * `invoice_type='monthly'` invoice whose `period_start` matches the
+   * canonical first-of-month date. Used by the monthly cron to short-circuit
+   * when a previous run already generated monthly invoices for
+   * `(kg, periodStart)` — paired with the advisory lock for defence-in-depth
+   * (B7 idempotency pattern).
+   *
+   * **Note (T11 C1):** previous to T11 this method matched ANY invoice_type,
+   * which meant a parent prepayment (period_start = first-of-next-month) or
+   * a manual one-off invoice with a same first-of-month period_start could
+   * silently block the entire kg's monthly generation. The filter ensures
+   * only `monthly` rows participate in the short-circuit decision.
    */
-  abstract existsAnyForPeriod(
+  abstract existsMonthlyForPeriod(
     kindergartenId: string,
     periodStart: Date,
   ): Promise<boolean>;

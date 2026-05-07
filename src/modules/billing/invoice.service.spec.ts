@@ -3,6 +3,7 @@ import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { Invoice, InvoiceState } from './domain/entities/invoice.entity';
 import { InvoiceLineItem } from './domain/entities/invoice-line-item.entity';
 import { PaymentAccount } from './domain/entities/payment-account.entity';
+import { Payment, PaymentProvider } from './domain/entities/payment.entity';
 import {
   TariffAssignment,
   TariffAssignmentState,
@@ -31,6 +32,7 @@ import {
 import { InvoiceLineItemRepository } from './infrastructure/persistence/invoice-line-item.repository';
 import { PaymentAccountService } from './payment-account.service';
 import { PaymentAccountRepository } from './infrastructure/persistence/payment-account.repository';
+import { PaymentRepository } from './infrastructure/persistence/payment.repository';
 import {
   CreateTariffAssignmentInput,
   TariffAssignmentRepository,
@@ -96,7 +98,7 @@ class FakeInvoiceRepo extends InvoiceRepository {
     return this.list(kindergartenId, { childId });
   }
 
-  existsAnyForPeriod(
+  existsMonthlyForPeriod(
     kindergartenId: string,
     periodStart: Date,
   ): Promise<boolean> {
@@ -104,6 +106,7 @@ class FakeInvoiceRepo extends InvoiceRepository {
     for (const inv of this.rows.values()) {
       if (
         inv.kindergartenId === kindergartenId &&
+        inv.invoiceType === 'monthly' &&
         inv.periodStart.toISOString().slice(0, 10) === periodKey
       ) {
         return Promise.resolve(true);
@@ -365,6 +368,50 @@ class FakeTariffAssignmentRepo extends TariffAssignmentRepository {
       ),
     );
   }
+  acquireAssignChildAdvisoryLock(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
+class FakePaymentRepo extends PaymentRepository {
+  rows = new Map<string, Payment>();
+
+  acquirePaymentAdvisoryLock(): Promise<void> {
+    return Promise.resolve();
+  }
+  create(payment: Payment): Promise<Payment> {
+    this.rows.set(payment.id, payment);
+    return Promise.resolve(payment);
+  }
+  findById(_kg: string, id: string): Promise<Payment | null> {
+    return Promise.resolve(this.rows.get(id) ?? null);
+  }
+  findByIdempotencyKey(): Promise<Payment | null> {
+    return Promise.resolve(null);
+  }
+  findByInvoiceId(_kg: string, invoiceId: string): Promise<Payment[]> {
+    return Promise.resolve(
+      [...this.rows.values()].filter((p) => p.invoiceId === invoiceId),
+    );
+  }
+  list(): Promise<Payment[]> {
+    return Promise.resolve([...this.rows.values()]);
+  }
+  findByProviderTxnIdCrossTenant(): Promise<Payment | null> {
+    return Promise.resolve(null);
+  }
+  markCompletedConditional(): Promise<Payment | null> {
+    return Promise.resolve(null);
+  }
+  markFailedConditional(): Promise<Payment | null> {
+    return Promise.resolve(null);
+  }
+  markProcessingConditional(): Promise<Payment | null> {
+    return Promise.resolve(null);
+  }
+  markRefundedConditional(): Promise<Payment | null> {
+    return Promise.resolve(null);
+  }
 }
 
 class FakePaymentAccountRepo extends PaymentAccountRepository {
@@ -511,6 +558,7 @@ function buildSvc() {
   const planRepo = new FakeTariffPlanRepo();
   const assignmentRepo = new FakeTariffAssignmentRepo();
   const accountRepo = new FakePaymentAccountRepo();
+  const paymentRepo = new FakePaymentRepo();
   const holidayRepo = new FakeHolidayRepo();
   const clock = new FakeClock(NOW);
   const accountSvc = new PaymentAccountService(accountRepo, clock);
@@ -527,6 +575,7 @@ function buildSvc() {
     holidaySvc,
     notifier,
     clock,
+    paymentRepo,
   );
   return {
     svc,
@@ -535,6 +584,7 @@ function buildSvc() {
     planRepo,
     assignmentRepo,
     accountRepo,
+    paymentRepo,
     holidayRepo,
     discount,
     notifier,
@@ -653,6 +703,59 @@ describe('InvoiceService', () => {
       expect(updated.status).toBe('paid');
       const acc = accountRepo.rows.get(account.id);
       expect(acc?.balance).toBe(50000);
+    });
+
+    it('creates a synthetic Payment row with provider=cash (T11 C3)', async () => {
+      const { svc, invoiceRepo, accountSvc, paymentRepo, notifier } =
+        buildSvc();
+      const account = await accountSvc.ensureForChild(KG, CHILD);
+      const id = 'i-cash';
+      invoiceRepo.rows.set(
+        id,
+        Invoice.fromState({
+          id,
+          kindergartenId: KG,
+          childId: CHILD,
+          paymentAccountId: account.id,
+          tariffPlanId: null,
+          invoiceType: 'monthly',
+          periodStart: new Date('2026-06-01T00:00:00.000Z'),
+          periodEnd: new Date('2026-06-30T00:00:00.000Z'),
+          amountDue: 50000,
+          discountPct: null,
+          discountReason: null,
+          amountAfterDiscount: 50000,
+          status: 'pending',
+          dueDate: new Date('2026-06-10T00:00:00.000Z'),
+          description: null,
+          proratedForDays: null,
+          createdAt: NOW,
+          updatedAt: NOW,
+        }),
+      );
+      const PAYER = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+      await svc.manualMarkPaid(KG, id, {
+        payerUserId: PAYER,
+        note: 'Cash receipt at front desk',
+      });
+
+      const payments = [...paymentRepo.rows.values()];
+      expect(payments).toHaveLength(1);
+      const p = payments[0];
+      expect(p.provider).toBe('cash' as PaymentProvider);
+      expect(p.status).toBe('completed');
+      expect(p.amount).toBe(50000);
+      expect(p.payerUserId).toBe(PAYER);
+      expect(p.idempotencyKey.startsWith(`cash:${id}:`)).toBe(true);
+      expect(p.providerPayload).toMatchObject({
+        note: 'Cash receipt at front desk',
+        marked_by: 'admin_manual',
+      });
+
+      // Both payment.completed AND invoice.paid emitted.
+      const types = notifier.events.map((e) => e.type);
+      expect(types).toContain('payment_completed');
+      expect(types).toContain('invoice_paid');
     });
 
     it('throws InvoiceAlreadyPaidError when already paid', async () => {
@@ -823,7 +926,49 @@ describe('InvoiceService', () => {
       expect(result).toEqual({ generated: 0, skipped: 0 });
     });
 
-    it('idempotent: second call short-circuits via existsAnyForPeriod', async () => {
+    it('does not short-circuit when only a prepayment invoice covers the same period (T11 C1)', async () => {
+      // Closes the T11 CRITICAL #1 finding: a prepayment_3m invoice with
+      // periodStart matching the cron's first-of-month would previously
+      // block monthly generation entirely. Now `existsMonthlyForPeriod`
+      // only counts `invoice_type='monthly'` rows.
+      const { svc, planRepo, assignmentRepo, invoiceRepo, accountSvc } =
+        buildSvc();
+      planRepo.put(TariffPlan.fromState(basePlanState()));
+      assignmentRepo.put(
+        TariffAssignment.fromState(baseAssignmentState({ id: 'ta-a' })),
+      );
+      // Seed a prepayment invoice for the same period_start.
+      const account = await accountSvc.ensureForChild(KG, CHILD);
+      invoiceRepo.rows.set(
+        'i-prep',
+        Invoice.fromState({
+          id: 'i-prep',
+          kindergartenId: KG,
+          childId: CHILD,
+          paymentAccountId: account.id,
+          tariffPlanId: PLAN,
+          invoiceType: 'prepayment_3m',
+          periodStart: PERIOD_START,
+          periodEnd: new Date('2026-08-31T00:00:00.000Z'),
+          amountDue: 150_000,
+          discountPct: 5,
+          discountReason: 'prepay_3m',
+          amountAfterDiscount: 142_500,
+          status: 'pending',
+          dueDate: new Date('2026-06-08T00:00:00.000Z'),
+          description: null,
+          proratedForDays: null,
+          createdAt: NOW,
+          updatedAt: NOW,
+        }),
+      );
+
+      const result = await svc.generateMonthly(KG, PERIOD_START);
+      expect(result.generated).toBe(1); // monthly invoice still emitted
+      expect(result.skipped).toBe(0);
+    });
+
+    it('idempotent: second call short-circuits via existsMonthlyForPeriod', async () => {
       const { svc, planRepo, assignmentRepo, invoiceRepo } = buildSvc();
       planRepo.put(TariffPlan.fromState(basePlanState()));
       assignmentRepo.put(

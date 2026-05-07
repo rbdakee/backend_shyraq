@@ -75,10 +75,8 @@ export class AdminInvoiceController {
     const kgId = requireTenant(t);
     const invoices = await this.service.list(kgId, {
       status: query.status,
-      // Repo filter currently supports only an upper-bound `dueDate`; the
-      // `due_date_from` is accepted by the DTO for forward-compat but
-      // ignored at the service layer until the repo lands range filters.
       dueDate: query.due_date_to,
+      dueDateFrom: query.due_date_from,
       childId: query.child_id,
       invoiceType: query.invoice_type,
       periodStart: query.period_start,

@@ -96,6 +96,7 @@ export class ParentInvoiceController {
       childId,
       status: query.status,
       dueDate: query.due_date_to,
+      dueDateFrom: query.due_date_from,
       invoiceType: query.invoice_type,
       periodStart: query.period_start,
       periodEnd: query.period_end,

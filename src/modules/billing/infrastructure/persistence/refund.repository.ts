@@ -84,4 +84,37 @@ export abstract class RefundRepository {
     providerRef: string | null,
     now: Date,
   ): Promise<Refund | null>;
+
+  /**
+   * Acquires `pg_advisory_xact_lock(hashtext('billing:refund:'||refundId))`.
+   * Released automatically on TX commit / rollback.
+   *
+   * Used by `RefundService.process` BEFORE the provider call to serialise
+   * concurrent admin "process" clicks on the same refund. Without this two
+   * concurrent processes both pass the initial `findById → 'approved'`
+   * check and both call `paymentProvider.refund`, doubling the chargeback
+   * at provider-side for vendors that don't honour our idempotency key.
+   *
+   * MUST be called inside an ambient TX — outside one the lock is
+   * released at the implicit per-statement boundary (no-op).
+   *
+   * Sums by id (not kg + id) because the refund id is itself a UUID —
+   * collisions across tenants are infinitesimal and the kg context is
+   * already enforced by the surrounding RLS scope.
+   */
+  abstract acquireRefundProcessAdvisoryLock(
+    kindergartenId: string,
+    refundId: string,
+  ): Promise<void>;
+
+  /**
+   * Sums `refunds.amount` for the given invoice across rows where
+   * `status='processed'`. Used by `RefundService.process` to decide
+   * whether to flip the invoice to `refunded` (full coverage) or leave
+   * it in `paid`/`partial` with a reduced effective balance.
+   */
+  abstract getProcessedRefundsSumForInvoice(
+    kindergartenId: string,
+    invoiceId: string,
+  ): Promise<number>;
 }

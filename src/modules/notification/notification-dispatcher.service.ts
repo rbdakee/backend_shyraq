@@ -647,6 +647,26 @@ const TEMPLATES: Record<string, EventTemplate> = {
       }),
     };
   },
+
+  // T11 H6 — admin-visible signal that the first invoice was skipped on
+  // enrollment.card_created because no tariff_assignment was configured.
+  'enrollment.first_invoice_skipped': ({ payload }) => ({
+    titleI18n: {
+      ru: 'Не выставлен первый счёт',
+      kk: 'Алғашқы шот құрылмады',
+      en: 'First invoice was not generated',
+    },
+    bodyI18n: {
+      ru: 'Не настроен тариф для ребёнка — назначьте тариф и пересчитайте счёт.',
+      kk: 'Балаға тариф тағайындалмаған — тарифті бекітіп, шотты қайта есептеңіз.',
+      en: 'No tariff is configured for the child — assign a tariff and re-issue the invoice.',
+    },
+    data: stringMap({
+      enrollmentId: payload.enrollmentId,
+      childId: payload.childId,
+      reason: payload.reason,
+    }),
+  }),
 };
 
 const RECIPIENT_RESOLVERS: Record<string, RecipientResolver> = {
@@ -703,6 +723,9 @@ const RECIPIENT_RESOLVERS: Record<string, RecipientResolver> = {
   'payment.failed': resolveByChildGuardians,
   'payment.refunded': resolveByChildGuardians,
   'refund.processed': resolveByChildGuardians,
+  // T11 H6 — recipients are pre-resolved by the producer (kg admin
+  // user_ids); the dispatcher reads the array verbatim from the payload.
+  'enrollment.first_invoice_skipped': resolveRecipientUserIdsFromPayload,
 };
 
 async function resolveByChildGuardians(
@@ -795,6 +818,26 @@ function resolveSelfFromField(fieldName: string): RecipientResolver {
     const userId = stringField(event.payload, fieldName);
     return Promise.resolve({ userIds: [userId], nannyUserIds: new Set() });
   };
+}
+
+/**
+ * Recipient resolver for events whose payload already names the target
+ * user_ids array (T11 H6 `enrollment.first_invoice_skipped`). The producer
+ * is expected to pre-resolve the list — typically kg admins from
+ * `StaffMemberRepository` — so the dispatcher does not pull in
+ * `StaffMemberRepository` (avoids notification ↔ staff module cycle).
+ */
+function resolveRecipientUserIdsFromPayload(
+  event: OutboxEvent,
+): Promise<ResolvedRecipients> {
+  const raw = event.payload.recipientUserIds;
+  const ids = Array.isArray(raw)
+    ? raw.filter((v): v is string => typeof v === 'string' && v.length > 0)
+    : [];
+  return Promise.resolve({
+    userIds: Array.from(new Set(ids)),
+    nannyUserIds: new Set(),
+  });
 }
 
 /**

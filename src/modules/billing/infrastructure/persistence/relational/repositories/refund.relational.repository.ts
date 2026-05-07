@@ -138,6 +138,34 @@ export class RefundRelationalRepository extends RefundRepository {
     });
   }
 
+  async acquireRefundProcessAdvisoryLock(
+    kindergartenId: string,
+    refundId: string,
+  ): Promise<void> {
+    const scope = `billing:refund:${kindergartenId}:${refundId}`;
+    await this.manager().query(
+      `SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`,
+      [scope],
+    );
+  }
+
+  async getProcessedRefundsSumForInvoice(
+    kindergartenId: string,
+    invoiceId: string,
+  ): Promise<number> {
+    const m = this.manager();
+    const result = await m.query(
+      `SELECT COALESCE(SUM(amount), 0)::text AS sum
+         FROM refunds
+        WHERE kindergarten_id = $1
+          AND invoice_id = $2
+          AND status = 'processed'`,
+      [kindergartenId, invoiceId],
+    );
+    const sum = result?.[0]?.sum ?? '0';
+    return Number(sum);
+  }
+
   /**
    * Conditional UPDATE: applies `patch` only if current row status is one
    * of `expected`. Returns the hydrated domain on success or `null` when

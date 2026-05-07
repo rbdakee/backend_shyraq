@@ -155,5 +155,41 @@ describe('MockPaymentProvider', () => {
       });
       expect(a.providerRefundId).not.toBe(b.providerRefundId);
     });
+
+    it('returns the same providerRefundId on duplicate idempotency key (T11 H1)', async () => {
+      const a = await adapter.refund({
+        providerPaymentId: 'mock_abc_0123456789abcdef',
+        amountKzt: 50000,
+        reason: 'r',
+        idempotencyKey: 'refund-dup',
+      });
+      const b = await adapter.refund({
+        providerPaymentId: 'mock_abc_0123456789abcdef',
+        amountKzt: 50000,
+        reason: 'r',
+        idempotencyKey: 'refund-dup',
+      });
+      expect(b.providerRefundId).toBe(a.providerRefundId);
+    });
+  });
+
+  describe('createPayment idempotency (T11 H1)', () => {
+    it('returns the same providerPaymentId on duplicate idempotency key', async () => {
+      const a = await adapter.createPayment({
+        invoiceId: INVOICE_ID,
+        amountKzt: 50000,
+        currency: 'KZT',
+        returnUrl: 'https://app.shyraq.local/return',
+        idempotencyKey: 'create-dup',
+      });
+      const b = await adapter.createPayment({
+        invoiceId: INVOICE_ID,
+        amountKzt: 50000,
+        currency: 'KZT',
+        returnUrl: 'https://app.shyraq.local/return',
+        idempotencyKey: 'create-dup',
+      });
+      expect(b.providerPaymentId).toBe(a.providerPaymentId);
+    });
   });
 });
