@@ -229,6 +229,9 @@ export class CustomDiscountRelationalRepository extends CustomDiscountRepository
         vuf: filter.validUntilFrom,
       });
     }
+    if (filter.targetType !== undefined) {
+      qb.andWhere('cd.target_type = :tt', { tt: filter.targetType });
+    }
 
     qb.orderBy('cd.created_at', 'DESC')
       .addOrderBy('cd.id', 'DESC')
@@ -331,6 +334,19 @@ export class CustomDiscountRelationalRepository extends CustomDiscountRepository
   ): Promise<void> {
     const m = this.manager(manager);
     const scope = `discount:activation:${kindergartenId}:${id}`;
+    await m.query(`SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`, [
+      scope,
+    ]);
+  }
+
+  async acquireDiscountApplyAdvisoryLock(
+    kindergartenId: string,
+    customDiscountId: string,
+    childId: string,
+    manager?: EntityManager,
+  ): Promise<void> {
+    const m = this.manager(manager);
+    const scope = `discount:apply:${kindergartenId}:${childId}:${customDiscountId}`;
     await m.query(`SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`, [
       scope,
     ]);

@@ -75,6 +75,8 @@ export interface ListCustomDiscountsFilter {
   validFromTo?: Date;
   /** ISO date — filters `valid_until >= validUntilFrom OR valid_until IS NULL`. */
   validUntilFrom?: Date;
+  /** B16 T8 M2 — filter by targeting mode (`all`/`groups`/`children`/...). */
+  targetType?: CustomDiscountTargetType;
 }
 
 /**
@@ -213,6 +215,29 @@ export abstract class CustomDiscountRepository {
   abstract acquireDiscountActivationAdvisoryLock(
     kindergartenId: string,
     id: string,
+    manager?: EntityManager,
+  ): Promise<void>;
+
+  /**
+   * `pg_advisory_xact_lock(hashtext('discount:apply:' || $kg || ':' || $childId || ':' || $id))`.
+   *
+   * Acquired by `InvoiceService.buildCustomDiscountInputs` BEFORE the
+   * `max_uses_per_child` COUNT so two concurrent invoice flows for the
+   * same `(child, custom_discount)` pair serialise. Without this lock,
+   * both flows could pass the COUNT, both pass eligibility, both write
+   * application rows + bump `used_count` — exceeding the per-child cap.
+   *
+   * Released automatically on TX commit / rollback. Caller MUST be
+   * inside an ambient TX (HTTP request handler under
+   * `TenantContextInterceptor` or cron-side `dataSource.transaction`).
+   * Outside any ambient TX the lock acquires + releases on the same
+   * statement and provides no serialisation — by design, since billing
+   * mutations always run inside a TX.
+   */
+  abstract acquireDiscountApplyAdvisoryLock(
+    kindergartenId: string,
+    customDiscountId: string,
+    childId: string,
     manager?: EntityManager,
   ): Promise<void>;
 }

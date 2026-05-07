@@ -655,23 +655,29 @@ const TEMPLATES: Record<string, EventTemplate> = {
   // role excluded by the resolver query). When the admin configured an
   // i18n title/body in the catalogue, the template uses those verbatim;
   // otherwise it falls back to a generic copy keyed by discountName.
+  //
+  // T8 L3: align with the B16 DTO + DBML SoT — admins write Kazakh under
+  // the `kz` key (not `kk`). Read both with `kz` preferred so admins
+  // who hand-fixed legacy `kk` rows aren't broken. Other event templates
+  // still use `kk` and will be swept in B22 polish.
   'discount.activated': ({ payload }) => {
     const tInline = payload.notificationTitle as Record<string, string> | null;
     const bInline = payload.notificationBody as Record<string, string> | null;
     const nameMap = (payload.discountName ?? {}) as Record<string, string>;
     const fallbackName =
       asNonEmptyString(nameMap.ru) ??
+      asNonEmptyString(nameMap.kz) ??
       asNonEmptyString(nameMap.kk) ??
       asNonEmptyString(nameMap.en) ??
       'скидка';
     const titleI18n = tInline ?? {
       ru: 'Новая скидка доступна',
-      kk: 'Жаңа жеңілдік қолжетімді',
+      kz: 'Жаңа жеңілдік қолжетімді',
       en: 'New discount available',
     };
     const bodyI18n = bInline ?? {
       ru: `Скидка «${fallbackName}» теперь доступна для вашего ребёнка.`,
-      kk: `«${fallbackName}» жеңілдігі сіздің балаңызға қолжетімді.`,
+      kz: `«${fallbackName}» жеңілдігі сіздің балаңызға қолжетімді.`,
       en: `Discount "${fallbackName}" is now available for your child.`,
     };
     return {

@@ -4,6 +4,7 @@ import {
   IsArray,
   IsBoolean,
   IsDateString,
+  IsDefined,
   IsEnum,
   IsInt,
   IsNotEmpty,
@@ -13,6 +14,7 @@ import {
   IsUUID,
   Max,
   Min,
+  ValidateIf,
   ValidateNested,
 } from 'class-validator';
 import type {
@@ -227,11 +229,23 @@ export class CreateCustomDiscountDto {
   @ApiProperty({
     example: { ru: 'Для вашего ребёнка скидка!', kz: 'Балаңызға жеңілдік!' },
     description:
-      'Localised push title. Required when `notify_on_activation=true` to actually send.',
+      'Localised push title. **REQUIRED when `notify_on_activation=true` (defaults to true)**. Missing → 422 UnprocessableEntity with `errors.notification_title`. T8 M3 closes the silent no-op where the activation flow used to log+skip when title/body were absent.',
     required: false,
     nullable: true,
   })
-  @IsOptional()
+  // T8 M3: enforce cross-field invariant `notify_on_activation=true →
+  // title required`. The `@ValidateIf` predicate fires the chained
+  // validators ONLY when notify is on (default true): in that path the
+  // field must be present (`@IsDefined`) and non-null/non-empty
+  // (`@IsNotEmpty`). When notify=false, the predicate returns false and
+  // class-validator skips subsequent rules entirely → the field stays
+  // optional. Returns 400 with `notification_title` in violations.
+  @ValidateIf(
+    (o: CreateCustomDiscountDto) =>
+      o.notify_on_activation === undefined || o.notify_on_activation === true,
+  )
+  @IsDefined()
+  @IsNotEmpty()
   @ValidateNested()
   @Type(() => I18nFieldDto)
   notification_title?: I18nFieldDto | null;
@@ -241,11 +255,17 @@ export class CreateCustomDiscountDto {
       ru: 'Скидка 15% действует с 1 по 10 марта',
       kz: '15% жеңілдік 1-10 наурыз аралығында',
     },
-    description: 'Localised push body.',
+    description:
+      'Localised push body. **REQUIRED when `notify_on_activation=true`** (paired with `notification_title`).',
     required: false,
     nullable: true,
   })
-  @IsOptional()
+  @ValidateIf(
+    (o: CreateCustomDiscountDto) =>
+      o.notify_on_activation === undefined || o.notify_on_activation === true,
+  )
+  @IsDefined()
+  @IsNotEmpty()
   @ValidateNested()
   @Type(() => I18nFieldDto)
   notification_body?: I18nFieldDto | null;

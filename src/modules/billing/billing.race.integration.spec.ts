@@ -85,6 +85,7 @@ class ZeroDiscountEngine extends DiscountEnginePort {
       discountReason: null,
       appliedRules: [],
       customApplicationsToWrite: [],
+      customDiscountAmount: null,
     });
   }
 }

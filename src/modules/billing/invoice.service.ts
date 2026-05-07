@@ -779,6 +779,7 @@ export class InvoiceService {
     const amountAfter = Invoice.computeAmountAfterDiscount(
       baseAmount,
       discount.discountPct,
+      discount.customDiscountAmount,
     );
 
     const account = await this.paymentAccounts.ensureForChild(
@@ -906,6 +907,7 @@ export class InvoiceService {
     let amountAfter = Invoice.computeAmountAfterDiscount(
       baseAmount,
       discount.discountPct,
+      discount.customDiscountAmount,
     );
 
     let proratedForDays: number | null = null;
@@ -1045,12 +1047,27 @@ export class InvoiceService {
     );
 
     // Step 3+4 — capacity guards (total_max_uses + per-child cap).
+    //
+    // T8 H1: serialise concurrent invoice flows for the same (child, discount)
+    // pair via `pg_advisory_xact_lock(hashtext('discount:apply:'||kg||':'||
+    // childId||':'||discountId))` BEFORE the per-child COUNT. Without this,
+    // two flows could both pass the COUNT, both be deemed eligible, and
+    // both write `custom_discount_applications` rows — exceeding
+    // `max_uses_per_child`. The lock is held for the duration of the
+    // ambient TX (HTTP-edge interceptor / cron `dataSource.transaction`)
+    // and released at COMMIT/ROLLBACK. Acquired ONLY for discounts with a
+    // per-child cap (cap=null = no contention to serialise).
     const eligible: CustomDiscountSnapshot[] = [];
     for (const snap of targeted) {
       if (snap.totalMaxUses !== null && snap.usedCount >= snap.totalMaxUses) {
         continue;
       }
       if (snap.maxUsesPerChild !== null) {
+        await this.customDiscounts.acquireDiscountApplyAdvisoryLock(
+          kindergartenId,
+          snap.id,
+          childId,
+        );
         const used =
           await this.customDiscountApplications.countByChildAndDiscount(
             kindergartenId,

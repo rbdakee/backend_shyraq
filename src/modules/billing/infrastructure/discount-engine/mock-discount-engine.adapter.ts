@@ -43,18 +43,27 @@ interface AppliedCustom {
  *     are filtered out. Defensive log+skip if the AST throws (should be
  *     unreachable post-validateConditionsSchema).
  *   - Sort matched custom discounts by `priority DESC, createdAt ASC`.
- *   - Stacking: if ANY matched custom discount has `stackable=false`,
- *     ONLY the highest-priority match is kept (B16 simplification — see
- *     T3 §E decision note). Otherwise all matched custom discounts
- *     stack additively.
+ *   - Stacking (T8 H3 — corrected from T3 §E):
+ *       * Sort by priority DESC, createdAt ASC.
+ *       * If the FIRST (highest-priority) match is non-stackable, ONLY
+ *         that one applies. (Top non-stackable wins outright.)
+ *       * Otherwise (top is stackable), apply the contiguous stackable
+ *         prefix. Stop at the first non-stackable encountered.
+ *         Justification: a non-stackable mid-list acts as a gate — once
+ *         hit, no further stacking — but higher-priority stackables that
+ *         came before still apply (they "won" by priority).
  *   - Amount calculation: `percentage` → `amountDue * (amount/100)`;
  *     `fixed_amount` → `min(amount, remaining)` where `remaining =
  *     amountDue - alreadyStackedKzt`. Total cap = `amountDue`.
  *   - Returns `customApplicationsToWrite` so the service can persist the
  *     `custom_discount_applications` ledger rows.
- *   - Combined output `discountPct` is computed as the equivalent
- *     percentage of the total custom-amount KZT against `amountDue`,
- *     stacked on top of any B13 sibling/prepay percentage.
+ *   - T8 SO-1 fix: returns absolute `customDiscountAmount` (KZT) so
+ *     downstream `Invoice.computeAmountAfterDiscount` can subtract the
+ *     EXACT amount instead of round-tripping through a 2dp percentage
+ *     (which loses precision on non-divisible totals like 3333/100000 →
+ *     3.33% → 3330 ≠ 3333). The combined `discountPct` is still emitted
+ *     for B13 backward-compat (presenter/audit trail), but the line-item
+ *     amount derives from the absolute total.
  *
  * Targeting + per-child max-uses + total_max_uses caps are enforced
  * UPSTREAM in `InvoiceService` (passed-in snapshots are pre-filtered).
@@ -122,6 +131,7 @@ export class MockDiscountEngine extends DiscountEnginePort {
         discountReason: null,
         appliedRules: [],
         customApplicationsToWrite: [],
+        customDiscountAmount: null,
       };
     }
 
@@ -163,6 +173,11 @@ export class MockDiscountEngine extends DiscountEnginePort {
         amountApplied: c.amountApplied,
         reason: c.reason,
       })),
+      // T8 SO-1: keep the precise KZT total so the invoice line item
+      // subtracts the exact amount (3333 not 3330). `null` when only
+      // sibling/prepay basic-rules contributed — caller falls back to
+      // discountPct (the B13 path).
+      customDiscountAmount: customKzt > 0 ? customKzt : null,
     };
     this.logger.debug(
       `[MockDiscount] invoice=${input.invoice.invoiceId} → ${out.discountPct ?? 'null'}% (${
@@ -218,11 +233,30 @@ export class MockDiscountEngine extends DiscountEnginePort {
       return a.createdAt.getTime() - b.createdAt.getTime();
     });
 
-    // B16 simplified stacking rule (T3 §E): if any match has
-    // stackable=false, ONLY the highest-priority match is applied
-    // (single winner). Otherwise all matches stack.
-    const hasNonStackable = sorted.some((s) => !s.stackable);
-    const winners = hasNonStackable ? [sorted[0]] : sorted;
+    // B16 stacking rule (T8 H3 — corrected from T3 §E):
+    //   * If the TOP (highest-priority) match is non-stackable, ONLY
+    //     that one applies — full block on stacking.
+    //   * Otherwise (top is stackable), take the contiguous stackable
+    //     prefix. Stop at the first non-stackable encountered (it acts
+    //     as a gate — higher-priority stackables before it still apply,
+    //     since they "won" by priority).
+    //
+    // Examples on `[A, B, C]` sorted high→low priority:
+    //   A=NS              → winners=[A]
+    //   A=S, B=NS, C=S    → winners=[A]  (gate at B; C trimmed)
+    //   A=S, B=S, C=NS    → winners=[A, B]
+    //   A=S, B=S, C=S     → winners=[A, B, C]
+    //   A=NS, B=NS, C=NS  → winners=[A]
+    let winners: CustomDiscountSnapshot[];
+    if (!sorted[0].stackable) {
+      winners = [sorted[0]];
+    } else {
+      winners = [];
+      for (const s of sorted) {
+        if (!s.stackable) break;
+        winners.push(s);
+      }
+    }
 
     const applied: AppliedCustom[] = [];
     let alreadyStacked = 0;

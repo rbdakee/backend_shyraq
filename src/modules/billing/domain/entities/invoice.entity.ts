@@ -240,14 +240,30 @@ export class Invoice {
   // ── pure helper ────────────────────────────────────────────────────────
 
   /**
-   * Canonical formula for `amount_after_discount`. Returned value is
-   * rounded to 2 decimal places. `null` or `0` discountPct returns
-   * `amountDue` unchanged.
+   * Canonical formula for `amount_after_discount`.
+   *
+   * B16 T8 SO-1: prefers `absoluteDiscountKzt` when present (B16 custom
+   * discounts emit absolute KZT amounts that are NOT representable as a
+   * 2dp percentage — e.g. 3333 KZT off 100000 → 3.333% → rounds to 3.33%
+   * → 3330 ≠ 3333). When `absoluteDiscountKzt` is null/0 the formula
+   * falls back to the B13 percentage path.
+   *
+   * Returned value is rounded to 2 decimal places. `null` or `0` discount
+   * input returns `amountDue` unchanged.
    */
   static computeAmountAfterDiscount(
     amountDue: number,
     discountPct: number | null,
+    absoluteDiscountKzt: number | null = null,
   ): number {
+    if (
+      absoluteDiscountKzt !== null &&
+      absoluteDiscountKzt > 0 &&
+      amountDue > 0
+    ) {
+      const after = amountDue - absoluteDiscountKzt;
+      return roundKzt(after > 0 ? after : 0);
+    }
     if (discountPct === null || discountPct === 0) {
       return amountDue;
     }

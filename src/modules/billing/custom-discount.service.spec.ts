@@ -154,11 +154,14 @@ class FakeCustomDiscountRepo extends CustomDiscountRepository {
 
   list(
     kindergartenId: string,
-    _filter: ListCustomDiscountsFilter,
+    filter: ListCustomDiscountsFilter,
     pagination: CustomDiscountPageRequest,
   ): Promise<{ rows: CustomDiscount[]; total: number }> {
     const all = [...this.rows.values()].filter(
-      (d) => d.kindergartenId === kindergartenId,
+      (d) =>
+        d.kindergartenId === kindergartenId &&
+        (filter.status === undefined || d.status === filter.status) &&
+        (filter.targetType === undefined || d.targetType === filter.targetType),
     );
     const total = all.length;
     const rows = all.slice(
@@ -250,6 +253,14 @@ class FakeCustomDiscountRepo extends CustomDiscountRepository {
     id: string,
   ): Promise<void> {
     this.activationLockCalls.push({ kgId: kindergartenId, id });
+    return Promise.resolve();
+  }
+
+  acquireDiscountApplyAdvisoryLock(
+    _kindergartenId: string,
+    _customDiscountId: string,
+    _childId: string,
+  ): Promise<void> {
     return Promise.resolve();
   }
 }
@@ -623,6 +634,35 @@ describe('CustomDiscountService', () => {
       const result = await svc.list(KG, {}, { limit: 10, offset: 0 });
       expect(result.total).toBe(2);
       expect(result.rows.every((d) => d.kindergartenId === KG)).toBe(true);
+    });
+
+    // T8 M2 — target_type filter wired through repo.
+    it('list filters by targetType when supplied', async () => {
+      const { svc } = buildSvc();
+      await svc.create(KG, { ...VALID_INPUT, targetType: 'all' }, 'staff-1');
+      await svc.create(
+        KG,
+        {
+          ...VALID_INPUT,
+          targetType: 'children',
+          targetIds: ['00000000-0000-0000-0000-000000000111'],
+        },
+        'staff-1',
+      );
+      const allOnly = await svc.list(
+        KG,
+        { targetType: 'all' },
+        { limit: 10, offset: 0 },
+      );
+      expect(allOnly.total).toBe(1);
+      expect(allOnly.rows[0].targetType).toBe('all');
+      const childrenOnly = await svc.list(
+        KG,
+        { targetType: 'children' },
+        { limit: 10, offset: 0 },
+      );
+      expect(childrenOnly.total).toBe(1);
+      expect(childrenOnly.rows[0].targetType).toBe('children');
     });
 
     it('getById returns the discount + stats', async () => {

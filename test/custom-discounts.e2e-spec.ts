@@ -1220,6 +1220,56 @@ describe('B16 Custom Discounts (e2e)', () => {
     });
   });
 
+  // ── Scenario O: M3 — DTO requires title/body when notify_on_activation=true ──
+
+  describe('Scenario O: notify_on_activation=true requires notification_title + body', () => {
+    it('returns 422 when notify_on_activation=true but notification_title is missing', async () => {
+      const a = await createKgWithAdmin('disc-m3-a', '+77030100201');
+      const res = await request(server)
+        .post('/api/v1/admin/custom-discounts')
+        .set('Authorization', `Bearer ${a.adminToken}`)
+        .send(
+          baseDiscountBody({
+            notify_on_activation: true,
+            // notification_title omitted on purpose
+            notification_body: { ru: 'Body', kz: 'Дене' },
+          }),
+        );
+      // Global ValidationPipe maps DTO errors → 422 (UnprocessableEntity).
+      expect(res.status).toBe(422);
+      expect(res.body.errors).toHaveProperty('notification_title');
+    });
+
+    it('returns 422 when notify_on_activation=true but notification_body is missing', async () => {
+      const a = await createKgWithAdmin('disc-m3-b', '+77030100202');
+      const res = await request(server)
+        .post('/api/v1/admin/custom-discounts')
+        .set('Authorization', `Bearer ${a.adminToken}`)
+        .send(
+          baseDiscountBody({
+            notify_on_activation: true,
+            notification_title: { ru: 'Title', kz: 'Тақырып' },
+            // notification_body omitted on purpose
+          }),
+        );
+      expect(res.status).toBe(422);
+      expect(res.body.errors).toHaveProperty('notification_body');
+    });
+
+    it('accepts notify_on_activation=false without title/body', async () => {
+      const a = await createKgWithAdmin('disc-m3-c', '+77030100203');
+      const res = await request(server)
+        .post('/api/v1/admin/custom-discounts')
+        .set('Authorization', `Bearer ${a.adminToken}`)
+        .send(
+          baseDiscountBody({
+            notify_on_activation: false,
+          }),
+        );
+      expect(res.status).toBe(201);
+    });
+  });
+
   // ── Extra: List with status filter ────────────────────────────────────────
 
   describe('Extra: List custom discounts with status filter', () => {

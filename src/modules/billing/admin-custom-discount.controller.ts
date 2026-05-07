@@ -108,13 +108,9 @@ export class AdminCustomDiscountController {
       validUntilFrom: query.valid_until_from
         ? new Date(query.valid_until_from)
         : undefined,
+      // T8 M2 — target_type now wired through to repo's WHERE clause.
+      targetType: query.target_type,
     };
-    if (query.target_type !== undefined) {
-      // target_type is not in ListCustomDiscountsFilter — service.list accepts
-      // it as part of filter. For B16 the filter shape covers status + validity
-      // window only; target_type filtering is a future extension deferred to
-      // B22. For now, pass through without error.
-    }
     const pagination: CustomDiscountPageRequest = {
       limit,
       offset: (page - 1) * limit,

@@ -499,6 +499,7 @@ class FakeDiscountEngine extends DiscountEnginePort {
     discountReason: null,
     appliedRules: [],
     customApplicationsToWrite: [],
+    customDiscountAmount: null,
   };
   lastInput: DiscountEvaluationInput | null = null;
   evaluate(input: DiscountEvaluationInput): Promise<DiscountEvaluationResult> {
@@ -995,6 +996,7 @@ describe('InvoiceService', () => {
         discountReason: 'sibling_discount',
         appliedRules: ['sibling'],
         customApplicationsToWrite: [],
+        customDiscountAmount: null,
       };
       await svc.generateMonthly(KG, PERIOD_START);
       const inv = [...invoiceRepo.rows.values()][0];

@@ -1376,6 +1376,41 @@ describe('NotificationDispatcher', () => {
     );
   });
 
+  // ── B16 T8 L3 — `discount.activated` reads `kz` (not legacy `kk`) ──────
+  describe('discount.activated template (T8 L3)', () => {
+    function render(payload: Record<string, unknown>) {
+      const template = EVENT_TEMPLATES['discount.activated'];
+      // Cast through unknown to satisfy the TemplateContext shape — the
+      // template only reads `payload`. Sentinel/pseudo-context is fine.
+      return template({
+        payload: payload as never,
+      } as never);
+    }
+
+    it('falls back to nameMap.kz before legacy nameMap.kk for the Kazakh greeting', () => {
+      const out = render({
+        discountId: 'd-1',
+        notificationTitle: null,
+        notificationBody: null,
+        discountName: { kz: 'Жаңа жеңілдік', kk: 'OLD KK' },
+      });
+      // The fallback Kazakh body should reference the kz value, not kk.
+      expect(out.bodyI18n.kz).toContain('Жаңа жеңілдік');
+      expect(out.bodyI18n.kz).not.toContain('OLD KK');
+    });
+
+    it('emits the fallback Kazakh title under `kz` (not `kk`)', () => {
+      const out = render({
+        discountId: 'd-1',
+        notificationTitle: null,
+        notificationBody: null,
+        discountName: { ru: 'Скидка' },
+      });
+      expect(out.titleI18n.kz).toBe('Жаңа жеңілдік қолжетімді');
+      expect(out.titleI18n.kk).toBeUndefined();
+    });
+  });
+
   // ── HIGH#2 SavepointRollback contract ──────────────────────────────────
 
   describe('SavepointRollback', () => {

@@ -132,6 +132,16 @@ export interface DiscountEvaluationResult {
     /** Discount name (ru fallback) — stored in line-item description for audit. */
     reason: string;
   }>;
+  /**
+   * B16 T8 SO-1 — absolute KZT total of stacked custom-discount amounts.
+   * `Invoice.computeAmountAfterDiscount` PREFERS this absolute value over
+   * the round-tripped `discountPct` so percentage-bearing custom amounts
+   * (e.g. fixed_amount = 3333 KZT on a 100000 invoice) survive without
+   * rounding loss (3333 → 3.33% → 3330 lossy round trip). When `null`
+   * (only sibling/prepay percentage rules matched), callers fall back to
+   * `discountPct` exactly as in B13.
+   */
+  customDiscountAmount: number | null;
 }
 
 export abstract class DiscountEnginePort {

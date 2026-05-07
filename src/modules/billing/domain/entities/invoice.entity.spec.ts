@@ -54,6 +54,30 @@ describe('Invoice domain entity', () => {
     it('handles 100 percent discount as zero', () => {
       expect(Invoice.computeAmountAfterDiscount(100_000, 100)).toBe(0);
     });
+
+    // ── B16 T8 SO-1 — absolute KZT amount precision ────────────────────────
+    it('subtracts absoluteDiscountKzt exactly when present (3333 KZT off 100000)', () => {
+      // Without the absolute path: 3333/100000*100 = 3.333% → rounds to 3.33%
+      // → 100000*(100-3.33)/100 = 96670, lossy.
+      expect(Invoice.computeAmountAfterDiscount(100_000, 3.33, 3333)).toBe(
+        96_667,
+      );
+    });
+
+    it('absolute path beats discountPct when both supplied', () => {
+      // amount-after = 100000 - 1500 = 98500 (NOT 100000*0.95 = 95000)
+      expect(Invoice.computeAmountAfterDiscount(100_000, 5, 1500)).toBe(98_500);
+    });
+
+    it('falls back to percentage path when absoluteDiscountKzt is null', () => {
+      expect(Invoice.computeAmountAfterDiscount(100_000, 10, null)).toBe(
+        90_000,
+      );
+    });
+
+    it('clamps absolute discount that exceeds amountDue to zero', () => {
+      expect(Invoice.computeAmountAfterDiscount(1_000, null, 5_000)).toBe(0);
+    });
   });
 
   // ── predicates ─────────────────────────────────────────────────────────

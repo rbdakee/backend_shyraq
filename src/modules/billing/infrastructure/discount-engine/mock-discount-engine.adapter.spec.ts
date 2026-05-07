@@ -1,4 +1,7 @@
-import { DiscountEvaluationInput } from './discount-engine.port';
+import {
+  CustomDiscountSnapshot,
+  DiscountEvaluationInput,
+} from './discount-engine.port';
 import { MockDiscountEngine } from './mock-discount-engine.adapter';
 
 const KG = '11111111-1111-1111-1111-111111111111';
@@ -47,6 +50,7 @@ describe('MockDiscountEngine', () => {
       discountReason: null,
       appliedRules: [],
       customApplicationsToWrite: [],
+      customDiscountAmount: null,
     });
   });
 
@@ -62,6 +66,7 @@ describe('MockDiscountEngine', () => {
       discountReason: 'sibling_discount',
       appliedRules: ['sibling'],
       customApplicationsToWrite: [],
+      customDiscountAmount: null,
     });
   });
 
@@ -89,6 +94,7 @@ describe('MockDiscountEngine', () => {
       discountReason: 'prepay_12m',
       appliedRules: ['prepay_12m'],
       customApplicationsToWrite: [],
+      customDiscountAmount: null,
     });
   });
 
@@ -129,6 +135,7 @@ describe('MockDiscountEngine', () => {
       discountReason: null,
       appliedRules: [],
       customApplicationsToWrite: [],
+      customDiscountAmount: null,
     });
   });
 
@@ -140,5 +147,216 @@ describe('MockDiscountEngine', () => {
       }),
     );
     expect(result.discountPct).toBeNull();
+  });
+
+  // ── B16 T8 H3 — corrected stacking semantics ────────────────────────────
+  //
+  // Rule: sort by priority DESC. If TOP is non-stackable → only top.
+  // Otherwise apply contiguous stackable prefix (gate at first non-stackable).
+  describe('custom-discount stacking (H3)', () => {
+    function snap(
+      id: string,
+      priority: number,
+      stackable: boolean,
+      amount = 10,
+      type: 'percentage' | 'fixed_amount' = 'percentage',
+    ): CustomDiscountSnapshot {
+      return {
+        id,
+        name: { ru: id },
+        discountType: type,
+        amount,
+        conditions: {} as never,
+        targetType: 'all',
+        targetIds: null,
+        priority,
+        stackable,
+        maxUsesPerChild: null,
+        totalMaxUses: null,
+        usedCount: 0,
+        createdAt: new Date('2026-01-01T00:00:00.000Z'),
+      };
+    }
+
+    const evalCtx = {
+      childContext: {
+        birthDate: new Date('2022-01-01'),
+        ageInMonths: 48,
+        currentGroupId: null,
+        benefitCategory: null,
+      },
+      familyContext: { siblingsInKgCount: 1, isFirstInvoiceForChild: false },
+    };
+
+    it('top non-stackable wins outright (NS at top)', async () => {
+      const result = await engine.evaluate(
+        input({
+          context: {
+            ...evalCtx,
+            customDiscounts: [
+              snap('A', 200, false, 10), // top, NS
+              snap('B', 100, true, 5),
+              snap('C', 50, true, 5),
+            ],
+          },
+        }),
+      );
+      expect(
+        result.customApplicationsToWrite.map((a) => a.customDiscountId),
+      ).toEqual(['A']);
+    });
+
+    it('NS in the middle gates further stacking — prefix of stackables wins', async () => {
+      const result = await engine.evaluate(
+        input({
+          context: {
+            ...evalCtx,
+            customDiscounts: [
+              snap('A', 200, true, 5),
+              snap('B', 150, true, 3),
+              snap('C', 100, false, 2), // gate
+              snap('D', 50, true, 5), // never reached
+            ],
+          },
+        }),
+      );
+      const ids = result.customApplicationsToWrite.map(
+        (a) => a.customDiscountId,
+      );
+      expect(ids).toEqual(['A', 'B']);
+    });
+
+    it('NS at bottom — all stackables before it apply', async () => {
+      const result = await engine.evaluate(
+        input({
+          context: {
+            ...evalCtx,
+            customDiscounts: [
+              snap('A', 200, true, 5),
+              snap('B', 150, true, 3),
+              snap('C', 100, false, 2),
+            ],
+          },
+        }),
+      );
+      const ids = result.customApplicationsToWrite.map(
+        (a) => a.customDiscountId,
+      );
+      expect(ids).toEqual(['A', 'B']);
+    });
+
+    it('all stackable — full stack', async () => {
+      const result = await engine.evaluate(
+        input({
+          context: {
+            ...evalCtx,
+            customDiscounts: [
+              snap('A', 200, true, 5),
+              snap('B', 150, true, 3),
+              snap('C', 100, true, 2),
+            ],
+          },
+        }),
+      );
+      const ids = result.customApplicationsToWrite.map(
+        (a) => a.customDiscountId,
+      );
+      expect(ids).toEqual(['A', 'B', 'C']);
+    });
+
+    it('all non-stackable — only top wins', async () => {
+      const result = await engine.evaluate(
+        input({
+          context: {
+            ...evalCtx,
+            customDiscounts: [
+              snap('A', 200, false, 5),
+              snap('B', 150, false, 3),
+              snap('C', 100, false, 2),
+            ],
+          },
+        }),
+      );
+      const ids = result.customApplicationsToWrite.map(
+        (a) => a.customDiscountId,
+      );
+      expect(ids).toEqual(['A']);
+    });
+  });
+
+  // ── B16 T8 SO-1 — custom discount AMOUNT precision ─────────────────────
+  //
+  // Bug: 3333 KZT custom discount on 100000 invoice. Engine emits
+  // discountPct = round((3333 / 100000) * 100, 2) = 3.33%. Then
+  // computeAmountAfterDiscount(100000, 3.33) = 96670 → discount = 3330,
+  // not 3333. Fix carries `customDiscountAmount` absolute KZT through.
+  describe('customDiscountAmount precision (SO-1)', () => {
+    const evalCtx = {
+      childContext: {
+        birthDate: new Date('2022-01-01'),
+        ageInMonths: 48,
+        currentGroupId: null,
+        benefitCategory: null,
+      },
+      familyContext: { siblingsInKgCount: 1, isFirstInvoiceForChild: false },
+    };
+
+    function fxSnap(amount: number): CustomDiscountSnapshot {
+      return {
+        id: 'fx-1',
+        name: { ru: 'Fx' },
+        discountType: 'fixed_amount',
+        amount,
+        conditions: {} as never,
+        targetType: 'all',
+        targetIds: null,
+        priority: 100,
+        stackable: false,
+        maxUsesPerChild: null,
+        totalMaxUses: null,
+        usedCount: 0,
+        createdAt: new Date('2026-01-01T00:00:00.000Z'),
+      };
+    }
+
+    it('emits absolute customDiscountAmount equal to fixed_amount input', async () => {
+      const result = await engine.evaluate(
+        input({
+          context: { ...evalCtx, customDiscounts: [fxSnap(3333)] },
+        }),
+      );
+      expect(result.customDiscountAmount).toBe(3333);
+      expect(result.customApplicationsToWrite[0].amountApplied).toBe(3333);
+    });
+
+    it('customDiscountAmount is null when no custom rules matched', async () => {
+      const result = await engine.evaluate(input());
+      expect(result.customDiscountAmount).toBeNull();
+    });
+
+    it('customDiscountAmount sums all stacked custom amounts', async () => {
+      const result = await engine.evaluate(
+        input({
+          context: {
+            ...evalCtx,
+            customDiscounts: [
+              {
+                ...fxSnap(2000),
+                id: 'fx-1',
+                priority: 200,
+                stackable: true,
+              },
+              {
+                ...fxSnap(1333),
+                id: 'fx-2',
+                priority: 100,
+                stackable: true,
+              },
+            ],
+          },
+        }),
+      );
+      expect(result.customDiscountAmount).toBe(3333);
+    });
   });
 });
