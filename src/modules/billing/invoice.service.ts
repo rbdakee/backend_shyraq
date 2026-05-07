@@ -1,4 +1,9 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  Logger,
+} from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { NotificationPort } from '@/common/notifications/notification.port';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
@@ -78,6 +83,28 @@ export interface GenerateLatePickupInvoiceInput {
   requestedBy: string;
   /** Fallback if no active `late_pickup_fee` plan is found. */
   lateFeeAmountKzt?: number;
+}
+
+/**
+ * Internal shape for `buildPaymentCalendar`. Fields are snake_case so the
+ * controller can return the array verbatim under `PaymentCalendarResponseDto`.
+ */
+export interface PaymentCalendarMonthEntry {
+  period_start: string;
+  period_end: string;
+  invoice_id: string | null;
+  projected_status:
+    | 'pending'
+    | 'paid'
+    | 'overdue'
+    | 'partial'
+    | 'projected'
+    | 'refunded'
+    | 'cancelled';
+  amount_after_discount: number | null;
+  due_date: string | null;
+  is_projection: boolean;
+  holidays_affected: number;
 }
 
 /**
@@ -497,6 +524,216 @@ export class InvoiceService {
     return persisted;
   }
 
+  // ── parent-facing read flows ───────────────────────────────────────────
+
+  /**
+   * Build the next-N-months payment calendar for a child. Months that
+   * already have an invoice surface real data; future months without an
+   * invoice yet are returned as `projected` rows derived from the active
+   * `tariff_assignment` + holiday count (best-effort estimate).
+   *
+   * `monthsAhead` is clamped to `[1, 24]`. The starting month is the first
+   * day of the current UTC month (DB stores `period_start` as `date`).
+   */
+  async buildPaymentCalendar(
+    kindergartenId: string,
+    childId: string,
+    monthsAhead: number,
+  ): Promise<PaymentCalendarMonthEntry[]> {
+    if (monthsAhead < 1 || monthsAhead > 24) {
+      throw new BadRequestException('months_ahead_out_of_range');
+    }
+    const today = this.clock.now();
+    const startMonth = startOfMonth(today);
+    const endMonth = endOfMonth(addMonthsUtc(startMonth, monthsAhead - 1));
+
+    const invoices = await this.invoices.findByChildId(
+      kindergartenId,
+      childId,
+      {
+        periodStart: toIsoDate(startMonth),
+        periodEnd: toIsoDate(endMonth),
+      },
+    );
+    const byMonthKey = new Map<string, Invoice>();
+    for (const inv of invoices) {
+      // Multiple matches per month (e.g. monthly + late_pickup_fee) — prefer
+      // the canonical "monthly" or prepayment row over fee invoices.
+      const key = monthKey(inv.periodStart);
+      const existing = byMonthKey.get(key);
+      if (
+        !existing ||
+        (inv.invoiceType === 'monthly' && existing.invoiceType !== 'monthly') ||
+        inv.invoiceType.startsWith('prepayment_')
+      ) {
+        byMonthKey.set(key, inv);
+      }
+    }
+
+    // Resolve the active assignment + tariff plan once for projections.
+    const assignment = await this.tariffAssignments.findActiveForChild(
+      kindergartenId,
+      childId,
+      today,
+    );
+    const tariffPlan = assignment
+      ? await this.tariffPlans.findById(kindergartenId, assignment.tariffPlanId)
+      : null;
+    const projectedAmount =
+      assignment && tariffPlan ? assignment.effectiveAmount(tariffPlan) : null;
+
+    const result: PaymentCalendarMonthEntry[] = [];
+    for (let i = 0; i < monthsAhead; i++) {
+      const mStart = addMonthsUtc(startMonth, i);
+      const mEnd = endOfMonth(mStart);
+      const holidaysAffected = await this.holidays.countNonBillableInRange(
+        kindergartenId,
+        mStart,
+        mEnd,
+      );
+      const matching = byMonthKey.get(monthKey(mStart));
+      if (matching) {
+        result.push({
+          period_start: toIsoDate(mStart),
+          period_end: toIsoDate(mEnd),
+          invoice_id: matching.id,
+          projected_status: matching.status,
+          amount_after_discount: matching.amountAfterDiscount,
+          due_date: toIsoDate(matching.dueDate),
+          is_projection: false,
+          holidays_affected: holidaysAffected,
+        });
+      } else {
+        result.push({
+          period_start: toIsoDate(mStart),
+          period_end: toIsoDate(mEnd),
+          invoice_id: null,
+          projected_status: 'projected',
+          amount_after_discount: projectedAmount,
+          due_date: null,
+          is_projection: true,
+          holidays_affected: holidaysAffected,
+        });
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Build a prepayment invoice covering the next `months` (3|6|12|24)
+   * starting at the first day of next month after `now`. Resolves the
+   * child's active tariff_assignment + plan, evaluates the matching
+   * `prepay_{N}m_pct` discount rule, and persists a single invoice with
+   * `invoice_type='prepayment_{N}m'`.
+   *
+   * Caller (`ParentPaymentController`) chains this into
+   * `paymentService.initiate` to actually start the provider flow.
+   */
+  async prepayInvoice(
+    kindergartenId: string,
+    childId: string,
+    months: 3 | 6 | 12 | 24,
+  ): Promise<Invoice> {
+    const now = this.clock.now();
+    const assignment = await this.tariffAssignments.findActiveForChild(
+      kindergartenId,
+      childId,
+      now,
+    );
+    if (!assignment) {
+      throw new TariffAssignmentNotFoundError(childId);
+    }
+    const tariffPlan = await this.tariffPlans.findById(
+      kindergartenId,
+      assignment.tariffPlanId,
+    );
+    if (!tariffPlan) {
+      throw new TariffPlanNotFoundError(assignment.tariffPlanId);
+    }
+
+    // Verify the requested horizon has an explicit pct configured. The
+    // monthly cron does not gate on this — it is checked here so the parent
+    // gets a clear 400 instead of a silent 0% prepayment.
+    const ruleKey =
+      `prepay_${months}m_pct` as keyof typeof tariffPlan.discountRules;
+    const rulePct = tariffPlan.discountRules[ruleKey];
+    if (rulePct === undefined || rulePct === null) {
+      throw new BadRequestException('prepayment_horizon_not_configured');
+    }
+
+    // Period: first day of the next month → last day of (next + months-1).
+    const periodStart = addMonthsUtc(startOfMonth(now), 1);
+    const periodEnd = endOfMonth(addMonthsUtc(periodStart, months - 1));
+
+    const monthlyAmount = assignment.effectiveAmount(tariffPlan);
+    const baseAmount = round2(monthlyAmount * months);
+
+    const discount = await this.discountEngine.evaluate({
+      invoice: {
+        invoiceId: 'pending',
+        invoiceType: `prepayment_${months}m` as InvoiceType,
+        childId,
+        kindergartenId,
+        amountDue: baseAmount,
+        periodStart,
+        periodEnd,
+      },
+      tariffPlan: {
+        id: tariffPlan.id,
+        discountRules: tariffPlan.discountRules,
+      },
+      context: { prepaymentMonths: months },
+    });
+
+    const amountAfter = Invoice.computeAmountAfterDiscount(
+      baseAmount,
+      discount.discountPct,
+    );
+
+    const account = await this.paymentAccounts.ensureForChild(
+      kindergartenId,
+      childId,
+    );
+
+    const dueDate = addDaysUtc(now, 7);
+    const invoiceId = randomUUID();
+    const invoice = Invoice.fromState({
+      id: invoiceId,
+      kindergartenId,
+      childId,
+      paymentAccountId: account.id,
+      tariffPlanId: tariffPlan.id,
+      invoiceType: `prepayment_${months}m` as InvoiceType,
+      periodStart,
+      periodEnd,
+      amountDue: baseAmount,
+      discountPct: discount.discountPct,
+      discountReason: discount.discountReason,
+      amountAfterDiscount: amountAfter,
+      status: 'pending',
+      dueDate,
+      description: `Prepayment ${months}m — ${toIsoDate(periodStart)}..${toIsoDate(periodEnd)}`,
+      proratedForDays: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const lineItem = InvoiceLineItem.fromState({
+      id: randomUUID(),
+      invoiceId,
+      kindergartenId,
+      description: `Prepayment ${months} months — ${tariffPlan.name}`,
+      tariffPlanId: tariffPlan.id,
+      quantity: months,
+      unitPrice: monthlyAmount,
+      lineTotal: InvoiceLineItem.compute(months, monthlyAmount),
+      createdAt: now,
+    });
+
+    const persisted = await this.invoices.create(invoice, [lineItem]);
+    await this.emitInvoiceCreated(persisted);
+    return persisted;
+  }
+
   // ── private helpers ────────────────────────────────────────────────────
 
   /**
@@ -662,4 +899,22 @@ function addDaysUtc(d: Date, days: number): Date {
   const out = new Date(d.getTime());
   out.setUTCDate(out.getUTCDate() + days);
   return out;
+}
+
+function addMonthsUtc(d: Date, months: number): Date {
+  return new Date(
+    Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + months, d.getUTCDate()),
+  );
+}
+
+function monthKey(d: Date): string {
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+function toIsoDate(d: Date): string {
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+}
+
+function round2(value: number): number {
+  return Math.round(value * 100) / 100;
 }

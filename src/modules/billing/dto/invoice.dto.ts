@@ -467,11 +467,26 @@ class PaymentCalendarMonthDto {
 
   @ApiProperty({
     example: 'projected',
-    enum: ['pending', 'paid', 'overdue', 'partial', 'projected'],
+    enum: [
+      'pending',
+      'paid',
+      'overdue',
+      'partial',
+      'projected',
+      'refunded',
+      'cancelled',
+    ],
     description:
       'Current status. "projected" means no invoice exists yet — amount is estimated.',
   })
-  projected_status!: 'pending' | 'paid' | 'overdue' | 'partial' | 'projected';
+  projected_status!:
+    | 'pending'
+    | 'paid'
+    | 'overdue'
+    | 'partial'
+    | 'projected'
+    | 'refunded'
+    | 'cancelled';
 
   @ApiProperty({
     example: 108000,

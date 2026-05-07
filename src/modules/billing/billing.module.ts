@@ -1,6 +1,7 @@
 import { Module, Provider } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { ChildModule } from '@/modules/child/child.module';
 import { DiscountEnginePort } from './infrastructure/discount-engine/discount-engine.port';
 import { MockDiscountEngine } from './infrastructure/discount-engine/mock-discount-engine.adapter';
 import { FiscalReceiptPort } from './infrastructure/fiscal-receipt/fiscal-receipt.port';
@@ -39,6 +40,9 @@ import { AdminPaymentController } from './admin-payment.controller';
 import { AdminRefundController } from './admin-refund.controller';
 import { AdminTariffAssignmentController } from './admin-tariff-assignment.controller';
 import { AdminTariffPlanController } from './admin-tariff-plan.controller';
+import { ParentInvoiceController } from './parent-invoice.controller';
+import { ParentPaymentController } from './parent-payment.controller';
+import { PaymentWebhookController } from './payment-webhook.controller';
 import { HolidayService } from './holiday.service';
 import { InvoiceService } from './invoice.service';
 import { MonthlyBillingScheduler } from './monthly-billing-scheduler.service';
@@ -131,6 +135,9 @@ function fiscalReceiptProvider(): Provider {
     // pushes one-off `MONTHLY_BILLING_MANUAL_JOB` jobs via
     // `@InjectQueue(MONTHLY_BILLING_QUEUE)`.
     BullModule.registerQueue({ name: MONTHLY_BILLING_QUEUE }),
+    // T7b: ChildModule re-exports `ChildGuardianRepository` so the parent
+    // controllers can re-check guardian-of-child links + nanny role gate.
+    ChildModule,
   ],
   controllers: [
     // Admin-side surface (KindergartenScopeGuard + RolesGuard@admin).
@@ -143,7 +150,11 @@ function fiscalReceiptProvider(): Provider {
     AdminFiscalReceiptController,
     // Super-admin trigger (SuperAdminScope + RolesGuard@super_admin/support).
     SaasBillingController,
-    // T7b adds: ParentInvoiceController, PaymentWebhookController.
+    // T7b: parent-side surface (JwtAuthGuard + Roles@parent + per-route
+    // guardian re-check) + cross-tenant payment webhook (@Public).
+    ParentInvoiceController,
+    ParentPaymentController,
+    PaymentWebhookController,
   ],
   providers: [
     paymentProviderProvider(),
