@@ -23,8 +23,8 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  * GRANTs: handled by ALTER DEFAULT PRIVILEGES set in InitExtensions — no
  * per-table GRANT needed for new tables created by the migration owner role.
  */
-export class B7ScheduleAndMeal1777556957492 implements MigrationInterface {
-  name = 'B7ScheduleAndMeal1777556957492';
+export class B7ScheduleAndMeal1777593606000 implements MigrationInterface {
+  name = 'B7ScheduleAndMeal1777593606000';
 
   public async up(queryRunner: QueryRunner): Promise<void> {
     // ── 1. activity_event_status ENUM ────────────────────────────────────────

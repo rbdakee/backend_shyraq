@@ -18,8 +18,8 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  * enrollment_status_log.changed_by references staff_members(id) ON DELETE RESTRICT
  * — log rows must never be silently removed when a staff member is deleted.
  */
-export class EnrollmentTables1777501179271 implements MigrationInterface {
-  name = 'EnrollmentTables1777501179271';
+export class EnrollmentTables1777593605000 implements MigrationInterface {
+  name = 'EnrollmentTables1777593605000';
 
   public async up(queryRunner: QueryRunner): Promise<void> {
     // ── 1. enrollment_status ENUM ─────────────────────────────────────────
