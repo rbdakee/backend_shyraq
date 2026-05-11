@@ -474,8 +474,8 @@ export class ContentService {
 
 function extractKeyFromUrl(url: string): string | null {
   if (!url) return null;
-  // Local adapter: `/static/<key>` — strip the prefix.
-  const m = url.match(/^\/static\/(.+)$/);
+  // Local adapter: `/api/v1/media/<key>` — strip the prefix.
+  const m = url.match(/^\/api\/v1\/media\/(.+)$/);
   if (m) return m[1];
   // S3 / CDN URLs (Phase B) — caller can pass through the raw key field
   // separately; for now we don't try to reverse-engineer a key from a

@@ -391,7 +391,7 @@ describe('B17 Content & Stories (e2e)', () => {
   describe('Scenario B: Admin creates news with media (multipart upload, files on disk)', () => {
     it(
       'POST /admin/content multipart with image file → 201, ' +
-        'media_urls contains /static/ URL, file exists on disk',
+        'media_urls contains /api/v1/media/ URL, file exists on disk',
       async () => {
         const { kgId, adminToken } = await createKgWithAdmin(
           'cnt-b',
@@ -417,13 +417,13 @@ describe('B17 Content & Stories (e2e)', () => {
         expect(Array.isArray(mediaUrls)).toBe(true);
         expect(mediaUrls!.length).toBeGreaterThanOrEqual(1);
 
-        // URL must be /static/<kgId>/<yyyy-mm>/<uuid>.png
+        // URL must be /api/v1/media/<kgId>/<yyyy-mm>/<uuid>.png
         const url = mediaUrls![0];
-        expect(url).toMatch(/^\/static\//);
+        expect(url).toMatch(/^\/api\/v1\/media\//);
         expect(url).toContain(kgId);
 
         // File must exist on disk
-        const key = url.replace('/static/', '');
+        const key = url.replace('/api/v1/media/', '');
         const filePath = join(uploadsDir, key);
         await expect(fsPromises.access(filePath)).resolves.toBeUndefined();
       },
@@ -799,7 +799,7 @@ describe('B17 Content & Stories (e2e)', () => {
 
         expect(createRes.body.id).toBeDefined();
         expect(createRes.body.group_id).toBe(groupId);
-        expect(createRes.body.media_url).toMatch(/^\/static\//);
+        expect(createRes.body.media_url).toMatch(/^\/api\/v1\/media\//);
         expect(createRes.body.media_type).toBe('image');
         expect(createRes.body.views).toBe(0);
         expect(createRes.body.caption).toBe('Дети на прогулке');
@@ -1009,7 +1009,7 @@ describe('B17 Content & Stories (e2e)', () => {
           .expect(201);
         const storyId = storyRes.body.id as string;
         const mediaUrl = storyRes.body.media_url as string;
-        const mediaKey = mediaUrl.replace('/static/', '');
+        const mediaKey = mediaUrl.replace('/api/v1/media/', '');
         const mediaPath = join(uploadsDir, mediaKey);
 
         // Verify file on disk before cleanup

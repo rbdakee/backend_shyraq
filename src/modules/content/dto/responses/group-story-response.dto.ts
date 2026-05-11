@@ -13,7 +13,7 @@ export class GroupStoryResponseDto {
   @ApiProperty({ example: 'b0c1d2e3-0000-0000-0000-000000000007' })
   created_by!: string;
 
-  @ApiProperty({ example: '/static/kg-id/stories/2026-05/xyz.jpg' })
+  @ApiProperty({ example: '/api/v1/media/kg-id/stories/2026-05/xyz.jpg' })
   media_url!: string;
 
   @ApiProperty({ example: 'image', enum: ['image', 'video'] })

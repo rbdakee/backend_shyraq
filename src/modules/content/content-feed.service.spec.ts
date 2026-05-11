@@ -291,7 +291,7 @@ describe('ContentFeedService.getParentChildFeed', () => {
       kindergartenId: KG,
       groupId: GROUP,
       createdBy: 'creator',
-      mediaUrl: '/static/x.jpg',
+      mediaUrl: '/api/v1/media/x.jpg',
       mediaType: 'image',
       now: NOW,
     });

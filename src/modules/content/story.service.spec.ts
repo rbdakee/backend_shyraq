@@ -280,7 +280,7 @@ class FakeFileStorage extends FileStoragePort {
   upload(input: FileStorageUploadInput): Promise<FileStorageUploadResult> {
     this.uploads.push(input);
     return Promise.resolve({
-      url: `/static/${input.key}`,
+      url: `/api/v1/media/${input.key}`,
       key: input.key,
       bytes: input.buffer.length,
     });
@@ -293,7 +293,7 @@ class FakeFileStorage extends FileStoragePort {
     return Promise.resolve();
   }
   getSignedUrl(key: string): Promise<string> {
-    return Promise.resolve(`/static/${key}`);
+    return Promise.resolve(`/api/v1/media/${key}`);
   }
 }
 
@@ -428,7 +428,7 @@ function seedExpired(repo: FakeStoryRepo, id: string): GroupStory {
     kindergartenId: KG,
     groupId: GROUP,
     createdBy: AUTHOR,
-    mediaUrl: '/static/foo.jpg',
+    mediaUrl: '/api/v1/media/foo.jpg',
     mediaType: 'image',
     caption: null,
     views: 5,
@@ -531,7 +531,7 @@ describe('StoryService.delete', () => {
     });
     await service.delete(KG, created.id, { userId: AUTHOR, role: 'mentor' });
     expect(storyRepo.stories.has(created.id)).toBe(false);
-    // The /static/<key> => key strip
+    // The /api/v1/media/<key> => key strip
     expect(fileStorage.deletes).toHaveLength(1);
   });
 

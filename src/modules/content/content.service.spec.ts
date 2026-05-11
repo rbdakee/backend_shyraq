@@ -266,7 +266,7 @@ class FakeFileStorage extends FileStoragePort {
   upload(input: FileStorageUploadInput): Promise<FileStorageUploadResult> {
     this.uploads.push(input);
     return Promise.resolve({
-      url: `/static/${input.key}`,
+      url: `/api/v1/media/${input.key}`,
       key: input.key,
       bytes: input.buffer.length,
     });
@@ -279,7 +279,7 @@ class FakeFileStorage extends FileStoragePort {
     return Promise.resolve();
   }
   getSignedUrl(key: string): Promise<string> {
-    return Promise.resolve(`/static/${key}`);
+    return Promise.resolve(`/api/v1/media/${key}`);
   }
 }
 
@@ -602,7 +602,7 @@ describe('ContentService.delete', () => {
       {
         contentType: 'news',
         targetType: 'all',
-        mediaUrls: ['/static/foo/bar.jpg', '/static/foo/baz.png'],
+        mediaUrls: ['/api/v1/media/foo/bar.jpg', '/api/v1/media/foo/baz.png'],
       },
       USER,
     );
@@ -710,14 +710,14 @@ describe('ContentService.uploadMedia', () => {
     ).rejects.toBeInstanceOf(MediaTypeInvalidError);
   });
 
-  it('uploads an image and returns /static/<key>', async () => {
+  it('uploads an image and returns /api/v1/media/<key>', async () => {
     const { service, fileStorage } = buildService();
     const result = await service.uploadMedia(KG, {
       buffer: Buffer.from('img'),
       mimetype: 'image/jpeg',
       originalname: 'photo.jpg',
     });
-    expect(result.url.startsWith('/static/')).toBe(true);
+    expect(result.url.startsWith('/api/v1/media/')).toBe(true);
     expect(fileStorage.uploads).toHaveLength(1);
     expect(fileStorage.uploads[0].contentType).toBe('image/jpeg');
   });

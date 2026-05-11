@@ -56,7 +56,7 @@ export class ContentPostResponseDto {
   body_i18n!: Record<string, string> | null;
 
   @ApiProperty({
-    example: ['/static/kg-id/2026-05/abc.jpg'],
+    example: ['/api/v1/media/kg-id/2026-05/abc.jpg'],
     nullable: true,
   })
   media_urls!: string[] | null;

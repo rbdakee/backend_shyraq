@@ -39,8 +39,9 @@ export interface FileStorageUploadInput {
 export interface FileStorageUploadResult {
   /**
    * Public URL for the uploaded asset. For the local adapter this is
-   * `/static/<key>` (served by ServeStaticModule). For Phase B S3 adapters
-   * this would be a signed CloudFront / Yandex CDN URL.
+   * `/api/v1/media/<key>` (served by the authenticated MediaController).
+   * For Phase B S3 adapters this would be a signed CloudFront / Yandex
+   * CDN URL.
    */
   url: string;
   /** The storage key (mirror of input.key). */
@@ -70,8 +71,8 @@ export abstract class FileStoragePort {
 
   /**
    * Optional signed URL with short TTL. Local adapter returns the same
-   * `/static/<key>` (no expiry — public local files); S3 adapters generate
-   * a pre-signed URL with `ttlSeconds` validity.
+   * `/api/v1/media/<key>` (no expiry — auth-gated by the MediaController);
+   * S3 adapters generate a pre-signed URL with `ttlSeconds` validity.
    */
   abstract getSignedUrl(key: string, ttlSeconds?: number): Promise<string>;
 }

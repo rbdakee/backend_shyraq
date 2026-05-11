@@ -171,7 +171,7 @@ export class StoryCleanupProcessor extends WorkerHost {
 
 function extractKeyFromUrl(url: string): string | null {
   if (!url) return null;
-  const m = url.match(/^\/static\/(.+)$/);
+  const m = url.match(/^\/api\/v1\/media\/(.+)$/);
   return m ? m[1] : null;
 }
 
