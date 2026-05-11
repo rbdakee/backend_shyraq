@@ -4,8 +4,15 @@ services:
     expose:
       - 5432
     environment:
-      POSTGRES_USER: ${DATABASE_USERNAME}
-      POSTGRES_PASSWORD: ${DATABASE_PASSWORD}
+      # Bootstrap PG with the migration superuser, NOT the runtime app role
+      # (see docker-compose.yaml for the full rationale + CLAUDE.md §5).
+      # InitExtensions creates shyraq_app as NOSUPERUSER NOBYPASSRLS and now
+      # asserts those attributes — using DATABASE_USERNAME here would seed
+      # shyraq_app as bootstrap-superuser, the assertion would fail and CI
+      # would refuse to start (which is the correct behavior — silent RLS
+      # bypass must never reach prod).
+      POSTGRES_USER: ${DATABASE_MIGRATION_USERNAME}
+      POSTGRES_PASSWORD: ${DATABASE_MIGRATION_PASSWORD}
       POSTGRES_DB: ${DATABASE_NAME}
 
   maildev:
@@ -16,11 +23,10 @@ services:
       - 1080
       - 1025
 
-  # Uncomment to use redis
-  # redis:
-  #   image: redis:7-alpine
-  #   expose:
-  #     - 6379
+  redis:
+    image: redis:7-alpine
+    expose:
+      - 6379
 
   api:
     build:
@@ -28,3 +34,12 @@ services:
       dockerfile: relational.e2e.Dockerfile
     env_file:
       - env-example-relational
+    # Override the localhost hosts from env-example-relational with the
+    # docker-compose service names. env-example-relational uses
+    # `localhost` so it works for `npm run start:dev` on the host machine,
+    # but inside the api container the DB and Redis live at their service
+    # names, not at the container's own loopback.
+    environment:
+      DATABASE_HOST: postgres
+      REDIS_HOST: redis
+      MAIL_HOST: maildev
