@@ -152,8 +152,9 @@ export async function truncateAll(_dataSource: DataSource): Promise<void> {
       return;
     } catch (err) {
       lastErr = err;
-      const code = (err as { code?: string; driverError?: { code?: string } })
-        ?.driverError?.code ?? (err as { code?: string }).code;
+      const code =
+        (err as { code?: string; driverError?: { code?: string } })?.driverError
+          ?.code ?? (err as { code?: string }).code;
       // 40P01 = deadlock_detected, 40001 = serialization_failure.
       // Other errors are real bugs — fail fast.
       if (code !== '40P01' && code !== '40001') throw err;
