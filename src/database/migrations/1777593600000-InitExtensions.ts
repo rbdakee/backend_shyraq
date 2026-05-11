@@ -31,6 +31,34 @@ export class InitExtensions1777593600000 implements MigrationInterface {
       $$;
     `);
 
+    // Hard assertion: shyraq_app MUST be NOSUPERUSER NOBYPASSRLS for RLS
+    // to actually enforce tenant isolation. If a previous misconfigured
+    // bootstrap (e.g. docker-compose seeding shyraq_app as POSTGRES_USER)
+    // left it as superuser, this fails loudly instead of silently leaking
+    // cross-tenant data. Recovery: drop the volume and re-bootstrap with
+    // the migration superuser (shyraq) as POSTGRES_USER.
+    await queryRunner.query(`
+      DO $$
+      DECLARE
+        is_super  boolean;
+        is_bypass boolean;
+      BEGIN
+        SELECT rolsuper, rolbypassrls INTO is_super, is_bypass
+          FROM pg_roles WHERE rolname = 'shyraq_app';
+        IF is_super OR is_bypass THEN
+          RAISE EXCEPTION
+            'shyraq_app has rolsuper=% rolbypassrls=% — both must be false. '
+            'Runtime role would bypass RLS even with FORCE ROW LEVEL SECURITY, '
+            'silently breaking tenant isolation. Recover by dropping the PG '
+            'volume and re-bootstrapping with POSTGRES_USER=shyraq (the '
+            'migration superuser), so InitExtensions creates shyraq_app fresh '
+            'with the correct NOSUPERUSER NOBYPASSRLS attributes.',
+            is_super, is_bypass;
+        END IF;
+      END
+      $$;
+    `);
+
     // Grant the app role enough to run regular CRUD across the public schema.
     // Tables added by future migrations also need access — handled via the
     // ALTER DEFAULT PRIVILEGES below, scoped to whatever role runs the
