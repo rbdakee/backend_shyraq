@@ -134,12 +134,33 @@ export async function truncateAll(_dataSource: DataSource): Promise<void> {
   // through a privileged cleanup DataSource. RLS is still bypassed inside
   // the tx for FORCE-RLS tables.
   const ds = await getCleanupDataSource();
-  await ds.transaction(async (m) => {
-    await m.query(`SET LOCAL app.bypass_rls = 'true'`);
-    await m.query(
-      `TRUNCATE TABLE group_stories, content_posts, progress_notes, diagnostic_entries, diagnostic_templates, custom_discount_applications, custom_discounts, refunds, payments, invoice_line_items, invoices, payment_accounts, tariff_assignments, tariff_plans, kindergarten_holidays, parent_request_messages, parent_requests, pickup_requests, trusted_people, user_qr_tokens, notification_outbox, notifications, notification_preferences, push_tokens, saas_refresh_tokens, saas_users, timeline_entries, attendance_events, child_daily_status, schedule_week_snapshots, activity_events, schedule_template_slots, schedule_templates, meal_items, meal_plans, child_group_history, child_guardians, children, group_mentors, groups, cameras, locations, staff_members, refresh_tokens, users, kindergartens RESTART IDENTITY CASCADE`,
-    );
-  });
+
+  // Retry on PG deadlock (40P01). Background BullMQ workers can briefly
+  // hold RowExclusiveLock on a row while truncateAll's afterAll/beforeEach
+  // is trying to grab AccessExclusiveLock on the parent table — under
+  // load on slower CI runners that produces a deadlock that's fatal for
+  // truncate but trivially resolved by retrying once the worker commits.
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      await ds.transaction(async (m) => {
+        await m.query(`SET LOCAL app.bypass_rls = 'true'`);
+        await m.query(
+          `TRUNCATE TABLE group_stories, content_posts, progress_notes, diagnostic_entries, diagnostic_templates, custom_discount_applications, custom_discounts, refunds, payments, invoice_line_items, invoices, payment_accounts, tariff_assignments, tariff_plans, kindergarten_holidays, parent_request_messages, parent_requests, pickup_requests, trusted_people, user_qr_tokens, notification_outbox, notifications, notification_preferences, push_tokens, saas_refresh_tokens, saas_users, timeline_entries, attendance_events, child_daily_status, schedule_week_snapshots, activity_events, schedule_template_slots, schedule_templates, meal_items, meal_plans, child_group_history, child_guardians, children, group_mentors, groups, cameras, locations, staff_members, refresh_tokens, users, kindergartens RESTART IDENTITY CASCADE`,
+        );
+      });
+      return;
+    } catch (err) {
+      lastErr = err;
+      const code = (err as { code?: string; driverError?: { code?: string } })
+        ?.driverError?.code ?? (err as { code?: string }).code;
+      // 40P01 = deadlock_detected, 40001 = serialization_failure.
+      // Other errors are real bugs — fail fast.
+      if (code !== '40P01' && code !== '40001') throw err;
+      await new Promise((r) => setTimeout(r, 50 * (attempt + 1)));
+    }
+  }
+  throw lastErr;
 }
 
 export async function flushRedis(redis: RedisService): Promise<void> {
