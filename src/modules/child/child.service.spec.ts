@@ -204,7 +204,13 @@ class FakeGuardianRepo extends ChildGuardianRepository {
   findById(kindergartenId: string, id: string): Promise<ChildGuardian | null> {
     const g = this.guardians.get(id);
     if (!g || g.kindergartenId !== kindergartenId) return Promise.resolve(null);
-    return Promise.resolve(g);
+    // Return a fresh hydrate of the stored state so callers that mutate
+    // the returned object do not also mutate the store reference. This
+    // mirrors PG snapshot semantics required by SM2's conditional
+    // UPDATE: the store row is only updated when `update` /
+    // `updateWithExpectedStatus` writes back, never via shared-reference
+    // mutation in domain methods.
+    return Promise.resolve(ChildGuardian.hydrate(g.toState()));
   }
 
   findByChildId(
@@ -230,7 +236,8 @@ class FakeGuardianRepo extends ChildGuardianRepository {
         x.userId === userId &&
         x.status.value !== 'revoked',
     );
-    return Promise.resolve(g ?? null);
+    // Snapshot-isolate (see findById rationale for SM2).
+    return Promise.resolve(g ? ChildGuardian.hydrate(g.toState()) : null);
   }
 
   findApprovedByChildAndUserCrossTenant(
@@ -278,6 +285,18 @@ class FakeGuardianRepo extends ChildGuardianRepository {
   update(g: ChildGuardian): Promise<void> {
     this.put(g);
     return Promise.resolve();
+  }
+
+  override updateWithExpectedStatus(
+    g: ChildGuardian,
+    expectedStatus: string,
+  ): Promise<boolean> {
+    const current = this.guardians.get(g.id);
+    if (!current || current.status.value !== expectedStatus) {
+      return Promise.resolve(false);
+    }
+    this.put(g);
+    return Promise.resolve(true);
   }
 
   countApprovalRights(
@@ -1024,6 +1043,38 @@ describe('ChildService — guardian state machine', () => {
     await expect(
       service.approveGuardian(KG, ctx.primaryUserId, g.id, false),
     ).rejects.toBeInstanceOf(InvalidGuardianStatusTransitionError);
+  });
+
+  it('updateWithExpectedStatus returns false when row status flipped between read and write (FINDINGS SM2)', async () => {
+    // Repo-level contract test for SM2: conditional UPDATE WHERE
+    // status = :expectedStatus must reject the write when a concurrent
+    // transition has already flipped the row. Real PG impl uses
+    // `affected === 0` to signal the conflict; fake mirrors via the
+    // store's `status.value` comparison. Caller maps false → throws
+    // ChildGuardianStatusConflictError (verified at the 5 service sites).
+    const ctx = await bootChildWithPrimary();
+    const { service, guardians } = ctx.setup;
+    const g = await service.inviteGuardian(KG, {
+      childId: ctx.childId,
+      userPhone: '+77011112222',
+      role: 'secondary',
+      invitedByUserId: ctx.primaryUserId,
+    });
+    // Simulate: caller-A read at status=pending_approval, caller-B already
+    // flipped row to `rejected` in the store. Caller-A now tries to write
+    // back its `approved` mutation with expected=pending_approval.
+    const stored = guardians.guardians.get(g.id)!;
+    stored.reject(new Date());
+    const desired = ChildGuardian.hydrate({
+      ...stored.toState(),
+      status: 'approved',
+    });
+    const ok = await guardians.updateWithExpectedStatus(
+      desired,
+      'pending_approval',
+    );
+    expect(ok).toBe(false);
+    expect(guardians.guardians.get(g.id)!.status.value).toBe('rejected');
   });
 
   it('revoke (admin) on approved → revoked; subsequent revoke fails', async () => {

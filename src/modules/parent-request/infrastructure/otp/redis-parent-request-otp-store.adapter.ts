@@ -64,11 +64,14 @@ export class RedisParentRequestOtpStoreAdapter extends ParentRequestOtpStorePort
 
   async incrementAttempts(userId: string): Promise<number> {
     const key = attemptsKey(userId);
-    const n = await this.redis.incr(key);
-    if (n === 1) {
-      await this.redis.expire(key, ATTEMPTS_TTL_SEC);
-    }
-    return n;
+    // Pipeline batches INCR + EXPIRE in one Redis round-trip so a crash
+    // between the two commands cannot leave the key without a TTL
+    // (permanent lock of the user-id OTP budget). Mirrors auth adapter.
+    const pl = this.redis.pipeline();
+    pl.incr(key);
+    pl.expire(key, ATTEMPTS_TTL_SEC);
+    const results = await pl.exec();
+    return (results?.[0]?.[1] as number | null) ?? 1;
   }
 
   async lockUser(userId: string, lockTtlSec: number): Promise<void> {

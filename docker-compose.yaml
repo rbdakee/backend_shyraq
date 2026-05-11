@@ -6,8 +6,15 @@ services:
     volumes:
       - boilerplate-db:/var/lib/postgresql/data
     environment:
-      POSTGRES_USER: ${DATABASE_USERNAME}
-      POSTGRES_PASSWORD: ${DATABASE_PASSWORD}
+      # Bootstrap PG with the migration superuser (DATABASE_MIGRATION_USERNAME)
+      # — NOT the runtime app role. InitExtensions later creates the
+      # non-superuser shyraq_app via the migration CLI. Seeding PG with the
+      # runtime role would (a) block the migration step (no superuser exists)
+      # and (b) violate the RLS layout from CLAUDE.md §5: the runtime role MUST
+      # NOT be a superuser, otherwise FORCE ROW LEVEL SECURITY is bypassed and
+      # tenant isolation is silently broken.
+      POSTGRES_USER: ${DATABASE_MIGRATION_USERNAME}
+      POSTGRES_PASSWORD: ${DATABASE_MIGRATION_PASSWORD}
       POSTGRES_DB: ${DATABASE_NAME}
 
   maildev:

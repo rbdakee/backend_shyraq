@@ -23,16 +23,22 @@ export interface LocalFileStorageOptions {
   urlPrefix?: string;
 }
 
-const DEFAULT_URL_PREFIX = '/static';
+// FINDINGS.md SP5 — URL prefix moved from `/static` (public, unauth) to
+// the versioned, auth-guarded `MediaController` route. Files on disk still
+// live at `<uploadsDir>/<key>`; only the public URL exposed to clients
+// changes so every fetch goes through JwtAuthGuard + KindergartenScopeGuard
+// + the controller's path-kg match.
+const DEFAULT_URL_PREFIX = '/api/v1/media';
 
 /**
  * Local-disk implementation of `FileStoragePort` — Phase A default.
  *
  * Files land under `<uploadsDir>/<key>`. Public URLs are
- * `<urlPrefix>/<key>` (served by ServeStaticModule, wired in T4's
- * `app.module.ts` work). `getSignedUrl` returns the same URL — local
- * files have no concept of signed access; the parent app sees them via
- * the same path during the 24h window the story is alive.
+ * `<urlPrefix>/<key>` (served by `MediaController` since FINDINGS.md SP5;
+ * was `ServeStaticModule` previously, removed because it bypassed every
+ * NestJS guard). `getSignedUrl` returns the same URL — local files have
+ * no concept of signed access; the parent app sees them via the same
+ * path during the 24h window the story is alive.
  *
  * Defence-in-depth: rejects keys containing `..` so a malicious caller
  * cannot escape the uploads root via path traversal.

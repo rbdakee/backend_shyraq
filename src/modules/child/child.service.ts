@@ -43,6 +43,7 @@ import { ChildNotFoundError } from './domain/errors/child-not-found.error';
 import { ChildNotFoundForIinError } from './domain/errors/child-not-found-for-iin.error';
 import { DuplicateGuardianError } from './domain/errors/duplicate-guardian.error';
 import { GuardianNotFoundError } from './domain/errors/guardian-not-found.error';
+import { ChildGuardianStatusConflictError } from './domain/errors/child-guardian-status-conflict.error';
 import { MaxApprovalRightsExceededError } from './domain/errors/max-approval-rights-exceeded.error';
 import { MultipleChildrenForIinError } from './domain/errors/multiple-children-for-iin.error';
 import { NotPrimaryGuardianError } from './domain/errors/not-primary-guardian.error';
@@ -484,8 +485,15 @@ export class ChildService {
       throw new GuardianNotFoundError(guardianId);
     }
     const by = UserId.parse(revokedByUserId);
+    const expectedStatus = guardian.status.value;
     guardian.revoke(by, this.clock.now());
-    await this.guardians.update(guardian);
+    const ok = await this.guardians.updateWithExpectedStatus(
+      guardian,
+      expectedStatus,
+    );
+    if (!ok) {
+      throw new ChildGuardianStatusConflictError(guardianId, expectedStatus);
+    }
     await this.notification.notifyGuardianRevoked({
       kindergartenId: kgId,
       childId: guardian.childId,
@@ -537,8 +545,15 @@ export class ChildService {
       }
     }
 
+    const expectedStatus = guardian.status.value;
     guardian.approve(primary, this.clock.now(), grantApprovalRights);
-    await this.guardians.update(guardian);
+    const ok = await this.guardians.updateWithExpectedStatus(
+      guardian,
+      expectedStatus,
+    );
+    if (!ok) {
+      throw new ChildGuardianStatusConflictError(guardianId, expectedStatus);
+    }
     await this.notification.notifyGuardianApproved({
       kindergartenId: kgId,
       childId: guardian.childId,
@@ -563,8 +578,15 @@ export class ChildService {
       guardian.childId,
       primary,
     );
+    const expectedStatus = guardian.status.value;
     guardian.reject(this.clock.now());
-    await this.guardians.update(guardian);
+    const ok = await this.guardians.updateWithExpectedStatus(
+      guardian,
+      expectedStatus,
+    );
+    if (!ok) {
+      throw new ChildGuardianStatusConflictError(guardianId, expectedStatus);
+    }
     await this.notification.notifyGuardianRejected({
       kindergartenId: kgId,
       childId: guardian.childId,
@@ -591,8 +613,15 @@ export class ChildService {
     if (guardian.userId === primary) {
       throw new PrimaryCannotSelfRevokeError(primary);
     }
+    const expectedStatus = guardian.status.value;
     guardian.revoke(primary, this.clock.now());
-    await this.guardians.update(guardian);
+    const ok = await this.guardians.updateWithExpectedStatus(
+      guardian,
+      expectedStatus,
+    );
+    if (!ok) {
+      throw new ChildGuardianStatusConflictError(guardianId, expectedStatus);
+    }
     await this.notification.notifyGuardianRevoked({
       kindergartenId: kgId,
       childId: guardian.childId,
@@ -759,8 +788,15 @@ export class ChildService {
       throw new ChildAccessDeniedError(callerUserId, childId);
     }
     const revokedAt = this.clock.now();
+    const expectedStatus = guardian.status.value;
     guardian.revokeBySelf(revokedAt);
-    await this.guardians.update(guardian);
+    const ok = await this.guardians.updateWithExpectedStatus(
+      guardian,
+      expectedStatus,
+    );
+    if (!ok) {
+      throw new ChildGuardianStatusConflictError(guardian.id, expectedStatus);
+    }
     await this.notification.notifyGuardianSelfRevoked({
       kindergartenId,
       childId,

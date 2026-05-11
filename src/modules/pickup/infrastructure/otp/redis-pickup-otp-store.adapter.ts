@@ -63,13 +63,14 @@ export class RedisPickupOtpStoreAdapter extends PickupOtpStorePort {
 
   async incrementAttempts(requestId: string): Promise<number> {
     const key = pickupOtpAttemptsRedisKey(requestId);
-    const n = await this.redis.incr(key);
-    // First write seeds the TTL — INCR alone leaves the key persistent
-    // which would brick the lock-budget for that request id forever.
-    if (n === 1) {
-      await this.redis.expire(key, ATTEMPTS_TTL_SEC);
-    }
-    return n;
+    // Pipeline batches INCR + EXPIRE in one Redis round-trip so a crash
+    // between the two commands cannot leave the key without a TTL
+    // (permanent lock of the request-id budget). Mirrors auth adapter.
+    const pl = this.redis.pipeline();
+    pl.incr(key);
+    pl.expire(key, ATTEMPTS_TTL_SEC);
+    const results = await pl.exec();
+    return (results?.[0]?.[1] as number | null) ?? 1;
   }
 
   async lockRequest(requestId: string, lockTtlSec: number): Promise<void> {

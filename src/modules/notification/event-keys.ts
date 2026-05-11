@@ -17,6 +17,16 @@ export const CANONICAL_EVENT_KEYS = [
   'timeline.entry_created',
   'guardian.approved',
   'guardian.self_revoked',
+  // ── B5/P5 — guardian lifecycle events emitted by ChildService but
+  // previously absent from CANONICAL → users could not opt out via
+  // PATCH /notifications/preferences (DTO IsIn rejected them) and
+  // default-merge skipped them. Producers are
+  // OutboxNotificationAdapter.notifyChildGuardian* / notifyChildTransferred.
+  'guardian.pending_approval',
+  'guardian.rejected',
+  'guardian.revoked',
+  'guardian.permissions_updated',
+  'child.transferred',
   'payment.upcoming',
   'payment.overdue',
   'payment.receipt_issued',

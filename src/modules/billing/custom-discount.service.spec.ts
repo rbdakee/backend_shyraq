@@ -230,7 +230,7 @@ class FakeCustomDiscountRepo extends CustomDiscountRepository {
     for (const d of this.rows.values()) {
       if (
         d.kindergartenId === kindergartenId &&
-        d.status === 'active' &&
+        (d.status === 'active' || d.status === 'paused') &&
         d.validUntil !== null &&
         d.validUntil.getTime() <= now.getTime()
       ) {
@@ -622,6 +622,24 @@ describe('CustomDiscountService', () => {
       const { svc } = buildSvc();
       const result = await svc.expireOverdue(KG, NOW);
       expect(result.expiredIds).toEqual([]);
+    });
+
+    it('expires a paused discount whose valid_until has passed', async () => {
+      const { svc, repo } = buildSvc();
+      const created = await svc.create(
+        KG,
+        {
+          ...VALID_INPUT,
+          validFrom: new Date('2026-04-01T00:00:00.000Z'),
+          validUntil: new Date('2026-05-01T00:00:00.000Z'),
+        },
+        'staff-1',
+      );
+      repo.put(
+        CustomDiscount.fromState({ ...created.toState(), status: 'paused' }),
+      );
+      const result = await svc.expireOverdue(KG, NOW);
+      expect(result.expiredIds).toContain(created.id);
     });
   });
 

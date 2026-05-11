@@ -158,6 +158,41 @@ export class ChildGuardianRelationalRepository extends ChildGuardianRepository {
     );
   }
 
+  /**
+   * Conditional UPDATE keyed on `status = :expectedStatus`. Returns true on
+   * success, false when the expected status no longer matches (concurrent
+   * approve/reject/revoke won the race). Service maps false → throws
+   * `ChildGuardianStatusConflictError`. Closes FINDINGS.md SM2.
+   */
+  override async updateWithExpectedStatus(
+    guardian: ChildGuardian,
+    expectedStatus: string,
+  ): Promise<boolean> {
+    const m = this.manager();
+    const state = guardian.toState();
+    const result = await m
+      .createQueryBuilder()
+      .update(ChildGuardianEntity)
+      .set({
+        role: state.role,
+        status: state.status,
+        has_approval_rights: state.hasApprovalRights,
+        approved_by: state.approvedBy,
+        approved_at: state.approvedAt,
+        revoked_by: state.revokedBy,
+        revoked_at: state.revokedAt,
+        can_pickup: state.canPickup,
+        permissions: state.permissions,
+        permissions_updated_by: state.permissionsUpdatedBy,
+        permissions_updated_at: state.permissionsUpdatedAt,
+      })
+      .where('id = :id', { id: state.id })
+      .andWhere('kindergarten_id = :kg', { kg: state.kindergartenId })
+      .andWhere('status = :expected', { expected: expectedStatus })
+      .execute();
+    return (result.affected ?? 0) > 0;
+  }
+
   async countApprovalRights(
     kindergartenId: string,
     childId: string,

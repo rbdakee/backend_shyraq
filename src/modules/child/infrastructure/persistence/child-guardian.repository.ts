@@ -49,6 +49,27 @@ export abstract class ChildGuardianRepository {
 
   abstract update(guardian: ChildGuardian): Promise<void>;
 
+  /**
+   * Conditional UPDATE used by status transitions (approve / reject / revoke).
+   * Writes ALL fields (same as `update`) BUT the WHERE clause additionally
+   * requires `status = :expectedStatus`. Returns true if exactly one row was
+   * affected, false if status changed between the service's read and write
+   * (concurrent transition lost the race). Callers map false → throw
+   * `ChildGuardianStatusConflictError` for a 409 response.
+   *
+   * Closes FINDINGS.md SM2 — previously the plain `update` overwrote
+   * concurrent transitions silently (last writer wins).
+   *
+   * Default no-op fallback returns true so older test fakes keep compiling;
+   * the relational impl provides the real conditional UPDATE.
+   */
+  updateWithExpectedStatus(
+    guardian: ChildGuardian,
+    _expectedStatus: string,
+  ): Promise<boolean> {
+    return this.update(guardian).then(() => true);
+  }
+
   abstract countApprovalRights(
     kindergartenId: string,
     childId: string,

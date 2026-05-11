@@ -315,7 +315,7 @@ export class CustomDiscountRelationalRepository extends CustomDiscountRepository
           SET status = 'expired',
               updated_at = $2
         WHERE kindergarten_id = $1
-          AND status = 'active'
+          AND status IN ('active', 'paused')
           AND valid_until IS NOT NULL
           AND valid_until <= $2
         RETURNING id`,

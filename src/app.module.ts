@@ -1,8 +1,7 @@
+import path from 'path';
 import { Module } from '@nestjs/common';
 import { existsSync } from 'fs';
-import path from 'path';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { ServeStaticModule } from '@nestjs/serve-static';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { BullModule } from '@nestjs/bullmq';
 import { ScheduleModule as NestScheduleModule } from '@nestjs/schedule';
@@ -143,12 +142,11 @@ const resolveI18nPath = (): string => {
     BillingModule,
     ContentModule,
     DiagnosticsModule,
-    ServeStaticModule.forRoot({
-      rootPath: process.env.FILE_STORAGE_LOCAL_DIR
-        ? path.resolve(process.env.FILE_STORAGE_LOCAL_DIR)
-        : path.join(process.cwd(), 'uploads'),
-      serveRoot: '/static',
-    }),
+    // FINDINGS.md SP5 — `ServeStaticModule` removed. Uploaded media is now
+    // served by `MediaController` (`GET /api/v1/media/:kgId/:yyyyMm/:filename`)
+    // behind JwtAuthGuard + KindergartenScopeGuard + path-segment kg match.
+    // ServeStaticModule hooks at the Express layer and bypasses every
+    // NestJS guard, so it cannot be used for tenant-scoped files.
   ],
   providers: [
     // The interceptor establishes a tenant-scoped TypeORM transaction (with

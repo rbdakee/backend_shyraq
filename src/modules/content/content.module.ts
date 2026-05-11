@@ -6,6 +6,7 @@ import { GroupModule } from '@/modules/group/group.module';
 import { FileStoragePort } from '@/shared-kernel/storage/file-storage.port';
 import { LocalFileStorageAdapter } from '@/shared-kernel/storage/adapters/local-file-storage.adapter';
 import { AdminContentController } from './admin-content.controller';
+import { MediaController } from './media.controller';
 import { ContentRepository } from './content.repository';
 import { ContentService } from './content.service';
 import { ContentFeedService } from './content-feed.service';
@@ -84,6 +85,7 @@ function fileStorageProvider(): Provider {
     StaffStoriesController,
     ParentContentController,
     SaasContentController,
+    MediaController,
   ],
   providers: [
     fileStorageProvider(),
