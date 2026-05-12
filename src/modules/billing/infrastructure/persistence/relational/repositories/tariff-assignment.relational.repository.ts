@@ -220,13 +220,19 @@ export class TariffAssignmentRelationalRepository extends TariffAssignmentReposi
     // whose valid_until is already <= $validUntil are skipped (the
     // assignment is already closed in the past relative to the archive
     // date — nothing to do).
+    //
+    // `valid_until` is a `date` column (no time-of-day) — feed it the
+    // YYYY-MM-DD form. `updated_at` is a `timestamptz`, so it gets the
+    // actual archive instant (`validUntil` as a Date) — T7-M3 fix.
+    // Previously both columns received the date-only string, which
+    // silently stored `updated_at` at midnight UTC of the archive day.
     const result = (await this.manager().query(
       `UPDATE tariff_assignments
-          SET valid_until = $3, updated_at = $3
+          SET valid_until = $3, updated_at = $4
         WHERE kindergarten_id = $1
           AND child_id = $2
           AND (valid_until IS NULL OR valid_until > $3)`,
-      [kindergartenId, childId, toIsoDate(validUntil)],
+      [kindergartenId, childId, toIsoDate(validUntil), validUntil],
     )) as unknown;
     // pg driver returns `[rows, count]` for UPDATE/INSERT/DELETE; the
     // raw `query()` shape is `[rows: any[], affected: number]`.
