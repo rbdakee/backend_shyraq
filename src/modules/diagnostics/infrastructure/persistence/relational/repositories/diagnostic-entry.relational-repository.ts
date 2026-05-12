@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Repository } from 'typeorm';
 import { tenantStorage } from '@/database/tenant-storage';
+import { formatDateInTimezone } from '@/shared-kernel/domain/value-objects/day-of-week.vo';
 import { DiagnosticEntry } from '../../../../domain/entities/diagnostic-entry.entity';
 import {
   DiagnosticEntryListResult,
@@ -64,7 +65,7 @@ export class DiagnosticEntryRelationalRepository extends DiagnosticEntryReposito
         s.childId,
         s.templateId,
         s.specialistId,
-        s.assessmentDate.toISOString().slice(0, 10),
+        formatDateInTimezone(s.assessmentDate),
         JSON.stringify(s.data),
         s.summary,
         s.recommendations,
@@ -128,19 +129,19 @@ export class DiagnosticEntryRelationalRepository extends DiagnosticEntryReposito
     }
     if (filters.from !== undefined) {
       qb.andWhere('de.assessment_date >= :from', {
-        from: filters.from.toISOString().slice(0, 10),
+        from: formatDateInTimezone(filters.from),
       });
     }
     if (filters.to !== undefined) {
       qb.andWhere('de.assessment_date <= :to', {
-        to: filters.to.toISOString().slice(0, 10),
+        to: formatDateInTimezone(filters.to),
       });
     }
     if (filters.cursor) {
       const decoded = decodeCursor(filters.cursor);
       if (decoded) {
         qb.andWhere('(de.assessment_date, de.id) < (:cursorDate, :cursorId)', {
-          cursorDate: decoded.assessmentDate.toISOString().slice(0, 10),
+          cursorDate: formatDateInTimezone(decoded.assessmentDate),
           cursorId: decoded.id,
         });
       }

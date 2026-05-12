@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, Repository } from 'typeorm';
 import { tenantStorage } from '@/database/tenant-storage';
+import { formatDateInTimezone } from '@/shared-kernel/domain/value-objects/day-of-week.vo';
 import {
   ContentPost,
   ContentStatus,
@@ -243,7 +244,7 @@ export class ContentPostRelationalRepository extends ContentRepository {
     childId: string,
     date: Date,
   ): Promise<void> {
-    const isoDate = toIsoDate(date);
+    const isoDate = formatDateInTimezone(date);
     const m = this.manager();
     await m.query(
       `SELECT pg_advisory_xact_lock(hashtext('birthday:' || $1 || ':' || $2 || ':' || $3)::bigint)`,
@@ -258,10 +259,15 @@ export class ContentPostRelationalRepository extends ContentRepository {
   ): Promise<boolean> {
     const m = this.manager();
     // Convert published_at to Asia/Almaty calendar date and compare to the
-    // calendar date passed in (also normalised). The migration already
-    // creates `idx_content_posts_target_child` (partial WHERE NOT NULL)
-    // which is hit via the `target_child_id = $2` predicate.
-    const isoDate = toIsoDate(date);
+    // calendar date passed in (also normalised). B22a T2 / B17 MEDIUM#11:
+    // the predicate `DATE(published_at AT TIME ZONE 'Asia/Almaty')` is
+    // STABLE (not IMMUTABLE) so a plain btree index on `published_at`
+    // cannot be used. Migration `B22ContentBirthdayDateIndex` adds a
+    // partial functional index `idx_content_posts_birthday_date_almaty`
+    // ON `(kindergarten_id, target_child_id, DATE(published_at AT TIME
+    // ZONE 'Asia/Almaty'))` WHERE `content_type='birthday'` so this
+    // lookup is index-only.
+    const isoDate = formatDateInTimezone(date);
     const rows = (await m.query(
       `SELECT 1 AS one
          FROM content_posts
@@ -279,24 +285,4 @@ export class ContentPostRelationalRepository extends ContentRepository {
     const ctx = tenantStorage.getStore();
     return ctx?.entityManager ?? this.repo.manager;
   }
-}
-
-/**
- * Format a Date as `YYYY-MM-DD` in Asia/Almaty timezone (UTC+5, no DST).
- * This mirrors the SQL expression `DATE(published_at AT TIME ZONE 'Asia/Almaty')`
- * used in `existsBirthdayForChildOnDate` — both sides must agree on the
- * calendar date so idempotency checks are consistent regardless of the UTC
- * wall-clock time.
- */
-function toIsoDate(d: Date): string {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Almaty',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).formatToParts(d);
-  const year = parts.find((p) => p.type === 'year')?.value ?? '0000';
-  const month = parts.find((p) => p.type === 'month')?.value ?? '01';
-  const day = parts.find((p) => p.type === 'day')?.value ?? '01';
-  return `${year}-${month}-${day}`;
 }

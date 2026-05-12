@@ -97,11 +97,62 @@ export function startOfDayInTimezone(
   date: Date,
   timeZone: string = KG_DEFAULT_TIMEZONE,
 ): Date {
-  const ymd = new Intl.DateTimeFormat('en-CA', {
+  const ymd = formatDateInTimezone(date, timeZone);
+  return new Date(`${ymd}T00:00:00.000Z`);
+}
+
+/**
+ * Returns `YYYY-MM-DD` for the calendar day of `date` rendered in `timeZone`.
+ * Default Asia/Almaty (UTC+5, no DST). Use this everywhere that previously
+ * called `date.toISOString().slice(0, 10)` against a wall-clock date — that
+ * UTC-only formatter rolls over a day early for any kindergarten time after
+ * 19:00 local. Mirrors the SQL `DATE(ts AT TIME ZONE 'Asia/Almaty')`
+ * expression so JS/SQL stays consistent.
+ *
+ * Example: 2026-05-12T18:30:00Z → '2026-05-12' UTC, but '2026-05-12' Almaty;
+ * 2026-05-12T19:30:00Z → '2026-05-12' UTC, but '2026-05-13' Almaty (00:30
+ * next day).
+ */
+export function formatDateInTimezone(
+  date: Date,
+  timeZone: string = KG_DEFAULT_TIMEZONE,
+): string {
+  return new Intl.DateTimeFormat('en-CA', {
     timeZone,
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
   }).format(date);
-  return new Date(`${ymd}T00:00:00.000Z`);
+}
+
+/**
+ * Returns today's `YYYY-MM-DD` in `timeZone`. Tiny convenience wrapper over
+ * `formatDateInTimezone(new Date(), tz)` — exists so call sites read as
+ * `todayInTimezone()` rather than the longer compose. Tests should inject a
+ * `ClockPort.now()` and pass it to `formatDateInTimezone` directly to keep
+ * determinism; this helper is for HTTP-edge code paths where wiring a Clock
+ * would be overkill.
+ */
+export function todayInTimezone(
+  timeZone: string = KG_DEFAULT_TIMEZONE,
+): string {
+  return formatDateInTimezone(new Date(), timeZone);
+}
+
+/**
+ * Returns the midnight UTC instant for the first day of the month containing
+ * `date` rendered in `timeZone`. Mirrors `startOfDayInTimezone` but anchored
+ * to day=01. Used by billing flows (`buildPaymentCalendar`, `prepayInvoice`,
+ * monthly cron) that derive `period_start` from `clock.now()`.
+ *
+ * Example: at 2026-05-31T22:00:00Z (which is 2026-06-01T03:00 in Asia/Almaty)
+ * we want the June period — UTC midnight of 2026-06-01, NOT May.
+ */
+export function firstOfMonthInTimezone(
+  date: Date,
+  timeZone: string = KG_DEFAULT_TIMEZONE,
+): Date {
+  const ymd = formatDateInTimezone(date, timeZone);
+  // en-CA → 'YYYY-MM-DD'. Slice off the day, force '01'.
+  return new Date(`${ymd.slice(0, 7)}-01T00:00:00.000Z`);
 }

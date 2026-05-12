@@ -50,6 +50,7 @@ import { createTestApp, flushRedis, TestApp, truncateAll } from './helpers/app';
 import { BirthdayGenerationProcessor } from '@/modules/content/processors/birthday-generation.processor';
 import { ContentPublishProcessor } from '@/modules/content/processors/content-publish.processor';
 import { StoryCleanupProcessor } from '@/modules/content/processors/story-cleanup.processor';
+import { formatDateInTimezone } from '@/shared-kernel/domain/value-objects/day-of-week.vo';
 
 const SUPER_ADMIN_EMAIL = 'super-content@shyraq.test';
 const SUPER_ADMIN_PASSWORD = 'admin12345';
@@ -1064,11 +1065,14 @@ describe('B17 Content & Stories (e2e)', () => {
           '+77050100111',
         );
 
-        // Seed a child whose birthday is today (use today's MM-DD)
+        // Seed a child whose birthday is today in Asia/Almaty (the production
+        // birthday-generator anchors month/day on the Almaty calendar — see
+        // B22a T2 / H9 fix). Using `getUTCMonth/UTCDate` here would silently
+        // skip the post when the test runs after 19:00 UTC.
         const now = new Date();
-        const birthdayMonth = String(now.getUTCMonth() + 1).padStart(2, '0');
-        const birthdayDay = String(now.getUTCDate()).padStart(2, '0');
-        // Child born in 2020 on today's MM-DD
+        const todayAlmaty = formatDateInTimezone(now); // 'YYYY-MM-DD'
+        const [, birthdayMonth, birthdayDay] = todayAlmaty.split('-');
+        // Child born in 2020 on today's Almaty MM-DD
         const dob = `2020-${birthdayMonth}-${birthdayDay}`;
 
         const childId = await createChild(adminToken, {
@@ -1202,10 +1206,11 @@ describe('B17 Content & Stories (e2e)', () => {
           .set('Authorization', `Bearer ${adminToken}`)
           .expect(200);
 
-        // Birthday post for child
+        // Birthday post for child — anchor on Asia/Almaty calendar to match
+        // the production birthday-generator (B22a T2 / H9).
         const now = new Date();
-        const birthdayMonth = String(now.getUTCMonth() + 1).padStart(2, '0');
-        const birthdayDay = String(now.getUTCDate()).padStart(2, '0');
+        const todayAlmaty = formatDateInTimezone(now);
+        const [, birthdayMonth, birthdayDay] = todayAlmaty.split('-');
         const dob = `2020-${birthdayMonth}-${birthdayDay}`;
         // Update child's DOB to today's birthday so auto-gen works
         await ctx.dataSource.transaction(async (m) => {

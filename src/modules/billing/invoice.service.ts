@@ -48,6 +48,7 @@ import { TariffPlanRepository } from './infrastructure/persistence/tariff-plan.r
 import { HolidayService } from './holiday.service';
 import { PaymentAccountService } from './payment-account.service';
 import { roundKzt, subtractKzt } from '@/shared-kernel/domain/money';
+import { firstOfMonthInTimezone } from '@/shared-kernel/domain/value-objects/day-of-week.vo';
 
 const DEFAULT_DUE_DAY = 10; // monthly invoices fall due on the 10th of period
 const LATE_PICKUP_DUE_DAYS = 7;
@@ -522,8 +523,11 @@ export class InvoiceService {
     if (!tariffPlan) {
       throw new TariffPlanNotFoundError(assignment.tariffPlanId);
     }
-    const periodStart = startOfMonth(input.enrollmentDate);
-    const periodEnd = endOfMonth(input.enrollmentDate);
+    // SP2: anchor on Asia/Almaty so an enrollment landing right after
+    // local midnight (UTC still previous day) is billed against the new
+    // local calendar month, matching `monthly-billing.processor.ts`.
+    const periodStart = firstOfMonthInTimezone(input.enrollmentDate);
+    const periodEnd = endOfMonth(periodStart);
     const totalDays = daysBetweenInclusive(periodStart, periodEnd);
     const billableDays = daysBetweenInclusive(input.enrollmentDate, periodEnd);
     const nonBillableHolidays = await this.holidays.countNonBillableInRange(
@@ -645,7 +649,12 @@ export class InvoiceService {
       throw new BadRequestException('months_ahead_out_of_range');
     }
     const today = this.clock.now();
-    const startMonth = startOfMonth(today);
+    // SP2: anchor on Asia/Almaty calendar month — `startOfMonth(today)` under
+    // UTC math rolls a month back when called near Almaty midnight (e.g.
+    // 2026-05-31T22:00Z = 2026-06-01T03:00 Almaty → June, not May). The
+    // `firstOfMonthInTimezone` helper mirrors the SQL `DATE_TRUNC('month',
+    // ts AT TIME ZONE 'Asia/Almaty')` boundary used by `monthly-billing`.
+    const startMonth = firstOfMonthInTimezone(today);
     const endMonth = endOfMonth(addMonthsUtc(startMonth, monthsAhead - 1));
 
     const invoices = await this.invoices.findByChildId(
@@ -763,7 +772,9 @@ export class InvoiceService {
     }
 
     // Period: first day of the next month → last day of (next + months-1).
-    const periodStart = addMonthsUtc(startOfMonth(now), 1);
+    // SP2: anchor on Asia/Almaty so `clock.now()` near local midnight does
+    // not shift the prepayment horizon a month back.
+    const periodStart = addMonthsUtc(firstOfMonthInTimezone(now), 1);
     const periodEnd = endOfMonth(addMonthsUtc(periodStart, months - 1));
 
     const monthlyAmount = assignment.effectiveAmount(tariffPlan);
@@ -1260,9 +1271,11 @@ function monthsBetween(from: Date, to: Date): number {
 
 // ── pure date helpers ────────────────────────────────────────────────────
 
-function startOfMonth(d: Date): Date {
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
-}
+// `startOfMonth` (UTC) deliberately removed in B22a T2: every caller now
+// anchors on Asia/Almaty via `firstOfMonthInTimezone` from shared-kernel —
+// see SP2 in docs/FINDINGS.md. `endOfMonth` stays UTC because once the
+// canonical first-of-month (a midnight-UTC anchor) is established, the
+// last-of-month derivation is unambiguous arithmetic.
 
 function endOfMonth(d: Date): Date {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0));

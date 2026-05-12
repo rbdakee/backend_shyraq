@@ -4,6 +4,7 @@ import { NotificationPort } from '@/common/notifications/notification.port';
 import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
 import { ChildNotFoundError } from '@/modules/child/domain/errors/child-not-found.error';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { formatDateInTimezone } from '@/shared-kernel/domain/value-objects/day-of-week.vo';
 import { DiagnosticTemplateRepository } from './diagnostic-template.repository';
 import {
   DiagnosticEntryListResult,
@@ -112,7 +113,10 @@ export class DiagnosticEntryService {
       templateName: template.name,
       specialistId: persisted.specialistId,
       specialistType: template.specialistType,
-      assessmentDate: persisted.assessmentDate.toISOString().slice(0, 10),
+      // B18 T6-M7: assessment_date is a PG `date` column round-tripped as
+      // a midnight-UTC Date. Under Asia/Almaty contract we format in
+      // Asia/Almaty so the YYYY-MM-DD matches the staff-input wall-clock.
+      assessmentDate: formatDateInTimezone(persisted.assessmentDate),
       createdAt: persisted.createdAt,
     });
 
