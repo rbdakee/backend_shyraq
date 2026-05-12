@@ -27,19 +27,28 @@ import {
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { ChildGuardianRepository } from './infrastructure/persistence/child-guardian.repository';
 import {
+  ChildArchiveResult,
   ChildGroupHistoryRecord,
   ChildListFilters,
+  ChildReactivateResult,
   ChildRepository,
   PageRequest,
   PageResult,
 } from './infrastructure/persistence/child.repository';
+import {
+  BillingLifecyclePort,
+  NoopBillingLifecycleAdapter,
+} from './infrastructure/billing-lifecycle.port';
 import { ChildService } from './child.service';
 import { Child } from './domain/entities/child.entity';
 import { ChildGuardian } from './domain/entities/child-guardian.entity';
 import { AlreadyLinkedToChildError } from './domain/errors/already-linked-to-child.error';
 import { AlreadyPendingForChildError } from './domain/errors/already-pending-for-child.error';
 import { ChildAccessDeniedError } from './domain/errors/child-access-denied.error';
+import { ArchiveReasonRequiredError } from './domain/errors/archive-reason-required.error';
+import { ChildAlreadyArchivedError } from './domain/errors/child-already-archived.error';
 import { ChildIinAlreadyExistsError } from './domain/errors/child-iin-already-exists.error';
+import { ChildNotArchivedError } from './domain/errors/child-not-archived.error';
 import { ChildNotFoundError } from './domain/errors/child-not-found.error';
 import { ChildNotFoundForIinError } from './domain/errors/child-not-found-for-iin.error';
 import { DuplicateGuardianError } from './domain/errors/duplicate-guardian.error';
@@ -186,6 +195,47 @@ class FakeChildRepo extends ChildRepository {
     return Promise.resolve(
       [...this.children.values()].filter((c) => ids.includes(c.id)),
     );
+  }
+
+  // B21 T3: conditional UPDATE simulators with the same discriminated
+  // union the relational impl returns.
+  override archive(
+    kindergartenId: string,
+    childId: string,
+    archivedAt: Date,
+    archiveReason: string,
+  ): Promise<ChildArchiveResult> {
+    const child = this.children.get(childId);
+    if (!child || child.kindergartenId !== kindergartenId) {
+      return Promise.resolve({ kind: 'not-found' });
+    }
+    if (child.status.value === 'archived') {
+      return Promise.resolve({ kind: 'already-archived' });
+    }
+    if (child.status.value !== 'active') {
+      // Treat as already-archived for the discriminator — service layer
+      // wraps any non-active into a 409. Real impl rejects the same way
+      // via the WHERE clause.
+      return Promise.resolve({ kind: 'already-archived' });
+    }
+    child.archive(archivedAt, archiveReason, '');
+    return Promise.resolve({ kind: 'archived', child });
+  }
+
+  override reactivate(
+    kindergartenId: string,
+    childId: string,
+    reactivatedAt: Date,
+  ): Promise<ChildReactivateResult> {
+    const child = this.children.get(childId);
+    if (!child || child.kindergartenId !== kindergartenId) {
+      return Promise.resolve({ kind: 'not-found' });
+    }
+    if (child.status.value !== 'archived') {
+      return Promise.resolve({ kind: 'not-archived' });
+    }
+    child.reactivate(reactivatedAt, '');
+    return Promise.resolve({ kind: 'reactivated', child });
   }
 }
 
@@ -751,6 +801,38 @@ function makeUser(id: string, phone: string): User {
   });
 }
 
+/**
+ * Minimal BullMQ Queue stub that records `.add(name, data, opts)` calls.
+ * The real type from `bullmq` is wide; we cast through `unknown` so the
+ * test setup does not depend on Redis being available.
+ */
+class FakeLifecycleQueue {
+  jobs: Array<{
+    name: string;
+    data: unknown;
+    opts: unknown;
+  }> = [];
+
+  add(name: string, data: unknown, opts: unknown): Promise<unknown> {
+    this.jobs.push({ name, data, opts });
+    return Promise.resolve({ id: `job-${this.jobs.length}` });
+  }
+}
+
+class CountingBillingLifecycleAdapter extends NoopBillingLifecycleAdapter {
+  calls: Array<{ kg: string; childId: string; validUntil: Date }> = [];
+  closedCountToReturn = 1;
+
+  override closeActiveTariffAssignmentsForChild(
+    kindergartenId: string,
+    childId: string,
+    validUntil: Date,
+  ): Promise<{ closedCount: number }> {
+    this.calls.push({ kg: kindergartenId, childId, validUntil });
+    return Promise.resolve({ closedCount: this.closedCountToReturn });
+  }
+}
+
 function setup(
   opts: {
     rateLimitParentLinkLimit?: number;
@@ -766,6 +848,8 @@ function setup(
   const notification = new FakeNotification();
   const otpStore = new FakeOtpStore();
   const configService = makeFakeConfig(opts);
+  const billingLifecycle = new CountingBillingLifecycleAdapter();
+  const lifecycleQueue = new FakeLifecycleQueue();
   const service = new ChildService(
     children,
     guardians,
@@ -777,6 +861,8 @@ function setup(
     fakeDataSource,
     otpStore,
     configService,
+    billingLifecycle as BillingLifecyclePort,
+    lifecycleQueue as unknown as never,
   );
   return {
     clock,
@@ -788,6 +874,8 @@ function setup(
     notification,
     otpStore,
     configService,
+    billingLifecycle,
+    lifecycleQueue,
     service,
   };
 }
@@ -856,19 +944,181 @@ describe('ChildService — admin: createChild + updates', () => {
       fullName: 'A',
       dateOfBirth: new Date('2021-09-15'),
     });
-    // archive requires status='active'; createChild leaves card_created, so
-    // walk the state machine via the domain method directly. T3 will wire a
-    // first-class activate path through the service.
+    // archive requires status='active'; createChild leaves card_created.
     c.activate(NOW);
-    await service.archiveChild(KG, c.id, 'parent withdrew');
+    await service.archiveChild(KG, c.id, 'parent withdrew', 'staff-1');
     const got = await service.getChild(KG, c.id);
     expect(got.child.status.value).toBe('archived');
     expect(got.child.archiveReason).toBe('parent withdrew');
-    await service.restoreChild(KG, c.id);
+    await service.restoreChild(KG, c.id, 'staff-1');
     const after = await service.getChild(KG, c.id);
     expect(after.child.status.value).toBe('active');
     expect(after.child.archivedAt).toBeUndefined();
     expect(after.child.archiveReason).toBeUndefined();
+  });
+
+  describe('B21 T3 archive/reactivate side-effects', () => {
+    it('archive closes active tariff_assignments via BillingLifecyclePort', async () => {
+      const { service, billingLifecycle } = setup();
+      const c = await service.createChild(KG, {
+        fullName: 'A',
+        dateOfBirth: new Date('2021-09-15'),
+      });
+      c.activate(NOW);
+      await service.archiveChild(KG, c.id, 'parent withdrew', 'staff-1');
+      expect(billingLifecycle.calls).toHaveLength(1);
+      expect(billingLifecycle.calls[0]).toMatchObject({
+        kg: KG,
+        childId: c.id,
+      });
+    });
+
+    it('archive enqueues lifecycle:pro-rata-refund with attempts=3', async () => {
+      const { service, lifecycleQueue } = setup();
+      const c = await service.createChild(KG, {
+        fullName: 'A',
+        dateOfBirth: new Date('2021-09-15'),
+      });
+      c.activate(NOW);
+      await service.archiveChild(KG, c.id, 'parent withdrew', 'staff-1');
+      expect(lifecycleQueue.jobs).toHaveLength(1);
+      const job = lifecycleQueue.jobs[0];
+      expect(job.name).toBe('lifecycle:pro-rata-refund');
+      expect(job.data).toEqual({
+        kindergartenId: KG,
+        childId: c.id,
+        archivedAt: NOW.toISOString(),
+      });
+      expect(job.opts).toMatchObject({
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 60_000 },
+      });
+    });
+
+    it('archive emits notifyChildArchived with reason + actor', async () => {
+      const { service, notification } = setup();
+      const c = await service.createChild(KG, {
+        fullName: 'A',
+        dateOfBirth: new Date('2021-09-15'),
+      });
+      c.activate(NOW);
+      await service.archiveChild(KG, c.id, 'parent withdrew', 'staff-1');
+      const ev = notification.events.find((e) => e.type === 'child_archived');
+      expect(ev).toBeDefined();
+      expect(ev?.payload).toMatchObject({
+        kindergartenId: KG,
+        childId: c.id,
+        archiveReason: 'parent withdrew',
+        archivedByStaffId: 'staff-1',
+      });
+    });
+
+    it('archive throws ChildAlreadyArchivedError when child already archived', async () => {
+      const { service } = setup();
+      const c = await service.createChild(KG, {
+        fullName: 'A',
+        dateOfBirth: new Date('2021-09-15'),
+      });
+      c.activate(NOW);
+      await service.archiveChild(KG, c.id, 'parent withdrew', 'staff-1');
+      await expect(
+        service.archiveChild(KG, c.id, 'parent withdrew', 'staff-1'),
+      ).rejects.toBeInstanceOf(ChildAlreadyArchivedError);
+    });
+
+    it('archive throws ChildNotFoundError when child does not exist', async () => {
+      const { service } = setup();
+      await expect(
+        service.archiveChild(
+          KG,
+          '00000000-0000-0000-0000-000000000099',
+          'parent withdrew',
+          'staff-1',
+        ),
+      ).rejects.toBeInstanceOf(ChildNotFoundError);
+    });
+
+    it('archive throws ChildNotFoundError when child belongs to another kg', async () => {
+      const { service } = setup();
+      const c = await service.createChild(KG, {
+        fullName: 'A',
+        dateOfBirth: new Date('2021-09-15'),
+      });
+      c.activate(NOW);
+      await expect(
+        service.archiveChild(KG2, c.id, 'parent withdrew', 'staff-1'),
+      ).rejects.toBeInstanceOf(ChildNotFoundError);
+    });
+
+    it('archive throws ArchiveReasonRequiredError on empty reason', async () => {
+      const { service } = setup();
+      const c = await service.createChild(KG, {
+        fullName: 'A',
+        dateOfBirth: new Date('2021-09-15'),
+      });
+      c.activate(NOW);
+      await expect(
+        service.archiveChild(KG, c.id, '   ', 'staff-1'),
+      ).rejects.toBeInstanceOf(ArchiveReasonRequiredError);
+    });
+
+    it('reactivate returns { child, requires_new_tariff_assignment: true }', async () => {
+      const { service } = setup();
+      const c = await service.createChild(KG, {
+        fullName: 'A',
+        dateOfBirth: new Date('2021-09-15'),
+      });
+      c.activate(NOW);
+      await service.archiveChild(KG, c.id, 'parent withdrew', 'staff-1');
+      const result = await service.reactivateChild(KG, c.id, 'staff-2');
+      expect(result.requires_new_tariff_assignment).toBe(true);
+      expect(result.child.status.value).toBe('active');
+      expect(result.child.archivedAt).toBeUndefined();
+      expect(result.child.archiveReason).toBeUndefined();
+    });
+
+    it('reactivate emits notifyChildReactivated with actor id', async () => {
+      const { service, notification } = setup();
+      const c = await service.createChild(KG, {
+        fullName: 'A',
+        dateOfBirth: new Date('2021-09-15'),
+      });
+      c.activate(NOW);
+      await service.archiveChild(KG, c.id, 'parent withdrew', 'staff-1');
+      await service.reactivateChild(KG, c.id, 'staff-2');
+      const ev = notification.events.find(
+        (e) => e.type === 'child_reactivated',
+      );
+      expect(ev).toBeDefined();
+      expect(ev?.payload).toMatchObject({
+        kindergartenId: KG,
+        childId: c.id,
+        reactivatedByStaffId: 'staff-2',
+      });
+    });
+
+    it('reactivate throws ChildNotArchivedError when child is active', async () => {
+      const { service } = setup();
+      const c = await service.createChild(KG, {
+        fullName: 'A',
+        dateOfBirth: new Date('2021-09-15'),
+      });
+      c.activate(NOW);
+      await expect(
+        service.reactivateChild(KG, c.id, 'staff-1'),
+      ).rejects.toBeInstanceOf(ChildNotArchivedError);
+    });
+
+    it('reactivate throws ChildNotFoundError when child does not exist', async () => {
+      const { service } = setup();
+      await expect(
+        service.reactivateChild(
+          KG,
+          '00000000-0000-0000-0000-000000000099',
+          'staff-1',
+        ),
+      ).rejects.toBeInstanceOf(ChildNotFoundError);
+    });
   });
 
   it('updateChildPhoto sets and clears the URL', async () => {

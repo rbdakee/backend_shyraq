@@ -12,6 +12,8 @@ import databaseConfig from '@/database/config/database.config';
 import { TypeOrmConfigService } from '@/database/typeorm-config.service';
 import { AuthModule } from '@/modules/auth/auth.module';
 import authConfig from '@/modules/auth/config/auth.config';
+import { BillingModule } from '@/modules/billing/billing.module';
+import { BillingLifecycleBridgeModule } from '@/modules/billing/billing-lifecycle-bridge.module';
 import { ChildModule } from '@/modules/child/child.module';
 import { GroupModule } from '@/modules/group/group.module';
 import { KindergartenModule } from '@/modules/kindergarten/kindergarten.module';
@@ -145,6 +147,13 @@ const resolveI18nPath = (): string => {
     KindergartenModule,
     GroupModule,
     ChildModule,
+    // B21 T3: worker hosts the ProRataRefundProcessor (BillingModule) and
+    // imports ChildModule for the lifecycle queue. The global lifecycle
+    // bridge module wires the real `BillingLifecyclePort` adapter so
+    // worker-side flows that touch `ChildService.archive` (e.g. cron-driven
+    // archives) see the same binding as the API process.
+    BillingModule,
+    BillingLifecycleBridgeModule,
     // `WorkerWebsocketModule` is the worker's counterpart of the api's
     // `WebsocketModule`. It provides the same global tokens
     // (`WsBroadcaster` + `SocketIoServerProvider`) but bound to a

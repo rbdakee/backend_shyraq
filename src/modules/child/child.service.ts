@@ -1,6 +1,8 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
 import { ConfigService } from '@nestjs/config';
 import { InjectDataSource } from '@nestjs/typeorm';
+import { Queue } from 'bullmq';
 import { randomUUID } from 'node:crypto';
 import { DataSource } from 'typeorm';
 import { NotificationPort } from '@/common/notifications/notification.port';
@@ -14,6 +16,15 @@ import { StaffNotFoundError } from '@/modules/staff/domain/errors/staff-not-foun
 import { UserRepository } from '@/modules/users/infrastructure/persistence/user.repository';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { NotFoundError } from '@/shared-kernel/domain/errors';
+import { BillingLifecyclePort } from './infrastructure/billing-lifecycle.port';
+import {
+  LIFECYCLE_PRO_RATA_REFUND_JOB,
+  LIFECYCLE_QUEUE,
+  ProRataRefundJobData,
+} from './lifecycle-queue.constants';
+import { ArchiveReasonRequiredError } from './domain/errors/archive-reason-required.error';
+import { ChildAlreadyArchivedError } from './domain/errors/child-already-archived.error';
+import { ChildNotArchivedError } from './domain/errors/child-not-archived.error';
 import { ChildId } from '@/shared-kernel/domain/value-objects/child-id.vo';
 import { GuardianPermissions } from '@/shared-kernel/domain/value-objects/guardian-permissions.vo';
 import {
@@ -125,6 +136,8 @@ const KG_UUID_RE =
  */
 @Injectable()
 export class ChildService {
+  private readonly logger = new Logger(ChildService.name);
+
   constructor(
     private readonly children: ChildRepository,
     private readonly guardians: ChildGuardianRepository,
@@ -136,6 +149,15 @@ export class ChildService {
     @InjectDataSource() private readonly dataSource: DataSource,
     @Inject(OtpStorePort) private readonly otpStore: OtpStorePort,
     private readonly configService: ConfigService<AllConfigType>,
+    @Inject(BillingLifecyclePort)
+    private readonly billingLifecycle: BillingLifecyclePort,
+    // BullMQ queue is optional so service-unit tests can wire ChildService
+    // without spinning up a real Redis. The archive flow falls back to a
+    // noop enqueue when the queue is undefined; production wiring
+    // (`ChildModule.imports`) always provides it.
+    @Optional()
+    @InjectQueue(LIFECYCLE_QUEUE)
+    private readonly lifecycleQueue: Queue<ProRataRefundJobData> | undefined,
   ) {}
 
   // ── Children: admin reads / writes ──────────────────────────────────────
@@ -338,29 +360,207 @@ export class ChildService {
     return this.children.listGroupHistory(kindergartenId, childId);
   }
 
+  /**
+   * Archive an active child. B21 T3 implementation:
+   *
+   *   1. Domain validation of `reason` via `Child.archive` (delegated through
+   *      the repo's discriminated-union pattern — the repo's conditional
+   *      UPDATE handles the status-guard race, the entity's `archive` would
+   *      throw on bad state but here we trust the SQL to be the single
+   *      source of truth and only run domain-validation up-front on the
+   *      reason text).
+   *   2. Atomic conditional UPDATE `WHERE status='active' RETURNING *`.
+   *      0-row result distinguished into 404 (no child in kg) vs 409
+   *      (already archived) via the repo's typed discriminator.
+   *   3. Bulk-close every still-active tariff_assignment for the child
+   *      (`BillingLifecyclePort`) so the monthly cron stops invoicing.
+   *   4. Emit `child.archived` via `NotificationPort` (production wires
+   *      this to `notification_outbox`, so the row commits atomically with
+   *      the conditional UPDATE inside the ambient tenant TX).
+   *   5. Enqueue `lifecycle:pro-rata-refund` on the `lifecycle` BullMQ queue
+   *      (the worker process picks it up and computes the pro-rata refund
+   *      row for the current billing period).
+   *
+   * Trade-off decision (T3 step3): BullMQ enqueue runs INSIDE the ambient
+   * tenant TX. BullMQ writes to Redis, not the same PG TX — so a TX
+   * rollback after enqueue would leave an orphan job. We accept this on
+   * the basis that the processor (T3 step4) is idempotent: it re-checks
+   * `child.status='archived'` before creating a refund, and skips if the
+   * archive was actually rolled back. The simpler ordering keeps the
+   * service code linear; the alternative (post-commit hook) would require
+   * an outbox-like Redis-event-table pattern that's premature here.
+   * Documented for T6 review.
+   *
+   * Domain errors:
+   *   - `ChildNotFoundError`  (404) — no row matches (kg, id).
+   *   - `ChildAlreadyArchivedError` (409) — row exists but is already archived.
+   *   - `ArchiveReasonRequiredError` (422) — reason empty / too long.
+   *
+   * `archivedByStaffId` is captured for audit (logged + carried into the
+   * notification event) but not persisted on the children row itself —
+   * per-actor audit lives in the notification event payload and (future)
+   * `child_status_history` table.
+   */
   async archiveChild(
     kindergartenId: string,
     childId: string,
-    reason = '',
-    archivedByStaffId = '',
+    reason: string,
+    archivedByStaffId: string,
   ): Promise<Child> {
-    const child = await this.children.findById(kindergartenId, childId);
-    if (!child) throw new ChildNotFoundError(childId);
-    // T3 wires conditional repo UPDATE + child_status_history audit row.
-    child.archive(this.clock.now(), reason, archivedByStaffId);
-    await this.children.update(child);
-    return child;
+    // Reason validation is a domain invariant. Mirror `Child.archive`'s
+    // rule (non-empty + <= 500 chars after trim) so we surface the same
+    // error type without mutating any in-memory hydrate.
+    const trimmedReason = (reason ?? '').trim();
+    if (trimmedReason.length === 0 || trimmedReason.length > 500) {
+      throw new ArchiveReasonRequiredError(childId);
+    }
+    const now = this.clock.now();
+
+    const result = await this.children.archive(
+      kindergartenId,
+      childId,
+      now,
+      trimmedReason,
+    );
+    if (result.kind === 'not-found') {
+      // Lost a race with a concurrent delete (unlikely — children are
+      // soft-deleted via archive) or a cross-tenant probe slipped
+      // through. Surface the canonical 404.
+      throw new ChildNotFoundError(childId);
+    }
+    if (result.kind === 'already-archived') {
+      throw new ChildAlreadyArchivedError(childId);
+    }
+
+    // Close any still-active tariff_assignment so monthly billing stops.
+    let closedCount = 0;
+    try {
+      const close =
+        await this.billingLifecycle.closeActiveTariffAssignmentsForChild(
+          kindergartenId,
+          childId,
+          now,
+        );
+      closedCount = close.closedCount;
+    } catch (err) {
+      // Surface so the outer tenant TX rolls back the archive too —
+      // archiving without closing tariff would leave the cron running
+      // for a ghost child. Re-throw after logging context.
+      this.logger.error(
+        `archive_close_tariff_failed kg=${kindergartenId} child=${childId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      throw err;
+    }
+    this.logger.log(
+      `child_archived kg=${kindergartenId} child=${childId} by=${archivedByStaffId} closed_tariff_assignments=${closedCount}`,
+    );
+
+    // Notification — emits outbox event under ambient TX.
+    await this.notification.notifyChildArchived({
+      kindergartenId,
+      childId,
+      archivedAt: now,
+      archiveReason: trimmedReason,
+      archivedByStaffId,
+    });
+
+    // BullMQ enqueue. See trade-off doc above.
+    if (this.lifecycleQueue) {
+      try {
+        await this.lifecycleQueue.add(
+          LIFECYCLE_PRO_RATA_REFUND_JOB,
+          {
+            kindergartenId,
+            childId,
+            archivedAt: now.toISOString(),
+          },
+          {
+            // BullMQ retry: 3 attempts with exp-backoff 1m/2m/4m. The
+            // processor is idempotent so a retry is safe.
+            attempts: 3,
+            backoff: { type: 'exponential', delay: 60_000 },
+            removeOnComplete: true,
+            removeOnFail: false,
+          },
+        );
+      } catch (err) {
+        // Don't fail the archive if Redis is briefly unavailable — log
+        // and let an operator manually trigger a pro-rata refund. The
+        // alternative (rolling back the archive) is worse: the row
+        // already exists, the staff already saw the success, and the
+        // monthly cron is already gated by status='active'.
+        this.logger.warn(
+          `lifecycle_enqueue_failed kg=${kindergartenId} child=${childId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+
+    return result.child;
   }
 
+  /**
+   * Reactivate an archived child. B21 T3 implementation:
+   *
+   *   1. Atomic conditional UPDATE `WHERE status='archived' RETURNING *`,
+   *      clearing `archived_at` / `archive_reason`.
+   *   2. 0-row: distinguish 404 vs 409 via the repo's discriminator.
+   *   3. Emit `child.reactivated` outbox event.
+   *
+   * **NOT** restored automatically: tariff assignments. The admin must
+   * explicitly assign a fresh tariff via `POST /admin/tariff-assignments`
+   * — re-opening the previously-closed assignment would arguably
+   * back-date billing across the archive gap, which is rarely what the
+   * staff intend. The service returns a `requires_new_tariff_assignment`
+   * flag so the controller can include it in the response and the
+   * admin UI can highlight the next step.
+   */
+  async reactivateChild(
+    kindergartenId: string,
+    childId: string,
+    reactivatedByStaffId: string,
+  ): Promise<{ child: Child; requires_new_tariff_assignment: true }> {
+    const now = this.clock.now();
+    const result = await this.children.reactivate(kindergartenId, childId, now);
+    if (result.kind === 'not-found') {
+      throw new ChildNotFoundError(childId);
+    }
+    if (result.kind === 'not-archived') {
+      throw new ChildNotArchivedError(childId);
+    }
+
+    this.logger.log(
+      `child_reactivated kg=${kindergartenId} child=${childId} by=${reactivatedByStaffId}`,
+    );
+
+    await this.notification.notifyChildReactivated({
+      kindergartenId,
+      childId,
+      reactivatedAt: now,
+      reactivatedByStaffId,
+    });
+
+    return { child: result.child, requires_new_tariff_assignment: true };
+  }
+
+  /**
+   * Back-compat alias for the old `restoreChild` name. New callers (T4
+   * controller) should use `reactivateChild`. Kept until the controller
+   * lands so `child.service.spec.ts` keeps compiling.
+   */
   async restoreChild(
     kindergartenId: string,
     childId: string,
     reactivatedByStaffId = '',
   ): Promise<Child> {
-    const child = await this.children.findById(kindergartenId, childId);
-    if (!child) throw new ChildNotFoundError(childId);
-    child.reactivate(this.clock.now(), reactivatedByStaffId);
-    await this.children.update(child);
+    const { child } = await this.reactivateChild(
+      kindergartenId,
+      childId,
+      reactivatedByStaffId,
+    );
     return child;
   }
 

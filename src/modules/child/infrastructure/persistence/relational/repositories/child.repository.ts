@@ -11,8 +11,10 @@ import { tenantStorage } from '@/database/tenant-storage';
 import { Child } from '../../../../domain/entities/child.entity';
 import { ChildIinAlreadyExistsError } from '../../../../domain/errors/child-iin-already-exists.error';
 import {
+  ChildArchiveResult,
   ChildGroupHistoryRecord,
   ChildListFilters,
+  ChildReactivateResult,
   ChildRepository,
   PageRequest,
   PageResult,
@@ -245,6 +247,78 @@ export class ChildRelationalRepository extends ChildRepository {
       });
       return rows.map((r) => ChildMapper.toDomain(r));
     });
+  }
+
+  // ── B21 — Lifecycle conditional UPDATEs ────────────────────────────────
+
+  async archive(
+    kindergartenId: string,
+    childId: string,
+    archivedAt: Date,
+    archiveReason: string,
+  ): Promise<ChildArchiveResult> {
+    const m = this.manager().getRepository(ChildEntity);
+    const result = await m
+      .createQueryBuilder()
+      .update(ChildEntity)
+      .set({
+        status: 'archived',
+        archived_at: archivedAt,
+        archive_reason: archiveReason,
+        updated_at: archivedAt,
+      })
+      .where('id = :id', { id: childId })
+      .andWhere('kindergarten_id = :kg', { kg: kindergartenId })
+      .andWhere(`status = 'active'`)
+      .returning('*')
+      .execute();
+    if (result.raw?.length) {
+      // RETURNING * gives us the post-mutation row; rehydrate via findOne to
+      // ride the mapper rather than reimplement column→domain mapping here.
+      const row = await m.findOne({
+        where: { id: childId, kindergarten_id: kindergartenId },
+      });
+      if (row) return { kind: 'archived', child: ChildMapper.toDomain(row) };
+    }
+    // 0-row UPDATE — disambiguate 409 vs 404 with a single follow-up SELECT.
+    const existing = await m.findOne({
+      where: { id: childId, kindergarten_id: kindergartenId },
+    });
+    if (!existing) return { kind: 'not-found' };
+    return { kind: 'already-archived' };
+  }
+
+  async reactivate(
+    kindergartenId: string,
+    childId: string,
+    reactivatedAt: Date,
+  ): Promise<ChildReactivateResult> {
+    const m = this.manager().getRepository(ChildEntity);
+    const result = await m
+      .createQueryBuilder()
+      .update(ChildEntity)
+      .set({
+        status: 'active',
+        archived_at: null,
+        archive_reason: null,
+        updated_at: reactivatedAt,
+      })
+      .where('id = :id', { id: childId })
+      .andWhere('kindergarten_id = :kg', { kg: kindergartenId })
+      .andWhere(`status = 'archived'`)
+      .returning('*')
+      .execute();
+    if (result.raw?.length) {
+      const row = await m.findOne({
+        where: { id: childId, kindergarten_id: kindergartenId },
+      });
+      if (row) return { kind: 'reactivated', child: ChildMapper.toDomain(row) };
+    }
+    const existing = await m.findOne({
+      where: { id: childId, kindergarten_id: kindergartenId },
+    });
+    if (!existing) return { kind: 'not-found' };
+    return { kind: 'not-archived' };
   }
 
   // ── B16 — DiscountTargetResolver helpers ──────────────────────────────

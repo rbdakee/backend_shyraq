@@ -33,6 +33,7 @@ import { ChildEntity } from '@/modules/child/infrastructure/persistence/relation
 import { ChildGroupHistoryEntity } from '@/modules/child/infrastructure/persistence/relational/entities/child-group-history.entity';
 import { ChildGuardianEntity } from '@/modules/child/infrastructure/persistence/relational/entities/child-guardian.entity';
 import { ChildGuardianRelationalRepository } from '@/modules/child/infrastructure/persistence/relational/repositories/child-guardian.repository';
+import { NoopBillingLifecycleAdapter } from '@/modules/child/infrastructure/billing-lifecycle.port';
 import { ChildRelationalRepository } from '@/modules/child/infrastructure/persistence/relational/repositories/child.repository';
 import { GroupEntity } from '@/modules/group/infrastructure/persistence/relational/entities/group.entity';
 import { GroupMentorEntity } from '@/modules/group/infrastructure/persistence/relational/entities/group-mentor.entity';
@@ -244,6 +245,9 @@ describeIntegration('EnrollmentService — service-integration', () => {
       },
       get: (): unknown => undefined,
     } as unknown as ConfigService;
+    // B21 T3 added two new ChildService deps (BillingLifecyclePort and
+    // an optional BullMQ Queue). Integration spec doesn't archive children
+    // so a no-op port + undefined queue are sufficient.
     return new ChildService(
       childRepo,
       guardianRepo,
@@ -255,6 +259,8 @@ describeIntegration('EnrollmentService — service-integration', () => {
       dataSource,
       otpStore,
       configService,
+      new NoopBillingLifecycleAdapter(),
+      undefined,
     );
   }
 

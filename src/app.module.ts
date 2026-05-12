@@ -21,6 +21,7 @@ import { HealthModule } from './modules/health/health.module';
 import { AttendanceModule } from './modules/attendance/attendance.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { BillingModule } from './modules/billing/billing.module';
+import { BillingLifecycleBridgeModule } from './modules/billing/billing-lifecycle-bridge.module';
 import { ContentModule } from './modules/content/content.module';
 import { DiagnosticsModule } from './modules/diagnostics/diagnostics.module';
 import { CameraModule } from './modules/camera/camera.module';
@@ -140,6 +141,11 @@ const resolveI18nPath = (): string => {
     PickupModule,
     ParentRequestModule,
     BillingModule,
+    // B21 T3: global bridge that overrides the default no-op
+    // `BillingLifecyclePort` registered in `ChildModule` with the real
+    // adapter that calls into `TariffAssignmentRepository`. Must come
+    // after `BillingModule` so the underlying provider exists.
+    BillingLifecycleBridgeModule,
     ContentModule,
     DiagnosticsModule,
     // FINDINGS.md SP5 — `ServeStaticModule` removed. Uploaded media is now

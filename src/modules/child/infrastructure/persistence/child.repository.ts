@@ -2,6 +2,30 @@ import { Child } from '../../domain/entities/child.entity';
 
 export type ChildStatusFilter = 'card_created' | 'active' | 'archived';
 
+/**
+ * Result of a conditional state transition (`archive` / `reactivate`).
+ * Discriminated union so the service can map a 0-row UPDATE to the right
+ * error without a follow-up SELECT in the happy path:
+ *   - `'archived'` / `'reactivated'`  → mutation committed, `child` is the
+ *     post-mutation hydrate.
+ *   - `'already-archived'` (for archive) / `'not-archived'` (for reactivate)
+ *     → row exists but status guard failed → service throws 409.
+ *   - `'not-found'`                   → row not in this kg → service throws 404.
+ *
+ * The relational impl runs a conditional UPDATE first; on 0 rows it
+ * disambiguates with a single follow-up SELECT, so the common (happy) path
+ * is still one round-trip.
+ */
+export type ChildArchiveResult =
+  | { kind: 'archived'; child: Child }
+  | { kind: 'already-archived' }
+  | { kind: 'not-found' };
+
+export type ChildReactivateResult =
+  | { kind: 'reactivated'; child: Child }
+  | { kind: 'not-archived' }
+  | { kind: 'not-found' };
+
 export interface ChildListFilters {
   status?: ChildStatusFilter;
   currentGroupId?: string;
@@ -91,6 +115,52 @@ export abstract class ChildRepository {
    * an empty array without opening a transaction.
    */
   abstract findByIdsCrossTenant(ids: string[]): Promise<Child[]>;
+
+  // ── B21 — Lifecycle conditional UPDATEs ──────────────────────────────
+  //
+  // Both methods perform a single conditional UPDATE WHERE status=expected
+  // RETURNING * and translate 0-row results into a typed discriminator the
+  // service can map to a domain error. Non-abstract default stubs keep
+  // pre-B21 service-unit fakes compiling — they must override these for
+  // their own tests.
+
+  /**
+   * Conditional UPDATE `active → archived`. Writes `archived_at`,
+   * `archive_reason`, `updated_at` atomically when the row is currently in
+   * `status='active'`. Returns:
+   *   - `archived` (with hydrated Child) on success.
+   *   - `already-archived` when the row exists but status differs.
+   *   - `not-found` when no row matches the (kg, id) tuple.
+   *
+   * `archivedByStaffId` is not persisted on the children row itself —
+   * the service writes a separate `child_status_history` audit row.
+   * Default impl: not-found.
+   */
+  archive(
+    _kindergartenId: string,
+    _childId: string,
+    _archivedAt: Date,
+    _archiveReason: string,
+  ): Promise<ChildArchiveResult> {
+    return Promise.resolve({ kind: 'not-found' });
+  }
+
+  /**
+   * Conditional UPDATE `archived → active`. Clears `archived_at` and
+   * `archive_reason`. Returns:
+   *   - `reactivated` (with hydrated Child) on success.
+   *   - `not-archived` when row exists but status differs.
+   *   - `not-found` when no row matches the (kg, id) tuple.
+   *
+   * Default impl: not-found.
+   */
+  reactivate(
+    _kindergartenId: string,
+    _childId: string,
+    _reactivatedAt: Date,
+  ): Promise<ChildReactivateResult> {
+    return Promise.resolve({ kind: 'not-found' });
+  }
 
   // ── B16 — DiscountTargetResolver helpers ──────────────────────────────
   // These are non-abstract default-no-op methods to keep older test

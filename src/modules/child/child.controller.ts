@@ -290,7 +290,17 @@ export class ChildController {
     @Body() dto: ArchiveChildDto,
   ): Promise<ChildDto> {
     const kgId = requireTenant(t);
-    const child = await this.service.archiveChild(kgId, id, dto.reason ?? '');
+    // B21 T3 wires the real archive flow; T4 will replace this controller
+    // path with a dedicated DTO carrying both `reason` and the resolved
+    // `archivedByStaffId`. Passing an empty actor id here keeps the legacy
+    // path compiling — the service still emits the outbox event and
+    // closes tariff assignments.
+    const child = await this.service.archiveChild(
+      kgId,
+      id,
+      dto.reason ?? '',
+      '',
+    );
     return ChildPresenter.child(child);
   }
 
