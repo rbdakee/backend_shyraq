@@ -271,8 +271,7 @@ describeIntegration(
 
         const created = outcomes.filter((o) => o.kind === 'created');
         const skipped = outcomes.filter(
-          (o) =>
-            o.kind === 'skipped' && o.reason === 'refund_already_exists',
+          (o) => o.kind === 'skipped' && o.reason === 'refund_already_exists',
         );
 
         // Exactly one caller wrote the refund; the other four observed it

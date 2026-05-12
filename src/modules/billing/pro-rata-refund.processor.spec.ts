@@ -346,7 +346,9 @@ describe('ProRataRefundProcessor', () => {
     const w = wire();
     w.childRepo.child = makeActiveThenArchivedChild();
     w.invoiceRepo.current = makeInvoice(periodStart, periodEnd);
-    w.paymentRepo.paymentsByInvoiceId.set(INVOICE, [makeCompletedPayment(INVOICE)]);
+    w.paymentRepo.paymentsByInvoiceId.set(INVOICE, [
+      makeCompletedPayment(INVOICE),
+    ]);
 
     const result = await w.processor.process(
       makeJob({
@@ -474,7 +476,9 @@ describe('ProRataRefundProcessor', () => {
     const w = wire();
     w.childRepo.child = makeActiveThenArchivedChild();
     w.invoiceRepo.current = makeInvoice(periodStart, periodEnd);
-    w.paymentRepo.paymentsByInvoiceId.set(INVOICE, [makeCompletedPayment(INVOICE)]);
+    w.paymentRepo.paymentsByInvoiceId.set(INVOICE, [
+      makeCompletedPayment(INVOICE),
+    ]);
     // Two non-billable holidays AFTER the archive day (2026-06-15)
     // — drops refundable billable days from 15 to 13. Total billable
     // days drops from 30 to 28. Refund = 60000 * 13/28 ≈ 27857.14 → 27857.14.
