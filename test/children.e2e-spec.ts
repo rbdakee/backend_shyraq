@@ -243,6 +243,14 @@ describe('P5 children & guardians (e2e)', () => {
       .send({ full_name: 'A', date_of_birth: '2021-09-15' })
       .expect(201);
     const id = created.body.id as string;
+    // B21 T2 strict state machine: archive only accepts `status='active'`.
+    // Newly-created children start `card_created`; enrollment flow that
+    // activates them is exercised by other suites. Seed `status='active'`
+    // via direct SQL (matches the lifecycle e2e helper pattern).
+    await ctx.dataSource.transaction(async (m) => {
+      await m.query(`SET LOCAL app.bypass_rls = 'true'`);
+      await m.query(`UPDATE children SET status = 'active' WHERE id = $1`, [id]);
+    });
     await request(server)
       .patch(`/api/v1/children/${id}`)
       .set('Authorization', `Bearer ${a.adminToken}`)
