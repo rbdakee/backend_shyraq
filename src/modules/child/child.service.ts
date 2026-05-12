@@ -381,15 +381,32 @@ export class ChildService {
    *      (the worker process picks it up and computes the pro-rata refund
    *      row for the current billing period).
    *
-   * Trade-off decision (T3 step3): BullMQ enqueue runs INSIDE the ambient
-   * tenant TX. BullMQ writes to Redis, not the same PG TX — so a TX
-   * rollback after enqueue would leave an orphan job. We accept this on
-   * the basis that the processor (T3 step4) is idempotent: it re-checks
-   * `child.status='archived'` before creating a refund, and skips if the
-   * archive was actually rolled back. The simpler ordering keeps the
-   * service code linear; the alternative (post-commit hook) would require
-   * an outbox-like Redis-event-table pattern that's premature here.
-   * Documented for T6 review.
+   * Race handling (B21 T8 — fix for T6 C1 / T7 C1):
+   *
+   * The BullMQ enqueue runs INSIDE the ambient tenant TX — BullMQ writes
+   * to Redis, not the same PG TX, so without mitigation a worker could
+   * pick up the job before the producer commits and observe
+   * `status='active'` in PG. Two belt-and-suspenders mitigations:
+   *
+   *   1. `delay: 5_000` on the job — BullMQ does not deliver the job to
+   *      the worker for ~5s, which is well over any realistic
+   *      single-row commit latency. Under normal load the worker sees
+   *      the committed row on the first attempt.
+   *   2. The processor (`ProRataRefundProcessor`) throws a retryable
+   *      `ChildNotYetArchivedError` when its status re-check observes
+   *      a non-archived row AND the gap from `archivedAt` is within
+   *      `PRO_RATA_COMMIT_GRACE_MS` (60s). BullMQ then retries under
+   *      exp-backoff (1m / 2m / 4m). Outside the grace window the
+   *      processor treats it as a permanent skip (producer TX
+   *      genuinely rolled back — the BullMQ job is an orphan).
+   *
+   * Idempotency: the processor's advisory-lock + sentinel-reason scan
+   * still short-circuits any duplicate worker tick (the T3 race spec
+   * pins this — 5 concurrent runs ⇒ 1 refund row).
+   *
+   * A post-commit hook (TX outbox poll) is the theoretically cleaner
+   * pattern but premature here — the delay + retry combo covers every
+   * realistic commit-latency case with no schema change.
    *
    * Domain errors:
    *   - `ChildNotFoundError`  (404) — no row matches (kg, id).
@@ -466,7 +483,7 @@ export class ChildService {
       archivedByStaffId,
     });
 
-    // BullMQ enqueue. See trade-off doc above.
+    // BullMQ enqueue. See race-handling doc above.
     if (this.lifecycleQueue) {
       try {
         await this.lifecycleQueue.add(
@@ -477,12 +494,21 @@ export class ChildService {
             archivedAt: now.toISOString(),
           },
           {
+            // `delay` keeps the job invisible to the worker for 5s so
+            // the producer's ambient PG TX has time to commit before
+            // BullMQ delivers it (T8 fix for T6/T7 C1). The processor
+            // also throws a retryable error when status<>'archived'
+            // within the 60s grace window — see processor doc.
+            delay: 5_000,
             // BullMQ retry: 3 attempts with exp-backoff 1m/2m/4m. The
             // processor is idempotent so a retry is safe.
             attempts: 3,
             backoff: { type: 'exponential', delay: 60_000 },
             removeOnComplete: true,
-            removeOnFail: false,
+            // Retain failed jobs for 30d so an operator can inspect /
+            // retry via a future admin endpoint (B21 carry-forward to
+            // B22 — `lifecycle` DLQ surface).
+            removeOnFail: { age: 30 * 86400 },
           },
         );
       } catch (err) {

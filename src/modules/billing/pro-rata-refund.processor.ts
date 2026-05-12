@@ -17,10 +17,26 @@ import {
 } from '@/shared-kernel/domain/value-objects/day-of-week.vo';
 import { roundKzt } from '@/shared-kernel/domain/money';
 import { Refund } from './domain/entities/refund.entity';
+import { ChildNotYetArchivedError } from './domain/errors/child-not-yet-archived.error';
 import { InvoiceRepository } from './infrastructure/persistence/invoice.repository';
 import { KindergartenHolidayRepository } from './infrastructure/persistence/kindergarten-holiday.repository';
 import { PaymentRepository } from './infrastructure/persistence/payment.repository';
 import { RefundRepository } from './infrastructure/persistence/refund.repository';
+
+/**
+ * Grace window (ms) during which a `child_not_archived` re-check is
+ * treated as a producer-TX-not-yet-committed race rather than a permanent
+ * skip. Within this window the worker throws a retryable error so
+ * BullMQ's exp-backoff retries the job after the producer TX commits.
+ *
+ * The producer also wires `delay: PRODUCER_DELAY_MS` (see
+ * `child.service.ts`), so under normal conditions the job is not picked
+ * up until ~5s after the archive call returned. The 60s grace combined
+ * with BullMQ's 3-attempt retry at 1m / 2m / 4m means the worker keeps
+ * retrying for up to ~7m before giving up — long enough to weather any
+ * realistic commit delay or replica lag.
+ */
+export const PRO_RATA_COMMIT_GRACE_MS = 60_000;
 
 /**
  * Sentinel reason string written into `refunds.reason` for rows created
@@ -165,10 +181,35 @@ export class ProRataRefundProcessor extends WorkerHost {
     await this.refundRepo.acquireProRataAdvisoryLock(kindergartenId, childId);
 
     // Step 3: re-check the archive landed.
+    //
+    // Two sub-cases when the child is not yet observed as archived:
+    //   (a) Producer's PG TX has not committed yet — BullMQ delivered
+    //       Redis-side before the row materialised. We throw a
+    //       retryable error so BullMQ retries under exp-backoff; by the
+    //       next attempt the commit is almost certainly visible. The
+    //       producer also wires `delay: 5s` which makes this branch
+    //       rarely fire in practice (see ChildService.archiveChild).
+    //   (b) Producer's TX actually rolled back (e.g. close-tariff
+    //       failed after the conditional UPDATE returned a row). The
+    //       BullMQ job is an orphan — skip permanently so it doesn't
+    //       block the retry slot. We distinguish (a) vs (b) by the gap
+    //       between `archivedAt` (from the job payload) and `now()`:
+    //       within `PRO_RATA_COMMIT_GRACE_MS` it is (a); outside it is
+    //       (b). The grace window is generous (60s) so replica lag or
+    //       long-running close-tariff transactions don't hit the
+    //       permanent-skip branch.
     const child = await this.childRepo.findById(kindergartenId, childId);
     if (!child || child.status.value !== 'archived') {
+      const observedStatus = child?.status.value ?? 'absent';
+      const gapMs = Math.max(0, this.clock.now().getTime() - archivedAt.getTime());
+      if (gapMs < PRO_RATA_COMMIT_GRACE_MS) {
+        this.logger.warn(
+          `pro-rata-refund retry child_not_yet_archived kg=${kindergartenId} child=${childId} observed=${observedStatus} gapMs=${gapMs}`,
+        );
+        throw new ChildNotYetArchivedError(childId, observedStatus);
+      }
       this.logger.warn(
-        `pro-rata-refund skip child_not_archived kg=${kindergartenId} child=${childId}`,
+        `pro-rata-refund skip child_not_archived kg=${kindergartenId} child=${childId} observed=${observedStatus} gapMs=${gapMs}`,
       );
       return { kind: 'skipped', reason: 'child_not_archived' };
     }

@@ -16,7 +16,9 @@ import { InvoiceRepository } from './infrastructure/persistence/invoice.reposito
 import { KindergartenHolidayRepository } from './infrastructure/persistence/kindergarten-holiday.repository';
 import { PaymentRepository } from './infrastructure/persistence/payment.repository';
 import { RefundRepository } from './infrastructure/persistence/refund.repository';
+import { ChildNotYetArchivedError } from './domain/errors/child-not-yet-archived.error';
 import {
+  PRO_RATA_COMMIT_GRACE_MS,
   PRO_RATA_REFUND_REASON,
   ProRataRefundProcessor,
 } from './pro-rata-refund.processor';
@@ -429,9 +431,56 @@ describe('ProRataRefundProcessor', () => {
     expect(w.refundRepo.refunds).toHaveLength(0);
   });
 
-  it('skips when the child is not archived (race with rolled-back archive)', async () => {
-    const w = wire();
+  it('skips when the child is not archived outside the commit-grace window (orphan job)', async () => {
     // Child is still active — archive TX rolled back, BullMQ job is orphan.
+    // To distinguish from the in-grace race case, set the clock well past
+    // archivedAt + PRO_RATA_COMMIT_GRACE_MS so the processor treats it as
+    // a permanent skip (not retryable).
+    const lateClock = new FixedClock(
+      new Date(archivedAt.getTime() + PRO_RATA_COMMIT_GRACE_MS + 1_000),
+    );
+    const refundRepo = new FakeRefundRepo();
+    const invoiceRepo = new FakeInvoiceRepo();
+    const holidayRepo = new FakeHolidayRepo();
+    const paymentRepo = new FakePaymentRepo();
+    const childRepo = new FakeChildRepo();
+    const processor = new ProRataRefundProcessor(
+      refundRepo,
+      invoiceRepo,
+      holidayRepo,
+      paymentRepo,
+      childRepo,
+      lateClock,
+      fakeDataSource,
+    );
+
+    const active = Child.createNew({
+      id: ChildId.parse(CHILD),
+      kindergartenId: KindergartenId.parse(KG),
+      fullName: 'Айгерим',
+      dateOfBirth: new Date('2021-09-15'),
+      now: new Date('2026-04-01T00:00:00.000Z'),
+    });
+    active.activate(new Date('2026-04-01T00:00:00.000Z'));
+    childRepo.child = active;
+    invoiceRepo.current = makeInvoice(periodStart, periodEnd);
+
+    const result = await processor.process(
+      makeJob({
+        kindergartenId: KG,
+        childId: CHILD,
+        archivedAt: archivedAt.toISOString(),
+      }),
+    );
+
+    expect(result).toEqual({ kind: 'skipped', reason: 'child_not_archived' });
+    expect(refundRepo.refunds).toHaveLength(0);
+  });
+
+  it('throws ChildNotYetArchivedError when the child is not yet archived within the grace window (retryable race)', async () => {
+    const w = wire();
+    // Clock is exactly at archivedAt — gapMs = 0, well inside grace. The
+    // worker observed an uncommitted producer TX; throw so BullMQ retries.
     const active = Child.createNew({
       id: ChildId.parse(CHILD),
       kindergartenId: KindergartenId.parse(KG),
@@ -443,15 +492,15 @@ describe('ProRataRefundProcessor', () => {
     w.childRepo.child = active;
     w.invoiceRepo.current = makeInvoice(periodStart, periodEnd);
 
-    const result = await w.processor.process(
-      makeJob({
-        kindergartenId: KG,
-        childId: CHILD,
-        archivedAt: archivedAt.toISOString(),
-      }),
-    );
-
-    expect(result).toEqual({ kind: 'skipped', reason: 'child_not_archived' });
+    await expect(
+      w.processor.process(
+        makeJob({
+          kindergartenId: KG,
+          childId: CHILD,
+          archivedAt: archivedAt.toISOString(),
+        }),
+      ),
+    ).rejects.toBeInstanceOf(ChildNotYetArchivedError);
     expect(w.refundRepo.refunds).toHaveLength(0);
   });
 

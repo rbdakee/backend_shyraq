@@ -411,7 +411,7 @@ Email + password (не OTP). Access-токен — тот же JWT HS256 (`JWT_A
 - `UPDATE children SET status='archived', archived_at=NOW(), archive_reason=<reason>`.
 - `UPDATE tariff_assignments SET valid_until=CURRENT_DATE WHERE child_id=:id AND (valid_until IS NULL OR valid_until > CURRENT_DATE)`.
 - INSERT `notification_outbox (event_key='child.archived')` — guardians (кроме nanny).
-- Post-commit: enqueue BullMQ `lifecycle:pro-rata-refund {kindergartenId, childId, archivedAt}`.
+- BullMQ enqueue `lifecycle:pro-rata-refund {kindergartenId, childId, archivedAt}` внутри той же TX с `delay: 5s`. Worker всегда видит закомиченную строку: (1) `delay` даёт TX 5 секунд на commit; (2) если worker всё-таки опередил commit, processor бросает retryable `ChildNotYetArchivedError` в 60-секундном grace-окне, BullMQ ретраит exp-backoff (1m/2m/4m). После grace процессор фиксирует skip (producer TX откатился, job orphan).
 
 ---
 
