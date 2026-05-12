@@ -10,9 +10,11 @@ import { ChildId } from '@/shared-kernel/domain/value-objects/child-id.vo';
 import { KindergartenId } from '@/shared-kernel/domain/value-objects/kindergarten-id.vo';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { Invoice } from './domain/entities/invoice.entity';
+import { Payment } from './domain/entities/payment.entity';
 import { Refund } from './domain/entities/refund.entity';
 import { InvoiceRepository } from './infrastructure/persistence/invoice.repository';
 import { KindergartenHolidayRepository } from './infrastructure/persistence/kindergarten-holiday.repository';
+import { PaymentRepository } from './infrastructure/persistence/payment.repository';
 import { RefundRepository } from './infrastructure/persistence/refund.repository';
 import {
   PRO_RATA_REFUND_REASON,
@@ -158,6 +160,44 @@ class FakeInvoiceRepo extends InvoiceRepository {
   }
 }
 
+class FakePaymentRepo extends PaymentRepository {
+  paymentsByInvoiceId = new Map<string, Payment[]>();
+
+  acquirePaymentAdvisoryLock(): Promise<void> {
+    return Promise.resolve();
+  }
+  create(): Promise<Payment> {
+    return Promise.reject(new Error('not used'));
+  }
+  findById(): Promise<Payment | null> {
+    return Promise.resolve(null);
+  }
+  findByIdempotencyKey(): Promise<Payment | null> {
+    return Promise.resolve(null);
+  }
+  findByInvoiceId(_kg: string, invoiceId: string): Promise<Payment[]> {
+    return Promise.resolve(this.paymentsByInvoiceId.get(invoiceId) ?? []);
+  }
+  list(): Promise<Payment[]> {
+    return Promise.resolve([]);
+  }
+  findByProviderTxnIdCrossTenant(): Promise<Payment | null> {
+    return Promise.resolve(null);
+  }
+  markCompletedConditional(): Promise<Payment | null> {
+    return Promise.resolve(null);
+  }
+  markFailedConditional(): Promise<Payment | null> {
+    return Promise.resolve(null);
+  }
+  markProcessingConditional(): Promise<Payment | null> {
+    return Promise.resolve(null);
+  }
+  markRefundedConditional(): Promise<Payment | null> {
+    return Promise.resolve(null);
+  }
+}
+
 class FakeHolidayRepo extends KindergartenHolidayRepository {
   /** Map of `${YYYY-MM-DD}` for is_billable=false days. */
   nonBillableDays = new Set<string>();
@@ -247,17 +287,47 @@ function wire() {
   const refundRepo = new FakeRefundRepo();
   const invoiceRepo = new FakeInvoiceRepo();
   const holidayRepo = new FakeHolidayRepo();
+  const paymentRepo = new FakePaymentRepo();
   const childRepo = new FakeChildRepo();
   const clock = new FixedClock(NOW);
   const processor = new ProRataRefundProcessor(
     refundRepo,
     invoiceRepo,
     holidayRepo,
+    paymentRepo,
     childRepo,
     clock,
     fakeDataSource,
   );
-  return { refundRepo, invoiceRepo, holidayRepo, childRepo, clock, processor };
+  return {
+    refundRepo,
+    invoiceRepo,
+    holidayRepo,
+    paymentRepo,
+    childRepo,
+    clock,
+    processor,
+  };
+}
+
+function makeCompletedPayment(invoiceId: string, amount = 60000): Payment {
+  return Payment.fromState({
+    id: PAYMENT,
+    kindergartenId: KG,
+    invoiceId,
+    childId: CHILD,
+    payerUserId: null,
+    amount,
+    provider: 'mock',
+    providerTxnId: 'tx-1',
+    status: 'completed',
+    providerPayload: null,
+    paidAt: new Date('2026-06-10T00:00:00.000Z'),
+    refundId: null,
+    idempotencyKey: 'k-1',
+    createdAt: new Date('2026-06-10T00:00:00.000Z'),
+    updatedAt: new Date('2026-06-10T00:00:00.000Z'),
+  });
 }
 
 function makeJob(data: ProRataRefundJobData): Job<ProRataRefundJobData> {
@@ -276,6 +346,7 @@ describe('ProRataRefundProcessor', () => {
     const w = wire();
     w.childRepo.child = makeActiveThenArchivedChild();
     w.invoiceRepo.current = makeInvoice(periodStart, periodEnd);
+    w.paymentRepo.paymentsByInvoiceId.set(INVOICE, [makeCompletedPayment(INVOICE)]);
 
     const result = await w.processor.process(
       makeJob({
@@ -296,7 +367,29 @@ describe('ProRataRefundProcessor', () => {
     expect(w.refundRepo.refunds).toHaveLength(1);
     expect(w.refundRepo.refunds[0].reason).toBe(PRO_RATA_REFUND_REASON);
     expect(w.refundRepo.refunds[0].status).toBe('pending');
+    expect(w.refundRepo.refunds[0].paymentId).toBe(PAYMENT);
     expect(w.refundRepo.acquireCalls).toBe(1);
+  });
+
+  it('skips when the current invoice has no completed payment yet', async () => {
+    const w = wire();
+    w.childRepo.child = makeActiveThenArchivedChild();
+    w.invoiceRepo.current = makeInvoice(periodStart, periodEnd);
+    // No payment in paymentRepo — parent hasn't paid the current invoice.
+
+    const result = await w.processor.process(
+      makeJob({
+        kindergartenId: KG,
+        childId: CHILD,
+        archivedAt: archivedAt.toISOString(),
+      }),
+    );
+
+    expect(result).toEqual({
+      kind: 'skipped',
+      reason: 'no_payment_on_invoice',
+    });
+    expect(w.refundRepo.refunds).toHaveLength(0);
   });
 
   it('idempotency: skips when a prior pro-rata refund exists for the child', async () => {
@@ -381,6 +474,7 @@ describe('ProRataRefundProcessor', () => {
     const w = wire();
     w.childRepo.child = makeActiveThenArchivedChild();
     w.invoiceRepo.current = makeInvoice(periodStart, periodEnd);
+    w.paymentRepo.paymentsByInvoiceId.set(INVOICE, [makeCompletedPayment(INVOICE)]);
     // Two non-billable holidays AFTER the archive day (2026-06-15)
     // — drops refundable billable days from 15 to 13. Total billable
     // days drops from 30 to 28. Refund = 60000 * 13/28 ≈ 27857.14 → 27857.14.

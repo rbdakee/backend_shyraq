@@ -19,6 +19,7 @@ import { roundKzt } from '@/shared-kernel/domain/money';
 import { Refund } from './domain/entities/refund.entity';
 import { InvoiceRepository } from './infrastructure/persistence/invoice.repository';
 import { KindergartenHolidayRepository } from './infrastructure/persistence/kindergarten-holiday.repository';
+import { PaymentRepository } from './infrastructure/persistence/payment.repository';
 import { RefundRepository } from './infrastructure/persistence/refund.repository';
 
 /**
@@ -43,7 +44,8 @@ export type ProRataSkipReason =
   | 'refund_already_exists'
   | 'no_current_invoice'
   | 'no_billable_days_after_archive'
-  | 'computed_amount_zero_or_negative';
+  | 'computed_amount_zero_or_negative'
+  | 'no_payment_on_invoice';
 
 /**
  * ProRataRefundProcessor — BullMQ worker that creates the pro-rata refund
@@ -106,6 +108,7 @@ export class ProRataRefundProcessor extends WorkerHost {
     private readonly refundRepo: RefundRepository,
     private readonly invoiceRepo: InvoiceRepository,
     private readonly holidayRepo: KindergartenHolidayRepository,
+    private readonly paymentRepo: PaymentRepository,
     @Inject(ChildRepository) private readonly childRepo: ChildRepository,
     @Inject(ClockPort) private readonly clock: ClockPort,
     private readonly dataSource: DataSource,
@@ -232,17 +235,31 @@ export class ProRataRefundProcessor extends WorkerHost {
       return { kind: 'skipped', reason: 'computed_amount_zero_or_negative' };
     }
 
-    // Step 7: insert refund.
+    // Step 7: resolve a payment to attach the refund to. The refunds
+    // table requires non-null payment_id (FK to payments). The MVP
+    // semantics are: refund the parent's most recent completed payment
+    // on this invoice. When no payment exists yet (parent hasn't paid
+    // the current invoice), skip — the admin will surface a refund
+    // manually after the parent pays. T6 may relax this (issue a
+    // "preliminary refund" concept) but B21 stays conservative.
+    const payments = await this.paymentRepo.findByInvoiceId(
+      kindergartenId,
+      invoice.id,
+    );
+    const targetPayment = payments.find((p) => p.status === 'completed');
+    if (!targetPayment) {
+      this.logger.log(
+        `pro-rata-refund skip no_payment_on_invoice kg=${kindergartenId} child=${childId} invoice=${invoice.id}`,
+      );
+      return { kind: 'skipped', reason: 'no_payment_on_invoice' };
+    }
+
     const refundId = randomUUID();
     const now = this.clock.now();
     const refund = Refund.fromState({
       id: refundId,
       kindergartenId,
-      // Lifecycle refunds are produced before any payment is made (parent
-      // may not have paid the current invoice yet) — current schema
-      // requires a non-null payment_id, so we skip when no payment is on
-      // the invoice and surface this as the carry-forward to T6.
-      paymentId: '',
+      paymentId: targetPayment.id,
       invoiceId: invoice.id,
       amount: refundAmount,
       reason: PRO_RATA_REFUND_REASON,
@@ -253,9 +270,6 @@ export class ProRataRefundProcessor extends WorkerHost {
       updatedAt: now,
     });
 
-    // The Refund entity does not validate paymentId emptiness — leaving
-    // this as a known limitation that T6 will revisit (relax the schema
-    // or carry a separate "preliminary refund" concept).
     await this.refundRepo.create(refund);
 
     this.logger.log(

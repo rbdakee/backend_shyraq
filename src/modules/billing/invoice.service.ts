@@ -444,6 +444,29 @@ export class InvoiceService {
 
     let generated = 0;
     for (const assignment of assignments) {
+      // B21 T3 step5: defence-in-depth gate against billing archived
+      // children. T3 step3 closes their tariff_assignment at the archive
+      // moment via `closeActiveForChild`, so `findAllActiveAtDate` here
+      // should already exclude them. The status check below catches the
+      // narrow race where archive lands AFTER `periodStart` (the
+      // assignment's valid_until still covers periodStart, so it's
+      // returned, but the cron tick happens later in the day after the
+      // archive committed). Child repo is optional in the constructor —
+      // pre-B16 integration specs build InvoiceService without it, so we
+      // fall back to no-op when undefined.
+      if (this.children) {
+        const child = await this.children.findById(
+          kindergartenId,
+          assignment.childId,
+        );
+        if (!child || child.status.value === 'archived') {
+          this.logger.log(
+            `monthly: skipping child=${assignment.childId} — status=${child?.status.value ?? 'missing'}`,
+          );
+          continue;
+        }
+      }
+
       const tariffPlan = await this.tariffPlans.findById(
         kindergartenId,
         assignment.tariffPlanId,
