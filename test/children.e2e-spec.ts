@@ -249,7 +249,9 @@ describe('P5 children & guardians (e2e)', () => {
     // via direct SQL (matches the lifecycle e2e helper pattern).
     await ctx.dataSource.transaction(async (m) => {
       await m.query(`SET LOCAL app.bypass_rls = 'true'`);
-      await m.query(`UPDATE children SET status = 'active' WHERE id = $1`, [id]);
+      await m.query(`UPDATE children SET status = 'active' WHERE id = $1`, [
+        id,
+      ]);
     });
     await request(server)
       .patch(`/api/v1/children/${id}`)
