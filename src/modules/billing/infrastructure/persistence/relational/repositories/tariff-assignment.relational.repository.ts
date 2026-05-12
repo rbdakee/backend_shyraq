@@ -210,6 +210,34 @@ export class TariffAssignmentRelationalRepository extends TariffAssignmentReposi
     );
   }
 
+  async closeActiveForChild(
+    kindergartenId: string,
+    childId: string,
+    validUntil: Date,
+  ): Promise<{ closedCount: number }> {
+    // Single bulk UPDATE — clamps both NULL (open-ended) and
+    // strictly-greater valid_until windows down to `$validUntil`. Rows
+    // whose valid_until is already <= $validUntil are skipped (the
+    // assignment is already closed in the past relative to the archive
+    // date — nothing to do).
+    const result = (await this.manager().query(
+      `UPDATE tariff_assignments
+          SET valid_until = $3, updated_at = $3
+        WHERE kindergarten_id = $1
+          AND child_id = $2
+          AND (valid_until IS NULL OR valid_until > $3)`,
+      [kindergartenId, childId, toIsoDate(validUntil)],
+    )) as unknown;
+    // pg driver returns `[rows, count]` for UPDATE/INSERT/DELETE; the
+    // raw `query()` shape is `[rows: any[], affected: number]`.
+    let closedCount = 0;
+    if (Array.isArray(result) && result.length >= 2) {
+      const second = result[1];
+      if (typeof second === 'number') closedCount = second;
+    }
+    return { closedCount };
+  }
+
   async listActiveChildIdsByTariffPlanIds(
     kindergartenId: string,
     tariffPlanIds: string[],

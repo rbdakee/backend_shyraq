@@ -120,4 +120,27 @@ export abstract class TariffAssignmentRepository {
   ): Promise<string[]> {
     return Promise.resolve([]);
   }
+
+  /**
+   * B21 — bulk-close every still-active tariff_assignment for `childId` by
+   * setting `valid_until = $validUntil` where the existing window has no
+   * upper bound or extends past `$validUntil`. Returns the count of rows
+   * affected so the caller can log / surface the close to admins.
+   *
+   * Used by `ChildService.archive` (B21 T3) — archiving a child must stop
+   * future invoicing immediately. Open-ended assignments (`valid_until=NULL`)
+   * and assignments whose existing `valid_until` is still in the future are
+   * both clamped down. Assignments already closed in the past (`valid_until
+   * < $validUntil`) are left untouched — there's nothing to truncate.
+   *
+   * Default no-op so older test fakes keep compiling; the relational impl
+   * overrides with the real UPDATE.
+   */
+  closeActiveForChild(
+    _kindergartenId: string,
+    _childId: string,
+    _validUntil: Date,
+  ): Promise<{ closedCount: number }> {
+    return Promise.resolve({ closedCount: 0 });
+  }
 }
