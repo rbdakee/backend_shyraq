@@ -1085,6 +1085,8 @@ DTOs на уровне контроллера используют **snake_case*
 
 **Важно:** refund создаётся только в `status='pending'`. Выплата выполняется вручную через `POST /admin/refunds/:id/approve` (существующий endpoint, B13). Автоматического списания или вызова payment-provider в B21 нет.
 
+**Archive-day billing policy (B21 carry-forward):** текущая реализация считает день архивирования инклюзивно как использованный день оказания услуги — refund покрывает интервал `(archive_day, period_end]`, а не `[archive_day, period_end]`. То есть если ребёнка архивируют в первый день периода (день 1 из 30), возвращается `29/30` суммы; если в последний — `0`. Boundary-тесты в `pro-rata-refund.processor.spec.ts` фиксируют эту политику явными числами. Подтверждение продуктовой логики required — см. `IMPLEMENTATION_PLAN.md §5 Active` (B21 T6/T7 carry-forwards). При изменении политики (день архивирования не тарифицируется) дроп `+1` в `rawArchivedDays` + обновление boundary-тестов.
+
 ---
 
 ### Result

@@ -113,8 +113,20 @@ class FakeRefundRepo extends RefundRepository {
     this.acquireCalls += 1;
     return Promise.resolve();
   }
-  override findPendingProRataForChildSinceArchive(): Promise<Refund[]> {
-    return Promise.resolve(this.preExistingProRata);
+  override findPendingProRataForChildSinceArchive(
+    _kg: string,
+    _childId: string,
+    since: Date,
+  ): Promise<Refund[]> {
+    // Real repo filters with `r.created_at >= since` AND
+    // `r.reason = 'pro_rata_archive'`. The fake mirrors both filters so
+    // archive→reactivate→archive scenarios can be exercised: the second
+    // archive's `since` is later than the first refund's createdAt, so
+    // the first refund correctly drops out.
+    const filtered = this.preExistingProRata.filter(
+      (r) => r.reason === PRO_RATA_REFUND_REASON && r.createdAt >= since,
+    );
+    return Promise.resolve(filtered);
   }
 }
 
@@ -564,6 +576,126 @@ describe('ProRataRefundProcessor', () => {
       }),
     );
 
+    expect(result).toEqual({
+      kind: 'skipped',
+      reason: 'computed_amount_zero_or_negative',
+    });
+  });
+
+  // ── B21 T8 H3 — archive→reactivate→archive double refund ─────────────
+  it('creates a second refund for archive→reactivate→archive cycle (different archivedAt)', async () => {
+    const w = wire();
+    w.childRepo.child = makeActiveThenArchivedChild();
+    w.invoiceRepo.current = makeInvoice(periodStart, periodEnd);
+    w.paymentRepo.paymentsByInvoiceId.set(INVOICE, [
+      makeCompletedPayment(INVOICE),
+    ]);
+
+    // First archive on 2026-06-15 → creates the first refund.
+    const firstArchivedAt = new Date('2026-06-15T09:00:00.000Z');
+    const first = await w.processor.process(
+      makeJob({
+        kindergartenId: KG,
+        childId: CHILD,
+        archivedAt: firstArchivedAt.toISOString(),
+      }),
+    );
+    expect(first.kind).toBe('created');
+    expect(w.refundRepo.refunds).toHaveLength(1);
+
+    // Simulate reactivate + re-archive on 2026-06-20 — the second
+    // archive's `since` window (20th) is past the first refund's
+    // createdAt (15th), so the idempotency check correctly does NOT
+    // see the prior refund and the processor writes a second one.
+    // Seed the first refund into `preExistingProRata` to model the DB
+    // state visible at job time.
+    w.refundRepo.preExistingProRata = [...w.refundRepo.refunds];
+
+    const secondArchivedAt = new Date('2026-06-20T09:00:00.000Z');
+    // Re-archive the child (status was reset to active → archived
+    // again at the new timestamp).
+    const c2 = makeActiveThenArchivedChild();
+    c2.reactivate(secondArchivedAt, 'staff-2');
+    c2.archive(secondArchivedAt, 'second archive', 'staff-1');
+    w.childRepo.child = c2;
+    // Bump the clock so the in-grace branch doesn't fire for the
+    // second archive — we want to assert the create path.
+    const lateClock = new FixedClock(secondArchivedAt);
+    const reprocessor = new ProRataRefundProcessor(
+      w.refundRepo,
+      w.invoiceRepo,
+      w.holidayRepo,
+      w.paymentRepo,
+      w.childRepo,
+      lateClock,
+      fakeDataSource,
+    );
+
+    const second = await reprocessor.process(
+      makeJob({
+        kindergartenId: KG,
+        childId: CHILD,
+        archivedAt: secondArchivedAt.toISOString(),
+      }),
+    );
+
+    expect(second.kind).toBe('created');
+    expect(w.refundRepo.refunds).toHaveLength(2);
+  });
+
+  // ── B21 T8 C2 boundary — pro-rata math policy ──────────────────────
+  //
+  // Code currently treats `archivedDays` as inclusive of the archive
+  // day, so `refundableDays = total - archivedDays` excludes that day
+  // from the refund. In policy terms: "the archive day is billed; the
+  // refund covers (archive_day, period_end]". These boundary tests pin
+  // that policy with named numbers; if a product policy change flips
+  // semantics, these expectations are the bright line to flip too.
+  // See docs/Shyraq BP.md §12.7 (B21 carry-forward note).
+  it('boundary: archive on the first day of the period refunds (totalBillable - 1) days', () => {
+    // The processor unit math: totalDays=30, archivedDays=1, refund=
+    // 60000 * 29/30 = 58000. Asserted via the public happy-path.
+    const w = wire();
+    w.childRepo.child = makeActiveThenArchivedChild();
+    w.invoiceRepo.current = makeInvoice(periodStart, periodEnd);
+    w.paymentRepo.paymentsByInvoiceId.set(INVOICE, [
+      makeCompletedPayment(INVOICE),
+    ]);
+
+    return w.processor
+      .process(
+        makeJob({
+          kindergartenId: KG,
+          childId: CHILD,
+          archivedAt: new Date('2026-06-01T03:00:00.000Z').toISOString(),
+        }),
+      )
+      .then((result) => {
+        expect(result.kind).toBe('created');
+        if (result.kind === 'created') {
+          // 60000 * 29 / 30 = 58000.
+          expect(result.amountKzt).toBe(58000);
+        }
+      });
+  });
+
+  it('boundary: archive on the last day of the period yields 0 refundable days', async () => {
+    const w = wire();
+    w.childRepo.child = makeActiveThenArchivedChild();
+    // periodEnd inclusive at 2026-06-30. Archive on 2026-06-30 →
+    // archivedDays=30, refundableDays=0 → skip.
+    w.invoiceRepo.current = makeInvoice(periodStart, periodEnd);
+    w.paymentRepo.paymentsByInvoiceId.set(INVOICE, [
+      makeCompletedPayment(INVOICE),
+    ]);
+
+    const result = await w.processor.process(
+      makeJob({
+        kindergartenId: KG,
+        childId: CHILD,
+        archivedAt: new Date('2026-06-30T20:00:00.000Z').toISOString(),
+      }),
+    );
     expect(result).toEqual({
       kind: 'skipped',
       reason: 'computed_amount_zero_or_negative',

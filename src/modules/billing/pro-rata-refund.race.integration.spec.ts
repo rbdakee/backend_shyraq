@@ -27,6 +27,9 @@ import { randomUUID } from 'node:crypto';
 import { DataSource } from 'typeorm';
 import { ChildRelationalRepository } from '@/modules/child/infrastructure/persistence/relational/repositories/child.repository';
 import { ChildEntity } from '@/modules/child/infrastructure/persistence/relational/entities/child.entity';
+import { GroupEntity } from '@/modules/group/infrastructure/persistence/relational/entities/group.entity';
+import { KindergartenEntity } from '@/modules/kindergarten/infrastructure/persistence/relational/entities/kindergarten.entity';
+import { LocationEntity } from '@/modules/location/infrastructure/persistence/relational/entities/location.entity';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { InvoiceRelationalRepository } from './infrastructure/persistence/relational/repositories/invoice.relational.repository';
 import { KindergartenHolidayRelationalRepository } from './infrastructure/persistence/relational/repositories/kindergarten-holiday.relational.repository';
@@ -74,6 +77,9 @@ describeIntegration(
         database: process.env.DATABASE_NAME ?? 'shyraq',
         entities: [
           ChildEntity,
+          GroupEntity,
+          KindergartenEntity,
+          LocationEntity,
           InvoiceTypeOrmEntity,
           KindergartenHolidayTypeOrmEntity,
           PaymentTypeOrmEntity,

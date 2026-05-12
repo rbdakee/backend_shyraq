@@ -342,6 +342,15 @@ export class ProRataRefundProcessor extends WorkerHost {
    *   - `archivedBillableDays` = billable days from periodStart
    *     up-to-and-including the archive day (Asia/Almaty).
    *   - `refundableDays` = totalBillableDays - archivedBillableDays.
+   *
+   * **Archive-day billing policy (B21 carry-forward):** because
+   * `archivedBillableDays` counts the archive day INCLUSIVELY, the refund
+   * window is effectively `(archive_day, period_end]` — the kindergarten
+   * keeps payment for the day the child was archived. Boundary tests in
+   * `pro-rata-refund.processor.spec.ts` pin this with named numbers
+   * (archive on day 1 → refund 29/30 of amount; archive on last day →
+   * refund 0). Product confirmation required — see
+   * `IMPLEMENTATION_PLAN.md §5 Active` (B21 T6/T7 carry-forwards).
    */
   private async computeBillableDays(
     kindergartenId: string,
