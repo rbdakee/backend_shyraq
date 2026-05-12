@@ -934,7 +934,7 @@ DTOs на уровне контроллера используют **snake_case*
 - **Обновление доступных камер:** при смене `groups.current_location_id` (Mentor нажал "Следующее событие") — WS broadcast `group:{id}:location_changed` → Parent App перезапрашивает `/cctv/access`.
 - **Лимит одновременных зрителей** — определяется возможностями MediaMTX и сетью (не на уровне БД).
 
-<!-- B21: implementation in progress -->
+<!-- B21: demo-ready 2026-05-12 -->
 
 ## 12. Lifecycle of Child in the System
 
