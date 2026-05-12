@@ -844,19 +844,25 @@ describe('ChildService — admin: createChild + updates', () => {
     expect(updated.updatedAt.toISOString()).toBe('2026-04-28T13:00:00.000Z');
   });
 
-  it('archive/restore are idempotent', async () => {
+  it('archives an active child and reactivates it', async () => {
     const { service } = setup();
     const c = await service.createChild(KG, {
       fullName: 'A',
       dateOfBirth: new Date('2021-09-15'),
     });
-    await service.archiveChild(KG, c.id, 'reason');
-    await service.archiveChild(KG, c.id, 'again'); // idempotent
+    // archive requires status='active'; createChild leaves card_created, so
+    // walk the state machine via the domain method directly. T3 will wire a
+    // first-class activate path through the service.
+    c.activate(NOW);
+    await service.archiveChild(KG, c.id, 'parent withdrew');
     const got = await service.getChild(KG, c.id);
     expect(got.child.status.value).toBe('archived');
+    expect(got.child.archiveReason).toBe('parent withdrew');
     await service.restoreChild(KG, c.id);
     const after = await service.getChild(KG, c.id);
     expect(after.child.status.value).toBe('active');
+    expect(after.child.archivedAt).toBeUndefined();
+    expect(after.child.archiveReason).toBeUndefined();
   });
 
   it('updateChildPhoto sets and clears the URL', async () => {

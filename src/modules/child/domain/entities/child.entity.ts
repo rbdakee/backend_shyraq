@@ -2,9 +2,14 @@ import { ChildId } from '@/shared-kernel/domain/value-objects/child-id.vo';
 import { ChildStatus } from '@/shared-kernel/domain/value-objects/child-status.vo';
 import { Iin } from '@/shared-kernel/domain/value-objects/iin.vo';
 import { KindergartenId } from '@/shared-kernel/domain/value-objects/kindergarten-id.vo';
+import { ArchiveReasonRequiredError } from '../errors/archive-reason-required.error';
+import { ChildAlreadyArchivedError } from '../errors/child-already-archived.error';
+import { ChildNotArchivedError } from '../errors/child-not-archived.error';
 import { GroupTransferToSelfError } from '../errors/group-transfer-to-self.error';
 import { InvalidChildProfileError } from '../errors/invalid-child-profile.error';
 import { InvalidChildStatusTransitionError } from '../errors/invalid-child-status-transition.error';
+
+const ARCHIVE_REASON_MAX_LENGTH = 500;
 
 export type Gender = 'male' | 'female';
 
@@ -287,26 +292,53 @@ export class Child {
   }
 
   /**
-   * active|card_created → archived. Idempotent on already-archived rows
-   * (returns without writing). Carries an audit reason persisted alongside.
+   * Strict `active` → `archived` state transition. Throws:
+   *   - `ChildAlreadyArchivedError` (409) if the child is already archived.
+   *   - `InvalidChildStatusTransitionError` (409) if the child is in any
+   *     other non-`active` status (e.g. `card_created` — must be activated
+   *     first via `Child.activate()`).
+   *   - `ArchiveReasonRequiredError` (422) if `reason` is empty / whitespace-
+   *     only / longer than 500 chars after trim.
+   *
+   * `archivedByStaffId` records the actor for downstream audit (e.g. a
+   * `child_status_history` row written by the application service). It is
+   * not persisted on the `children` row itself — the `children` schema
+   * stores only `archived_at` and `archive_reason`; per-actor audit lives in
+   * a separate history table managed by the service layer.
    */
-  archive(reason: string, now: Date): void {
+  archive(now: Date, reason: string, archivedByStaffId: string): void {
+    void archivedByStaffId;
     if (this.status.equals(ChildStatus.ARCHIVED)) {
-      return;
+      throw new ChildAlreadyArchivedError(this.id);
+    }
+    if (!this.status.equals(ChildStatus.ACTIVE)) {
+      throw new InvalidChildStatusTransitionError(
+        this.status.value,
+        ChildStatus.ARCHIVED.value,
+      );
+    }
+    const trimmed = reason?.trim() ?? '';
+    if (trimmed.length === 0 || trimmed.length > ARCHIVE_REASON_MAX_LENGTH) {
+      throw new ArchiveReasonRequiredError(this.id);
     }
     this.status = ChildStatus.ARCHIVED;
     this.archivedAt = now;
-    this.archiveReason = reason;
+    this.archiveReason = trimmed;
     this.updatedAt = now;
   }
 
   /**
-   * archived → active. Restores an archived child card. Idempotent on
-   * already-active rows.
+   * Strict `archived` → `active` state transition. Throws
+   * `ChildNotArchivedError` (409) if the child is not currently archived.
+   * Clears `archivedAt` / `archiveReason` so the row is indistinguishable
+   * (in steady-state columns) from a never-archived active child; the
+   * status-change record lives in `child_status_history` written by the
+   * service layer with `reactivatedByStaffId` as actor.
    */
-  restore(now: Date): void {
+  reactivate(now: Date, reactivatedByStaffId: string): void {
+    void reactivatedByStaffId;
     if (!this.status.equals(ChildStatus.ARCHIVED)) {
-      return;
+      throw new ChildNotArchivedError(this.id);
     }
     this.status = ChildStatus.ACTIVE;
     this.archivedAt = undefined;

@@ -342,18 +342,24 @@ export class ChildService {
     kindergartenId: string,
     childId: string,
     reason = '',
+    archivedByStaffId = '',
   ): Promise<Child> {
     const child = await this.children.findById(kindergartenId, childId);
     if (!child) throw new ChildNotFoundError(childId);
-    child.archive(reason, this.clock.now());
+    // T3 wires conditional repo UPDATE + child_status_history audit row.
+    child.archive(this.clock.now(), reason, archivedByStaffId);
     await this.children.update(child);
     return child;
   }
 
-  async restoreChild(kindergartenId: string, childId: string): Promise<Child> {
+  async restoreChild(
+    kindergartenId: string,
+    childId: string,
+    reactivatedByStaffId = '',
+  ): Promise<Child> {
     const child = await this.children.findById(kindergartenId, childId);
     if (!child) throw new ChildNotFoundError(childId);
-    child.restore(this.clock.now());
+    child.reactivate(this.clock.now(), reactivatedByStaffId);
     await this.children.update(child);
     return child;
   }
