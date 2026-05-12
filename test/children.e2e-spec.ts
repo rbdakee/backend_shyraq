@@ -235,7 +235,7 @@ describe('P5 children & guardians (e2e)', () => {
     expect(res.body.meta.total).toBe(3);
   });
 
-  it('PATCH /children/:id updates profile, archive/restore is idempotent', async () => {
+  it('PATCH /children/:id updates profile, archive→409-on-replay→restore flow', async () => {
     const a = await createKgWithAdmin('children-4', '+77011115004');
     const created = await request(server)
       .post('/api/v1/children')
@@ -249,16 +249,20 @@ describe('P5 children & guardians (e2e)', () => {
       .send({ full_name: 'B' })
       .expect(200)
       .expect((r) => expect(r.body.full_name).toBe('B'));
+    // B21 T2/T4: archive_reason is now the required field name; double
+    // archive is no longer idempotent and surfaces 409.
     await request(server)
       .post(`/api/v1/children/${id}/archive`)
       .set('Authorization', `Bearer ${a.adminToken}`)
-      .send({ reason: 'gone' })
+      .send({ archive_reason: 'gone' })
       .expect(200)
       .expect((r) => expect(r.body.status).toBe('archived'));
     await request(server)
       .post(`/api/v1/children/${id}/archive`)
       .set('Authorization', `Bearer ${a.adminToken}`)
-      .expect(200);
+      .send({ archive_reason: 'second attempt' })
+      .expect(409)
+      .expect((r) => expect(r.body.error).toBe('child_already_archived'));
     await request(server)
       .post(`/api/v1/children/${id}/restore`)
       .set('Authorization', `Bearer ${a.adminToken}`)

@@ -273,12 +273,15 @@ export class ChildRelationalRepository extends ChildRepository {
       .returning('*')
       .execute();
     if (result.raw?.length) {
-      // RETURNING * gives us the post-mutation row; rehydrate via findOne to
-      // ride the mapper rather than reimplement column→domain mapping here.
-      const row = await m.findOne({
-        where: { id: childId, kindergarten_id: kindergartenId },
-      });
-      if (row) return { kind: 'archived', child: ChildMapper.toDomain(row) };
+      // Happy path: hydrate the post-mutation row directly from
+      // RETURNING * so we make a single SQL round-trip (T8 H5).
+      // pg-driver returns column values as already-typed JS objects
+      // (Date for timestamptz/date, string for varchar/text, …) so we
+      // can feed the raw row through the same mapper used by findOne.
+      return {
+        kind: 'archived',
+        child: ChildMapper.toDomain(this.hydrateRaw(m, result.raw[0])),
+      };
     }
     // 0-row UPDATE — disambiguate 409 vs 404 with a single follow-up SELECT.
     const existing = await m.findOne({
@@ -309,16 +312,34 @@ export class ChildRelationalRepository extends ChildRepository {
       .returning('*')
       .execute();
     if (result.raw?.length) {
-      const row = await m.findOne({
-        where: { id: childId, kindergarten_id: kindergartenId },
-      });
-      if (row) return { kind: 'reactivated', child: ChildMapper.toDomain(row) };
+      // Single round-trip hydrate from RETURNING * (T8 H5).
+      return {
+        kind: 'reactivated',
+        child: ChildMapper.toDomain(this.hydrateRaw(m, result.raw[0])),
+      };
     }
     const existing = await m.findOne({
       where: { id: childId, kindergarten_id: kindergartenId },
     });
     if (!existing) return { kind: 'not-found' };
     return { kind: 'not-archived' };
+  }
+
+  /**
+   * Build a `ChildEntity` from the raw `RETURNING *` row produced by the
+   * archive/reactivate conditional UPDATEs. node-postgres parses
+   * timestamptz columns into JS Dates by default; `date` columns come
+   * back as strings, which `ChildMapper.toDomain` already handles. We
+   * normalise into a fresh entity instance (not a plain object) so the
+   * mapper's `instanceof Date` branches work on the timestamp columns.
+   */
+  private hydrateRaw(
+    repo: Repository<ChildEntity>,
+    raw: Record<string, unknown>,
+  ): ChildEntity {
+    const entity = repo.create();
+    Object.assign(entity, raw);
+    return entity;
   }
 
   // ── B16 — DiscountTargetResolver helpers ──────────────────────────────
