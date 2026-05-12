@@ -149,6 +149,60 @@ export class RefundRelationalRepository extends RefundRepository {
     );
   }
 
+  // ── B21 T3 ProRataRefundProcessor helpers ─────────────────────────────
+
+  async acquireProRataAdvisoryLock(
+    kindergartenId: string,
+    childId: string,
+  ): Promise<void> {
+    const scope = `billing:pro-rata:${kindergartenId}:${childId}`;
+    await this.manager().query(
+      `SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`,
+      [scope],
+    );
+  }
+
+  async findPendingProRataForChildSinceArchive(
+    kindergartenId: string,
+    childId: string,
+    since: Date,
+  ): Promise<Refund[]> {
+    // Join refunds → invoices to filter by child_id; refund has no
+    // child_id column. Filter `reason = 'pro_rata_archive'` to scope
+    // strictly to lifecycle-issued rows so an admin-created refund on
+    // the same invoice does not silently make this look like a duplicate.
+    const m = this.manager();
+    const rows = (await m.query(
+      `SELECT r.*
+         FROM refunds r
+         JOIN invoices i ON i.id = r.invoice_id
+        WHERE r.kindergarten_id = $1
+          AND i.child_id = $2
+          AND r.reason = 'pro_rata_archive'
+          AND r.created_at >= $3
+        ORDER BY r.created_at DESC`,
+      [kindergartenId, childId, since],
+    )) as Array<Record<string, unknown>>;
+    return rows.map((raw) => {
+      // The raw rows come from the driver in snake_case. Re-shape into
+      // RefundTypeOrmEntity columns before handing to the mapper.
+      const ent = m.getRepository(RefundTypeOrmEntity).create({
+        id: raw.id as string,
+        kindergartenId: raw.kindergarten_id as string,
+        paymentId: raw.payment_id as string,
+        invoiceId: (raw.invoice_id as string) ?? null,
+        amount: Number(raw.amount),
+        reason: raw.reason as string,
+        status: raw.status as 'pending' | 'approved' | 'processed' | 'rejected',
+        processedBy: (raw.processed_by as string) ?? null,
+        providerRef: (raw.provider_ref as string) ?? null,
+        createdAt: raw.created_at as Date,
+        updatedAt: raw.updated_at as Date,
+      });
+      return RefundMapper.toDomain(ent);
+    });
+  }
+
   async getProcessedRefundsSumForInvoice(
     kindergartenId: string,
     invoiceId: string,

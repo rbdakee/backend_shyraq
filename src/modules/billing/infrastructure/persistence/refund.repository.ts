@@ -117,4 +117,41 @@ export abstract class RefundRepository {
     kindergartenId: string,
     invoiceId: string,
   ): Promise<number>;
+
+  // ── B21 T3 ProRataRefundProcessor helpers ─────────────────────────────
+  //
+  // Both methods carry default no-op implementations so older test fakes
+  // (B13 .. B20) keep compiling. The relational impl overrides each.
+
+  /**
+   * Acquires `pg_advisory_xact_lock(hashtext('billing:pro-rata:'||kgId||':'||childId))`
+   * to serialise concurrent ProRataRefundProcessor runs targeting the
+   * same archived child. Released automatically on TX commit / rollback.
+   *
+   * MUST be called inside an ambient TX — outside one the lock is
+   * released at the implicit per-statement boundary (no-op).
+   */
+  acquireProRataAdvisoryLock(
+    _kindergartenId: string,
+    _childId: string,
+  ): Promise<void> {
+    return Promise.resolve();
+  }
+
+  /**
+   * Returns refunds for the child that look like pro-rata-on-archive rows
+   * created on or after `since`. Implementation: joins refunds → invoices
+   * to filter by child_id (refund table has no child_id column), AND
+   * `reason = 'pro_rata_archive'` to scope to the lifecycle-issued rows.
+   * Used by the processor as the idempotency guard — a non-empty result
+   * means a prior run already wrote the refund row and the current job
+   * is a retry.
+   */
+  findPendingProRataForChildSinceArchive(
+    _kindergartenId: string,
+    _childId: string,
+    _since: Date,
+  ): Promise<Refund[]> {
+    return Promise.resolve([]);
+  }
 }

@@ -257,6 +257,28 @@ export class InvoiceRelationalRepository extends InvoiceRepository {
     );
   }
 
+  async findCurrentInvoiceForChildAt(
+    kindergartenId: string,
+    childId: string,
+    atDate: Date,
+  ): Promise<Invoice | null> {
+    const dateIso = toIsoDate(atDate);
+    const row = await this.manager()
+      .getRepository(InvoiceTypeOrmEntity)
+      .createQueryBuilder('inv')
+      .where('inv.kindergarten_id = :kg', { kg: kindergartenId })
+      .andWhere('inv.child_id = :cid', { cid: childId })
+      .andWhere('inv.period_start <= :d', { d: dateIso })
+      .andWhere('inv.period_end >= :d', { d: dateIso })
+      .andWhere('inv.status IN (:...statuses)', {
+        statuses: ['pending', 'partial', 'overdue'],
+      })
+      .orderBy('inv.period_start', 'DESC')
+      .limit(1)
+      .getOne();
+    return row ? InvoiceMapper.toDomain(row) : null;
+  }
+
   /**
    * Conditional UPDATE: applies `nextStatus` only if current row status is
    * one of `expected`. Returns the hydrated domain on success or `null`

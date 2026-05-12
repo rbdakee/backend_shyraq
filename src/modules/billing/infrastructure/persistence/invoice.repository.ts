@@ -152,4 +152,24 @@ export abstract class InvoiceRepository {
     kindergartenId: string,
     periodStart: Date,
   ): Promise<void>;
+
+  // ── B21 T3 ProRataRefundProcessor helpers ─────────────────────────────
+
+  /**
+   * Returns the single invoice (or null) for `childId` whose
+   * `[period_start, period_end]` window contains `atDate` AND whose
+   * status is one of pending|partial|overdue (i.e. has any remaining
+   * billed amount the pro-rata refund could compensate). If multiple
+   * rows match — rare unless a manual adjustment was inserted — the
+   * latest `period_start DESC` wins.
+   *
+   * Default no-op so older fakes compile; relational impl overrides.
+   */
+  findCurrentInvoiceForChildAt(
+    _kindergartenId: string,
+    _childId: string,
+    _atDate: Date,
+  ): Promise<Invoice | null> {
+    return Promise.resolve(null);
+  }
 }

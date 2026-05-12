@@ -2,6 +2,7 @@ import { Module, Provider } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ChildModule } from '@/modules/child/child.module';
+import { LIFECYCLE_QUEUE } from '@/modules/child/lifecycle-queue.constants';
 import { CustomDiscountRepository } from './custom-discount.repository';
 import { CustomDiscountApplicationRepository } from './custom-discount-application.repository';
 import { CustomDiscountService } from './custom-discount.service';
@@ -64,6 +65,7 @@ import {
   MonthlyBillingProcessor,
   MONTHLY_BILLING_QUEUE,
 } from './monthly-billing.processor';
+import { ProRataRefundProcessor } from './pro-rata-refund.processor';
 import { PaymentAccountService } from './payment-account.service';
 import { PaymentService } from './payment.service';
 import { RefundService } from './refund.service';
@@ -156,6 +158,11 @@ function fiscalReceiptProvider(): Provider {
     // override pattern as the monthly run. The processor +
     // scheduler live in `discount-expire.processor.ts`.
     BullModule.registerQueue({ name: DISCOUNT_EXPIRE_QUEUE }),
+    // B21 T3 step4 — host the ProRataRefundProcessor on the same
+    // `lifecycle` queue ChildService publishes to. Worker process picks
+    // up `lifecycle:pro-rata-refund` jobs and creates the pro-rata
+    // refund row in the child's current billing period.
+    BullModule.registerQueue({ name: LIFECYCLE_QUEUE }),
     // T7b: ChildModule re-exports `ChildGuardianRepository` so the parent
     // controllers can re-check guardian-of-child links + nanny role gate.
     ChildModule,
@@ -225,6 +232,7 @@ function fiscalReceiptProvider(): Provider {
     MonthlyBillingScheduler,
     DiscountExpireProcessor,
     DiscountExpireScheduler,
+    ProRataRefundProcessor,
   ],
   exports: [
     PaymentProviderPort,
