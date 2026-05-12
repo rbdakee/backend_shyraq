@@ -342,6 +342,8 @@ Email + password (не OTP). Access-токен — тот же JWT HS256 (`JWT_A
 | POST | `/admin/children/:id/transfer-group` | Перевод в другую группу. Создаёт запись в `child_group_history`. Emits `child.transferred` через outbox (менторы старой+новой группы + guardians). |
 | POST | `/admin/children/:id/archive` | Архивировать ребёнка. Закрывает `tariff_assignments`, enqueue BullMQ `lifecycle:pro-rata-refund`. |
 | POST | `/admin/children/:id/reactivate` | Реактивировать ребёнка. Возврат в `status='active'`. |
+| POST | `/admin/children/:id/restore` | **DEPRECATED (B22a) — возвращает 410 `endpoint_gone` c заголовком `Location: /api/v1/admin/children/:id/reactivate`.** Удалён контроллером B22a; alias-shim удалён полностью в B22b. Клиенты должны мигрировать на `/reactivate`. |
+| GET | `/admin/children/:id/status-history` | История изменений `children.status` (audit). Paginated `?limit=&offset=`. Response: `[{id, previous_status, new_status, previous_archive_reason, archive_reason, changed_by_user_id, changed_at}]` отсортирован `changed_at DESC`. См. §2.7.4. |
 | GET | `/admin/children/:id/guardians` | Все guardians ребёнка (+ статус одобрения, `has_approval_rights`). |
 | POST | `/admin/children/:id/guardians` | Добавить guardian вручную (админ может создать primary с самого начала). |
 | PATCH | `/admin/children/:id/guardians/:guardianId` | Изменить `role`, `can_pickup`. Изменение `has_approval_rights` — только через Primary Guardian's approval flow (см. Parent API). |
@@ -448,7 +450,72 @@ Email + password (не OTP). Access-токен — тот же JWT HS256 (`JWT_A
 - INSERT `notification_outbox (event_key='child.reactivated')` — guardians (кроме nanny).
 - Новый `tariff_assignments` **не создаётся автоматически**.
 
-**Error codes (§2.7):** `child_not_found`(404), `child_already_archived`(409), `child_not_archived`(409), `archive_reason_required`(422), `child_already_in_group`(409), `group_not_found`(404).
+#### 2.7.4 GET `/admin/children/:id/status-history` (B22a)
+
+**Auth:** `admin` role + `KindergartenScopeGuard`.
+
+**Query:** `limit?` (default 50, max 200), `offset?` (default 0).
+
+**Success 200:**
+```json
+{
+  "items": [
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440099",
+      "previous_status": "archived",
+      "new_status": "active",
+      "previous_archive_reason": "Переезд семьи в другой город",
+      "archive_reason": null,
+      "changed_by_user_id": "550e8400-e29b-41d4-a716-446655440007",
+      "changed_at": "2026-05-12T14:30:00.000Z"
+    },
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440098",
+      "previous_status": "active",
+      "new_status": "archived",
+      "previous_archive_reason": null,
+      "archive_reason": "Переезд семьи в другой город",
+      "changed_by_user_id": "550e8400-e29b-41d4-a716-446655440007",
+      "changed_at": "2026-05-10T10:00:00.000Z"
+    }
+  ],
+  "total": 2
+}
+```
+
+**Errors:** 401 `unauthorized`, 403 `forbidden`, 404 `child_not_found`, 429 `rate_limit_exceeded`.
+
+**Notes:**
+- История переходов хранится в `child_status_history` (RLS-scoped, REVOKE TRUNCATE — rows никогда не удаляются для compliance).
+- `previous_archive_reason` зафиксирован ДО того как `Child.reactivate()` сбрасывает `archive_reason` (audit гарантия).
+- `changed_by_user_id` — `users.id` инициатора (не `staff_members.id`).
+- Pagination через `offset` (per-child объём маленький, cursor не нужен).
+- Mentor + parent не имеют доступа к этому endpoint — статус в текущем виде они видят через основной child-detail.
+
+---
+
+#### 2.7.5 POST `/admin/children/:id/restore` (B22a — DEPRECATED)
+
+**Status:** ⚠️ **410 GONE** — endpoint удалён в B22a.
+
+**Response 410:**
+```json
+{
+  "error": {
+    "code": "endpoint_gone",
+    "message": "POST /admin/children/:id/restore is deprecated. Use POST /admin/children/:id/reactivate instead.",
+    "successor": "/api/v1/admin/children/:id/reactivate"
+  }
+}
+```
+
+**Headers:** `Location: /api/v1/admin/children/:id/reactivate`.
+
+Полное удаление shim'а — в B22b. Клиенты обязаны мигрировать на `/reactivate` до B22b merge.
+
+---
+
+**Error codes (§2.7):** `child_not_found`(404), `child_already_archived`(409), `child_not_archived`(409), `archive_reason_required`(422), `child_already_in_group`(409), `group_not_found`(404), `endpoint_gone`(410).
 
 ### 2.8 Schedule (Templates + Activity Events)
 
@@ -770,6 +837,25 @@ Qundylyq реализуется как `content_posts` с `content_type='qundyly
 | Метод | Путь | Назначение |
 |---|---|---|
 | POST | `/admin/qr/revoke-all/:userId` | Auth: `JwtAuthGuard` + `KindergartenScopeGuard` + `AdminScope`. Tenant-scoped: target user должен быть активным `staff_member` в kg вызывающего админа ИЛИ approved+non-revoked `child_guardian` ребёнка из kg вызывающего админа — иначе 403 `user_no_relationship_to_kindergarten`. 404 `user_not_found` если userId не существует. Bulk-revoke всех активных токенов пользователя: DB `revoked_at = NOW()` для всех активных строк `user_qr_tokens WHERE user_id=:userId AND revoked_at IS NULL` + `DEL qr:user:{userId}:identity` (next user GET сразу mintsит fresh). Plaintext-keyed `qr:token:{plaintext}` НЕ удаляется (admin не имеет plaintext-токенов, только их хэши); cache-TTL ≤24h задаёт верхнюю границу stale-cache exposure; следующий скан попадает в DB-recheck и возвращает 410 `qr_token_revoked`. Security-recourse при подозрении на компрометацию QR. Response: `{revoked_count: number}`. |
+
+### 2.24 Lifecycle DLQ — Admin Operator Surface (B22a)
+
+<!-- Implemented in B22a — exposes BullMQ `lifecycle` queue failed jobs (pro-rata refund + future lifecycle processors) for operator triage. -->
+
+**Auth:** `JwtAuthGuard` + `KindergartenScopeGuard` + `AdminScope`. Cross-kg listing допускается только super-admin'у; per-kg admin видит только jobs с `payload.kindergartenId` равным своему kg.
+
+| Метод | Путь | Назначение |
+|---|---|---|
+| GET | `/admin/lifecycle/failed-jobs` | List failed BullMQ jobs from `lifecycle` queue. Query: `limit?` (default 50, max 200), `cursor?` (offset-based for BullMQ `getFailed(start, end)` API). Response: `{items: [{id, name, payload, failed_reason, attempts_made, timestamp, finished_on}], next_cursor?}`. Per-kg admin видит только items где `payload.kindergartenId` matches caller's kg; super-admin видит всё. |
+| POST | `/admin/lifecycle/failed-jobs/:id/retry` | Re-enqueue failed job в `lifecycle` queue с тем же payload. Body пустой. Response 202: `{enqueued: true, job_id: string}`. Errors: 404 `lifecycle_job_not_found`, 409 `lifecycle_job_not_in_failed_state`, 403 `forbidden` (per-kg admin не имеет доступа к чужому kg job). |
+
+**Errors:** 401, 403 `forbidden`, 404 `lifecycle_job_not_found`, 409 `lifecycle_job_not_in_failed_state`, 429.
+
+**Notes:**
+- Backed by `LifecycleJobsService` использующий `@nestjs/bullmq`'s `getFailed(start, end)` API; `removeOnFail: { age: 30 * 86400 }` (B21 T8) гарантирует что failed jobs живут 30 дней до auto-cleanup.
+- Per-kg admin scoping реализуется в service-слое через payload-фильтр (BullMQ не знает о tenant'ах).
+- Retry endpoint полезен после исправления transient bugs в processor'е — re-enqueue вместо ручного UPDATE на DB-rows.
+- Полный список processor'ов в `lifecycle` queue: `pro-rata-refund` (B21). Будущие lifecycle-jobs наследуют этот же admin-surface.
 
 ---
 

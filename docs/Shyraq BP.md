@@ -1085,7 +1085,35 @@ DTOs на уровне контроллера используют **snake_case*
 
 **Важно:** refund создаётся только в `status='pending'`. Выплата выполняется вручную через `POST /admin/refunds/:id/approve` (существующий endpoint, B13). Автоматического списания или вызова payment-provider в B21 нет.
 
-**Archive-day billing policy (B21 carry-forward):** текущая реализация считает день архивирования инклюзивно как использованный день оказания услуги — refund покрывает интервал `(archive_day, period_end]`, а не `[archive_day, period_end]`. То есть если ребёнка архивируют в первый день периода (день 1 из 30), возвращается `29/30` суммы; если в последний — `0`. Boundary-тесты в `pro-rata-refund.processor.spec.ts` фиксируют эту политику явными числами. Подтверждение продуктовой логики required — см. `IMPLEMENTATION_PLAN.md §5 Active` (B21 T6/T7 carry-forwards). При изменении политики (день архивирования не тарифицируется) дроп `+1` в `rawArchivedDays` + обновление boundary-тестов.
+**Archive-day billing policy (B22a — final):** день архивирования **тарифицируется** (считается как использованный день оказания услуги — ребёнок ещё посещал сад в этот день, до момента архивирования). Refund покрывает интервал `(archive_day, period_end]`, а не `[archive_day, period_end]`. То есть если ребёнка архивируют в первый день периода (день 1 из 30), возвращается `29/30` суммы; если в последний — `0`. Boundary-тесты в `pro-rata-refund.processor.spec.ts` фиксируют политику явными числами (день 1 → `29/30`; день N → `0`). Решение зафиксировано в B22a T0 doc-sync — пересматривается только при явном запросе product owner. При изменении (день архивирования не тарифицируется) дропнуть `+1` в `rawArchivedDays` + обновление boundary-тестов.
+
+**Unpaid-invoice archive policy (B22a — deferred):** если ребёнка архивируют до того как родитель оплатил месячный счёт (нет `payments` со `status='completed'` для текущего invoice), `ProRataRefundProcessor` пропускает refund-job с `no_payment_on_invoice` skip-reason — `refunds.payment_id` имеет `NOT NULL` constraint, который не позволяет создать "предварительный" refund-row. Закрытие гэпа (либо relax constraint + новый refund-status `preliminary`, либо рекомендация админу выставить счёт credit вручную) — отложено к Phase B. До тех пор это документированная политика, а не баг.
+
+---
+
+### 12.8 Status history (audit log) — B22a
+
+**Трекинг:** каждое изменение `children.status` (archive / reactivate / первый flip `card_created → active`) пишется в audit-таблицу `child_status_history` атомарно в той же ambient TX что и conditional UPDATE статуса.
+
+**Поля:**
+- `previous_status`, `new_status` — `child_status` до и после транзакции.
+- `previous_archive_reason` — для `archived → active` фиксируется ДО того как `Child.reactivate()` сбрасывает `archive_reason` в `NULL` (иначе причина архивирования теряется навсегда).
+- `archive_reason` — текущая причина для `archived` state.
+- `changed_by_user_id` — `users.id` инициатора (`req.user.sub`), не `staff_members.id` (паттерн совпадает с `tariff_assignments.assigned_by`, `refunds.processed_by`).
+- `changed_at` — момент перехода (от инициатора-сервиса).
+
+**Атомарность:** INSERT происходит внутри той же ambient TX что и `UPDATE children`. Если history INSERT throws — archive/reactivate откатывается (test required: simulate INSERT failure → ACID guarantee).
+
+**Endpoint:** `GET /admin/children/:id/status-history?limit=&offset=` (admin scope, paginated) возвращает upo-date историю переходов. Доступно только админу — mentor и parent видят текущий статус через основной child detail endpoint.
+
+**Migration constraint:** CHECK `chk_valid_transition` ограничивает допустимые переходы:
+- `active → archived`
+- `archived → active`
+- `card_created → active`
+
+Запись с `card_created → archived` или прочими комбинациями отвергается на уровне DB (доменные инварианты в `Child.archive()`/`Child.reactivate()` это уже гарантируют, CHECK — defense-in-depth).
+
+**Retention:** audit-таблица никогда не truncate'ится (REVOKE TRUNCATE FROM `shyraq_app`); rows живут вечно для compliance.
 
 ---
 
