@@ -23,7 +23,9 @@ import {
   ApiNotFoundResponse,
   ApiOkResponse,
   ApiOperation,
+  ApiProperty,
   ApiTags,
+  ApiTooManyRequestsResponse,
   ApiUnauthorizedResponse,
   ApiUnprocessableEntityResponse,
 } from '@nestjs/swagger';
@@ -47,6 +49,7 @@ import {
   GuardianDto,
   InviteGuardianDto,
   ListChildrenQueryDto,
+  ReactivateChildDto,
   TransferChildGroupDto,
   UpdateChildDto,
   UpdateChildPhotoDto,
@@ -58,6 +61,19 @@ const TENANT_REQUIRED = 'tenant_required';
 function requireTenant(t: TenantContext): string {
   if (!t.kgId) throw new BadRequestException(TENANT_REQUIRED);
   return t.kgId;
+}
+
+/** Response shape for POST :id/reactivate — always includes the tariff hint. */
+class ReactivateChildResponseDto {
+  @ApiProperty({ type: ChildDto })
+  child!: ChildDto;
+
+  @ApiProperty({
+    example: true,
+    description:
+      'Always true — admin must create a new tariff assignment after reactivation.',
+  })
+  requires_new_tariff_assignment!: true;
 }
 
 /**
@@ -243,10 +259,26 @@ export class ChildController {
       'TX: UPDATE children.current_group_id + INSERT child_group_history(transferred_by_staff_id). 422 if target equals current.',
   })
   @ApiOkResponse({ type: ChildDto })
-  @ApiNotFoundResponse({ description: 'Child or target group not found.' })
-  @ApiUnprocessableEntityResponse({
-    description: 'group_transfer_to_self.',
+  @ApiBadRequestResponse({ description: 'Validation error.' })
+  @ApiUnauthorizedResponse({
+    description: 'Bearer missing / invalid / revoked.',
   })
+  @ApiForbiddenResponse({ description: 'Caller is not admin.' })
+  @ApiNotFoundResponse({ description: 'Child or target group not found.' })
+  @ApiConflictResponse({
+    description: 'No conflict scenarios; included for completeness.',
+  })
+  @ApiUnprocessableEntityResponse({
+    description: 'group_transfer_to_self — to_group_id equals current group.',
+    schema: {
+      example: {
+        statusCode: 422,
+        error: 'group_transfer_to_self',
+        message: 'group_transfer_to_self',
+      },
+    },
+  })
+  @ApiTooManyRequestsResponse({ description: 'Rate limited.' })
   async transferGroup(
     @Tenant() t: TenantContext,
     @Param('id', new ParseUUIDPipe()) id: string,
@@ -282,39 +314,160 @@ export class ChildController {
 
   @Post(':id/archive')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Archive a child card (idempotent).' })
+  @ApiOperation({
+    summary: 'Archive a child card.',
+    description:
+      'Closes any active tariff assignments and enqueues a pro-rata refund job. ' +
+      'Emits a child.archived outbox event. Idempotent at the HTTP level — ' +
+      'a second call returns 409 child_already_archived.',
+  })
   @ApiOkResponse({ type: ChildDto })
+  @ApiBadRequestResponse({
+    description: 'Validation error (e.g. blank reason).',
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Bearer missing / invalid / revoked.',
+  })
+  @ApiForbiddenResponse({ description: 'Caller is not admin.' })
+  @ApiNotFoundResponse({
+    description: 'Child not found.',
+    schema: {
+      example: {
+        statusCode: 404,
+        error: 'child_not_found',
+        message: 'child_not_found',
+      },
+    },
+  })
+  @ApiConflictResponse({
+    description: 'Child is already archived.',
+    schema: {
+      example: {
+        statusCode: 409,
+        error: 'child_already_archived',
+        message: 'child_already_archived',
+      },
+    },
+  })
+  @ApiUnprocessableEntityResponse({
+    description: 'archive_reason is empty or exceeds 500 characters.',
+    schema: {
+      example: {
+        statusCode: 422,
+        error: 'archive_reason_required',
+        message: 'archive_reason_required',
+      },
+    },
+  })
+  @ApiTooManyRequestsResponse({ description: 'Rate limited.' })
   async archive(
     @Tenant() t: TenantContext,
+    @CurrentUser() user: JwtPayload,
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: ArchiveChildDto,
   ): Promise<ChildDto> {
     const kgId = requireTenant(t);
-    // B21 T3 wires the real archive flow; T4 will replace this controller
-    // path with a dedicated DTO carrying both `reason` and the resolved
-    // `archivedByStaffId`. Passing an empty actor id here keeps the legacy
-    // path compiling — the service still emits the outbox event and
-    // closes tariff assignments.
+    const staffId = await this.service.resolveStaffMemberIdForUser(
+      kgId,
+      user!.sub,
+    );
     const child = await this.service.archiveChild(
       kgId,
       id,
-      dto.reason ?? '',
-      '',
+      dto.archive_reason,
+      staffId,
     );
     return ChildPresenter.child(child);
   }
 
+  @Post(':id/reactivate')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Reactivate an archived child.',
+    description:
+      'Clears archived_at / archive_reason and sets status back to active. ' +
+      'Tariff assignments are NOT restored automatically — the admin must ' +
+      'create a new assignment via POST /admin/tariff-assignments. ' +
+      'The response always includes requires_new_tariff_assignment: true as a hint.',
+  })
+  @ApiOkResponse({
+    type: ReactivateChildResponseDto,
+    description: 'Child reactivated; new tariff assignment required.',
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Bearer missing / invalid / revoked.',
+  })
+  @ApiForbiddenResponse({ description: 'Caller is not admin.' })
+  @ApiNotFoundResponse({
+    description: 'Child not found.',
+    schema: {
+      example: {
+        statusCode: 404,
+        error: 'child_not_found',
+        message: 'child_not_found',
+      },
+    },
+  })
+  @ApiConflictResponse({
+    description: 'Child is not archived.',
+    schema: {
+      example: {
+        statusCode: 409,
+        error: 'child_not_archived',
+        message: 'child_not_archived',
+      },
+    },
+  })
+  @ApiTooManyRequestsResponse({ description: 'Rate limited.' })
+  async reactivate(
+    @Tenant() t: TenantContext,
+    @CurrentUser() user: JwtPayload,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() _dto: ReactivateChildDto,
+  ): Promise<ReactivateChildResponseDto> {
+    const kgId = requireTenant(t);
+    const staffId = await this.service.resolveStaffMemberIdForUser(
+      kgId,
+      user!.sub,
+    );
+    const result = await this.service.reactivateChild(kgId, id, staffId);
+    return {
+      child: ChildPresenter.child(result.child),
+      requires_new_tariff_assignment: true,
+    };
+  }
+
+  /**
+   * @deprecated Use POST :id/reactivate instead.
+   * Kept for backwards compatibility with any pre-T4 callers. Will be removed
+   * in a future phase once clients have migrated to /reactivate.
+   */
   @Post(':id/restore')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Restore an archived child card (idempotent).' })
+  @ApiOperation({
+    summary:
+      '[Deprecated] Restore an archived child — use /reactivate instead.',
+    deprecated: true,
+  })
   @ApiOkResponse({ type: ChildDto })
+  @ApiUnauthorizedResponse({
+    description: 'Bearer missing / invalid / revoked.',
+  })
+  @ApiForbiddenResponse({ description: 'Caller is not admin.' })
+  @ApiNotFoundResponse({ description: 'Child not found.' })
+  @ApiConflictResponse({ description: 'Child is not archived.' })
   async restore(
     @Tenant() t: TenantContext,
+    @CurrentUser() user: JwtPayload,
     @Param('id', new ParseUUIDPipe()) id: string,
   ): Promise<ChildDto> {
     const kgId = requireTenant(t);
-    const child = await this.service.restoreChild(kgId, id);
-    return ChildPresenter.child(child);
+    const staffId = await this.service.resolveStaffMemberIdForUser(
+      kgId,
+      user!.sub,
+    );
+    const result = await this.service.reactivateChild(kgId, id, staffId);
+    return ChildPresenter.child(result.child);
   }
 
   // ── Guardians (admin) ──────────────────────────────────────────────────

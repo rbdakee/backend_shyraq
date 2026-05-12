@@ -32,6 +32,9 @@ import { KindergartenArchivedError } from '@/modules/kindergarten/domain/errors/
 import { KindergartenNotFoundError } from '@/modules/kindergarten/domain/errors/kindergarten-not-found.error';
 import { KindergartenSlugTakenError } from '@/modules/kindergarten/domain/errors/kindergarten-slug-taken.error';
 import { StaffAlreadyExistsError } from '@/modules/staff/domain/errors/staff-already-exists.error';
+import { ArchiveReasonRequiredError } from '@/modules/child/domain/errors/archive-reason-required.error';
+import { ChildAlreadyArchivedError } from '@/modules/child/domain/errors/child-already-archived.error';
+import { ChildNotArchivedError } from '@/modules/child/domain/errors/child-not-archived.error';
 import { ChildAccessDeniedError } from '@/modules/child/domain/errors/child-access-denied.error';
 import { ChildIinAlreadyExistsError } from '@/modules/child/domain/errors/child-iin-already-exists.error';
 import { DuplicateGuardianError } from '@/modules/child/domain/errors/duplicate-guardian.error';
@@ -136,7 +139,11 @@ export class DomainErrorFilter implements ExceptionFilter {
     if (err instanceof StaffAlreadyExistsError) return HttpStatus.CONFLICT;
     if (err instanceof FiscalSettingsForbiddenError)
       return HttpStatus.FORBIDDEN;
-    // Children & guardians
+    // Children & guardians — B21 archive/reactivate lifecycle errors
+    if (err instanceof ChildAlreadyArchivedError) return HttpStatus.CONFLICT;
+    if (err instanceof ChildNotArchivedError) return HttpStatus.CONFLICT;
+    if (err instanceof ArchiveReasonRequiredError)
+      return HttpStatus.UNPROCESSABLE_ENTITY;
     if (err instanceof ChildAccessDeniedError) return HttpStatus.FORBIDDEN;
     if (err instanceof NotPrimaryGuardianError) return HttpStatus.FORBIDDEN;
     if (err instanceof ChildIinAlreadyExistsError) return HttpStatus.CONFLICT;

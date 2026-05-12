@@ -7,6 +7,7 @@ export {
 } from './transfer-child-group.dto';
 export { UpdateChildPhotoDto } from './update-photo.dto';
 export { ArchiveChildDto } from './archive-child.dto';
+export { ReactivateChildDto } from './reactivate-child.dto';
 export {
   InviteGuardianDto,
   UpdateGuardianRolePickupDto,
