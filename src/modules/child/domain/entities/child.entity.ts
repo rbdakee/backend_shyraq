@@ -3,6 +3,7 @@ import { ChildStatus } from '@/shared-kernel/domain/value-objects/child-status.v
 import { Iin } from '@/shared-kernel/domain/value-objects/iin.vo';
 import { KindergartenId } from '@/shared-kernel/domain/value-objects/kindergarten-id.vo';
 import { ArchiveReasonRequiredError } from '../errors/archive-reason-required.error';
+import { ArchivedChildNotTransferableError } from '../errors/archived-child-not-transferable.error';
 import { ChildAlreadyArchivedError } from '../errors/child-already-archived.error';
 import { ChildNotArchivedError } from '../errors/child-not-archived.error';
 import { GroupTransferToSelfError } from '../errors/group-transfer-to-self.error';
@@ -245,12 +246,21 @@ export class Child {
   /**
    * Mutate `currentGroupId` from one group to another. The use-case is expected
    * to record a `child_group_history` row using the returned (from, to) pair.
-   * Throws if the target group equals the current group.
+   *
+   * Throws:
+   *   - `ArchivedChildNotTransferableError` (409) when the child is already
+   *     archived — archived children are inactive and should not be silently
+   *     re-grouped; the caller must reactivate first.
+   *   - `GroupTransferToSelfError` (422) when the target group equals the
+   *     current group.
    */
   transferToGroup(
     toGroupId: string,
     now: Date,
   ): { fromGroupId: string | null; toGroupId: string } {
+    if (this.status.equals(ChildStatus.ARCHIVED)) {
+      throw new ArchivedChildNotTransferableError(this.id);
+    }
     validateGroupId(toGroupId);
     if (
       this.currentGroupId !== undefined &&

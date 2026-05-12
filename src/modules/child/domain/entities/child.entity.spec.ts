@@ -3,6 +3,7 @@ import { Iin } from '@/shared-kernel/domain/value-objects/iin.vo';
 import { KindergartenId } from '@/shared-kernel/domain/value-objects/kindergarten-id.vo';
 import { Child } from './child.entity';
 import { ArchiveReasonRequiredError } from '../errors/archive-reason-required.error';
+import { ArchivedChildNotTransferableError } from '../errors/archived-child-not-transferable.error';
 import { ChildAlreadyArchivedError } from '../errors/child-already-archived.error';
 import { ChildNotArchivedError } from '../errors/child-not-archived.error';
 import { GroupTransferToSelfError } from '../errors/group-transfer-to-self.error';
@@ -65,6 +66,22 @@ describe('Child domain entity', () => {
     expect(() =>
       c.transferToGroup('00000000-0000-0000-0000-0000000000aa', NOW),
     ).toThrow(GroupTransferToSelfError);
+  });
+
+  it('transferToGroup throws ArchivedChildNotTransferableError when the child is archived', () => {
+    const c = Child.createNew({
+      id: ID,
+      kindergartenId: KG,
+      fullName: 'A',
+      dateOfBirth: new Date('2021-09-15'),
+      currentGroupId: '00000000-0000-0000-0000-0000000000aa',
+      now: NOW,
+    });
+    c.activate(NOW);
+    c.archive(NOW, 'family moved', STAFF_ID);
+    expect(() =>
+      c.transferToGroup('00000000-0000-0000-0000-0000000000bb', NOW),
+    ).toThrow(ArchivedChildNotTransferableError);
   });
 
   it('activate requires status=card_created', () => {

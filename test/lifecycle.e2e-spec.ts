@@ -532,13 +532,11 @@ describe('Lifecycle E2E (B21 T5)', () => {
   });
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // Scenario H: transfer-group of archived child
-  // Note: adapts to actual service behaviour. The service does NOT explicitly
-  // block transfers for archived children — Child.transferToGroup does not
-  // check status. So we expect 200 (transfer proceeds even when archived).
+  // Scenario H: transfer-group of archived child → 409
+  // B21 T8 H4: archived children are inactive and cannot be transferred.
   // ═══════════════════════════════════════════════════════════════════════════
 
-  it('transfers an archived child to a new group (service allows it)', async () => {
+  it('rejects group transfer for an archived child with 409 archived_child_not_transferable', async () => {
     const child = await createActiveChild(kgAAdminToken, 'H');
 
     // Create a group
@@ -556,20 +554,13 @@ describe('Lifecycle E2E (B21 T5)', () => {
       'To test transfer after archive',
     );
 
-    // Transfer of archived child — service does not block, expects 200
+    // Transfer of archived child — service blocks with 409.
     const transferRes = await request(server)
       .post(`/api/v1/children/${child.id}/transfer`)
       .set('Authorization', `Bearer ${kgAAdminToken}`)
-      .send({ to_group_id: groupId, reason: 'post-archive transfer' });
-
-    // Accept either 200 (transfer allowed) or 409 (blocked) — document actual behaviour
-    expect([200, 409]).toContain(transferRes.status);
-    if (transferRes.status === 200) {
-      expect(transferRes.body.current_group_id).toBe(groupId);
-    } else {
-      // 409: service blocks transfer for archived children
-      expect(transferRes.body.error).toBeDefined();
-    }
+      .send({ to_group_id: groupId, reason: 'post-archive transfer' })
+      .expect(409);
+    expect(transferRes.body.error).toBe('archived_child_not_transferable');
   });
 
   // ═══════════════════════════════════════════════════════════════════════════
