@@ -201,7 +201,10 @@ export class ProRataRefundProcessor extends WorkerHost {
     const child = await this.childRepo.findById(kindergartenId, childId);
     if (!child || child.status.value !== 'archived') {
       const observedStatus = child?.status.value ?? 'absent';
-      const gapMs = Math.max(0, this.clock.now().getTime() - archivedAt.getTime());
+      const gapMs = Math.max(
+        0,
+        this.clock.now().getTime() - archivedAt.getTime(),
+      );
       if (gapMs < PRO_RATA_COMMIT_GRACE_MS) {
         this.logger.warn(
           `pro-rata-refund retry child_not_yet_archived kg=${kindergartenId} child=${childId} observed=${observedStatus} gapMs=${gapMs}`,
