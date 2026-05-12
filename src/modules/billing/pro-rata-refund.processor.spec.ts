@@ -41,7 +41,9 @@ class FakeChildRepo extends ChildRepository {
     return Promise.resolve();
   }
   findById(_kg: string, id: string): Promise<Child | null> {
-    return Promise.resolve(this.child && this.child.id === id ? this.child : null);
+    return Promise.resolve(
+      this.child && this.child.id === id ? this.child : null,
+    );
   }
   findByKindergartenAndIin(): Promise<Child | null> {
     return Promise.resolve(null);
@@ -175,11 +177,7 @@ class FakeHolidayRepo extends KindergartenHolidayRepository {
   list(): Promise<never[]> {
     return Promise.resolve([]);
   }
-  countNonBillableInRange(
-    _kg: string,
-    from: Date,
-    to: Date,
-  ): Promise<number> {
+  countNonBillableInRange(_kg: string, from: Date, to: Date): Promise<number> {
     let n = 0;
     for (const ds of this.nonBillableDays) {
       const d = new Date(`${ds}T00:00:00.000Z`);
@@ -201,9 +199,8 @@ const fakeManager = {
 } as unknown as EntityManager;
 
 const fakeDataSource = {
-  transaction: <T>(
-    cb: (m: EntityManager) => Promise<T>,
-  ): Promise<T> => cb(fakeManager),
+  transaction: <T>(cb: (m: EntityManager) => Promise<T>): Promise<T> =>
+    cb(fakeManager),
 } as unknown as DataSource;
 
 function makeActiveThenArchivedChild(): Child {
@@ -219,7 +216,11 @@ function makeActiveThenArchivedChild(): Child {
   return c;
 }
 
-function makeInvoice(periodStart: Date, periodEnd: Date, amount = 60000): Invoice {
+function makeInvoice(
+  periodStart: Date,
+  periodEnd: Date,
+  amount = 60000,
+): Invoice {
   return Invoice.fromState({
     id: INVOICE,
     kindergartenId: KG,

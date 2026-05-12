@@ -113,9 +113,7 @@ export class ProRataRefundProcessor extends WorkerHost {
     super();
   }
 
-  async process(
-    job: Job<ProRataRefundJobData>,
-  ): Promise<ProRataRefundOutcome> {
+  async process(job: Job<ProRataRefundJobData>): Promise<ProRataRefundOutcome> {
     if (job.name !== LIFECYCLE_PRO_RATA_REFUND_JOB) {
       // Single-queue, multi-job-name design — silently ignore unknown
       // jobs so the same worker can host additional lifecycle handlers
@@ -173,11 +171,12 @@ export class ProRataRefundProcessor extends WorkerHost {
     }
 
     // Step 4: idempotency.
-    const existing = await this.refundRepo.findPendingProRataForChildSinceArchive(
-      kindergartenId,
-      childId,
-      archivedAt,
-    );
+    const existing =
+      await this.refundRepo.findPendingProRataForChildSinceArchive(
+        kindergartenId,
+        childId,
+        archivedAt,
+      );
     if (existing.length > 0) {
       this.logger.log(
         `pro-rata-refund skip refund_already_exists kg=${kindergartenId} child=${childId} existing=${existing[0].id}`,
@@ -294,13 +293,11 @@ export class ProRataRefundProcessor extends WorkerHost {
   ): Promise<{ totalBillableDays: number; refundableDays: number }> {
     const startLocal = startOfDayInTimezone(periodStart, KG_DEFAULT_TIMEZONE);
     const endLocal = startOfDayInTimezone(periodEnd, KG_DEFAULT_TIMEZONE);
-    const archivedLocal = startOfDayInTimezone(
-      archivedAt,
-      KG_DEFAULT_TIMEZONE,
-    );
+    const archivedLocal = startOfDayInTimezone(archivedAt, KG_DEFAULT_TIMEZONE);
 
     const dayMs = 24 * 60 * 60 * 1000;
-    const totalDays = Math.round((endLocal.getTime() - startLocal.getTime()) / dayMs) + 1;
+    const totalDays =
+      Math.round((endLocal.getTime() - startLocal.getTime()) / dayMs) + 1;
     // archivedDays = days from start to archive INCLUSIVE.
     const rawArchivedDays =
       Math.round((archivedLocal.getTime() - startLocal.getTime()) / dayMs) + 1;
