@@ -339,15 +339,116 @@ Email + password (не OTP). Access-токен — тот же JWT HS256 (`JWT_A
 | POST | `/admin/children` | Создать карточку вручную (вне enrollment flow). |
 | GET | `/admin/children/:id` | Полная карточка: гардианы, группа, история групп, timeline (preview), платежи (preview), диагностики (preview). |
 | PATCH | `/admin/children/:id` | Обновить ФИО, ИИН, DOB, photo, `medical_notes`, `allergy_notes`. |
-| POST | `/admin/children/:id/transfer-group` | Перевод в другую группу. Создаёт запись в `child_group_history`. |
-| POST | `/admin/children/:id/archive` | `status='archived'`, `archived_at=NOW()`, `archive_reason`. Закрывает активные `tariff_assignments`, enqueue `billing:pro-rata`. **[Deferred to B21 — связано с tariff_assignments + pro-rata refund]** |
-| POST | `/admin/children/:id/reactivate` | Возврат в `active`, открытие нового `tariff_assignment`. **[Deferred to B21]** |
+| POST | `/admin/children/:id/transfer-group` | Перевод в другую группу. Создаёт запись в `child_group_history`. Emits `child.transferred` через outbox (менторы старой+новой группы + guardians). |
+| POST | `/admin/children/:id/archive` | Архивировать ребёнка. Закрывает `tariff_assignments`, enqueue BullMQ `lifecycle:pro-rata-refund`. |
+| POST | `/admin/children/:id/reactivate` | Реактивировать ребёнка. Возврат в `status='active'`. |
 | GET | `/admin/children/:id/guardians` | Все guardians ребёнка (+ статус одобрения, `has_approval_rights`). |
 | POST | `/admin/children/:id/guardians` | Добавить guardian вручную (админ может создать primary с самого начала). |
 | PATCH | `/admin/children/:id/guardians/:guardianId` | Изменить `role`, `can_pickup`. Изменение `has_approval_rights` — только через Primary Guardian's approval flow (см. Parent API). |
 | POST | `/admin/children/:id/guardians/:guardianId/revoke` | Отозвать доступ (`revoked_at`, `revoked_by`). |
 | GET | `/admin/children/:id/group-history` | История переводов. |
 | GET | `/admin/children/:id/timeline` | Вся timeline ребёнка. |
+
+#### 2.7.1 POST `/admin/children/:id/transfer-group`
+
+**Auth:** `admin` role + `KindergartenScopeGuard`.
+
+**Request body:**
+```json
+{ "to_group_id": "550e8400-e29b-41d4-a716-446655440010", "reason": "Возрастная группа" }
+```
+`to_group_id` — обязательное, UUID; `reason` — опциональное, text.
+
+**Success 200:**
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440001",
+  "full_name": "Алишер Нурмагамбетов",
+  "current_group_id": "550e8400-e29b-41d4-a716-446655440010",
+  "group_history_entry_id": "550e8400-e29b-41d4-a716-446655440099"
+}
+```
+
+**Errors:** 400 (validation), 401, 403, 404 `child_not_found`, 404 `group_not_found`, 409 `child_already_in_group`, 422, 429.
+
+**Side effects:** INSERT `child_group_history`; INSERT `notification_outbox (event_key='child.transferred')` в той же TX (menторы старой+новой группы + approved guardians, nanny исключены).
+
+---
+
+#### 2.7.2 POST `/admin/children/:id/archive`
+
+**Auth:** `admin` role + `KindergartenScopeGuard`.
+
+**Request body:**
+```json
+{ "archive_reason": "Переезд семьи в другой город" }
+```
+`archive_reason` — обязательное, text, 1..500 символов.
+
+**Success 200:**
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440001",
+  "full_name": "Алишер Нурмагамбетов",
+  "status": "archived",
+  "archived_at": "2026-05-12T10:00:00.000Z",
+  "archive_reason": "Переезд семьи в другой город"
+}
+```
+
+**Errors:**
+| HTTP | Code | Условие |
+|---|---|---|
+| 400 | `validation_error` | Невалидный body |
+| 401 | `unauthorized` | Нет/истёк токен |
+| 403 | `forbidden` | Нет роли admin |
+| 404 | `child_not_found` | `:id` не существует или не принадлежит kg |
+| 409 | `child_already_archived` | `status` уже `archived` |
+| 422 | `archive_reason_required` | `archive_reason` отсутствует или пустая строка |
+| 429 | `rate_limit_exceeded` | Слишком много запросов |
+
+**Side effects (в одной TX):**
+- `UPDATE children SET status='archived', archived_at=NOW(), archive_reason=<reason>`.
+- `UPDATE tariff_assignments SET valid_until=CURRENT_DATE WHERE child_id=:id AND (valid_until IS NULL OR valid_until > CURRENT_DATE)`.
+- INSERT `notification_outbox (event_key='child.archived')` — guardians (кроме nanny).
+- Post-commit: enqueue BullMQ `lifecycle:pro-rata-refund {kindergartenId, childId, archivedAt}`.
+
+---
+
+#### 2.7.3 POST `/admin/children/:id/reactivate`
+
+**Auth:** `admin` role + `KindergartenScopeGuard`.
+
+**Request body:** пустой `{}`.
+
+**Success 200:**
+```json
+{
+  "child": {
+    "id": "550e8400-e29b-41d4-a716-446655440001",
+    "full_name": "Алишер Нурмагамбетов",
+    "status": "active"
+  },
+  "requires_new_tariff_assignment": true
+}
+```
+`requires_new_tariff_assignment: true` — всегда `true`; сигнал для UI создать новый тарифный план через `POST /admin/tariff-assignments`.
+
+**Errors:**
+| HTTP | Code | Условие |
+|---|---|---|
+| 401 | `unauthorized` | Нет/истёк токен |
+| 403 | `forbidden` | Нет роли admin |
+| 404 | `child_not_found` | `:id` не существует или не принадлежит kg |
+| 409 | `child_not_archived` | `status` не равен `archived` |
+| 429 | `rate_limit_exceeded` | Слишком много запросов |
+
+**Side effects (в одной TX):**
+- `UPDATE children SET status='active', archived_at=NULL, archive_reason=NULL`.
+- INSERT `notification_outbox (event_key='child.reactivated')` — guardians (кроме nanny).
+- Новый `tariff_assignments` **не создаётся автоматически**.
+
+**Error codes (§2.7):** `child_not_found`(404), `child_already_archived`(409), `child_not_archived`(409), `archive_reason_required`(422), `child_already_in_group`(409), `group_not_found`(404).
 
 ### 2.8 Schedule (Templates + Activity Events)
 

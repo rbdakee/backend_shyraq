@@ -354,6 +354,7 @@ Naming convention — `it('returns ...')` / `it('throws ...')` / `it('rejects ..
 | `birthday-generation` | worker (repeatable) | `0 7 * * *` Asia/Almaty | B17: создаёт `content_posts` (type='birthday') для именинников, идемпотентно |
 | `story-cleanup` | worker (repeatable) | ежечасно | B17: удаляет истёкшие `group_stories` (`expires_at <= NOW()`), вызывает `FileStoragePort.delete` |
 | `content-publish` | worker (repeatable) | каждые 5 минут | B17: условный UPDATE `content_posts` `scheduled → published` для `scheduled_for <= NOW()` |
+| `lifecycle` / `lifecycle:pro-rata-refund` | worker (on-demand) | Triggered by archive action | B21: ProRataRefundProcessor — рассчитывает pro-rata refund при архивировании ребёнка посреди billing-period. Payload: `{kindergartenId, childId, archivedAt}`. Idempotency: `pg_advisory_xact_lock(hashtext('pro-rata:'||childId))` + existing-refund check. Retry: exp-backoff 3×(1m, 2m, 4m). Создаёт `refunds(status='pending', reason='pro_rata_archive')`. File: `src/modules/billing/infrastructure/processors/pro-rata-refund.processor.ts`. Queue registered via `BullModule.registerQueue({ name: 'lifecycle' })`. |
 
 `@nestjs/schedule` удаляется в B9 (заменён BullMQ). BullMQ даёт бесплатный distributed lock через Redis `BZPOPMIN` — только один worker-инстанс выполняет job в момент времени.
 

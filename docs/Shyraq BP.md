@@ -934,6 +934,8 @@ DTOs на уровне контроллера используют **snake_case*
 - **Обновление доступных камер:** при смене `groups.current_location_id` (Mentor нажал "Следующее событие") — WS broadcast `group:{id}:location_changed` → Parent App перезапрашивает `/cctv/access`.
 - **Лимит одновременных зрителей** — определяется возможностями MediaMTX и сетью (не на уровне БД).
 
+<!-- B21: implementation in progress -->
+
 ## 12. Lifecycle of Child in the System
 
 ## Process
@@ -970,7 +972,7 @@ DTOs на уровне контроллера используют **snake_case*
 1. **Триггер:** Администратор открывает карточку ребенка и вызывает `POST /admin/children/:id/transfer-group {to_group_id, reason?}`.
 2. Администратор изменяет группу и при необходимости назначенного Mentor.
 3. Система: `UPDATE children.current_group_id` + INSERT в `child_group_history` (`from_group_id`, `to_group_id`, `transferred_by=staff_member_id`, `reason`) — audit-trail.
-4. Mentor'ы старой и новой группы получают уведомление `child.transferred` (через `NotificationPort` skeleton в B4 → real BullMQ + FCM/APNS + WS в B9). Primary guardian тоже получает уведомление.
+4. В той же транзакции INSERT в `notification_outbox (event_key='child.transferred', payload={childId, fromGroupId, toGroupId, kindergartenId})` — transactional outbox pattern (B21: notification-emit через outbox). `notification-outbox-poll` worker доставляет push/WS к получателям: менторы старой и новой группы + все approved non-revoked guardians ребёнка (nanny НЕ получает lifecycle events — только `attendance.*` и `pickup.*`).
 5. Новый Mentor получает ребенка в своей группе в `Staff App`.
 6. Родитель видит новую группу ребенка в `Parent App`.
 7. Система продолжает вести историю ребенка без потери прошлых данных (`child_group_history` хранится навсегда).
@@ -1017,23 +1019,91 @@ DTOs на уровне контроллера используют **snake_case*
 - Nanny не получает primary/secondary defaults для `view_payments`, `pay_invoices`, `view_diagnostics`, `create_requests` — только `view_timeline` и pickup-связанные права.
 - **No limit на общее число nanny-записей per child** (только ≤2 approval_rights enforced).
 
-### 12.5 Завершение посещения садика
+### 12.5 Архивирование ребёнка (B21)
 
-1. Администратор переводит ребенка в архив.
-2. Система закрывает активные операционные процессы ребенка.
-3. Ребенок исчезает из активных рабочих списков в `Staff App`.
-4. Кабинет ребенка в `Parent App` переводится в архивный режим или ограниченный доступ.
-5. Система сохраняет историю посещения, оплат, заявок и прогресса.
+**Триггер:** `POST /admin/children/:id/archive`
+
+**Request body:**
+```json
+{ "archive_reason": "Переезд семьи в другой город" }
+```
+`archive_reason` — обязательное поле, текст 1..500 символов. Возвращает 422 `archive_reason_required` если отсутствует или пусто.
+
+**Действия системы (в одной транзакции):**
+1. Проверяет `status != 'archived'`; если уже архивирован — 409 `child_already_archived`.
+2. `UPDATE children SET status='archived', archived_at=NOW(), archive_reason=<reason>`.
+3. `UPDATE tariff_assignments SET valid_until=CURRENT_DATE WHERE child_id=:id AND valid_until IS NULL OR valid_until > CURRENT_DATE` — закрывает активные тарифные назначения.
+4. INSERT в `notification_outbox (event_key='child.archived', payload={childId, kindergartenId, archivedAt})`.
+5. После коммита транзакции: enqueue BullMQ job `lifecycle:pro-rata-refund {kindergartenId, childId, archivedAt}` в очередь `lifecycle`.
+
+**Результат:** ребёнок исчезает из активных рабочих списков в `Staff App`; Parent App переводится в архивный/ограниченный режим.
+
+---
+
+### 12.6 Реактивация ребёнка (B21)
+
+**Триггер:** `POST /admin/children/:id/reactivate`
+
+**Request body:** пустой (нет полей).
+
+**Действия системы (в одной транзакции):**
+1. Проверяет `status == 'archived'`; если не архивирован — 409 `child_not_archived`.
+2. `UPDATE children SET status='active', archived_at=NULL, archive_reason=NULL`.
+3. INSERT в `notification_outbox (event_key='child.reactivated', payload={childId, kindergartenId})`.
+4. **Новый tariff_assignment НЕ создаётся автоматически** — администратор создаёт его отдельным запросом (`POST /admin/tariff-assignments`).
+
+**Success response 200:**
+```json
+{
+  "child": { "id": "...", "full_name": "...", "status": "active" },
+  "requires_new_tariff_assignment": true
+}
+```
+Поле `requires_new_tariff_assignment: true` — сигнал для UI что нужно назначить новый тариф.
+
+---
+
+### 12.7 Pro-rata refund flow (B21)
+
+**Триггер:** enqueue из `archive` action выше — BullMQ job `lifecycle:pro-rata-refund` в очереди `lifecycle`.
+
+**Job payload:** `{ kindergartenId: uuid, childId: uuid, archivedAt: ISO8601 }`
+
+**Алгоритм (в worker `ProRataRefundProcessor`):**
+
+1. **Idempotency guard:** `pg_advisory_xact_lock(hashtext('pro-rata:'||childId))` в начале транзакции + проверка `SELECT 1 FROM refunds WHERE child_id=:childId AND reason='pro_rata_archive'` — если запись уже есть, выходим без ошибки.
+2. **Загрузка invoice:** найти `invoices` для `child_id` со `status IN ('paid','pending')` billing_period которого содержит дату `archivedAt`.
+3. **Загрузка holidays:** `SELECT date FROM kindergarten_holidays WHERE kindergarten_id=:kgId AND is_billable=false AND date BETWEEN archivedAt AND period_end`.
+4. **Расчёт billable days:**
+   - `totalBillableDaysInPeriod` = все рабочие дни периода минус holidays с `is_billable=false`.
+   - `billableDaysAfterArchive` = рабочие дни от `archivedAt+1day` до конца периода, исключая non-billable holidays.
+   - `refund_amount = invoice_amount * billableDaysAfterArchive / totalBillableDaysInPeriod` (rounded down to 2 decimal places, currency = invoice.currency).
+5. **Создание refund:** INSERT `refunds (status='pending', reason='pro_rata_archive', child_id, invoice_id, amount=refund_amount, created_at=NOW())`.
+6. **Retry:** exp-backoff 3 × (1m, 2m, 4m). При исчерпании — job переходит в `failed`; ручное re-queue через BullMQ dashboard.
+
+**Важно:** refund создаётся только в `status='pending'`. Выплата выполняется вручную через `POST /admin/refunds/:id/approve` (существующий endpoint, B13). Автоматического списания или вызова payment-provider в B21 нет.
+
+---
 
 ### Result
 
 - История ребенка сохраняется на всем жизненном цикле, а активный статус меняется управляемо.
 
+### Notification events (lifecycle)
+
+| Event key | Получатели | Trigger |
+|---|---|---|
+| `child.archived` | Все approved non-revoked guardians (nanny — нет) | `POST /admin/children/:id/archive` |
+| `child.reactivated` | Все approved non-revoked guardians (nanny — нет) | `POST /admin/children/:id/reactivate` |
+| `child.transferred` | Менторы старой и новой группы + approved non-revoked guardians (nanny — нет) | `POST /admin/children/:id/transfer-group` |
+
+Все lifecycle-события отправляются через transactional outbox (`notification_outbox`), доставляются `notification-outbox-poll` worker через `NotificationDispatcher`.
+
 ### Дополнения (архитектурные)
 
-- **Архивирование → остановка биллинга:** при `UPDATE children.status='archived'` система проставляет `archived_at`, закрывает активные `activity_events`, обновляет `tariff_assignments.valid_until = today`. Cron больше не генерирует invoice для этого ребёнка.
-- **Pro-rata refund при архивировании посреди месяца:** enqueue `billing:pro-rata` → worker считает billable-дни до `archived_at` (с учётом `kindergarten_holidays.is_billable=false`) → создаёт `refunds (status='pending')` для подтверждения админом ЛИБО negative `invoice_line_items` на следующий invoice.
-- **Реактивация:** возврат в `status='active'`, открытие новой `tariff_assignments` (`valid_from=today`), разблокировка Parent App.
+- **Архивирование → остановка биллинга:** при `UPDATE children.status='archived'` система проставляет `archived_at` и `archive_reason` (обязательное поле), закрывает активные `tariff_assignments.valid_until=today`. `MonthlyBillingProcessor` скипает archived-детей через `WHERE status != 'archived'` в запросе.
+- **Pro-rata refund при архивировании посреди месяца:** enqueue BullMQ job `lifecycle:pro-rata-refund` → `ProRataRefundProcessor` считает billable-дни от `archived_at` до конца billing-period (с учётом `kindergarten_holidays.is_billable=false`) → создаёт `refunds (status='pending', reason='pro_rata_archive')` идемпотентно. Выплата — через существующий `POST /admin/refunds/:id/approve`.
+- **Реактивация:** возврат в `status='active'`, `archived_at=NULL`, `archive_reason=NULL`; новый `tariff_assignments` создаётся администратором отдельным запросом (response `requires_new_tariff_assignment: true` указывает UI).
 - **История доступов:** изменения в `child_guardians` (отзыв, добавление новых) логируются через `updated_at` + поля `revoked_by`, `approved_by`, `approved_at`, `revoked_at`. Полноценный audit_log — этап 2.
 - **Retention:** данные не удаляются даже после архива — только ограничивается доступ родителя. Удаление по запросу субъекта ПДн (ZRK 94-V) — отдельный процесс, запланирован на этап 2 (`data_export_requests`, `purge` endpoint).
 

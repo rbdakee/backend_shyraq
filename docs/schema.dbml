@@ -357,8 +357,8 @@ Table children {
   status           child_status [not null, default: 'card_created']
   current_group_id uuid         [ref: > groups.id]
   enrollment_date  date
-  archived_at      timestamptz
-  archive_reason   text
+  archived_at      timestamptz  [note: 'P5/B21 — set to NOW() when status flipped to archived']
+  archive_reason   text         [note: 'B21 — reason set when status flipped to archived; required (1..500 chars)']
   medical_notes    text
   allergy_notes    text
   created_at       timestamptz  [not null, default: `now()`]
