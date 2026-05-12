@@ -2,6 +2,8 @@ import { Injectable } from '@nestjs/common';
 import {
   AttendanceCheckInEvent,
   AttendanceCheckOutEvent,
+  ChildArchivedEvent,
+  ChildReactivatedEvent,
   ChildTransferredEvent,
   DailyStatusChangedEvent,
   DiagnosticNewPayload,
@@ -431,6 +433,25 @@ export class OutboxNotificationAdapter extends NotificationPort {
       childFullName: event.childFullName,
       age: event.age,
       publishedAt: event.publishedAt.toISOString(),
+    });
+  }
+
+  // ── B21 Child lifecycle events ─────────────────────────────────────────
+
+  notifyChildArchived(event: ChildArchivedEvent): Promise<void> {
+    return this.enqueue(event.kindergartenId, 'child.archived', {
+      childId: event.childId,
+      archivedAt: event.archivedAt.toISOString(),
+      archiveReason: event.archiveReason,
+      archivedByStaffId: event.archivedByStaffId,
+    });
+  }
+
+  notifyChildReactivated(event: ChildReactivatedEvent): Promise<void> {
+    return this.enqueue(event.kindergartenId, 'child.reactivated', {
+      childId: event.childId,
+      reactivatedAt: event.reactivatedAt.toISOString(),
+      reactivatedByStaffId: event.reactivatedByStaffId,
     });
   }
 

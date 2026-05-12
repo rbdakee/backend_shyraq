@@ -851,6 +851,47 @@ const TEMPLATES: Record<string, EventTemplate> = {
     }),
   }),
 
+  // ── B21 Child lifecycle ─────────────────────────────────────────────
+  // Both admin-only — nannies excluded by NANNY_ALLOWED_EVENT_KEYS.
+  // Generic Russian copy keyed by the child name (enrichment), reason
+  // surfaced only inside the data payload (parent-facing wording stays
+  // neutral).
+
+  'child.archived': ({ payload, enrichment }) => ({
+    titleI18n: {
+      ru: 'Ребёнок переведён в архив',
+      kk: 'Бала мұрағатқа жіберілді',
+      en: 'Child archived',
+    },
+    bodyI18n: {
+      ru: `${enrichment.childName} переведён(а) в архив администратором сада.`,
+      kk: `${enrichment.childName} балабақша әкімшісімен мұрағатқа жіберілді.`,
+      en: `${enrichment.childName} was archived by the kindergarten admin.`,
+    },
+    data: stringMap({
+      childId: payload.childId,
+      archivedAt: payload.archivedAt,
+      archiveReason: payload.archiveReason,
+    }),
+  }),
+
+  'child.reactivated': ({ payload, enrichment }) => ({
+    titleI18n: {
+      ru: 'Ребёнок снова активен',
+      kk: 'Бала қайта белсенді',
+      en: 'Child reactivated',
+    },
+    bodyI18n: {
+      ru: `${enrichment.childName} снова активен в саду.`,
+      kk: `${enrichment.childName} балабақшада қайта белсенді.`,
+      en: `${enrichment.childName} is active again in the kindergarten.`,
+    },
+    data: stringMap({
+      childId: payload.childId,
+      reactivatedAt: payload.reactivatedAt,
+    }),
+  }),
+
   // T11 H6 — admin-visible signal that the first invoice was skipped on
   // enrollment.card_created because no tariff_assignment was configured.
   'enrollment.first_invoice_skipped': ({ payload }) => ({
@@ -885,6 +926,9 @@ const RECIPIENT_RESOLVERS: Record<string, RecipientResolver> = {
   'guardian.revoked': resolveSelfFromField('guardianUserId'),
   'guardian.permissions_updated': resolveSelfFromField('guardianUserId'),
   'child.transferred': resolveByChildGuardians,
+  // ── B21 Child lifecycle — same fan-out shape as child.transferred ────
+  'child.archived': resolveByChildGuardians,
+  'child.reactivated': resolveByChildGuardians,
   // ── B11 Pickup OTP ─────────────────────────────────────────────────────
   // T7-5 MEDIUM#4: pickup recipients are re-validated against the
   // current guardian-link before delivery. Without this, a parent who

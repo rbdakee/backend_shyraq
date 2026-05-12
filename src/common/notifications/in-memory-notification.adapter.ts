@@ -2,6 +2,8 @@ import { Injectable, Logger } from '@nestjs/common';
 import {
   AttendanceCheckInEvent,
   AttendanceCheckOutEvent,
+  ChildArchivedEvent,
+  ChildReactivatedEvent,
   ChildTransferredEvent,
   DailyStatusChangedEvent,
   DiagnosticNewPayload,
@@ -238,6 +240,18 @@ export class InMemoryNotificationAdapter extends NotificationPort {
 
   notifyContentBirthday(event: NotifyContentBirthdayInput): Promise<void> {
     this.record('content_birthday', event);
+    return Promise.resolve();
+  }
+
+  // ── B21 Child lifecycle events ────────────────────────────────────────
+
+  notifyChildArchived(event: ChildArchivedEvent): Promise<void> {
+    this.record('child_archived', event);
+    return Promise.resolve();
+  }
+
+  notifyChildReactivated(event: ChildReactivatedEvent): Promise<void> {
+    this.record('child_reactivated', event);
     return Promise.resolve();
   }
 

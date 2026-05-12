@@ -1326,6 +1326,76 @@ describe('NotificationDispatcher', () => {
     });
   });
 
+  // ── B21 Child lifecycle (child.archived / child.reactivated) ───────────
+
+  describe('B21 child lifecycle events', () => {
+    it('child.archived fans out to approved guardians (parents) only — nanny dropped', async () => {
+      const w = wire();
+      w.guardianRepo.setGuardiansForChild(CHILD, [
+        approvedGuardian(USER_A, 'primary'),
+        approvedGuardian(USER_B, 'secondary'),
+        approvedGuardian(USER_NANNY, 'nanny'),
+      ]);
+      w.childRepo.set(makeChild('Айгерим'));
+      const event = OutboxEvent.create(
+        {
+          id: '99999999-9999-9999-9999-9999b21arc01',
+          kindergartenId: KG,
+          eventKey: 'child.archived',
+          payload: {
+            childId: CHILD,
+            archivedAt: NOW.toISOString(),
+            archiveReason: 'parent withdrew',
+            archivedByStaffId: 'staff-1',
+          },
+        },
+        NOW,
+      );
+
+      const result = await w.dispatcher.dispatch(event);
+
+      expect(result).toEqual({ status: 'dispatched' });
+      // USER_A + USER_B make it through; nanny dropped (child.archived is
+      // not in NANNY_ALLOWED_EVENT_KEYS).
+      expect(w.notificationRepo.rows.map((r) => r.userId).sort()).toEqual(
+        [USER_A, USER_B].sort(),
+      );
+      // The dispatcher template uses the enrichment-resolved child name.
+      const bodyRu = w.notificationRepo.rows[0].bodyI18n.ru;
+      expect(bodyRu).toContain('Айгерим');
+    });
+
+    it('child.reactivated fans out to approved guardians only — nanny dropped', async () => {
+      const w = wire();
+      w.guardianRepo.setGuardiansForChild(CHILD, [
+        approvedGuardian(USER_A, 'primary'),
+        approvedGuardian(USER_NANNY, 'nanny'),
+      ]);
+      w.childRepo.set(makeChild('Айгерим'));
+      const event = OutboxEvent.create(
+        {
+          id: '99999999-9999-9999-9999-9999b21rea01',
+          kindergartenId: KG,
+          eventKey: 'child.reactivated',
+          payload: {
+            childId: CHILD,
+            reactivatedAt: NOW.toISOString(),
+            reactivatedByStaffId: 'staff-1',
+          },
+        },
+        NOW,
+      );
+
+      const result = await w.dispatcher.dispatch(event);
+
+      expect(result).toEqual({ status: 'dispatched' });
+      expect(w.notificationRepo.rows.map((r) => r.userId)).toEqual([USER_A]);
+      expect(w.notificationRepo.rows[0].titleI18n.ru).toBe(
+        'Ребёнок снова активен',
+      );
+    });
+  });
+
   // ── coverage assertion (HIGH#1 guardrail) ──────────────────────────────
 
   describe('dispatcher event-key coverage', () => {
@@ -1368,6 +1438,9 @@ describe('NotificationDispatcher', () => {
       // ── B18 Diagnostics & Progress ─────────────────────────────────────
       'diagnostic.new',
       'progress_note.new',
+      // ── B21 Child lifecycle ────────────────────────────────────────────
+      'child.archived',
+      'child.reactivated',
     ];
 
     it.each(COVERED_KEYS)(

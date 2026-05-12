@@ -50,6 +50,35 @@ export interface ChildTransferredEvent {
   recipientUserIds: string[];
 }
 
+// ── B21 Child lifecycle events ─────────────────────────────────────────────
+//
+// Both events fan out to the child's approved-active guardians. They are
+// admin-driven domain transitions (archive / reactivate) — nannies are
+// excluded by `NANNY_ALLOWED_EVENT_KEYS` (only attendance.* + pickup.*).
+// `archivedByStaffId` / `reactivatedByStaffId` are captured for audit but
+// the dispatcher templates do not render them (admin identity stays
+// internal to the staff app).
+
+export interface ChildArchivedEvent {
+  kindergartenId: string;
+  childId: string;
+  /** UTC instant of the archive transition. */
+  archivedAt: Date;
+  /** Trimmed reason string (1..500 chars — validated by `Child.archive`). */
+  archiveReason: string;
+  /** Staff member id that initiated the archive (audit only). */
+  archivedByStaffId: string;
+}
+
+export interface ChildReactivatedEvent {
+  kindergartenId: string;
+  childId: string;
+  /** UTC instant of the reactivate transition. */
+  reactivatedAt: Date;
+  /** Staff member id that initiated the reactivate (audit only). */
+  reactivatedByStaffId: string;
+}
+
 export interface PermissionsUpdatedEvent {
   kindergartenId: string;
   childId: string;
@@ -637,6 +666,29 @@ export abstract class NotificationPort {
    * guardians of the celebrated child.
    */
   notifyContentBirthday(_event: NotifyContentBirthdayInput): Promise<void> {
+    return Promise.resolve();
+  }
+
+  // ── B21 Child lifecycle events ──────────────────────────────────────
+  // Non-abstract default-no-op so older test FakeNotificationPort classes
+  // keep compiling. Production `OutboxNotificationAdapter` overrides;
+  // `InMemoryNotificationAdapter` records into its events array.
+
+  /**
+   * Fired by `ChildService.archive` after the conditional UPDATE commits.
+   * Recipients: approved-active guardians of the archived child (parents
+   * only — `child.archived` is NOT in NANNY_ALLOWED_EVENT_KEYS).
+   */
+  notifyChildArchived(_event: ChildArchivedEvent): Promise<void> {
+    return Promise.resolve();
+  }
+
+  /**
+   * Fired by `ChildService.reactivate` after the conditional UPDATE commits.
+   * Recipients: approved-active guardians of the reactivated child (parents
+   * only — `child.reactivated` is NOT in NANNY_ALLOWED_EVENT_KEYS).
+   */
+  notifyChildReactivated(_event: ChildReactivatedEvent): Promise<void> {
     return Promise.resolve();
   }
 }

@@ -61,6 +61,12 @@ export const CANONICAL_EVENT_KEYS = [
   // skipped on enrollment.card_created because no tariff_assignment was
   // configured. Enables admins to remediate without monitoring server logs.
   'enrollment.first_invoice_skipped',
+  // ── B21 Child lifecycle — admin archive / reactivate. Recipients are
+  // approved-active guardians (parents only; nannies excluded by the
+  // policy gate). `child.transferred` already lives above; these complete
+  // the lifecycle triplet.
+  'child.archived',
+  'child.reactivated',
 ] as const;
 
 export type EventKey = (typeof CANONICAL_EVENT_KEYS)[number];

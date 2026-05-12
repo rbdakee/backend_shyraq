@@ -358,4 +358,40 @@ describe('OutboxNotificationAdapter', () => {
       daysOverdue: 7,
     });
   });
+
+  // ── B21 Child lifecycle ───────────────────────────────────────────────
+
+  it('enqueues child.archived with iso-serialised archivedAt', async () => {
+    await adapter.notifyChildArchived({
+      kindergartenId: KG,
+      childId: CHILD,
+      archivedAt: NOW,
+      archiveReason: 'parent withdrew',
+      archivedByStaffId: 'staff-1',
+    });
+
+    expect(repo.calls[0].input.eventKey).toBe('child.archived');
+    expect(repo.calls[0].input.payload).toEqual({
+      childId: CHILD,
+      archivedAt: NOW.toISOString(),
+      archiveReason: 'parent withdrew',
+      archivedByStaffId: 'staff-1',
+    });
+  });
+
+  it('enqueues child.reactivated with iso-serialised reactivatedAt', async () => {
+    await adapter.notifyChildReactivated({
+      kindergartenId: KG,
+      childId: CHILD,
+      reactivatedAt: NOW,
+      reactivatedByStaffId: 'staff-1',
+    });
+
+    expect(repo.calls[0].input.eventKey).toBe('child.reactivated');
+    expect(repo.calls[0].input.payload).toEqual({
+      childId: CHILD,
+      reactivatedAt: NOW.toISOString(),
+      reactivatedByStaffId: 'staff-1',
+    });
+  });
 });

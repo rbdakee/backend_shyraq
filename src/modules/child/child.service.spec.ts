@@ -692,6 +692,12 @@ class FakeNotification extends NotificationPort {
   notifyEnrollmentFirstInvoiceSkipped(e: unknown): Promise<void> {
     return this.push('enrollment_first_invoice_skipped', e);
   }
+  notifyChildArchived(e: unknown): Promise<void> {
+    return this.push('child_archived', e);
+  }
+  notifyChildReactivated(e: unknown): Promise<void> {
+    return this.push('child_reactivated', e);
+  }
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────
