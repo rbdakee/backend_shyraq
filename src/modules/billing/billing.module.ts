@@ -65,6 +65,11 @@ import {
   MonthlyBillingProcessor,
   MONTHLY_BILLING_QUEUE,
 } from './monthly-billing.processor';
+import {
+  OverdueInvoiceProcessor,
+  OverdueInvoiceScheduler,
+  OVERDUE_INVOICE_QUEUE,
+} from './overdue-invoice.processor';
 import { ProRataRefundProcessor } from './pro-rata-refund.processor';
 import { PaymentAccountService } from './payment-account.service';
 import { PaymentService } from './payment.service';
@@ -158,6 +163,9 @@ function fiscalReceiptProvider(): Provider {
     // override pattern as the monthly run. The processor +
     // scheduler live in `discount-expire.processor.ts`.
     BullModule.registerQueue({ name: DISCOUNT_EXPIRE_QUEUE }),
+    // B22a T1 — nightly overdue-invoice cron + manual saas trigger.
+    // Same gating + manual override pattern as discount-expire.
+    BullModule.registerQueue({ name: OVERDUE_INVOICE_QUEUE }),
     // B21 T3 step4 — host the ProRataRefundProcessor on the same
     // `lifecycle` queue ChildService publishes to. Worker process picks
     // up `lifecycle:pro-rata-refund` jobs and creates the pro-rata
@@ -232,6 +240,8 @@ function fiscalReceiptProvider(): Provider {
     MonthlyBillingScheduler,
     DiscountExpireProcessor,
     DiscountExpireScheduler,
+    OverdueInvoiceProcessor,
+    OverdueInvoiceScheduler,
     ProRataRefundProcessor,
   ],
   exports: [

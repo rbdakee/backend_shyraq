@@ -1080,11 +1080,18 @@ export class InvoiceService {
     // ambient TX (HTTP-edge interceptor / cron `dataSource.transaction`)
     // and released at COMMIT/ROLLBACK. Acquired ONLY for discounts with a
     // per-child cap (cap=null = no contention to serialise).
+    //
+    // B22a T1 H16: total_max_uses guard is now an ATOMIC RESERVE — we
+    // call `tryReserveUsage` BEFORE the engine sees the discount. If the
+    // cap raced (another concurrent flow took the last slot), the
+    // discount is dropped here and never reaches the engine. The
+    // reservation lives inside the ambient TX — if the invoice INSERT
+    // later throws, TX rollback naturally releases it (PG atomicity).
+    // This eliminates the line-item/ledger drift (B16 T6-H2) that used
+    // to be caused by post-INSERT `incrementUsedCount` failures.
     const eligible: CustomDiscountSnapshot[] = [];
+    const reservedDiscountIds: string[] = [];
     for (const snap of targeted) {
-      if (snap.totalMaxUses !== null && snap.usedCount >= snap.totalMaxUses) {
-        continue;
-      }
       if (snap.maxUsesPerChild !== null) {
         await this.customDiscounts.acquireDiscountApplyAdvisoryLock(
           kindergartenId,
@@ -1099,8 +1106,24 @@ export class InvoiceService {
           );
         if (used >= snap.maxUsesPerChild) continue;
       }
+      // total_max_uses atomic reserve. `tryReserveUsage` returns true
+      // immediately for cap-disabled discounts (total_max_uses IS NULL).
+      if (snap.totalMaxUses !== null) {
+        const reserved = await this.customDiscounts.tryReserveUsage(
+          kindergartenId,
+          snap.id,
+        );
+        if (!reserved) {
+          this.logger.log(
+            `discount.cap_raced: kg=${kindergartenId} discount=${snap.id} child=${childId} — skipped before engine.`,
+          );
+          continue;
+        }
+        reservedDiscountIds.push(snap.id);
+      }
       eligible.push(snap);
     }
+    void reservedDiscountIds; // surface in logs only — TX rollback releases on its own
 
     // Build child + family context.
     const child = await this.children.findById(kindergartenId, childId);
@@ -1122,8 +1145,16 @@ export class InvoiceService {
       // No-cost approximation for `firstInvoice`: list any prior invoices
       // for the child (any type) — empty list = first invoice. The
       // existing `findByChildId` query is indexed on (kg, child_id).
+      //
+      // B22a T1 H15: `cancelled` invoices MUST NOT count as a prior. The
+      // discount engine uses `isFirstInvoiceForChild` to gate "first
+      // month" promotional rules; a child whose previous month was
+      // cancelled (e.g. admin reversed an enrollment) is still semantically
+      // a "first invoice" for the next billable month. Without this
+      // filter the engine silently dropped the first-invoice perk for any
+      // child that had a cancelled invoice in the same kg.
       const priors = await this.invoices.findByChildId(kindergartenId, childId);
-      isFirstInvoiceForChild = priors.length === 0;
+      isFirstInvoiceForChild = priors.every((p) => p.status === 'cancelled');
       siblingsInKgCount = await this.childGuardians.countSiblingsInKgForChild(
         kindergartenId,
         childId,
@@ -1146,15 +1177,18 @@ export class InvoiceService {
 
   /**
    * Inserts one `custom_discount_applications` ledger row per matched
-   * custom discount AND atomically increments the parent's `used_count`.
+   * custom discount. The parent's `used_count` was already incremented
+   * up-front by `buildCustomDiscountInputs.tryReserveUsage` BEFORE the
+   * engine evaluation — so reaching this method means a usage slot is
+   * already reserved for this invoice (or the cap was disabled). The
+   * audit-row INSERT runs in the same ambient TX, so if the invoice
+   * INSERT had failed before this method ran, the reservation would
+   * have been rolled back along with it.
    *
-   * Race handling (T3 §F): when `incrementUsedCount` returns `false`
-   * (total_max_uses reached between engine eval + write — should be
-   * exceedingly rare given the pre-engine capacity guard), we log+skip
-   * the application row and leave the invoice's discount line in place.
-   * Documented trade-off — the alternative is to retro-modify the
-   * already-inserted invoice, which is more dangerous than letting one
-   * over-the-cap discount slip through.
+   * B22a T1 H16 / B16 T6-H2: this method no longer has a "skip on cap
+   * race" branch — the cap race is impossible at this stage because the
+   * reserve preceded the engine evaluation. line-items and audit ledger
+   * always agree.
    *
    * Short-circuits when the B16 deps are missing — keeps older spec
    * wiring (B13 race spec) green.
@@ -1173,17 +1207,6 @@ export class InvoiceService {
       return;
     }
     for (const app of result.customApplicationsToWrite) {
-      const incremented = await this.customDiscounts.incrementUsedCount(
-        kindergartenId,
-        app.customDiscountId,
-        1,
-      );
-      if (!incremented) {
-        this.logger.warn(
-          `discount.max_uses_total_raced: kg=${kindergartenId} discount=${app.customDiscountId} invoice=${invoice.id} — application row skipped.`,
-        );
-        continue;
-      }
       await this.customDiscountApplications.create({
         kindergartenId,
         customDiscountId: app.customDiscountId,

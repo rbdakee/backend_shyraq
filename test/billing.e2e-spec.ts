@@ -79,6 +79,7 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { createTestApp, flushRedis, TestApp, truncateAll } from './helpers/app';
 import { MonthlyBillingProcessor } from '@/modules/billing/monthly-billing.processor';
+import { OverdueInvoiceProcessor } from '@/modules/billing/overdue-invoice.processor';
 
 const SUPER_ADMIN_EMAIL = 'super-billing@shyraq.test';
 const SUPER_ADMIN_PASSWORD = 'admin12345';
@@ -1755,6 +1756,81 @@ describe('B13 Billing & Invoices (e2e)', () => {
           expect(p.status).toBe('completed');
         },
       );
+    });
+  });
+
+  // ── Z. B22a T1 — Overdue cron flips past-due invoice + emits outbox ──────
+
+  describe('Scenario Z (B22a T1): Overdue cron flips past-due invoice + emits invoice.overdue outbox row', () => {
+    it('enqueues overdue-run, processor flips pending invoice past due_date to overdue, outbox event emitted', async () => {
+      const a = await createKgWithAdmin('bi-z', '+77020100301');
+      const childId = await createChild(a.adminToken, {
+        full_name: 'Child Z',
+        date_of_birth: '2021-03-15',
+      });
+
+      // Create an invoice; the helper sets due_date 10 days in the future.
+      const { id: invoiceId } = await createOneOffInvoice(
+        a.adminToken,
+        childId,
+        15000,
+      );
+
+      // Push the invoice's due_date into the past so the cron can pick it
+      // up. Direct SQL — the public API doesn't expose due_date PATCH
+      // (and the relational unique constraint doesn't conflict).
+      await ctx.dataSource.transaction(async (m) => {
+        await m.query(`SET LOCAL app.bypass_rls = 'true'`);
+        await m.query(
+          `UPDATE invoices SET due_date = '2020-01-01' WHERE id = $1`,
+          [invoiceId],
+        );
+      });
+
+      // Enqueue via SaaS endpoint (sanity — the body returns the job id).
+      const enqueueRes = await request(server)
+        .post('/api/v1/saas/billing/overdue-run')
+        .set('Authorization', `Bearer ${saToken}`)
+        .send({})
+        .expect(202);
+      expect(enqueueRes.body.job_id).toBeDefined();
+      expect(enqueueRes.body.status).toBe('enqueued');
+
+      // BullMQ workers don't auto-process in test env. Drive the
+      // processor directly (mirror Scenario J).
+      const processor = ctx.app.get(OverdueInvoiceProcessor);
+      const result = await processor.runForKindergarten(a.kgId, new Date());
+      expect(result.flippedIds).toContain(invoiceId);
+
+      // Invoice now reads as overdue from the admin endpoint.
+      const invRes = await request(server)
+        .get(`/api/v1/admin/invoices/${invoiceId}`)
+        .set('Authorization', `Bearer ${a.adminToken}`)
+        .expect(200);
+      expect(invRes.body.status).toBe('overdue');
+
+      // Outbox row landed for `invoice.overdue` with the invoice id in
+      // payload. Read directly — outbox is internal infra (no admin
+      // GET endpoint in B13).
+      const outboxRows = await ctx.dataSource.transaction(async (m) => {
+        await m.query(`SET LOCAL app.bypass_rls = 'true'`);
+        return (await m.query(
+          `SELECT event_key, payload
+             FROM notification_outbox
+            WHERE kindergarten_id = $1
+              AND event_key = 'invoice.overdue'
+              AND payload->>'invoiceId' = $2`,
+          [a.kgId, invoiceId],
+        )) as Array<{ event_key: string; payload: { invoiceId: string } }>;
+      });
+      expect(outboxRows.length).toBeGreaterThanOrEqual(1);
+      expect(outboxRows[0].event_key).toBe('invoice.overdue');
+      expect(outboxRows[0].payload.invoiceId).toBe(invoiceId);
+
+      // Re-running the processor on the same kg is idempotent: already-
+      // overdue rows are excluded by the WHERE status filter.
+      const second = await processor.runForKindergarten(a.kgId, new Date());
+      expect(second.flippedIds).not.toContain(invoiceId);
     });
   });
 });

@@ -191,6 +191,27 @@ class FakeCustomDiscountRepo extends CustomDiscountRepository {
     return Promise.resolve(true);
   }
 
+  tryReserveUsage(kindergartenId: string, id: string): Promise<boolean> {
+    // B22a T1 H16 — same semantics as incrementUsedCount(by=1).
+    return this.incrementUsedCount(kindergartenId, id, 1);
+  }
+
+  releaseUsage(kindergartenId: string, id: string): Promise<void> {
+    const existing = this.rows.get(id);
+    if (!existing || existing.kindergartenId !== kindergartenId) {
+      return Promise.resolve();
+    }
+    const s = existing.toState();
+    this.rows.set(
+      id,
+      CustomDiscount.fromState({
+        ...s,
+        usedCount: Math.max(0, s.usedCount - 1),
+      }),
+    );
+    return Promise.resolve();
+  }
+
   findActiveCustomDiscounts(
     kindergartenId: string,
     now: Date,
