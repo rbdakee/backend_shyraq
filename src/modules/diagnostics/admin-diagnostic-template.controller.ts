@@ -145,11 +145,16 @@ export class AdminDiagnosticTemplateController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
-      'Update a diagnostic template (partial). Bumps version on schema change.',
+      'Update a diagnostic template (partial). Bumps version on schema change. ' +
+      'Schema PATCH on a template with existing entries → 409 template_has_entries.',
   })
   @ApiOkResponse({ type: DiagnosticTemplateResponseDto })
   @ApiBadRequestResponse({
     description: 'Validation error / invalid schema shape.',
+  })
+  @ApiConflictResponse({
+    description:
+      'template_has_entries — schema is pinned because entries reference this template.',
   })
   @ApiUnauthorizedResponse({ description: 'Bearer missing/invalid/revoked.' })
   @ApiForbiddenResponse({ description: 'Caller is not admin.' })

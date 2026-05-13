@@ -102,21 +102,26 @@ export class ProgressNoteRelationalRepository extends ProgressNoteRepository {
       // B22a T4 — conditional UPDATE with row_version guard. The
       // append-only schema has no `updated_at` column, so the only
       // mutated bookkeeping field is `row_version` itself.
+      // B22a T7 — also stamps the admin-bypass audit columns.
       const result = unwrapReturning<{ row_version: number }>(
         await m.query(
           `UPDATE progress_notes
               SET body = $3,
                   media_urls = $4,
+                  last_modified_by_user_id = $5,
+                  last_modified_at = $6,
                   row_version = row_version + 1
             WHERE id = $1
               AND kindergarten_id = $2
-              AND row_version = $5
+              AND row_version = $7
             RETURNING row_version`,
           [
             s.id,
             s.kindergartenId,
             s.body,
             s.mediaUrls.length > 0 ? s.mediaUrls : null,
+            s.lastModifiedByUserId ?? null,
+            s.lastModifiedAt ?? null,
             expectedRowVersion,
           ],
         ),
@@ -138,6 +143,8 @@ export class ProgressNoteRelationalRepository extends ProgressNoteRepository {
       {
         body: s.body,
         mediaUrls: s.mediaUrls.length > 0 ? s.mediaUrls : null,
+        lastModifiedByUserId: s.lastModifiedByUserId ?? null,
+        lastModifiedAt: s.lastModifiedAt ?? null,
       },
     );
     return note;

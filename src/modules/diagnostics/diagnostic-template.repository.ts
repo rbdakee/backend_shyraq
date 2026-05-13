@@ -71,4 +71,21 @@ export abstract class DiagnosticTemplateRepository {
     kgId: string,
     filters: ListDiagnosticTemplatesFilter,
   ): Promise<DiagnosticTemplateListResult>;
+
+  /**
+   * Returns the number of `diagnostic_entries` rows that reference this
+   * template inside the given kindergarten. Used by H12
+   * (B22a T7) to guard schema-PATCH against a template that already has
+   * persisted entries — mutating the schema would invalidate every
+   * existing entry's `data` payload.
+   *
+   * Lives on the template repo (not the entry repo) because the use-case
+   * is template-side: the template's own `update()` flow needs the count
+   * BEFORE any mutation. Keeping it here also avoids cross-port plumbing
+   * inside `DiagnosticTemplateService`.
+   */
+  abstract countEntriesUsingTemplate(
+    kgId: string,
+    templateId: string,
+  ): Promise<number>;
 }

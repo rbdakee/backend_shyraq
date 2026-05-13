@@ -26,11 +26,25 @@ export interface ProgressNoteState {
    * layer captures `loaded.rowVersion` and passes it back.
    */
   rowVersion: number;
+  /**
+   * Admin-bypass-on-PATCH audit fields (B22a T7 — closes B18 Concern 1).
+   * Stamped by the service layer on every PATCH (including admin
+   * override). NULL on never-patched rows. Internal — not exposed via DTO.
+   */
+  lastModifiedByUserId?: string | null;
+  lastModifiedAt?: Date | null;
 }
 
 export interface ProgressNoteUpdatePatch {
   body?: string;
   mediaUrls?: string[];
+  /**
+   * Audit stamps (B22a T7) — NOT user-supplied. Service layer fills
+   * these from `req.user.sub` + `clock.now()` before calling
+   * `entity.update()`.
+   */
+  lastModifiedByUserId?: string | null;
+  lastModifiedAt?: Date | null;
 }
 
 const FUTURE_SKEW_MS = 5 * 60 * 1000;
@@ -110,6 +124,14 @@ export class ProgressNote {
     return this.state.rowVersion;
   }
 
+  get lastModifiedByUserId(): string | null {
+    return this.state.lastModifiedByUserId ?? null;
+  }
+
+  get lastModifiedAt(): Date | null {
+    return this.state.lastModifiedAt ?? null;
+  }
+
   // ── invariants ───────────────────────────────────────────────────────────
 
   private static assertInvariants(s: ProgressNoteState, now: Date): void {
@@ -145,6 +167,15 @@ export class ProgressNote {
     }
     if (patch.mediaUrls !== undefined) {
       next.mediaUrls = [...patch.mediaUrls];
+    }
+    // Audit stamps (B22a T7). Service supplies these on every PATCH;
+    // we copy from the patch only when present so internal opt-out
+    // callers (none today) can still drive the entity directly.
+    if (patch.lastModifiedByUserId !== undefined) {
+      next.lastModifiedByUserId = patch.lastModifiedByUserId;
+    }
+    if (patch.lastModifiedAt !== undefined) {
+      next.lastModifiedAt = patch.lastModifiedAt;
     }
     return new ProgressNote(next);
   }

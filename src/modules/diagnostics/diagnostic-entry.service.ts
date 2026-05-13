@@ -137,11 +137,20 @@ export class DiagnosticEntryService {
    * captured BEFORE the domain mutation; concurrent PATCHes serialise
    * via the conditional UPDATE in the relational repo. Late writers
    * receive `OptimisticLockError` (HTTP 409).
+   *
+   * Audit stamping (B22a T7 — closes B18 Concern 1): `callerUserId` is
+   * the caller's `users.id` (not their `staff_members.id`) — surfaces
+   * the admin-override audit trail at the user-identity layer so we
+   * can follow it across staff_member churn (terminate + re-add in
+   * different role would break a staff_member-FK link). Stamped on
+   * `last_modified_by_user_id` + `last_modified_at` columns alongside
+   * the business-field updates inside the same conditional UPDATE.
    */
   async update(
     kgId: string,
     id: string,
     callerStaffMemberId: string,
+    callerUserId: string,
     patch: DiagnosticEntryUpdatePatch,
   ): Promise<DiagnosticEntry> {
     const existing = await this.entries.findById(kgId, id);
@@ -161,7 +170,15 @@ export class DiagnosticEntryService {
     }
 
     const expectedRowVersion = existing.rowVersion;
-    const updated = existing.update(patch, this.clock.now());
+    const now = this.clock.now();
+    const updated = existing.update(
+      {
+        ...patch,
+        lastModifiedByUserId: callerUserId,
+        lastModifiedAt: now,
+      },
+      now,
+    );
     return this.entries.update(updated, expectedRowVersion);
   }
 

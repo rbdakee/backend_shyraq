@@ -28,6 +28,10 @@ const KG = '11111111-1111-1111-1111-111111111111';
 const STAFF_A = '22222222-2222-2222-2222-222222222222';
 const STAFF_B = '33333333-3333-3333-3333-333333333333';
 const CHILD = '44444444-4444-4444-4444-444444444444';
+// B22a T7 — caller's `users.id` (separate from `staff_members.id`).
+// Used to assert the audit-stamp wiring without coupling tests to staff.
+const USER_A = '99999999-9999-9999-9999-999999999991';
+const USER_B = '99999999-9999-9999-9999-999999999992';
 const NOW = new Date('2026-05-01T09:00:00.000Z');
 const TODAY = new Date('2026-05-01T00:00:00.000Z');
 
@@ -73,6 +77,13 @@ class FakeTemplateRepo extends DiagnosticTemplateRepository {
     _filters: ListDiagnosticTemplatesFilter,
   ): Promise<DiagnosticTemplateListResult> {
     return Promise.resolve({ items: [], nextCursor: null });
+  }
+  countEntriesUsingTemplate(
+    _kgId: string,
+    _templateId: string,
+  ): Promise<number> {
+    // Not used by DiagnosticEntryService — return 0 for completeness.
+    return Promise.resolve(0);
   }
 }
 
@@ -402,7 +413,7 @@ describe('DiagnosticEntryService', () => {
       templates.put(tmpl);
       const entry = buildEntry(tmpl);
       entries.put(entry);
-      const updated = await service.update(KG, entry.id, STAFF_A, {
+      const updated = await service.update(KG, entry.id, STAFF_A, USER_A, {
         summary: 'Calm',
       });
       expect(updated.summary).toBe('Calm');
@@ -414,7 +425,7 @@ describe('DiagnosticEntryService', () => {
       templates.put(tmpl);
       const entry = buildEntry(tmpl);
       entries.put(entry);
-      const updated = await service.update(KG, entry.id, STAFF_A, {
+      const updated = await service.update(KG, entry.id, STAFF_A, USER_A, {
         data: { mood: 5, notes: 'better' },
       });
       expect((updated.data as { mood: number }).mood).toBe(5);
@@ -426,7 +437,7 @@ describe('DiagnosticEntryService', () => {
       const entry = buildEntry(tmpl);
       entries.put(entry);
       await expect(
-        service.update(KG, entry.id, STAFF_A, {
+        service.update(KG, entry.id, STAFF_A, USER_A, {
           data: { mood: 'not-a-number' as unknown as number },
         }),
       ).rejects.toMatchObject({ code: 'diagnostic_entry_data_invalid' });
@@ -434,7 +445,7 @@ describe('DiagnosticEntryService', () => {
 
     it('throws 404 when entry not found', async () => {
       await expect(
-        service.update(KG, randomUUID(), STAFF_A, { summary: 'x' }),
+        service.update(KG, randomUUID(), STAFF_A, USER_A, { summary: 'x' }),
       ).rejects.toBeInstanceOf(DiagnosticEntryNotFoundError);
     });
 
@@ -444,7 +455,7 @@ describe('DiagnosticEntryService', () => {
       const entry = buildEntry(tmpl);
       entries.put(entry);
       await expect(
-        service.update(KG, entry.id, STAFF_B, { summary: 'x' }),
+        service.update(KG, entry.id, STAFF_B, USER_B, { summary: 'x' }),
       ).rejects.toBeInstanceOf(DiagnosticEntryNotAuthoredByYouError);
     });
 
@@ -463,8 +474,50 @@ describe('DiagnosticEntryService', () => {
       entries.put(buildEntry(tmpl, { id: stale.id, rowVersion: 2 }));
       jest.spyOn(entries, 'findById').mockResolvedValueOnce(stale);
       await expect(
-        service.update(KG, stale.id, STAFF_A, { summary: 'late' }),
+        service.update(KG, stale.id, STAFF_A, USER_A, { summary: 'late' }),
       ).rejects.toBeInstanceOf(OptimisticLockError);
+    });
+
+    it('stamps lastModifiedByUserId + lastModifiedAt on every PATCH', async () => {
+      // B22a T7 / B18 Concern 1 — admin-bypass-on-PATCH audit trail.
+      // The service must populate the audit columns from the supplied
+      // `callerUserId` + `clock.now()`, regardless of which patch
+      // fields were touched. Asserts both the value reaching the entity
+      // and the persisted aggregate (FakeEntryRepo round-trips it).
+      const tmpl = buildTemplate();
+      templates.put(tmpl);
+      const entry = buildEntry(tmpl);
+      entries.put(entry);
+      const updated = await service.update(KG, entry.id, STAFF_A, USER_A, {
+        summary: 'Audited',
+      });
+      expect(updated.lastModifiedByUserId).toBe(USER_A);
+      expect(updated.lastModifiedAt).toEqual(NOW);
+      expect(entries.rows.get(entry.id)?.lastModifiedByUserId).toBe(USER_A);
+    });
+
+    it('stamps audit columns on the admin-override PATCH path', async () => {
+      // Admin overrides happen at the controller layer by passing the
+      // entry's actual `specialist_id` as `callerStaffMemberId` so the
+      // author check passes. The audit stamp uses the admin's own
+      // `users.id` (the controller passes `user.sub`) — so the DB row
+      // shows the admin's id even though the author check was a no-op.
+      const tmpl = buildTemplate();
+      templates.put(tmpl);
+      const entry = buildEntry(tmpl);
+      entries.put(entry);
+      // Simulate the controller's admin-override branch: callerStaffMemberId
+      // = the entry's authoring specialist (so assertAuthoredBy passes),
+      // callerUserId = the admin's own users.id (USER_B here).
+      const updated = await service.update(
+        KG,
+        entry.id,
+        entry.specialistId,
+        USER_B,
+        { summary: 'Admin override' },
+      );
+      expect(updated.lastModifiedByUserId).toBe(USER_B);
+      expect(updated.specialistId).toBe(STAFF_A); // unchanged author
     });
   });
 

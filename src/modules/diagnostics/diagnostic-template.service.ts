@@ -12,7 +12,8 @@ import {
   DiagnosticTemplateUpdatePatch,
 } from './domain/entities/diagnostic-template.entity';
 import { DiagnosticTemplateNotFoundError } from './domain/errors/diagnostic-template-not-found.error';
-import { TemplateSchema } from './domain/schema-validators';
+import { TemplateHasEntriesError } from './domain/errors/template-has-entries.error';
+import { deepEqualJson, TemplateSchema } from './domain/schema-validators';
 
 export interface CreateDiagnosticTemplateInput {
   specialistType: string;
@@ -67,6 +68,16 @@ export class DiagnosticTemplateService {
    * `existing.rowVersion` BEFORE applying the domain mutation and pass
    * it to the repo so the conditional UPDATE serialises concurrent
    * PATCHes. Late writers get `OptimisticLockError` (HTTP 409).
+   *
+   * Schema version-pinning (B22a T7 — closes H12): if `patch.schema` is
+   * supplied AND structurally differs from the persisted schema AND
+   * there is at least one persisted `diagnostic_entry` referencing this
+   * template, throw `TemplateHasEntriesError` (HTTP 409
+   * `template_has_entries`). The entry payloads are validated against
+   * the live template schema on read; mutating the schema would silently
+   * invalidate every prior entry. Non-schema patch fields (`name`,
+   * `description`) remain editable in this state — the guard only fires
+   * on a real structural diff.
    */
   async update(
     kgId: string,
@@ -76,6 +87,22 @@ export class DiagnosticTemplateService {
     const existing = await this.templates.findById(kgId, id);
     if (existing === null) {
       throw new DiagnosticTemplateNotFoundError(id);
+    }
+    // H12: only pay the COUNT round-trip when the patch actually carries
+    // a structural schema change. `deepEqualJson` short-circuits on the
+    // common no-op-schema case (e.g. UI re-sending the same JSON object
+    // alongside a renamed `name`).
+    if (
+      patch.schema !== undefined &&
+      !deepEqualJson(existing.schema, patch.schema)
+    ) {
+      const entriesCount = await this.templates.countEntriesUsingTemplate(
+        kgId,
+        id,
+      );
+      if (entriesCount > 0) {
+        throw new TemplateHasEntriesError(id, entriesCount);
+      }
     }
     const expectedRowVersion = existing.rowVersion;
     const updated = existing.update(patch, this.clock.now());

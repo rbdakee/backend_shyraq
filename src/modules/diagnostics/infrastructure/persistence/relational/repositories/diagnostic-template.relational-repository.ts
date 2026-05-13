@@ -241,4 +241,25 @@ export class DiagnosticTemplateRelationalRepository extends DiagnosticTemplateRe
       hasMore && last ? encodeCursor(last.updatedAt, last.id) : null;
     return { items, nextCursor };
   }
+
+  /**
+   * H12 (B22a T7) — schema PATCH guard. A scalar `count(*)` is cheap
+   * because `diagnostic_entries(template_id, kindergarten_id)` is
+   * indirectly indexed via the existing `idx_diagnostic_entries_kg_date`
+   * (kg_id) plus the FK index PG creates on `template_id`. We don't need
+   * a stricter index — schema PATCHes are rare administrative actions.
+   */
+  async countEntriesUsingTemplate(
+    kgId: string,
+    templateId: string,
+  ): Promise<number> {
+    const rows = (await this.manager().query(
+      `SELECT COUNT(*)::int AS count
+         FROM diagnostic_entries
+        WHERE kindergarten_id = $1
+          AND template_id = $2`,
+      [kgId, templateId],
+    )) as Array<{ count: number }>;
+    return rows[0]?.count ?? 0;
+  }
 }

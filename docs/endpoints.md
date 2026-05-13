@@ -795,7 +795,7 @@ Qundylyq реализуется как `content_posts` с `content_type='qundyly
 | GET | `/admin/diagnostic-templates` | Список шаблонов. Query: `specialist_type?`, `is_active?`. |
 | POST | `/admin/diagnostic-templates` | Создать: body `{specialist_type, name, description?, schema}`. Schema JSONB: `{sections: [{title, fields: [{key, label, type, required, options?, min?, max?}]}]}`. `type`: `text\|number\|boolean\|select\|multiselect\|date\|scale`. |
 | GET | `/admin/diagnostic-templates/:id` | Подробности. |
-| PATCH | `/admin/diagnostic-templates/:id` | Обновить (auto-bump `version` при изменении `schema`). |
+| PATCH | `/admin/diagnostic-templates/:id` | Обновить (auto-bump `version` при изменении `schema`). **B22a T7 (H12):** schema PATCH блокируется → 409 `template_has_entries`, если уже есть `diagnostic_entries` против шаблона (mutating schema invalidates persisted `data` payloads). Patch только `name`/`description`/`is_active` — допустим в любое время. |
 | POST | `/admin/diagnostic-templates/:id/deactivate` | `is_active=false`. Существующие записи против этого шаблона сохраняются. |
 
 ### 2.20 Face ID Management
@@ -1034,6 +1034,9 @@ Templates create/update/deactivate — `/admin/diagnostic-templates` (admin role
 | 400 | `assessment_date_in_future` | `assessment_date > CURRENT_DATE` |
 | 403 | `diagnostic_entry_not_authored_by_you` | PATCH — caller не является автором записи |
 | 403 | `staff_member_must_have_specialist_type` | `GET /staff/my-todos` — caller не имеет `specialist_type` и не передал `?specialist_type=` |
+| 409 | `optimistic_lock_conflict` | PATCH — конкурентный writer изменил запись между read и write (B22a T4 row_version guard). Клиент должен перечитать запись и повторить. |
+
+**Audit trail (B22a T7):** PATCH на `/staff/diagnostic-entries/:id` пишет `last_modified_by_user_id` (= caller `users.id`) + `last_modified_at` (= server clock) в DB. Колонки нужны для админ-override flow: admin прокидывает `entry.specialist_id` чтобы пройти author check, но `last_modified_by_user_id` фиксирует реальную идентичность редактора. Колонки внутренние, не возвращаются в HTTP-ответе в B22a (см. `docs/schema.dbml` §`diagnostic_entries`).
 
 ### 3.11 Progress Notes (Mentor)
 
@@ -1053,6 +1056,9 @@ Templates create/update/deactivate — `/admin/diagnostic-templates` (admin role
 | 403 | `progress_note_not_authored_by_you` | PATCH/DELETE — caller не является автором (не admin) |
 | 404 | `not_found` | POST — `child_id` не найден или принадлежит другому kg (`ChildNotFoundError`); message: `child not found: <id>` |
 | 404 | `progress_note_not_found` | Заметка не найдена или вне kg |
+| 409 | `optimistic_lock_conflict` | PATCH — конкурентный writer изменил заметку (B22a T4 row_version guard). |
+
+**Audit trail (B22a T7):** PATCH на `/staff/progress-notes/:id` пишет `last_modified_by_user_id` + `last_modified_at` в DB (admin-override audit). Не возвращается в HTTP-ответе в B22a.
 
 ### 3.12 Group Stories (Mentor) — B17
 

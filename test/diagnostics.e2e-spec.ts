@@ -1555,4 +1555,218 @@ describe('B18 Diagnostics & Progress (e2e)', () => {
       },
     );
   });
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // Scenario P — H12 schema PATCH version-pinning (B22a T7)
+  // ══════════════════════════════════════════════════════════════════════════════
+
+  describe('Scenario P: schema PATCH on template with entries → 409', () => {
+    it(
+      'admin creates template + 1 entry; ' +
+        'PATCH name only → 200; ' +
+        'PATCH schema → 409 template_has_entries; ' +
+        'underlying schema/version unchanged in DB',
+      async () => {
+        const { kgId, adminToken } = await createKgWithAdmin(
+          'tpl-p',
+          '+77010100241',
+        );
+        const template = await createTemplate(adminToken, {
+          specialist_type: 'psychologist',
+        });
+        const childId = await createChild(adminToken);
+
+        // Seed a specialist + author one entry against the template.
+        const specUserId = await seedUser('+77010100242');
+        await seedStaffMember(kgId, specUserId, 'specialist', 'psychologist');
+        const specToken = await mintToken({
+          sub: specUserId,
+          role: 'specialist',
+          kindergartenId: kgId,
+        });
+        await request(server)
+          .post('/api/v1/staff/diagnostic-entries')
+          .set('Authorization', `Bearer ${specToken}`)
+          .send({
+            child_id: childId,
+            template_id: template.id,
+            assessment_date: isoToday(),
+            data: validEntryData(),
+          })
+          .expect(201);
+
+        // Sanity: PATCH name still allowed even with entries pinned.
+        await request(server)
+          .patch(`/api/v1/admin/diagnostic-templates/${template.id}`)
+          .set('Authorization', `Bearer ${adminToken}`)
+          .send({ name: 'Renamed (with entries)' })
+          .expect(200);
+
+        // PATCH schema (structurally different) → 409 template_has_entries.
+        const newSchema = validSchema({
+          sections: [
+            {
+              title: 'General v2',
+              fields: [
+                {
+                  key: 'mood',
+                  label: 'Mood',
+                  type: 'scale',
+                  required: true,
+                  min: 1,
+                  max: 10,
+                },
+              ],
+            },
+          ],
+        });
+        const conflictRes = await request(server)
+          .patch(`/api/v1/admin/diagnostic-templates/${template.id}`)
+          .set('Authorization', `Bearer ${adminToken}`)
+          .send({ schema: newSchema })
+          .expect(409);
+        expect(conflictRes.body.error).toBe('template_has_entries');
+
+        // Verify DB state: schema + version unchanged (guard fired BEFORE write).
+        const reloaded = await request(server)
+          .get(`/api/v1/admin/diagnostic-templates/${template.id}`)
+          .set('Authorization', `Bearer ${adminToken}`)
+          .expect(200);
+        expect(reloaded.body.version).toBe(1);
+      },
+    );
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // Scenario Q — admin override on PATCH writes audit columns (B22a T7)
+  // ══════════════════════════════════════════════════════════════════════════════
+
+  describe('Scenario Q: admin override stamps last_modified_by_user_id', () => {
+    it(
+      'specialist authors entry; admin PATCHes summary; ' +
+        'DB last_modified_by_user_id = admin.userId; last_modified_at populated',
+      async () => {
+        const {
+          kgId,
+          userId: adminUserId,
+          adminToken,
+        } = await createKgWithAdmin('aud-q-ent', '+77010100251');
+        const template = await createTemplate(adminToken, {
+          specialist_type: 'psychologist',
+        });
+        const childId = await createChild(adminToken);
+
+        const specUserId = await seedUser('+77010100252');
+        await seedStaffMember(kgId, specUserId, 'specialist', 'psychologist');
+        const specToken = await mintToken({
+          sub: specUserId,
+          role: 'specialist',
+          kindergartenId: kgId,
+        });
+
+        // Specialist creates the entry.
+        const createRes = await request(server)
+          .post('/api/v1/staff/diagnostic-entries')
+          .set('Authorization', `Bearer ${specToken}`)
+          .send({
+            child_id: childId,
+            template_id: template.id,
+            assessment_date: isoToday(),
+            data: validEntryData(),
+          })
+          .expect(201);
+        const entryId = createRes.body.id as string;
+
+        // Pre-state: never modified → both audit columns NULL.
+        const preRows = (await ctx.dataSource.transaction(async (m) => {
+          await m.query(`SET LOCAL app.bypass_rls = 'true'`);
+          return m.query(
+            `SELECT last_modified_by_user_id, last_modified_at
+               FROM diagnostic_entries WHERE id = $1`,
+            [entryId],
+          );
+        })) as Array<{
+          last_modified_by_user_id: string | null;
+          last_modified_at: Date | null;
+        }>;
+        expect(preRows[0].last_modified_by_user_id).toBeNull();
+        expect(preRows[0].last_modified_at).toBeNull();
+
+        // Admin PATCH override.
+        await request(server)
+          .patch(`/api/v1/staff/diagnostic-entries/${entryId}`)
+          .set('Authorization', `Bearer ${adminToken}`)
+          .send({ summary: 'Admin override for audit' })
+          .expect(200);
+
+        // Post-state: audit stamps populated with admin's users.id.
+        const postRows = (await ctx.dataSource.transaction(async (m) => {
+          await m.query(`SET LOCAL app.bypass_rls = 'true'`);
+          return m.query(
+            `SELECT last_modified_by_user_id, last_modified_at, summary
+               FROM diagnostic_entries WHERE id = $1`,
+            [entryId],
+          );
+        })) as Array<{
+          last_modified_by_user_id: string | null;
+          last_modified_at: Date | null;
+          summary: string | null;
+        }>;
+        expect(postRows[0].last_modified_by_user_id).toBe(adminUserId);
+        expect(postRows[0].last_modified_at).not.toBeNull();
+        expect(postRows[0].summary).toBe('Admin override for audit');
+      },
+    );
+
+    it(
+      'mentor authors note; admin PATCHes body; ' +
+        'progress_notes.last_modified_by_user_id = admin.userId',
+      async () => {
+        const {
+          kgId,
+          userId: adminUserId,
+          adminToken,
+        } = await createKgWithAdmin('aud-q-note', '+77010100261');
+        const childId = await createChild(adminToken);
+
+        const mentorUserId = await seedUser('+77010100262');
+        await seedStaffMember(kgId, mentorUserId, 'mentor');
+        const mentorToken = await mintToken({
+          sub: mentorUserId,
+          role: 'mentor',
+          kindergartenId: kgId,
+        });
+
+        const createRes = await request(server)
+          .post('/api/v1/staff/progress-notes')
+          .set('Authorization', `Bearer ${mentorToken}`)
+          .send({ child_id: childId, body: 'Initial body.' })
+          .expect(201);
+        const noteId = createRes.body.id as string;
+
+        // Admin overrides the body.
+        await request(server)
+          .patch(`/api/v1/staff/progress-notes/${noteId}`)
+          .set('Authorization', `Bearer ${adminToken}`)
+          .send({ body: 'Admin-overridden body.' })
+          .expect(200);
+
+        const rows = (await ctx.dataSource.transaction(async (m) => {
+          await m.query(`SET LOCAL app.bypass_rls = 'true'`);
+          return m.query(
+            `SELECT last_modified_by_user_id, last_modified_at, body
+               FROM progress_notes WHERE id = $1`,
+            [noteId],
+          );
+        })) as Array<{
+          last_modified_by_user_id: string | null;
+          last_modified_at: Date | null;
+          body: string;
+        }>;
+        expect(rows[0].last_modified_by_user_id).toBe(adminUserId);
+        expect(rows[0].last_modified_at).not.toBeNull();
+        expect(rows[0].body).toBe('Admin-overridden body.');
+      },
+    );
+  });
 });

@@ -114,6 +114,9 @@ export class DiagnosticEntryRelationalRepository extends DiagnosticEntryReposito
       // B22a T4 — conditional UPDATE with row_version guard. See sibling
       // template repo for the rationale; the entry table follows the
       // same single-statement bump pattern.
+      // B22a T7 — also stamps the admin-bypass audit columns on every
+      // PATCH (`last_modified_by_user_id` / `last_modified_at`) from the
+      // domain state filled by the service layer.
       const result = unwrapReturning<{ row_version: number }>(
         await m.query(
           `UPDATE diagnostic_entries
@@ -122,10 +125,12 @@ export class DiagnosticEntryRelationalRepository extends DiagnosticEntryReposito
                   recommendations = $5,
                   attachments = $6,
                   updated_at = $7,
+                  last_modified_by_user_id = $8,
+                  last_modified_at = $9,
                   row_version = row_version + 1
             WHERE id = $1
               AND kindergarten_id = $2
-              AND row_version = $8
+              AND row_version = $10
             RETURNING row_version`,
           [
             s.id,
@@ -135,6 +140,8 @@ export class DiagnosticEntryRelationalRepository extends DiagnosticEntryReposito
             s.recommendations,
             s.attachments.length > 0 ? s.attachments : null,
             s.updatedAt,
+            s.lastModifiedByUserId ?? null,
+            s.lastModifiedAt ?? null,
             expectedRowVersion,
           ],
         ),
@@ -161,6 +168,8 @@ export class DiagnosticEntryRelationalRepository extends DiagnosticEntryReposito
         recommendations: s.recommendations,
         attachments: s.attachments.length > 0 ? s.attachments : null,
         updatedAt: s.updatedAt,
+        lastModifiedByUserId: s.lastModifiedByUserId ?? null,
+        lastModifiedAt: s.lastModifiedAt ?? null,
       },
     );
     return entry;

@@ -16,6 +16,9 @@ export class ProgressNoteMapper {
       notedAt: row.notedAt,
       createdAt: row.createdAt,
       rowVersion: Number(row.rowVersion ?? 1),
+      // B22a T7 — audit columns round-tripped same way as the entry mapper.
+      lastModifiedByUserId: row.lastModifiedByUserId ?? null,
+      lastModifiedAt: row.lastModifiedAt ?? null,
     };
     // Rehydrate skips the future-skew check — historical rows can legitimately
     // exist with `noted_at` written under a different server clock.
@@ -36,6 +39,8 @@ export class ProgressNoteMapper {
       notedAt: s.notedAt,
       createdAt: s.createdAt,
       rowVersion: s.rowVersion,
+      lastModifiedByUserId: s.lastModifiedByUserId ?? null,
+      lastModifiedAt: s.lastModifiedAt ?? null,
     };
   }
 }

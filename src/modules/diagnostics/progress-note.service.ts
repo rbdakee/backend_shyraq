@@ -87,11 +87,18 @@ export class ProgressNoteService {
    * captured BEFORE the domain mutation; concurrent PATCHes serialise
    * via the conditional UPDATE in the relational repo. Late writers
    * receive `OptimisticLockError` (HTTP 409).
+   *
+   * Audit stamping (B22a T7 — closes B18 Concern 1): `callerUserId` is
+   * the caller's `users.id` (not `staff_members.id`) — see
+   * `DiagnosticEntryService.update` for the same rationale. Surfaces
+   * the admin-override audit trail in `last_modified_by_user_id` /
+   * `last_modified_at`.
    */
   async update(
     kgId: string,
     id: string,
     callerMentorId: string,
+    callerUserId: string,
     patch: ProgressNoteUpdatePatch,
   ): Promise<ProgressNote> {
     const existing = await this.notes.findById(kgId, id);
@@ -100,7 +107,15 @@ export class ProgressNoteService {
     }
     existing.assertAuthoredBy(callerMentorId);
     const expectedRowVersion = existing.rowVersion;
-    const updated = existing.update(patch, this.clock.now());
+    const now = this.clock.now();
+    const updated = existing.update(
+      {
+        ...patch,
+        lastModifiedByUserId: callerUserId,
+        lastModifiedAt: now,
+      },
+      now,
+    );
     return this.notes.update(updated, expectedRowVersion);
   }
 
