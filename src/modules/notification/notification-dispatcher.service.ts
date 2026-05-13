@@ -656,28 +656,30 @@ const TEMPLATES: Record<string, EventTemplate> = {
   // i18n title/body in the catalogue, the template uses those verbatim;
   // otherwise it falls back to a generic copy keyed by discountName.
   //
-  // T8 L3: align with the B16 DTO + DBML SoT — admins write Kazakh under
-  // the `kz` key (not `kk`). Read both with `kz` preferred so admins
-  // who hand-fixed legacy `kk` rows aren't broken. Other event templates
-  // still use `kk` and will be swept in B22 polish.
+  // B22b T1 — i18n key sweep: Kazakh is now keyed under BCP-47 `kk` (was
+  // the country-code `kz` until B22a). Legacy DB rows that still hold a
+  // `kz` key are migrated forward by `B22I18nKzToKk`; for one release the
+  // read-side fallbacks below still tolerate `kz` last so any unmigrated
+  // row from an external integration stays readable. Drop the `kz`
+  // fallback branches in B23.
   'discount.activated': ({ payload }) => {
     const tInline = payload.notificationTitle as Record<string, string> | null;
     const bInline = payload.notificationBody as Record<string, string> | null;
     const nameMap = (payload.discountName ?? {}) as Record<string, string>;
     const fallbackName =
       asNonEmptyString(nameMap.ru) ??
-      asNonEmptyString(nameMap.kz) ??
       asNonEmptyString(nameMap.kk) ??
+      asNonEmptyString(nameMap.kz) ?? // kz: legacy, drop in B23
       asNonEmptyString(nameMap.en) ??
       'скидка';
     const titleI18n = tInline ?? {
       ru: 'Новая скидка доступна',
-      kz: 'Жаңа жеңілдік қолжетімді',
+      kk: 'Жаңа жеңілдік қолжетімді',
       en: 'New discount available',
     };
     const bodyI18n = bInline ?? {
       ru: `Скидка «${fallbackName}» теперь доступна для вашего ребёнка.`,
-      kz: `«${fallbackName}» жеңілдігі сіздің балаңызға қолжетімді.`,
+      kk: `«${fallbackName}» жеңілдігі сіздің балаңызға қолжетімді.`,
       en: `Discount "${fallbackName}" is now available for your child.`,
     };
     return {
@@ -750,13 +752,11 @@ const TEMPLATES: Record<string, EventTemplate> = {
     return {
       titleI18n: {
         ru: 'С днём рождения!',
-        kz: 'Туған күніңмен!',
         kk: 'Туған күніңмен!',
         en: 'Happy birthday!',
       },
       bodyI18n: {
         ru: `Поздравляем ${childName} с ${age}-летием!`,
-        kz: `${childName} ${age} жасыңмен құттықтаймыз!`,
         kk: `${childName} ${age} жасыңмен құттықтаймыз!`,
         en: `Wishing ${childName} a happy ${age}th birthday!`,
       },
@@ -772,23 +772,21 @@ const TEMPLATES: Record<string, EventTemplate> = {
     const titleMap = (payload.titleI18n ?? {}) as Record<string, string>;
     const titleFallback =
       asNonEmptyString(titleMap.ru) ??
-      asNonEmptyString(titleMap.kz) ??
       asNonEmptyString(titleMap.kk) ??
+      asNonEmptyString(titleMap.kz) ?? // kz: legacy, drop in B23
       asNonEmptyString(titleMap.en) ??
       'Новая публикация';
     return {
       titleI18n: {
         ru: asNonEmptyString(titleMap.ru) ?? 'Новая публикация',
-        kz: asNonEmptyString(titleMap.kz) ?? titleFallback,
         kk:
           asNonEmptyString(titleMap.kk) ??
-          asNonEmptyString(titleMap.kz) ??
+          asNonEmptyString(titleMap.kz) ?? // kz: legacy, drop in B23
           titleFallback,
         en: asNonEmptyString(titleMap.en) ?? 'New post',
       },
       bodyI18n: {
         ru: 'Открыть, чтобы прочитать новость.',
-        kz: 'Жаңалықты оқу үшін ашыңыз.',
         kk: 'Жаңалықты оқу үшін ашыңыз.',
         en: 'Open to read the news.',
       },
@@ -805,23 +803,21 @@ const TEMPLATES: Record<string, EventTemplate> = {
     const titleMap = (payload.titleI18n ?? {}) as Record<string, string>;
     const titleFallback =
       asNonEmptyString(titleMap.ru) ??
-      asNonEmptyString(titleMap.kz) ??
       asNonEmptyString(titleMap.kk) ??
+      asNonEmptyString(titleMap.kz) ?? // kz: legacy, drop in B23
       asNonEmptyString(titleMap.en) ??
       'Новый Qundylyq';
     return {
       titleI18n: {
         ru: asNonEmptyString(titleMap.ru) ?? 'Новый Qundylyq',
-        kz: asNonEmptyString(titleMap.kz) ?? titleFallback,
         kk:
           asNonEmptyString(titleMap.kk) ??
-          asNonEmptyString(titleMap.kz) ??
+          asNonEmptyString(titleMap.kz) ?? // kz: legacy, drop in B23
           titleFallback,
         en: asNonEmptyString(titleMap.en) ?? 'New Qundylyq',
       },
       bodyI18n: {
         ru: 'Месячная ценность от сада.',
-        kz: 'Айлық құндылық — балабақшадан.',
         kk: 'Айлық құндылық — балабақшадан.',
         en: 'Monthly value from the kindergarten.',
       },
@@ -834,13 +830,11 @@ const TEMPLATES: Record<string, EventTemplate> = {
   'content.story_new': ({ payload }) => ({
     titleI18n: {
       ru: 'Новая история',
-      kz: 'Жаңа сториз',
       kk: 'Жаңа сториз',
       en: 'New story',
     },
     bodyI18n: {
       ru: 'В группе появилась новая история — посмотрите!',
-      kz: 'Топта жаңа сториз пайда болды — қараңыз!',
       kk: 'Топта жаңа сториз пайда болды — қараңыз!',
       en: 'A new story is available in the group.',
     },

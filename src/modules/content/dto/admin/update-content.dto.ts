@@ -1,4 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
+import { Transform } from 'class-transformer';
 import {
   IsISO8601,
   IsIn,
@@ -9,6 +10,7 @@ import {
   MaxLength,
   ValidateIf,
 } from 'class-validator';
+import { normalizeLegacyKzLocale } from '../../../../shared-kernel/utils/i18n-locale-normalizer';
 
 /**
  * Partial patch DTO for `PATCH /admin/content/:id`.
@@ -72,22 +74,24 @@ export class UpdateContentDto {
   body?: string | null;
 
   @ApiProperty({
-    example: { ru: 'Обновлённое объявление', kz: 'Жаңартылған хабарландыру' },
+    example: { ru: 'Обновлённое объявление', kk: 'Жаңартылған хабарландыру' },
     description: 'Localised title map.',
     required: false,
     nullable: true,
   })
   @IsOptional()
+  @Transform(({ value }) => normalizeLegacyKzLocale(value))
   @IsObject()
   title_i18n?: Record<string, string> | null;
 
   @ApiProperty({
-    example: { ru: 'Текст изменён.', kz: 'Мәтін өзгерді.' },
+    example: { ru: 'Текст изменён.', kk: 'Мәтін өзгерді.' },
     description: 'Localised body map.',
     required: false,
     nullable: true,
   })
   @IsOptional()
+  @Transform(({ value }) => normalizeLegacyKzLocale(value))
   @IsObject()
   body_i18n?: Record<string, string> | null;
 

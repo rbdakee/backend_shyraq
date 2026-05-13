@@ -1,4 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
+import { Transform } from 'class-transformer';
 import {
   IsIn,
   IsISO8601,
@@ -9,6 +10,7 @@ import {
   MaxLength,
   ValidateIf,
 } from 'class-validator';
+import { normalizeLegacyKzLocale } from '../../../../shared-kernel/utils/i18n-locale-normalizer';
 
 export class CreateContentDto {
   @ApiProperty({
@@ -73,25 +75,27 @@ export class CreateContentDto {
   body?: string | null;
 
   @ApiProperty({
-    example: { ru: 'Важное объявление', kz: 'Маңызды хабарландыру' },
-    description: 'Localised title map, e.g. { ru, kz }.',
+    example: { ru: 'Важное объявление', kk: 'Маңызды хабарландыру' },
+    description: 'Localised title map, e.g. { ru, kk }.',
     required: false,
     nullable: true,
   })
   @IsOptional()
+  @Transform(({ value }) => normalizeLegacyKzLocale(value))
   @IsObject()
   title_i18n?: Record<string, string> | null;
 
   @ApiProperty({
     example: {
       ru: 'Просим всех родителей ознакомиться с новыми правилами.',
-      kz: 'Барлық ата-аналарды жаңа ережелермен таныса беруін сұраймыз.',
+      kk: 'Барлық ата-аналарды жаңа ережелермен таныса беруін сұраймыз.',
     },
     description: 'Localised body map.',
     required: false,
     nullable: true,
   })
   @IsOptional()
+  @Transform(({ value }) => normalizeLegacyKzLocale(value))
   @IsObject()
   body_i18n?: Record<string, string> | null;
 

@@ -170,7 +170,7 @@ describeIntegration(
         await m.query(
           `INSERT INTO kindergarten_holidays
              (id, kindergarten_id, date, name, is_billable)
-           VALUES ($1, $2, '2025-01-01', '{"ru":"Новый год","kz":"Жаңа жыл"}', false)`,
+           VALUES ($1, $2, '2025-01-01', '{"ru":"Новый год","kk":"Жаңа жыл"}', false)`,
           [holidayA, kgA],
         );
       });

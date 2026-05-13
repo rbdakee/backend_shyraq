@@ -343,11 +343,11 @@ describe('B17 Content & Stories (e2e)', () => {
             target_type: 'all',
             title_i18n: {
               ru: 'Тестовая новость',
-              kz: 'Сынақ жаңалық',
+              kk: 'Сынақ жаңалық',
             },
             body_i18n: {
               ru: 'Текст новости',
-              kz: 'Жаңалық мәтіні',
+              kk: 'Жаңалық мәтіні',
             },
           })
           .expect(201);
@@ -449,7 +449,7 @@ describe('B17 Content & Stories (e2e)', () => {
           .send({
             content_type: 'news',
             target_type: 'all',
-            title_i18n: { ru: 'Оригинал', kz: 'Түпнұсқа' },
+            title_i18n: { ru: 'Оригинал', kk: 'Түпнұсқа' },
           })
           .expect(201);
         const id = createRes.body.id as string;
@@ -465,11 +465,11 @@ describe('B17 Content & Stories (e2e)', () => {
           .send({
             title_i18n: {
               ru: 'Обновлённый заголовок',
-              kz: 'Жаңартылған тақырып',
+              kk: 'Жаңартылған тақырып',
             },
             body_i18n: {
               ru: 'Обновлённый текст',
-              kz: 'Жаңартылған мәтін',
+              kk: 'Жаңартылған мәтін',
             },
           })
           .expect(200);
@@ -512,7 +512,7 @@ describe('B17 Content & Stories (e2e)', () => {
             target_type: 'all',
             title_i18n: {
               ru: 'Публикуем',
-              kz: 'Жариялаймыз',
+              kk: 'Жариялаймыз',
             },
           })
           .expect(201);
@@ -568,7 +568,7 @@ describe('B17 Content & Stories (e2e)', () => {
             target_type: 'all',
             title_i18n: {
               ru: 'Запланированная новость',
-              kz: 'Жоспарланған жаңалық',
+              kk: 'Жоспарланған жаңалық',
             },
           })
           .expect(201);
@@ -649,7 +649,7 @@ describe('B17 Content & Stories (e2e)', () => {
             target_type: 'all',
             title_i18n: {
               ru: 'Отложенная публикация',
-              kz: 'Кейінге қалдырылған',
+              kk: 'Кейінге қалдырылған',
             },
           })
           .expect(201);
@@ -1178,7 +1178,7 @@ describe('B17 Content & Stories (e2e)', () => {
             target_type: 'all',
             title_i18n: {
               ru: 'Новость для родителей',
-              kz: 'Ата-аналарға жаңалық',
+              kk: 'Ата-аналарға жаңалық',
             },
           })
           .expect(201);
@@ -1196,7 +1196,7 @@ describe('B17 Content & Stories (e2e)', () => {
             target_type: 'all',
             title_i18n: {
               ru: 'Ценность месяца',
-              kz: 'Ай құндылығы',
+              kk: 'Ай құндылығы',
             },
             metadata: { month: '2026-05', theme: 'Kindness' },
           })

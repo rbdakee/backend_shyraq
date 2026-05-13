@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   IsBoolean,
   IsDateString,
@@ -9,6 +9,7 @@ import {
   MinLength,
   ValidateNested,
 } from 'class-validator';
+import { normalizeLegacyKzLocale } from '../../../shared-kernel/utils/i18n-locale-normalizer';
 
 class HolidayNameDto {
   @ApiProperty({
@@ -22,12 +23,12 @@ class HolidayNameDto {
 
   @ApiProperty({
     example: 'Республика күні',
-    description: 'Kazakh locale name.',
+    description: 'Kazakh locale name (BCP 47 `kk`).',
     required: false,
   })
   @IsOptional()
   @IsString()
-  kz?: string;
+  kk?: string;
 
   @ApiProperty({
     example: 'Republic Day',
@@ -51,8 +52,9 @@ export class CreateHolidayDto {
   @ApiProperty({
     type: HolidayNameDto,
     description: 'Locale map for the holiday name. At least "ru" is required.',
-    example: { ru: 'День Республики', kz: 'Республика күні' },
+    example: { ru: 'День Республики', kk: 'Республика күні' },
   })
+  @Transform(({ value }) => normalizeLegacyKzLocale(value))
   @ValidateNested()
   @Type(() => HolidayNameDto)
   name!: HolidayNameDto;
@@ -71,11 +73,12 @@ export class CreateHolidayDto {
 
 export class UpdateHolidayDto {
   @ApiProperty({
-    example: { ru: 'Обновлённое название', kz: 'Жаңартылған атау' },
+    example: { ru: 'Обновлённое название', kk: 'Жаңартылған атау' },
     description: 'Partial locale map update.',
     required: false,
   })
   @IsOptional()
+  @Transform(({ value }) => normalizeLegacyKzLocale(value))
   @IsObject()
   name?: Record<string, string>;
 
@@ -103,7 +106,7 @@ export class HolidayResponseDto {
   date!: string;
 
   @ApiProperty({
-    example: { ru: 'День Республики', kz: 'Республика күні' },
+    example: { ru: 'День Республики', kk: 'Республика күні' },
     description: 'Locale map of holiday names.',
   })
   name!: Record<string, string>;

@@ -23,8 +23,8 @@ function makeState(
     targetChildId: null,
     title: null,
     body: null,
-    titleI18n: { ru: 'Привет', kz: 'Сәлем' },
-    bodyI18n: { ru: 'Текст', kz: 'Мәтін' },
+    titleI18n: { ru: 'Привет', kk: 'Сәлем' },
+    bodyI18n: { ru: 'Текст', kk: 'Мәтін' },
     mediaUrls: null,
     metadata: null,
     scheduledFor: null,
@@ -52,7 +52,7 @@ describe('ContentPost domain entity', () => {
         kindergartenId: 'kg-1',
         contentType: 'news',
         targetType: 'all',
-        titleI18n: { ru: 'T', kz: 'T' },
+        titleI18n: { ru: 'T', kk: 'T' },
         now: NOW,
       });
       expect(p.status).toBe('draft');
@@ -244,9 +244,9 @@ describe('ContentPost domain entity', () => {
       expect(p.publishedAt).toEqual(NOW);
       expect(p.createdBy).toBeNull();
       expect(p.titleI18n?.ru).toContain('Айгерим');
-      expect(p.titleI18n?.kz).toContain('Айгерим');
+      expect(p.titleI18n?.kk).toContain('Айгерим');
       expect(p.bodyI18n?.ru).toContain('5');
-      expect(p.bodyI18n?.kz).toContain('5');
+      expect(p.bodyI18n?.kk).toContain('5');
       expect(p.metadata).toEqual({ child_id: 'child-1', age: 5 });
     });
   });
@@ -322,8 +322,8 @@ describe('ContentPost domain entity', () => {
         {
           title: 'New title',
           body: 'New body',
-          titleI18n: { ru: 'Заголовок', kz: 'Тақырып' },
-          bodyI18n: { ru: 'Тело', kz: 'Дене' },
+          titleI18n: { ru: 'Заголовок', kk: 'Тақырып' },
+          bodyI18n: { ru: 'Тело', kk: 'Дене' },
           mediaUrls: ['https://x/y.jpg'],
           metadata: { tag: 'urgent' },
           expiresAt: FUTURE,
@@ -332,8 +332,8 @@ describe('ContentPost domain entity', () => {
       );
       expect(p.title).toBe('New title');
       expect(p.body).toBe('New body');
-      expect(p.titleI18n).toEqual({ ru: 'Заголовок', kz: 'Тақырып' });
-      expect(p.bodyI18n).toEqual({ ru: 'Тело', kz: 'Дене' });
+      expect(p.titleI18n).toEqual({ ru: 'Заголовок', kk: 'Тақырып' });
+      expect(p.bodyI18n).toEqual({ ru: 'Тело', kk: 'Дене' });
       expect(p.mediaUrls).toEqual(['https://x/y.jpg']);
       expect(p.metadata).toEqual({ tag: 'urgent' });
       expect(p.expiresAt).toEqual(FUTURE);

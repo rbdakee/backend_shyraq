@@ -12,7 +12,7 @@ function makeHoliday(
     id: 'hol-uuid-0001',
     kindergartenId: 'kg-uuid-0001',
     date: new Date('2026-03-22'),
-    name: { ru: 'Наурыз', kz: 'Наурыз мейрамы' },
+    name: { ru: 'Наурыз', kk: 'Наурыз мейрамы' },
     isBillable: false,
     createdAt: NOW,
     updatedAt: NOW,

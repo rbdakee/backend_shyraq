@@ -1456,8 +1456,9 @@ describe('NotificationDispatcher', () => {
     );
   });
 
-  // ── B16 T8 L3 — `discount.activated` reads `kz` (not legacy `kk`) ──────
-  describe('discount.activated template (T8 L3)', () => {
+  // ── B22b T1 — `discount.activated` reads `kk` first, with `kz` as a
+  // legacy fallback for one release post i18n sweep ─────────────────────
+  describe('discount.activated template (B22b T1)', () => {
     function render(payload: Record<string, unknown>) {
       const template = EVENT_TEMPLATES['discount.activated'];
       // Cast through unknown to satisfy the TemplateContext shape — the
@@ -1467,27 +1468,37 @@ describe('NotificationDispatcher', () => {
       } as never);
     }
 
-    it('falls back to nameMap.kz before legacy nameMap.kk for the Kazakh greeting', () => {
+    it('prefers nameMap.kk over legacy nameMap.kz for the Kazakh greeting', () => {
       const out = render({
         discountId: 'd-1',
         notificationTitle: null,
         notificationBody: null,
-        discountName: { kz: 'Жаңа жеңілдік', kk: 'OLD KK' },
+        discountName: { kk: 'Жаңа жеңілдік', kz: 'OLD KZ' },
       });
-      // The fallback Kazakh body should reference the kz value, not kk.
-      expect(out.bodyI18n.kz).toContain('Жаңа жеңілдік');
-      expect(out.bodyI18n.kz).not.toContain('OLD KK');
+      // The fallback Kazakh body should reference the kk value, not legacy kz.
+      expect(out.bodyI18n.kk).toContain('Жаңа жеңілдік');
+      expect(out.bodyI18n.kk).not.toContain('OLD KZ');
     });
 
-    it('emits the fallback Kazakh title under `kz` (not `kk`)', () => {
+    it('falls back to legacy nameMap.kz when nameMap.kk is missing', () => {
+      const out = render({
+        discountId: 'd-1',
+        notificationTitle: null,
+        notificationBody: null,
+        discountName: { kz: 'Ескі жеңілдік' },
+      });
+      expect(out.bodyI18n.kk).toContain('Ескі жеңілдік');
+    });
+
+    it('emits the fallback Kazakh title under `kk` (not legacy `kz`)', () => {
       const out = render({
         discountId: 'd-1',
         notificationTitle: null,
         notificationBody: null,
         discountName: { ru: 'Скидка' },
       });
-      expect(out.titleI18n.kz).toBe('Жаңа жеңілдік қолжетімді');
-      expect(out.titleI18n.kk).toBeUndefined();
+      expect(out.titleI18n.kk).toBe('Жаңа жеңілдік қолжетімді');
+      expect(out.titleI18n.kz).toBeUndefined();
     });
   });
 

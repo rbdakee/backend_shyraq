@@ -10,7 +10,7 @@ export interface KindergartenHolidayState {
 
 /**
  * Per-kindergarten holiday (or non-billable closure) entry. `name` is a
- * locale map (`{ ru: '…', kz: '…' }`) — at least one locale key is
+ * locale map (`{ ru: '…', kk: '…' }`) — at least one locale key is
  * required. `isBillable=false` excludes the day from pro-rata calculations.
  */
 export class KindergartenHoliday {

@@ -486,5 +486,8 @@ function extractKeyFromUrl(url: string): string | null {
 
 function pickName(i18n: LocalisedText | null): string {
   if (!i18n) return '';
-  return i18n.ru ?? i18n.kz ?? i18n.kk ?? i18n.en ?? '';
+  // B22b T1: prefer canonical BCP-47 `kk` over legacy `kz`. The legacy
+  // `kz` fallback is kept for one release to cover rows persisted before
+  // the `B22I18nKzToKk` data migration; drop in B23.
+  return i18n.ru ?? i18n.kk ?? i18n.kz ?? i18n.en ?? '';
 }
