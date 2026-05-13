@@ -235,7 +235,7 @@ describe('P5 children & guardians (e2e)', () => {
     expect(res.body.meta.total).toBe(3);
   });
 
-  it('PATCH /children/:id updates profile, archive→409-on-replay→reactivate flow; legacy /restore returns 410', async () => {
+  it('PATCH /children/:id updates profile, archive→409-on-replay→reactivate flow; legacy /restore is gone', async () => {
     const a = await createKgWithAdmin('children-4', '+77011115004');
     const created = await request(server)
       .post('/api/v1/children')
@@ -273,18 +273,15 @@ describe('P5 children & guardians (e2e)', () => {
       .send({ archive_reason: 'second attempt' })
       .expect(409)
       .expect((r) => expect(r.body.error).toBe('child_already_archived'));
-    // B22a T11: /restore is now a 410 Gone shim. Callers must migrate to
-    // /reactivate. The Location header advertises the successor.
-    const goneRes = await request(server)
+    // B22b T12: the legacy /restore route has been fully removed (the B22a
+    // T11 410-Gone shim shipped for one release). Hitting the legacy path
+    // now falls through to the router-level 404 — clients must use
+    // /reactivate.
+    await request(server)
       .post(`/api/v1/children/${id}/restore`)
       .set('Authorization', `Bearer ${a.adminToken}`)
-      .expect(410);
-    expect(goneRes.body.error).toBe('endpoint_gone');
-    expect(goneRes.body.details).toEqual({
-      successor: `/api/v1/children/${id}/reactivate`,
-    });
-    expect(goneRes.headers.location).toBe(`/api/v1/children/${id}/reactivate`);
-    // Sanity: /reactivate (the documented successor) actually works.
+      .expect(404);
+    // /reactivate (the documented successor) still works.
     await request(server)
       .post(`/api/v1/children/${id}/reactivate`)
       .set('Authorization', `Bearer ${a.adminToken}`)

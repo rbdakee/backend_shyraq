@@ -688,27 +688,6 @@ export class ChildService {
     return { child: result.child, requires_new_tariff_assignment: true };
   }
 
-  /**
-   * Back-compat alias for the old `restoreChild` name. New callers (T4
-   * controller) should use `reactivateChild`. Kept until the controller
-   * lands so `child.service.spec.ts` keeps compiling. T13 L1 (opus) —
-   * `changedByUserId` is now required (no `staff_members.id` fallback).
-   */
-  async restoreChild(
-    kindergartenId: string,
-    childId: string,
-    reactivatedByStaffId: string,
-    changedByUserId: string,
-  ): Promise<Child> {
-    const { child } = await this.reactivateChild(
-      kindergartenId,
-      childId,
-      reactivatedByStaffId,
-      changedByUserId,
-    );
-    return child;
-  }
-
   // ── Guardians: admin path ───────────────────────────────────────────────
 
   /**

@@ -149,3 +149,12 @@ DATABASE_SUPERADMIN_PASSWORD=shyraq_superadmin
 # CONTENT_PUBLISH_CRON=enabled
 # BIRTHDAY_GENERATION_CRON=enabled
 # STORY_CLEANUP_CRON=enabled
+# OUTBOX_PRUNE_CRON=enabled
+#
+# Notes on outbox-prune retention (B22b T12): the weekly cron deletes
+# terminal `notification_outbox` rows older than 7 days (dispatched)
+# and 30 days (failed). Retention windows are HARDCODED in
+# `src/modules/notification/outbox-prune.processor.ts` — not via env —
+# because a misconfigured window is more dangerous (silent data loss
+# from a typo) than a hardcoded one. Change the constants when
+# compliance or audit requirements push us to a different horizon.

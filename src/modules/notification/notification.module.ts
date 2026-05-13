@@ -1,4 +1,5 @@
 import { Global, Module, Provider } from '@nestjs/common';
+import { BullModule } from '@nestjs/bullmq';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { NotificationPort } from '@/common/notifications/notification.port';
 import { ChildModule } from '@/modules/child/child.module';
@@ -20,6 +21,11 @@ import { NotificationDispatcher } from './notification-dispatcher.service';
 import { NotificationPreferenceRepository } from './notification-preference.repository';
 import { NotificationRepository } from './notification.repository';
 import { OutboxEventRepository } from './outbox-event.repository';
+import {
+  OutboxPruneProcessor,
+  OutboxPruneScheduler,
+  OUTBOX_PRUNE_QUEUE,
+} from './outbox-prune.processor';
 import { PushTokenRepository } from './push-token.repository';
 import { NotificationService } from './notification.service';
 import { PushTokenController } from './push-token.controller';
@@ -60,6 +66,11 @@ function pushPortProvider(): Provider {
       NotificationPreferenceTypeOrmEntity,
       PushTokenTypeOrmEntity,
     ]),
+    // B22b T12 — weekly outbox-prune BullMQ queue. The scheduler upserts
+    // the repeatable cron at OnApplicationBootstrap; the worker process
+    // (`WorkerModule`) registers the same provider so the processor runs
+    // there. API process can opt out via `OUTBOX_PRUNE_CRON=disabled`.
+    BullModule.registerQueue({ name: OUTBOX_PRUNE_QUEUE }),
     ChildModule,
     GroupModule,
     UsersModule,
@@ -101,6 +112,13 @@ function pushPortProvider(): Provider {
     // Services.
     NotificationDispatcher,
     NotificationService,
+    // B22b T12 — outbox-prune cron. The scheduler is gated behind
+    // `OUTBOX_PRUNE_CRON !== 'disabled'`; the processor is harmless to
+    // register here too (BullMQ workers attach to the queue by name and
+    // duplicates across processes serialise on the queue, never doubling
+    // work on a single repeatable tick).
+    OutboxPruneProcessor,
+    OutboxPruneScheduler,
   ],
   exports: [
     OutboxEventRepository,
@@ -111,6 +129,10 @@ function pushPortProvider(): Provider {
     PushNotificationPort,
     NotificationDispatcher,
     NotificationService,
+    // Re-export BullMQ tokens so worker-side modules importing
+    // NotificationModule can `@InjectQueue(OUTBOX_PRUNE_QUEUE)` without
+    // a second `BullModule.registerQueue` call.
+    BullModule,
   ],
 })
 export class NotificationModule {}

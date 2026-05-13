@@ -136,6 +136,41 @@ export class OutboxEventRelationalRepository extends OutboxEventRepository {
     return row ? OutboxEventMapper.toDomain(row) : null;
   }
 
+  async prunePrunables(
+    manager: EntityManager,
+    dispatchedCutoff: Date,
+    failedCutoff: Date,
+  ): Promise<{ deletedDispatched: number; deletedFailed: number }> {
+    // The pruner runs cross-tenant under `app.bypass_rls = 'true'`
+    // (publish handled by the processor). Two separate DELETEs let the
+    // two retention windows differ without a CASE expression in the
+    // WHERE clause; both rely on the `created_at` index from the B9
+    // migration so they remain bounded by row count even on a multi-
+    // year archive.
+    const dispatchedResult: Array<{ count: string }> = await manager.query(
+      `WITH del AS (
+         DELETE FROM notification_outbox
+          WHERE status = 'dispatched' AND created_at < $1
+          RETURNING 1
+       )
+       SELECT COUNT(*)::text AS count FROM del`,
+      [dispatchedCutoff],
+    );
+    const failedResult: Array<{ count: string }> = await manager.query(
+      `WITH del AS (
+         DELETE FROM notification_outbox
+          WHERE status = 'failed' AND created_at < $1
+          RETURNING 1
+       )
+       SELECT COUNT(*)::text AS count FROM del`,
+      [failedCutoff],
+    );
+    return {
+      deletedDispatched: parseInt(dispatchedResult[0]?.count ?? '0', 10),
+      deletedFailed: parseInt(failedResult[0]?.count ?? '0', 10),
+    };
+  }
+
   // ── helpers ───────────────────────────────────────────────────────────────
 
   private manager(explicit?: EntityManager): EntityManager {

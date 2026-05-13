@@ -24,6 +24,7 @@ import {
   OutboxPollerProcessor,
   OUTBOX_POLLER_QUEUE,
 } from '@/modules/notification/outbox-poller.processor';
+import { OUTBOX_PRUNE_QUEUE } from '@/modules/notification/outbox-prune.processor';
 import { ScheduleModule } from '@/modules/schedule/schedule.module';
 import { ScheduleRolloutModule } from '@/modules/schedule-rollout/schedule-rollout.module';
 import {
@@ -134,6 +135,12 @@ const resolveI18nPath = (): string => {
     BullModule.registerQueue(
       { name: OUTBOX_POLLER_QUEUE },
       { name: WEEKLY_ROLLOUT_QUEUE },
+      // B22b T12 — weekly outbox-prune queue (the processor + scheduler
+      // are registered by `NotificationModule`; this `registerQueue`
+      // call publishes the queue token in the worker DI graph so
+      // `@InjectQueue(OUTBOX_PRUNE_QUEUE)` resolves under the worker
+      // process bootstrap).
+      { name: OUTBOX_PRUNE_QUEUE },
     ),
     SharedKernelModule,
     RedisModule,

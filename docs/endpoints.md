@@ -345,7 +345,6 @@ Email + password (не OTP). Access-токен — тот же JWT HS256 (`JWT_A
 | POST | `/admin/children/:id/transfer-group` | Перевод в другую группу. Создаёт запись в `child_group_history`. Emits `child.transferred` через outbox (менторы старой+новой группы + guardians). |
 | POST | `/admin/children/:id/archive` | Архивировать ребёнка. Закрывает `tariff_assignments`, enqueue BullMQ `lifecycle:pro-rata-refund`. |
 | POST | `/admin/children/:id/reactivate` | Реактивировать ребёнка. Возврат в `status='active'`. |
-| POST | `/admin/children/:id/restore` | **DEPRECATED (B22a) — возвращает 410 `endpoint_gone` c заголовком `Location: /api/v1/admin/children/:id/reactivate`.** Удалён контроллером B22a; alias-shim удалён полностью в B22b. Клиенты должны мигрировать на `/reactivate`. |
 | GET | `/admin/children/:id/status-history` | История изменений `children.status` (audit). Paginated `?limit=&offset=`. Response: `[{id, previous_status, new_status, previous_archive_reason, archive_reason, changed_by_user_id, changed_at}]` отсортирован `changed_at DESC`. См. §2.7.4. |
 | GET | `/admin/children/:id/guardians` | Все guardians ребёнка (+ статус одобрения, `has_approval_rights`). |
 | POST | `/admin/children/:id/guardians` | Добавить guardian вручную (админ может создать primary с самого начала). |
@@ -497,28 +496,7 @@ Email + password (не OTP). Access-токен — тот же JWT HS256 (`JWT_A
 
 ---
 
-#### 2.7.5 POST `/admin/children/:id/restore` (B22a — DEPRECATED)
-
-**Status:** ⚠️ **410 GONE** — endpoint удалён в B22a.
-
-**Response 410:**
-```json
-{
-  "error": {
-    "code": "endpoint_gone",
-    "message": "POST /admin/children/:id/restore is deprecated. Use POST /admin/children/:id/reactivate instead.",
-    "successor": "/api/v1/admin/children/:id/reactivate"
-  }
-}
-```
-
-**Headers:** `Location: /api/v1/admin/children/:id/reactivate`.
-
-Полное удаление shim'а — в B22b. Клиенты обязаны мигрировать на `/reactivate` до B22b merge.
-
----
-
-**Error codes (§2.7):** `child_not_found`(404), `child_already_archived`(409), `child_not_archived`(409), `archive_reason_required`(422), `child_already_in_group`(409), `group_not_found`(404), `endpoint_gone`(410).
+**Error codes (§2.7):** `child_not_found`(404), `child_already_archived`(409), `child_not_archived`(409), `archive_reason_required`(422), `child_already_in_group`(409), `group_not_found`(404).
 
 ### 2.8 Schedule (Templates + Activity Events)
 

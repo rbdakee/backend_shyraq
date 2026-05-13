@@ -1026,7 +1026,7 @@ describe('ChildService — admin: createChild + updates', () => {
     const got = await service.getChild(KG, c.id);
     expect(got.child.status.value).toBe('archived');
     expect(got.child.archiveReason).toBe('parent withdrew');
-    await service.restoreChild(KG, c.id, 'staff-1', LEGACY_ACTOR_USER_ID);
+    await service.reactivateChild(KG, c.id, 'staff-1', LEGACY_ACTOR_USER_ID);
     const after = await service.getChild(KG, c.id);
     expect(after.child.status.value).toBe('active');
     expect(after.child.archivedAt).toBeUndefined();
