@@ -1,28 +1,48 @@
 /**
  * Money helpers — KZT, two-decimal places.
  *
- * Today billing math is held as a plain `number` (IEEE-754 double) which is
- * lossy when intermediate values drift below the cent boundary. The minimum
- * fix (T11 H7) is to centralise rounding so every arithmetic call ends in a
- * canonical 2dp form. A future migration to `decimal.js` or BigInt-backed
- * tiyn (1 KZT = 100 tiyn) is tracked under `// TODO(B22): migrate to
- * Decimal-backed money type`.
+ * B22b T2 (closes B13 T11 H7): arithmetic is now Decimal-backed, routed
+ * through `MoneyKzt` from `./money-kzt`. The function signatures stay
+ * `(number) => number` for callsite-compat — every callsite gets the
+ * IEEE-754 precision fix without code changes. `roundKzt(0.1 + 0.2)` is
+ * still `0.3` here, but the addition + rounding inside the VO are
+ * banker-rounded Decimal ops, not lossy IEEE-754 + Math.round.
  *
- * Convention:
- *   - All public helpers return values rounded to 2dp.
- *   - `null`/`undefined` inputs propagate via the typed signature; they are
- *     not silently coerced. Callers handle `null` explicitly.
+ * Migration roadmap (carry-forward from B22b T2):
+ *   - All NEW callsites SHOULD prefer `MoneyKzt` directly — `import {
+ *     MoneyKzt } from '@/shared-kernel/domain/money-kzt'` — to get the
+ *     immutable VO surface (add/sub/mul/div, isZero/isPositive, etc.).
+ *   - Existing callsites in `src/modules/billing/` continue to use these
+ *     helpers as a transitional compatibility layer. Migrating their
+ *     domain-entity state shapes from `number` → `MoneyKzt` lands in a
+ *     follow-up task (state-shape change ripples through 8 entities, 9
+ *     TypeORM mappings, 4 services, presenters, DTOs, and the entire
+ *     billing spec suite — too disruptive for one PR).
+ *
+ * Public surface:
+ *   - All helpers round to 2dp via banker's (ROUND_HALF_EVEN) rounding,
+ *     the financial-industry default.
+ *   - `null`/`undefined` inputs propagate via the typed signature — they
+ *     are NOT silently coerced. Callers handle `null` explicitly.
+ *   - `divideKzt` throws on division by zero (no silent `Infinity`).
  *   - Functions are pure; no side effects, no I/O.
+ *
+ * `@deprecated` is documented but not annotated programmatically because
+ * every domain entity and service still consumes these helpers — flipping
+ * the JSDoc tag would flood the build with warnings. Tag removal is part
+ * of the follow-up migration.
  */
-
-const SCALE = 100;
+import { MoneyKzt } from './money-kzt';
 
 /**
- * Round to 2 decimal places via the canonical "scale, round, descale"
- * pattern. Centralised to keep behaviour consistent across the codebase
- * (cron, hook, parent-pay, refund, payment_account ledger).
+ * Round to 2 decimal places via banker's rounding.
  *
- * `roundKzt(0.1 + 0.2)` returns `0.3` — the IEEE-754 trap is closed.
+ * `roundKzt(0.1 + 0.2)` returns `0.3` — the IEEE-754 trap is closed by
+ * routing the round through `MoneyKzt.fromKzt` (Decimal-backed). Note
+ * that the JS `+` happens BEFORE the call, so the operand is already
+ * `0.30000000000000004`; the rounding step pulls it back to `0.3`.
+ * Prefer `MoneyKzt.fromKzt(a).add(MoneyKzt.fromKzt(b))` when the
+ * intermediate precision matters (e.g. chained arithmetic).
  */
 export function roundKzt(value: number): number {
   if (!Number.isFinite(value)) {
@@ -30,33 +50,41 @@ export function roundKzt(value: number): number {
       `roundKzt: expected finite number, got ${String(value)}`,
     );
   }
-  return Math.round(value * SCALE) / SCALE;
+  return MoneyKzt.fromKzt(value).toNumber();
 }
 
-/** `roundKzt(a + b)` */
+/** `MoneyKzt.fromKzt(a).add(MoneyKzt.fromKzt(b))` → number. */
 export function addKzt(a: number, b: number): number {
-  return roundKzt(a + b);
+  return MoneyKzt.fromKzt(a).add(MoneyKzt.fromKzt(b)).toNumber();
 }
 
-/** `roundKzt(a - b)` */
+/** `MoneyKzt.fromKzt(a).sub(MoneyKzt.fromKzt(b))` → number. */
 export function subtractKzt(a: number, b: number): number {
-  return roundKzt(a - b);
+  return MoneyKzt.fromKzt(a).sub(MoneyKzt.fromKzt(b)).toNumber();
 }
 
-/** `roundKzt(a * b)` */
+/** `MoneyKzt.fromKzt(a).mul(b)` → number. */
 export function multiplyKzt(a: number, b: number): number {
-  return roundKzt(a * b);
+  if (!Number.isFinite(b)) {
+    throw new TypeError(
+      `multiplyKzt: expected finite number, got ${String(b)}`,
+    );
+  }
+  return MoneyKzt.fromKzt(a).mul(b).toNumber();
 }
 
 /**
- * `roundKzt(a / b)` — throws on division by zero rather than returning
- * `Infinity` / `NaN` which would be silently rounded to `0` later in the
- * pipeline. Callers that need a fallback must guard `b !== 0` before
- * calling.
+ * `MoneyKzt.fromKzt(a).div(b)` → number. Throws `RangeError` on
+ * division by zero rather than returning `Infinity` / `NaN` which would
+ * be silently coerced to `0` later in the pipeline. Callers that need a
+ * fallback must guard `b !== 0` before calling.
  */
 export function divideKzt(a: number, b: number): number {
+  if (!Number.isFinite(b)) {
+    throw new TypeError(`divideKzt: expected finite number, got ${String(b)}`);
+  }
   if (b === 0) {
     throw new RangeError('divideKzt: divisor is zero');
   }
-  return roundKzt(a / b);
+  return MoneyKzt.fromKzt(a).div(b).toNumber();
 }

@@ -5,8 +5,11 @@ describe('roundKzt', () => {
     expect(roundKzt(0.1 + 0.2)).toBe(0.3);
   });
 
-  it('rounds via Math.round semantics (IEEE-754 binary representation drives ties)', () => {
-    // 1.005 — IEEE-754 stores it as 1.00499999...→ rounds DOWN to 1.0.
+  it('rounds tie cases via banker (half-even) semantics post-B22b-T2', () => {
+    // 1.005 — IEEE-754 stores it as 1.00499999...→ rounds DOWN to 1.0 under
+    // EITHER Math.round (legacy) OR ROUND_HALF_EVEN (current), because the
+    // actual representable value is below the tie point. Acceptance check
+    // for the Decimal-backed implementation parity.
     expect(roundKzt(1.005)).toBe(1.0);
     // 50000 * 1.1 — IEEE-754 stores 1.1 with a positive bias → 55000 exact.
     expect(roundKzt(50_000 * 1.1)).toBe(55_000);
