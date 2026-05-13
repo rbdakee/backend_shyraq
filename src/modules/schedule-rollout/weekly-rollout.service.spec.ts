@@ -267,14 +267,8 @@ describe('WeeklyRolloutService.runWeeklyRollout', () => {
         q.includes('set_config') && params[0] === 'app.kindergarten_id',
     );
     expect(setConfigCalls).toHaveLength(2);
-    expect(setConfigCalls[0].params).toEqual([
-      'app.kindergarten_id',
-      KG_A,
-    ]);
-    expect(setConfigCalls[1].params).toEqual([
-      'app.kindergarten_id',
-      KG_B,
-    ]);
+    expect(setConfigCalls[0].params).toEqual(['app.kindergarten_id', KG_A]);
+    expect(setConfigCalls[1].params).toEqual(['app.kindergarten_id', KG_B]);
   });
 
   it('captures one-kg failure into the summary and continues with the rest', async () => {

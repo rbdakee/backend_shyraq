@@ -201,7 +201,9 @@ describeIntegration(
         findByIdsCrossTenant(): Promise<Child[]> {
           throw new Error('not used in this spec');
         }
-        private em(): { query: (q: string, p?: unknown[]) => Promise<unknown> } {
+        private em(): {
+          query: (q: string, p?: unknown[]) => Promise<unknown>;
+        } {
           const ctx = tenantStorage.getStore();
           return (
             (ctx?.entityManager as
