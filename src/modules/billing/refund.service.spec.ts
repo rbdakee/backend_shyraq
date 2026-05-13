@@ -652,12 +652,32 @@ describe('RefundService.reject', () => {
     ).rejects.toBeInstanceOf(RefundNotFoundError);
   });
 
+  it('returns RefundNotFoundError for cross-tenant refund id (RLS scope honoured)', async () => {
+    const h = buildHarness();
+    // Seed a refund under a different kg — its id is invisible to KG.
+    const otherKg = '22222222-2222-2222-2222-222222222222';
+    const seeded = seedRefund(h.refundRepo, { kindergartenId: otherKg });
+    await expect(
+      h.service.reject(KG, seeded.id, { reason: 'x' }),
+    ).rejects.toBeInstanceOf(RefundNotFoundError);
+  });
+
   it('throws RefundAlreadyProcessedError when not pending', async () => {
     const h = buildHarness();
     const seeded = seedRefund(h.refundRepo, { status: 'approved' });
     await expect(
       h.service.reject(KG, seeded.id, { reason: 'x' }),
     ).rejects.toBeInstanceOf(RefundAlreadyProcessedError);
+  });
+
+  it('does not touch the underlying payment when rejecting', async () => {
+    const h = buildHarness();
+    h.paymentRepo.rows.set(PAYMENT, makePayment());
+    const beforeStatus = h.paymentRepo.rows.get(PAYMENT)!.status;
+    const seeded = seedRefund(h.refundRepo);
+    await h.service.reject(KG, seeded.id, { reason: 'not approved' });
+    const afterStatus = h.paymentRepo.rows.get(PAYMENT)!.status;
+    expect(afterStatus).toBe(beforeStatus);
   });
 });
 

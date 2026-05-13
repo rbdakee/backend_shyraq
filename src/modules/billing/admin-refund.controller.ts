@@ -35,6 +35,7 @@ import {
   CreateRefundDto,
   ListRefundsQueryDto,
   RefundResponseDto,
+  RejectRefundDto,
 } from './dto/refund.dto';
 import { RefundPresenter } from './refund.presenter';
 import { RefundService } from './refund.service';
@@ -51,12 +52,13 @@ function requireTenant(t: TenantContext): string {
  *
  *   create  → pending
  *   approve → approved (locks the row, processed_by from req.user)
+ *   reject  → rejected (terminal — no provider call; overwrites reason)
  *   process → processed (calls payment provider, atomically debits ledger)
  *
- * Reject is intentionally not exposed yet — admins can simply leave a
- * refund in `pending` and create a new one when the customer agrees on a
- * different amount. A reject endpoint will be added when the parent UI
- * grows a "decline refund" affordance.
+ * `reject` is wired in B22b T6 — admins can terminally decline a `pending`
+ * refund with a rejection note. The note overwrites the original `reason`
+ * column (single-column design — see `Refund.reject` docstring). Rejected
+ * refunds are terminal; the underlying payment is left untouched.
  */
 @ApiTags('Admin / Billing — Refunds')
 @ApiBearerAuth()
@@ -152,6 +154,31 @@ export class AdminRefundController {
     const refund = await this.service.approve(kgId, id, {
       processedBy: user.sub,
     });
+    return RefundPresenter.one(refund);
+  }
+
+  @Post(':id/reject')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Reject a pending refund (terminal). Does not touch the underlying payment.',
+  })
+  @ApiOkResponse({ type: RefundResponseDto })
+  @ApiBadRequestResponse({ description: 'Validation error.' })
+  @ApiUnauthorizedResponse({ description: 'Bearer missing/invalid/revoked.' })
+  @ApiForbiddenResponse({ description: 'Caller is not admin.' })
+  @ApiNotFoundResponse({ description: 'Refund not found.' })
+  @ApiConflictResponse({
+    description:
+      'Refund is not in pending state (already approved/processed/rejected).',
+  })
+  async reject(
+    @Tenant() t: TenantContext,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: RejectRefundDto,
+  ): Promise<RefundResponseDto> {
+    const kgId = requireTenant(t);
+    const refund = await this.service.reject(kgId, id, { reason: dto.reason });
     return RefundPresenter.one(refund);
   }
 

@@ -5,6 +5,7 @@ import {
   TariffPlanState,
 } from './domain/entities/tariff-plan.entity';
 import { TariffPlanNotFoundError } from './domain/errors/tariff-plan-not-found.error';
+import { TariffPlanOverlapError } from './domain/errors/tariff-plan-overlap.error';
 import {
   ListTariffPlansFilter,
   TariffPlanRepository,
@@ -55,6 +56,42 @@ class FakeTariffPlanRepo extends TariffPlanRepository {
 
   put(plan: TariffPlan): void {
     this.rows.set(plan.id, plan);
+  }
+
+  // Mirrors the relational impl: matches active rows with the same
+  // (kg, tariff_type, applies_to[, group_id]) tuple whose [validFrom,
+  // validUntil] window overlaps the proposed one. `individual` short-circuits.
+  override existsOverlap(
+    kindergartenId: string,
+    tariffType: TariffPlan['tariffType'],
+    appliesTo: TariffPlan['appliesTo'],
+    groupId: string | null,
+    validFrom: Date,
+    validUntil: Date | null,
+    excludeId?: string,
+  ): Promise<boolean> {
+    if (appliesTo === 'individual') return Promise.resolve(false);
+    const fromMs = validFrom.getTime();
+    const untilMs =
+      validUntil === null ? Number.POSITIVE_INFINITY : validUntil.getTime();
+    for (const p of this.rows.values()) {
+      if (p.kindergartenId !== kindergartenId) continue;
+      if (p.id === excludeId) continue;
+      if (!p.isActive) continue;
+      if (p.tariffType !== tariffType) continue;
+      if (p.appliesTo !== appliesTo) continue;
+      if (appliesTo === 'group' && p.groupId !== groupId) continue;
+      const pFromMs = p.validFrom.getTime();
+      const pUntilMs =
+        p.validUntil === null
+          ? Number.POSITIVE_INFINITY
+          : p.validUntil.getTime();
+      // overlap iff a1 <= b2 AND b1 <= a2
+      if (pFromMs <= untilMs && fromMs <= pUntilMs) {
+        return Promise.resolve(true);
+      }
+    }
+    return Promise.resolve(false);
   }
 
   create(plan: TariffPlan): Promise<TariffPlan> {
@@ -272,6 +309,194 @@ describe('TariffPlanService', () => {
       await expect(svc.get(KG, 'missing')).rejects.toThrow(
         TariffPlanNotFoundError,
       );
+    });
+  });
+
+  // ── overlap protection (B22b T6) ─────────────────────────────────────────
+
+  describe('overlap protection', () => {
+    it('throws TariffPlanOverlapError when create overlaps an existing active all_children plan of same type', async () => {
+      repo.put(
+        TariffPlan.fromState(
+          basePlanState({
+            id: 'tp-existing',
+            validFrom: new Date('2026-01-01T00:00:00.000Z'),
+            validUntil: new Date('2026-12-31T00:00:00.000Z'),
+          }),
+        ),
+      );
+      await expect(
+        svc.create(KG, {
+          name: 'New plan',
+          tariffType: 'monthly',
+          amount: 60000,
+          appliesTo: 'all_children',
+          validFrom: new Date('2026-06-01T00:00:00.000Z'),
+          validUntil: new Date('2027-05-31T00:00:00.000Z'),
+        }),
+      ).rejects.toThrow(TariffPlanOverlapError);
+    });
+
+    it('allows create when proposed window is strictly after the existing valid_until', async () => {
+      repo.put(
+        TariffPlan.fromState(
+          basePlanState({
+            id: 'tp-old',
+            validFrom: new Date('2026-01-01T00:00:00.000Z'),
+            validUntil: new Date('2026-05-31T00:00:00.000Z'),
+          }),
+        ),
+      );
+      const plan = await svc.create(KG, {
+        name: 'Next year',
+        tariffType: 'monthly',
+        amount: 60000,
+        appliesTo: 'all_children',
+        validFrom: new Date('2026-06-01T00:00:00.000Z'),
+      });
+      expect(plan.id).toBeDefined();
+    });
+
+    it('ignores an inactive existing plan during overlap check', async () => {
+      repo.put(
+        TariffPlan.fromState(
+          basePlanState({
+            id: 'tp-inactive',
+            isActive: false,
+            validFrom: new Date('2026-01-01T00:00:00.000Z'),
+            validUntil: null,
+          }),
+        ),
+      );
+      const plan = await svc.create(KG, {
+        name: 'Replacement',
+        tariffType: 'monthly',
+        amount: 70000,
+        appliesTo: 'all_children',
+        validFrom: new Date('2026-03-01T00:00:00.000Z'),
+      });
+      expect(plan.id).toBeDefined();
+    });
+
+    it('does not collide across different tariff_types', async () => {
+      repo.put(
+        TariffPlan.fromState(
+          basePlanState({
+            id: 'tp-monthly',
+            tariffType: 'monthly',
+            validFrom: new Date('2026-01-01T00:00:00.000Z'),
+            validUntil: null,
+          }),
+        ),
+      );
+      const plan = await svc.create(KG, {
+        name: 'Late pickup',
+        tariffType: 'late_pickup_fee',
+        amount: 2000,
+        appliesTo: 'all_children',
+        validFrom: new Date('2026-01-01T00:00:00.000Z'),
+      });
+      expect(plan.tariffType).toBe('late_pickup_fee');
+    });
+
+    it('isolates overlap check by group_id when applies_to=group', async () => {
+      repo.put(
+        TariffPlan.fromState(
+          basePlanState({
+            id: 'tp-grp-A',
+            appliesTo: 'group',
+            groupId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+            validFrom: new Date('2026-01-01T00:00:00.000Z'),
+            validUntil: null,
+          }),
+        ),
+      );
+      // Different group → no overlap
+      const plan = await svc.create(KG, {
+        name: 'Group B plan',
+        tariffType: 'monthly',
+        amount: 50000,
+        appliesTo: 'group',
+        groupId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+        validFrom: new Date('2026-01-01T00:00:00.000Z'),
+      });
+      expect(plan.id).toBeDefined();
+
+      // Same group → overlap
+      await expect(
+        svc.create(KG, {
+          name: 'Group A duplicate',
+          tariffType: 'monthly',
+          amount: 50000,
+          appliesTo: 'group',
+          groupId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+          validFrom: new Date('2026-06-01T00:00:00.000Z'),
+        }),
+      ).rejects.toThrow(TariffPlanOverlapError);
+    });
+
+    it('skips overlap entirely for applies_to=individual', async () => {
+      repo.put(
+        TariffPlan.fromState(
+          basePlanState({
+            id: 'tp-ind-1',
+            appliesTo: 'individual',
+            validFrom: new Date('2026-01-01T00:00:00.000Z'),
+            validUntil: null,
+          }),
+        ),
+      );
+      const plan = await svc.create(KG, {
+        name: 'Another individual plan',
+        tariffType: 'monthly',
+        amount: 40000,
+        appliesTo: 'individual',
+        validFrom: new Date('2026-01-01T00:00:00.000Z'),
+      });
+      expect(plan.appliesTo).toBe('individual');
+    });
+
+    it('rejects an update that would create an overlap on extended valid_until', async () => {
+      repo.put(
+        TariffPlan.fromState(
+          basePlanState({
+            id: 'tp-1',
+            validFrom: new Date('2026-01-01T00:00:00.000Z'),
+            validUntil: new Date('2026-05-31T00:00:00.000Z'),
+          }),
+        ),
+      );
+      repo.put(
+        TariffPlan.fromState(
+          basePlanState({
+            id: 'tp-2',
+            validFrom: new Date('2026-06-01T00:00:00.000Z'),
+            validUntil: new Date('2026-12-31T00:00:00.000Z'),
+          }),
+        ),
+      );
+      // tp-1 tries to extend until 2026-09-30 → overlaps tp-2
+      await expect(
+        svc.update(KG, 'tp-1', {
+          validUntil: new Date('2026-09-30T00:00:00.000Z'),
+        }),
+      ).rejects.toThrow(TariffPlanOverlapError);
+    });
+
+    it('does not flag an update when only changing non-window fields', async () => {
+      repo.put(
+        TariffPlan.fromState(
+          basePlanState({
+            id: 'tp-x',
+            validFrom: new Date('2026-01-01T00:00:00.000Z'),
+            validUntil: null,
+          }),
+        ),
+      );
+      // Adding a second plan with overlapping window would normally collide,
+      // but here we only patch amount on the existing row.
+      const updated = await svc.update(KG, 'tp-x', { amount: 99000 });
+      expect(updated.amount.toNumber()).toBe(99000);
     });
   });
 });

@@ -66,4 +66,35 @@ export abstract class TariffPlanRepository {
     kindergartenId: string,
     filter?: ListTariffPlansFilter,
   ): Promise<TariffPlan[]>;
+
+  /**
+   * Returns `true` if there is at least one existing **active** tariff_plan
+   * row in `kindergartenId` whose `valid_from..valid_until` window overlaps
+   * `[validFrom, validUntil]` for the same `(tariffType, appliesTo, groupId)`
+   * tuple.
+   *
+   * For `appliesTo='age_range'` rows the collision is broader — any other
+   * `age_range` plan of the same `tariffType` with a window overlap is
+   * considered a conflict (age-bound overlap detection is too expensive to do
+   * here; we err on the safe side and let admins close+reopen).
+   *
+   * For `appliesTo='individual'` rows the method always returns `false` —
+   * per-child assignments are managed via `tariff_assignments`.
+   *
+   * `excludeId` lets the update path skip the row currently being edited.
+   *
+   * Default impl returns `false` so older test fakes (B13..B22a) keep
+   * compiling; the relational adapter overrides.
+   */
+  existsOverlap(
+    _kindergartenId: string,
+    _tariffType: TariffPlan['tariffType'],
+    _appliesTo: TariffPlan['appliesTo'],
+    _groupId: string | null,
+    _validFrom: Date,
+    _validUntil: Date | null,
+    _excludeId?: string,
+  ): Promise<boolean> {
+    return Promise.resolve(false);
+  }
 }

@@ -62,6 +62,20 @@ export class ProcessRefundDto {
   // Class kept for Swagger @Body() annotation consistency.
 }
 
+export class RejectRefundDto {
+  @ApiProperty({
+    example: 'Возврат отклонён — недостаточно оснований',
+    description:
+      'Rejection note. Overwrites the original reason column (single-column design — see Refund.reject docstring).',
+    minLength: 1,
+    maxLength: 500,
+  })
+  @IsString()
+  @MinLength(1)
+  @MaxLength(500)
+  reason!: string;
+}
+
 export class ListRefundsQueryDto {
   @ApiProperty({
     enum: REFUND_STATUSES,

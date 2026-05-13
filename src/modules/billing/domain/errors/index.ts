@@ -1,5 +1,6 @@
 export { TariffPlanNotFoundError } from './tariff-plan-not-found.error';
 export { TariffPlanInactiveError } from './tariff-plan-inactive.error';
+export { TariffPlanOverlapError } from './tariff-plan-overlap.error';
 export { TariffAssignmentNotFoundError } from './tariff-assignment-not-found.error';
 export { TariffAssignmentOverlapError } from './tariff-assignment-overlap.error';
 export { InvoiceNotFoundError } from './invoice-not-found.error';

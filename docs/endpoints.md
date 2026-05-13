@@ -737,6 +737,7 @@ Qundylyq реализуется как `content_posts` с `content_type='qundyly
 | GET | `/admin/refunds/:id` | Детали возврата. |
 | POST | `/admin/refunds` | Создать возврат (`status='pending'`). Body: `{payment_id, amount: 60000, reason: 'переплата за июнь'}`. Checks: `payment.status = 'completed'`, `amount <= payment.amount`. Response 201: refund object. Errors: 404 `payment_not_found`, 409 `refund_already_processed` (если уже существует completed refund для этого payment). |
 | POST | `/admin/refunds/:id/approve` | Перевести в `approved` (первичная авторизация). Conditional UPDATE WHERE status='pending'. Response 200: `{id, status: 'approved', processed_by}`. Errors: 404 `refund_not_found`, 409 `refund_already_processed`. |
+| POST | `/admin/refunds/:id/reject` | Терминально отклонить `pending` возврат. Body: `{reason: 'Возврат отклонён — недостаточно оснований'}` (1–500 символов). Платёж не затрагивается; `reason` колонка перезаписывается на rejection note. Response 200: refund object со `status='rejected'`. Errors: 404 `refund_not_found`, 409 `refund_already_processed` (не в `pending`). |
 | POST | `/admin/refunds/:id/process` | Исполнить возврат через провайдера (`PaymentProviderPort.refund`). Атомарная TX: `refund.status='processed'` + `payment.status='refunded'` + `invoice.applyRefund` + `payment_account.balance` update. Response 200: `{id, status: 'processed', provider_ref?}`. Errors: 404 `refund_not_found`, 409 `refund_already_processed` (status уже `processed`). |
 
 **Error map (§2.15):**

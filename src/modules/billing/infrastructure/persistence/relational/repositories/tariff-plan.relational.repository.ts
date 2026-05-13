@@ -4,6 +4,7 @@ import { EntityManager, Repository } from 'typeorm';
 import { tenantStorage } from '@/database/tenant-storage';
 import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import {
+  TariffAppliesTo,
   TariffPlan,
   TariffType,
 } from '../../../../domain/entities/tariff-plan.entity';
@@ -174,5 +175,69 @@ export class TariffPlanRelationalRepository extends TariffPlanRepository {
     qb.orderBy('tp.created_at', 'DESC').addOrderBy('tp.id', 'DESC');
     const rows = await qb.getMany();
     return rows.map(TariffPlanMapper.toDomain);
+  }
+
+  async existsOverlap(
+    kindergartenId: string,
+    tariffType: TariffType,
+    appliesTo: TariffAppliesTo,
+    groupId: string | null,
+    validFrom: Date,
+    validUntil: Date | null,
+    excludeId?: string,
+  ): Promise<boolean> {
+    // `individual` plans never collide at catalogue level — per-child rules
+    // are managed via `tariff_assignments`.
+    if (appliesTo === 'individual') return false;
+
+    const fromIso = toIsoDate(validFrom);
+    const untilIso = toIsoDateOrNull(validUntil);
+
+    const qb = this.manager()
+      .getRepository(TariffPlanTypeOrmEntity)
+      .createQueryBuilder('tp')
+      .where('tp.kindergarten_id = :kg', { kg: kindergartenId })
+      .andWhere('tp.tariff_type = :tt', { tt: tariffType })
+      .andWhere('tp.is_active = true');
+
+    // Granularity:
+    //   all_children → no extra filter (collision is per kg + tariff_type)
+    //   group        → match on group_id
+    //   age_range    → any other age_range row of same type is a candidate
+    //                  for window-overlap (we don't compare age bounds —
+    //                  admins should close+reopen to widen).
+    if (appliesTo === 'group') {
+      qb.andWhere('tp.applies_to = :at', { at: appliesTo });
+      if (groupId === null) {
+        qb.andWhere('tp.group_id IS NULL');
+      } else {
+        qb.andWhere('tp.group_id = :gid', { gid: groupId });
+      }
+    } else if (appliesTo === 'age_range') {
+      qb.andWhere('tp.applies_to = :at', { at: appliesTo });
+    } else {
+      // all_children — collision is per kg + tariff_type
+      qb.andWhere('tp.applies_to = :at', { at: appliesTo });
+    }
+
+    // Window overlap test: two windows [a1,a2] and [b1,b2] (NULL = +∞)
+    // overlap iff a1 <= b2 AND b1 <= a2.
+    if (untilIso === null) {
+      qb.andWhere('(tp.valid_until IS NULL OR tp.valid_until >= :from)', {
+        from: fromIso,
+      });
+    } else {
+      qb.andWhere('tp.valid_from <= :until', { until: untilIso }).andWhere(
+        '(tp.valid_until IS NULL OR tp.valid_until >= :from)',
+        { from: fromIso },
+      );
+    }
+
+    if (excludeId) {
+      qb.andWhere('tp.id <> :exId', { exId: excludeId });
+    }
+
+    const count = await qb.getCount();
+    return count > 0;
   }
 }
