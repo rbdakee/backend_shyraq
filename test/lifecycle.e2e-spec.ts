@@ -35,9 +35,12 @@ import bcrypt from 'bcryptjs';
 import request from 'supertest';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
+import { getQueueToken } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 import { DataSource } from 'typeorm';
 import { createTestApp, flushRedis, TestApp, truncateAll } from './helpers/app';
 import { ProRataRefundProcessor } from '@/modules/billing/pro-rata-refund.processor';
+import { LIFECYCLE_QUEUE } from '@/modules/child/lifecycle-queue.constants';
 
 const SUPER_ADMIN_EMAIL = 'super-lifecycle@shyraq.test';
 const SUPER_ADMIN_PASSWORD = 'Lifecycle12345!';
@@ -924,5 +927,181 @@ describe('Lifecycle E2E (B21 T5)', () => {
       .set('Authorization', `Bearer ${kgBAdminToken}`)
       .expect(404);
     expect(res.body.error).toBe('not_found');
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Scenario N (B22a T10): Lifecycle DLQ admin surface
+  // GET /admin/lifecycle/failed-jobs + POST /admin/lifecycle/failed-jobs/:id/retry
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  describe('Lifecycle DLQ admin (B22a T10)', () => {
+    /**
+     * Seed a failed job in the `lifecycle` queue by directly writing to
+     * Redis. We avoid letting a Worker organically fail a job because
+     * the api process imports `BillingModule` which registers the
+     * `ProRataRefundProcessor` (`@Processor(LIFECYCLE_QUEUE)`) — for
+     * unknown job names it returns `{kind:'skipped'}` (success, not
+     * failure), and for genuine `lifecycle:pro-rata-refund` jobs the
+     * outcome depends on PG state and timing. Direct Redis seed keeps
+     * the test deterministic regardless of consumer behaviour.
+     *
+     * Approach: enqueue a job (BullMQ assigns it an id and pushes it to
+     * `wait`), then atomically pull it out of every consumable list /
+     * sorted set and add it to the `failed` sorted set, plus stamp the
+     * job hash with `failedReason`/`attemptsMade`/`finishedOn` so
+     * `getFailed`/`getJob`/`isFailed` return the expected values.
+     * `removeOnFail: false` is set so retention does not auto-clean the
+     * row mid-test.
+     */
+    async function seedFailedJob(payload: {
+      kindergartenId: string;
+      childId?: string;
+      archivedAt?: string;
+    }): Promise<string> {
+      const queue = ctx.app.get(getQueueToken(LIFECYCLE_QUEUE)) as Queue;
+      const data = {
+        kindergartenId: payload.kindergartenId,
+        childId: payload.childId ?? randomUUID(),
+        archivedAt: payload.archivedAt ?? new Date().toISOString(),
+      };
+
+      const job = await queue.add('e2e:dlq-failure', data, {
+        attempts: 1,
+        removeOnFail: false,
+        removeOnComplete: false,
+      });
+
+      const jobId = String(job.id);
+      const client = await queue.client;
+      const prefix = queue.opts?.prefix ?? 'bull';
+      const queueKey = `${prefix}:${LIFECYCLE_QUEUE}`;
+      const now = Date.now();
+      const failedReason = 'e2e DLQ seed failure';
+
+      // Atomic state move via MULTI: pull the job out of every list /
+      // sorted set a worker could pick from, add it to `failed`, and
+      // stamp the job hash with the fields the controller surfaces.
+      const pipeline = client.multi();
+      pipeline.lrem(`${queueKey}:wait`, 0, jobId);
+      pipeline.lrem(`${queueKey}:active`, 0, jobId);
+      pipeline.zrem(`${queueKey}:prioritized`, jobId);
+      pipeline.zadd(`${queueKey}:failed`, now, jobId);
+      pipeline.hset(
+        `${queueKey}:${jobId}`,
+        'failedReason',
+        failedReason,
+        'attemptsMade',
+        '1',
+        'finishedOn',
+        String(now),
+        'processedOn',
+        String(now - 100),
+        'stacktrace',
+        JSON.stringify(['Error: e2e DLQ seed failure']),
+      );
+      await pipeline.exec();
+
+      return jobId;
+    }
+
+    it('lists failed jobs scoped to the caller’s kindergarten', async () => {
+      const idA = await seedFailedJob({ kindergartenId: kgAId });
+
+      const res = await request(server)
+        .get('/api/v1/admin/lifecycle/failed-jobs')
+        .set('Authorization', `Bearer ${kgAAdminToken}`)
+        .expect(200);
+
+      const body = res.body as {
+        items: Array<{
+          id: string;
+          name: string;
+          payload: Record<string, unknown>;
+          failed_reason: string | null;
+          attempts_made: number;
+          timestamp: number;
+          finished_on: number | null;
+        }>;
+        next_cursor: string | null;
+      };
+
+      expect(Array.isArray(body.items)).toBe(true);
+      const seeded = body.items.find((it) => it.id === idA);
+      expect(seeded).toBeDefined();
+      expect(seeded!.name).toBe('e2e:dlq-failure');
+      expect(seeded!.payload['kindergartenId']).toBe(kgAId);
+      expect(seeded!.failed_reason).toContain('e2e DLQ seed failure');
+      expect(seeded!.attempts_made).toBeGreaterThanOrEqual(1);
+    });
+
+    it('filters out failed jobs from other kindergartens for per-kg admin', async () => {
+      const idA = await seedFailedJob({ kindergartenId: kgAId });
+      const idB = await seedFailedJob({ kindergartenId: 'cross-kg-id-zzz' });
+
+      const res = await request(server)
+        .get('/api/v1/admin/lifecycle/failed-jobs')
+        .set('Authorization', `Bearer ${kgAAdminToken}`)
+        .expect(200);
+
+      const ids = (res.body.items as Array<{ id: string }>).map((i) => i.id);
+      expect(ids).toContain(idA);
+      expect(ids).not.toContain(idB);
+    });
+
+    it('rejects list calls from a non-admin role with 403', async () => {
+      // Mint a fake parent JWT (role='parent'); RolesGuard should 403 on @Roles('admin').
+      const parentToken = await jwtService.signAsync(
+        {
+          sub: randomUUID(),
+          role: 'parent',
+          kindergarten_id: kgAId,
+          jti: randomUUID(),
+        },
+        { secret: jwtSecret, expiresIn: '1h' },
+      );
+
+      await request(server)
+        .get('/api/v1/admin/lifecycle/failed-jobs')
+        .set('Authorization', `Bearer ${parentToken}`)
+        .expect(403);
+    });
+
+    it('retries a failed job and returns enqueued + job_id', async () => {
+      const id = await seedFailedJob({ kindergartenId: kgAId });
+
+      const res = await request(server)
+        .post(`/api/v1/admin/lifecycle/failed-jobs/${id}/retry`)
+        .set('Authorization', `Bearer ${kgAAdminToken}`)
+        .send({})
+        .expect(202);
+
+      expect(res.body).toEqual({ enqueued: true, job_id: id });
+
+      // After retry the job is no longer in failed state — verify by
+      // checking that subsequent failed-list does not surface it.
+      const queue = ctx.app.get(getQueueToken(LIFECYCLE_QUEUE)) as Queue;
+      const stillFailed = await queue.getFailed(0, 200);
+      expect(stillFailed.find((j) => String(j.id) === id)).toBeUndefined();
+    });
+
+    it('rejects retry for a missing job with 404 lifecycle_job_not_found', async () => {
+      const res = await request(server)
+        .post('/api/v1/admin/lifecycle/failed-jobs/non-existent-id/retry')
+        .set('Authorization', `Bearer ${kgAAdminToken}`)
+        .send({})
+        .expect(404);
+      expect(res.body.error).toBe('lifecycle_job_not_found');
+    });
+
+    it('rejects cross-kg retry attempts with 403 forbidden', async () => {
+      const id = await seedFailedJob({ kindergartenId: kgAId });
+
+      const res = await request(server)
+        .post(`/api/v1/admin/lifecycle/failed-jobs/${id}/retry`)
+        .set('Authorization', `Bearer ${kgBAdminToken}`)
+        .send({})
+        .expect(403);
+      expect(res.body.error).toBe('forbidden');
+    });
   });
 });

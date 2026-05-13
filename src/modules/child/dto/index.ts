@@ -31,3 +31,9 @@ export {
   ChildStatusHistoryListResponseDto,
   ListChildStatusHistoryQueryDto,
 } from './child-status-history.dto';
+export {
+  LifecycleFailedJobDto,
+  ListLifecycleFailedJobsResponseDto,
+  ListFailedLifecycleJobsQueryDto,
+  RetryLifecycleFailedJobResponseDto,
+} from './lifecycle-failed-job.dto';

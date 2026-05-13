@@ -8,6 +8,8 @@ import { UsersModule } from '@/modules/users/users.module';
 import { ChildGuardianRepository } from './infrastructure/persistence/child-guardian.repository';
 import { ChildRepository } from './infrastructure/persistence/child.repository';
 import { ChildStatusHistoryRepository } from './infrastructure/persistence/child-status-history.repository';
+import { AdminLifecycleController } from './admin-lifecycle.controller';
+import { AdminLifecycleService } from './admin-lifecycle.service';
 import { ChildController } from './child.controller';
 import { ChildService } from './child.service';
 import { ChildEntity } from './infrastructure/persistence/relational/entities/child.entity';
@@ -56,9 +58,11 @@ import { ParentLinkController } from './parent-link.controller';
     ParentChildController,
     ParentApprovalController,
     ParentLinkController,
+    AdminLifecycleController,
   ],
   providers: [
     ChildService,
+    AdminLifecycleService,
     ChildAccessGuard,
     { provide: ChildRepository, useClass: ChildRelationalRepository },
     {
