@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { EntityManager } from 'typeorm';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import { PaymentAccount } from './domain/entities/payment-account.entity';
 import { PaymentAccountNotFoundError } from './domain/errors/payment-account-not-found.error';
 import { PaymentAccountRepository } from './infrastructure/persistence/payment-account.repository';
@@ -39,7 +40,7 @@ export class PaymentAccountService {
   async creditFromPayment(
     kindergartenId: string,
     accountId: string,
-    amount: number,
+    amount: MoneyKzt,
   ): Promise<PaymentAccount> {
     const account = await this.accounts.findById(kindergartenId, accountId);
     if (!account) {
@@ -52,7 +53,7 @@ export class PaymentAccountService {
   async debitForRefund(
     kindergartenId: string,
     accountId: string,
-    amount: number,
+    amount: MoneyKzt,
   ): Promise<PaymentAccount> {
     const account = await this.accounts.findById(kindergartenId, accountId);
     if (!account) {

@@ -12,7 +12,8 @@ export class RefundMapper {
       kindergartenId: row.kindergartenId,
       paymentId: row.paymentId,
       invoiceId: row.invoiceId,
-      amount: Number(row.amount),
+      // Transformer hands `MoneyKzt` directly — pass through.
+      amount: row.amount,
       reason: row.reason,
       status: row.status,
       processedBy: row.processedBy,

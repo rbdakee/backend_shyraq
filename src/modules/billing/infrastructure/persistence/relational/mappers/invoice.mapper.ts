@@ -16,10 +16,11 @@ export class InvoiceMapper {
       invoiceType: row.invoiceType,
       periodStart: toDate(row.periodStart),
       periodEnd: toDate(row.periodEnd),
-      amountDue: Number(row.amountDue),
+      // Transformer hands `MoneyKzt` directly — pass through.
+      amountDue: row.amountDue,
       discountPct: row.discountPct === null ? null : Number(row.discountPct),
       discountReason: row.discountReason,
-      amountAfterDiscount: Number(row.amountAfterDiscount),
+      amountAfterDiscount: row.amountAfterDiscount,
       status: row.status,
       dueDate: toDate(row.dueDate),
       description: row.description,

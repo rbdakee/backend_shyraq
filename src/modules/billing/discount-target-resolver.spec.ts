@@ -1,5 +1,6 @@
 import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import { TariffAssignmentRepository } from './infrastructure/persistence/tariff-assignment.repository';
 import { CustomDiscount } from './domain/entities/custom-discount.entity';
 import { DiscountTargetResolver } from './discount-target-resolver';
@@ -80,7 +81,7 @@ function makeDiscount(overrides: {
     name: { ru: 'X' },
     description: null,
     discountType: 'percentage',
-    amount: 10,
+    amount: MoneyKzt.fromKzt(10),
     conditions: (overrides.conditions ?? {}) as Record<string, never>,
     targetType: overrides.targetType,
     targetIds: overrides.targetIds,
@@ -193,7 +194,7 @@ describe('DiscountTargetResolver', () => {
       id: 'd-all',
       name: { ru: 'X' },
       discountType: 'percentage' as const,
-      amount: 10,
+      amount: MoneyKzt.fromKzt(10),
       conditions: {} as Record<string, never>,
       targetType: 'all' as const,
       targetIds: null as string[] | null,

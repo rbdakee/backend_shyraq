@@ -1,6 +1,7 @@
 import { DataSource, EntityManager } from 'typeorm';
 import { InMemoryNotificationAdapter } from '@/common/notifications/in-memory-notification.adapter';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import {
   Invoice,
   InvoiceState,
@@ -49,6 +50,8 @@ import { InvoiceService } from './invoice.service';
 import { PaymentService } from './payment.service';
 import { PaymentAccountService } from './payment-account.service';
 import { PaymentAccountRepository } from './infrastructure/persistence/payment-account.repository';
+
+const m = (n: number): MoneyKzt => MoneyKzt.fromKzt(n);
 
 const KG = '11111111-1111-1111-1111-111111111111';
 const KG_OTHER = '22222222-2222-2222-2222-222222222222';
@@ -274,7 +277,7 @@ class FakeInvoiceRepo extends InvoiceRepository {
             p.invoiceId === invoiceId &&
             p.status === 'completed',
         )
-        .reduce((acc, p) => acc + p.amount, 0);
+        .reduce((acc, p) => acc + p.amount.toNumber(), 0);
       return Promise.resolve(sum);
     }
     return Promise.resolve(0);
@@ -438,10 +441,10 @@ function makeInvoice(overrides: Partial<InvoiceState> = {}): Invoice {
     invoiceType: 'monthly',
     periodStart: new Date('2026-06-01T00:00:00.000Z'),
     periodEnd: new Date('2026-06-30T00:00:00.000Z'),
-    amountDue: 50000,
+    amountDue: m(50000),
     discountPct: null,
     discountReason: null,
-    amountAfterDiscount: 50000,
+    amountAfterDiscount: m(50000),
     status: 'pending',
     dueDate: new Date('2026-06-10T00:00:00.000Z'),
     description: null,
@@ -458,7 +461,7 @@ function makeAccount(): PaymentAccount {
     id: ACCOUNT,
     kindergartenId: KG,
     childId: CHILD,
-    balance: 0,
+    balance: MoneyKzt.zero(),
     createdAt: NOW,
     updatedAt: NOW,
   });
@@ -744,7 +747,7 @@ describe('PaymentService.initiate', () => {
     });
 
     const account = await h.paymentAccountRepo.findById(KG, ACCOUNT);
-    expect(account?.balance).toBe(50000);
+    expect(account?.balance.toNumber()).toBe(50000);
   });
 
   it('marks payment failed and rethrows PaymentProviderError when provider createPayment throws', async () => {
@@ -787,7 +790,7 @@ describe('PaymentService.initiate', () => {
       invoiceId: INVOICE,
       childId: CHILD,
       payerUserId: PAYER,
-      amount: 50000,
+      amount: m(50000),
       provider: 'mock',
       providerTxnId: 'tx_seed',
       idempotencyKey: 'idem-race',
@@ -903,7 +906,7 @@ describe('PaymentService.processWebhook', () => {
       invoiceId: INVOICE,
       childId: CHILD,
       payerUserId: PAYER,
-      amount: 50000,
+      amount: m(50000),
       provider: 'mock',
       providerTxnId: 'tx_async_1',
       idempotencyKey: 'idem-w-1',
@@ -948,7 +951,7 @@ describe('PaymentService.processWebhook', () => {
       invoiceId: INVOICE,
       childId: CHILD,
       payerUserId: PAYER,
-      amount: 50000,
+      amount: m(50000),
       provider: 'mock',
       providerTxnId: 'tx_async_2',
       idempotencyKey: 'idem-w-2',
@@ -974,14 +977,14 @@ describe('PaymentService.processWebhook', () => {
       body: {},
     });
     const acc = await h.paymentAccountRepo.findById(KG, ACCOUNT);
-    expect(acc?.balance).toBe(50000);
+    expect(acc?.balance.toNumber()).toBe(50000);
   });
 
   it('is idempotent on replay (already completed payment is a no-op)', async () => {
     const h = buildHarness();
     h.invoiceRepo.rows.set(INVOICE, makeInvoice({ status: 'paid' }));
     const account = makeAccount();
-    account.credit(50000, NOW);
+    account.credit(m(50000), NOW);
     h.paymentAccountRepo.put(account);
     const seeded = Payment.fromState({
       id: 'pmt-r',
@@ -989,7 +992,7 @@ describe('PaymentService.processWebhook', () => {
       invoiceId: INVOICE,
       childId: CHILD,
       payerUserId: PAYER,
-      amount: 50000,
+      amount: m(50000),
       provider: 'mock',
       providerTxnId: 'tx_replay',
       idempotencyKey: 'idem-replay',
@@ -1018,7 +1021,7 @@ describe('PaymentService.processWebhook', () => {
 
     const acc = await h.paymentAccountRepo.findById(KG, ACCOUNT);
     // Balance unchanged — initial credit + no double-credit.
-    expect(acc?.balance).toBe(50000);
+    expect(acc?.balance.toNumber()).toBe(50000);
   });
 
   it('marks invoice partial when paidSum < amountAfterDiscount', async () => {
@@ -1031,7 +1034,7 @@ describe('PaymentService.processWebhook', () => {
       invoiceId: INVOICE,
       childId: CHILD,
       payerUserId: PAYER,
-      amount: 20000,
+      amount: m(20000),
       provider: 'mock',
       providerTxnId: 'tx_part',
       idempotencyKey: 'idem-part',
@@ -1070,7 +1073,7 @@ describe('PaymentService.processWebhook', () => {
       invoiceId: INVOICE,
       childId: CHILD,
       payerUserId: PAYER,
-      amount: 30000,
+      amount: m(30000),
       provider: 'mock',
       providerTxnId: 'tx_final',
       idempotencyKey: 'idem-final',
@@ -1109,7 +1112,7 @@ describe('PaymentService.processWebhook', () => {
       invoiceId: INVOICE,
       childId: CHILD,
       payerUserId: PAYER,
-      amount: 50000,
+      amount: m(50000),
       provider: 'mock',
       providerTxnId: 'tx_fail',
       idempotencyKey: 'idem-fail',
@@ -1153,7 +1156,7 @@ describe('PaymentService.processWebhook', () => {
       invoiceId: INVOICE,
       childId: CHILD,
       payerUserId: PAYER,
-      amount: 50000,
+      amount: m(50000),
       provider: 'mock',
       providerTxnId: 'tx_kgA',
       idempotencyKey: 'idem-kgA',
@@ -1172,7 +1175,7 @@ describe('PaymentService.processWebhook', () => {
       invoiceId: 'inv-B',
       childId: 'ch-B',
       payerUserId: null,
-      amount: 10000,
+      amount: m(10000),
       provider: 'mock',
       providerTxnId: 'tx_kgB',
       idempotencyKey: 'idem-kgB',
@@ -1218,7 +1221,7 @@ describe('PaymentService.processWebhook', () => {
       invoiceId: INVOICE,
       childId: CHILD,
       payerUserId: PAYER,
-      amount: 50000,
+      amount: m(50000),
       provider: 'mock',
       providerTxnId: 'tx_fiscal',
       idempotencyKey: 'idem-fiscal',
@@ -1264,7 +1267,7 @@ describe('PaymentService.processWebhook', () => {
       invoiceId: INVOICE,
       childId: CHILD,
       payerUserId: PAYER,
-      amount: 50000,
+      amount: m(50000),
       provider: 'mock',
       providerTxnId: 'tx_fiscal_fail',
       idempotencyKey: 'idem-fiscal-fail',
@@ -1307,7 +1310,7 @@ describe('PaymentService.processWebhook', () => {
       invoiceId: INVOICE,
       childId: CHILD,
       payerUserId: PAYER,
-      amount: 50000,
+      amount: m(50000),
       provider: 'mock',
       providerTxnId: 'tx_evt',
       idempotencyKey: 'idem-evt',
@@ -1348,7 +1351,7 @@ describe('PaymentService.processWebhook', () => {
       invoiceId: INVOICE,
       childId: CHILD,
       payerUserId: PAYER,
-      amount: 20000,
+      amount: m(20000),
       provider: 'mock',
       providerTxnId: 'tx_evt_p',
       idempotencyKey: 'idem-evt-p',
@@ -1389,7 +1392,7 @@ describe('PaymentService.processWebhook', () => {
       invoiceId: INVOICE,
       childId: CHILD,
       payerUserId: PAYER,
-      amount: 50000,
+      amount: m(50000),
       provider: 'mock',
       providerTxnId: 'tx_fail_evt',
       idempotencyKey: 'idem-fail-evt',
@@ -1430,7 +1433,7 @@ describe('PaymentService.markFailed / getById / list', () => {
       invoiceId: INVOICE,
       childId: CHILD,
       payerUserId: PAYER,
-      amount: 1000,
+      amount: m(1000),
       provider: 'mock',
       providerTxnId: null,
       idempotencyKey: 'idem-mf',
@@ -1461,7 +1464,7 @@ describe('PaymentService.markFailed / getById / list', () => {
       invoiceId: INVOICE,
       childId: CHILD,
       payerUserId: PAYER,
-      amount: 1000,
+      amount: m(1000),
       provider: 'mock',
       providerTxnId: 'tx',
       idempotencyKey: 'idem-term',
@@ -1486,7 +1489,7 @@ describe('PaymentService.markFailed / getById / list', () => {
       invoiceId: INVOICE,
       childId: CHILD,
       payerUserId: PAYER,
-      amount: 1,
+      amount: m(1),
       provider: 'mock',
       providerTxnId: null,
       idempotencyKey: 'idem-get',
@@ -1520,7 +1523,7 @@ describe('PaymentService.markFailed / getById / list', () => {
           invoiceId: INVOICE,
           childId: CHILD,
           payerUserId: PAYER,
-          amount: 100,
+          amount: m(100),
           provider: 'mock',
           providerTxnId: null,
           idempotencyKey: `idem-${id}`,
@@ -1554,7 +1557,7 @@ describe('PaymentService.initiate — H14 partial on overdue', () => {
     // partial payment that is LESS than the remaining amount.
     h.invoiceRepo.rows.set(
       INVOICE,
-      makeInvoice({ status: 'overdue', amountAfterDiscount: 50_000 }),
+      makeInvoice({ status: 'overdue', amountAfterDiscount: m(50_000) }),
     );
     h.paymentAccountRepo.put(makeAccount());
     h.provider.createPaymentImpl = () =>
@@ -1574,7 +1577,7 @@ describe('PaymentService.initiate — H14 partial on overdue', () => {
     });
 
     expect(result.payment.status).toBe('completed');
-    expect(result.payment.amount).toBe(20_000);
+    expect(result.payment.amount.toNumber()).toBe(20_000);
     const invAfter = await h.invoiceRepo.findById(KG, INVOICE);
     // Pre-H14: status stayed at 'overdue' because the conditional UPDATE
     // accepted only 'pending' source rows. Post-H14: invoice flips to
@@ -1587,7 +1590,7 @@ describe('PaymentService.initiate — H14 partial on overdue', () => {
     const h = buildHarness();
     h.invoiceRepo.rows.set(
       INVOICE,
-      makeInvoice({ status: 'overdue', amountAfterDiscount: 50_000 }),
+      makeInvoice({ status: 'overdue', amountAfterDiscount: m(50_000) }),
     );
     h.paymentAccountRepo.put(makeAccount());
 

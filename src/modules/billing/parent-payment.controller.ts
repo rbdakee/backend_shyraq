@@ -108,7 +108,9 @@ export class ParentPaymentController {
     }
 
     const amount =
-      dto.payment_mode === 'full' ? invoice.amountAfterDiscount : dto.amount!;
+      dto.payment_mode === 'full'
+        ? invoice.amountAfterDiscount.toNumber()
+        : dto.amount!;
 
     const result = await this.paymentService.initiate(kgId, {
       invoiceId: invoice.id,
@@ -165,7 +167,7 @@ export class ParentPaymentController {
 
     const result = await this.paymentService.initiate(kgId, {
       invoiceId: prepaymentInvoice.id,
-      amount: prepaymentInvoice.amountAfterDiscount,
+      amount: prepaymentInvoice.amountAfterDiscount.toNumber(),
       paymentMode: 'full',
       provider: dto.provider,
       idempotencyKey: dto.idempotency_key,
@@ -179,9 +181,9 @@ export class ParentPaymentController {
       payment_id: result.payment.id,
       redirect_url: result.redirectUrl ?? null,
       preview: {
-        base_amount: prepaymentInvoice.amountDue,
+        base_amount: prepaymentInvoice.amountDue.toNumber(),
         discount_pct: prepaymentInvoice.discountPct ?? 0,
-        final_amount: prepaymentInvoice.amountAfterDiscount,
+        final_amount: prepaymentInvoice.amountAfterDiscount.toNumber(),
         covers_period: {
           from: presented.period_start,
           to: presented.period_end,

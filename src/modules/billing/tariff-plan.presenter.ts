@@ -14,7 +14,7 @@ export const TariffPlanPresenter = {
       name: s.name,
       description: s.description,
       tariff_type: s.tariffType,
-      amount: s.amount,
+      amount: s.amount.toNumber(),
       currency: s.currency,
       applies_to: s.appliesTo,
       group_id: s.groupId,

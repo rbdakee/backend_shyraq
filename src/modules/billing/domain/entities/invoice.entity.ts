@@ -1,4 +1,4 @@
-import { roundKzt } from '@/shared-kernel/domain/money';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import { InvoiceAlreadyPaidError } from '../errors/invoice-already-paid.error';
 import { InvoiceStatusInvalidError } from '../errors/invoice-status-invalid.error';
 
@@ -29,10 +29,10 @@ export interface InvoiceState {
   invoiceType: InvoiceType;
   periodStart: Date;
   periodEnd: Date;
-  amountDue: number;
+  amountDue: MoneyKzt;
   discountPct: number | null;
   discountReason: string | null;
-  amountAfterDiscount: number;
+  amountAfterDiscount: MoneyKzt;
   status: InvoiceStatus;
   dueDate: Date;
   description: string | null;
@@ -56,9 +56,11 @@ export interface InvoiceState {
  *
  * `cancelled` and `refunded` are terminal — no further transitions.
  *
- * Money is held as plain `number` (KZT, 2 decimal places). Service /
- * mapper layer is responsible for rounding to two places before persisting
- * — see `computeAmountAfterDiscount` for the canonical rounding helper.
+ * Money is held as `MoneyKzt` (B22b T2 state-shape migration). Service /
+ * mapper layer wraps DTO `number` inputs at the boundary; arithmetic
+ * inside the aggregate happens through `MoneyKzt` method chains so
+ * intermediate precision is preserved. See `computeAmountAfterDiscount`
+ * for the canonical single-rounding pipeline.
  */
 export class Invoice {
   private constructor(private state: InvoiceState) {}
@@ -105,7 +107,7 @@ export class Invoice {
     return this.state.periodEnd;
   }
 
-  get amountDue(): number {
+  get amountDue(): MoneyKzt {
     return this.state.amountDue;
   }
 
@@ -117,7 +119,7 @@ export class Invoice {
     return this.state.discountReason;
   }
 
-  get amountAfterDiscount(): number {
+  get amountAfterDiscount(): MoneyKzt {
     return this.state.amountAfterDiscount;
   }
 
@@ -168,16 +170,16 @@ export class Invoice {
    * `currentPaidSum > 0`                    → `partial`
    * else                                    → status unchanged
    */
-  applyPayment(currentPaidSum: number, now: Date): void {
+  applyPayment(currentPaidSum: MoneyKzt, now: Date): void {
     if (this.isTerminal()) {
       throw new InvoiceStatusInvalidError(this.state.status, 'applyPayment');
     }
-    if (currentPaidSum < 0) {
+    if (currentPaidSum.isNegative()) {
       throw new InvoiceStatusInvalidError(this.state.status, 'applyPayment');
     }
-    if (currentPaidSum >= this.state.amountAfterDiscount) {
+    if (currentPaidSum.gte(this.state.amountAfterDiscount)) {
       this.state.status = 'paid';
-    } else if (currentPaidSum > 0) {
+    } else if (currentPaidSum.isPositive()) {
       this.state.status = 'partial';
     }
     this.state.updatedAt = now;
@@ -225,11 +227,11 @@ export class Invoice {
    * `partial`. The caller (refund.service) verifies that `refundedAmount`
    * matches the original net total before invoking.
    */
-  applyRefund(refundedAmount: number, now: Date): void {
+  applyRefund(refundedAmount: MoneyKzt, now: Date): void {
     if (this.state.status !== 'paid' && this.state.status !== 'partial') {
       throw new InvoiceStatusInvalidError(this.state.status, 'applyRefund');
     }
-    if (refundedAmount < this.state.amountAfterDiscount) {
+    if (refundedAmount.lt(this.state.amountAfterDiscount)) {
       // partial refund support is deferred — see method docstring
       throw new InvoiceStatusInvalidError(this.state.status, 'applyRefund');
     }
@@ -252,21 +254,26 @@ export class Invoice {
    * input returns `amountDue` unchanged.
    */
   static computeAmountAfterDiscount(
-    amountDue: number,
+    amountDue: MoneyKzt,
     discountPct: number | null,
-    absoluteDiscountKzt: number | null = null,
-  ): number {
+    absoluteDiscountKzt: MoneyKzt | null = null,
+  ): MoneyKzt {
     if (
       absoluteDiscountKzt !== null &&
-      absoluteDiscountKzt > 0 &&
-      amountDue > 0
+      absoluteDiscountKzt.isPositive() &&
+      amountDue.isPositive()
     ) {
-      const after = amountDue - absoluteDiscountKzt;
-      return roundKzt(after > 0 ? after : 0);
+      const after = amountDue.sub(absoluteDiscountKzt);
+      return after.isPositive() ? after : MoneyKzt.zero();
     }
     if (discountPct === null || discountPct === 0) {
       return amountDue;
     }
-    return roundKzt((amountDue * (100 - discountPct)) / 100);
+    // Single-rounding chain: amountDue * (100 - discountPct) / 100. Each
+    // op rounds to 2dp via banker's rounding, but the intermediate `mul`
+    // happens before the `div`, so the precision-shift relative to the
+    // legacy `(a * (100 - p)) / 100` then `roundKzt` is at most ±1 tiyn
+    // for non-divisible products.
+    return amountDue.mul(100 - discountPct).div(100);
   }
 }

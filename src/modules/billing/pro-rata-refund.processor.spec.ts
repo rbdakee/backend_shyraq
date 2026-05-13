@@ -1,5 +1,6 @@
 import { Job } from 'bullmq';
 import { DataSource, EntityManager } from 'typeorm';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import { Child } from '@/modules/child/domain/entities/child.entity';
 import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
 import {
@@ -284,10 +285,10 @@ function makeInvoice(
     invoiceType: 'monthly',
     periodStart,
     periodEnd,
-    amountDue: amount,
+    amountDue: MoneyKzt.fromKzt(amount),
     discountPct: null,
     discountReason: null,
-    amountAfterDiscount: amount,
+    amountAfterDiscount: MoneyKzt.fromKzt(amount),
     status: 'pending',
     dueDate: periodStart,
     description: null,
@@ -331,7 +332,7 @@ function makeCompletedPayment(invoiceId: string, amount = 60000): Payment {
     invoiceId,
     childId: CHILD,
     payerUserId: null,
-    amount,
+    amount: MoneyKzt.fromKzt(amount),
     provider: 'mock',
     providerTxnId: 'tx-1',
     status: 'completed',
@@ -418,7 +419,7 @@ describe('ProRataRefundProcessor', () => {
         kindergartenId: KG,
         paymentId: PAYMENT,
         invoiceId: INVOICE,
-        amount: 30000,
+        amount: MoneyKzt.fromKzt(30000),
         reason: PRO_RATA_REFUND_REASON,
         status: 'pending',
         processedBy: null,
@@ -556,7 +557,7 @@ describe('ProRataRefundProcessor', () => {
 
     expect(result.kind).toBe('created');
     if (result.kind === 'created') {
-      // multiplyKzt rounds to 2dp.
+      // MoneyKzt fluent chain rounds to 2dp via banker's rounding.
       expect(result.amountKzt).toBeCloseTo(27857.14, 2);
     }
   });

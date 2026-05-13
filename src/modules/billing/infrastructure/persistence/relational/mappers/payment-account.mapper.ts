@@ -10,7 +10,8 @@ export class PaymentAccountMapper {
       id: row.id,
       kindergartenId: row.kindergartenId,
       childId: row.childId,
-      balance: Number(row.balance),
+      // Transformer hands `MoneyKzt` directly — pass through.
+      balance: row.balance,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };

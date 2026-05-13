@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, Repository } from 'typeorm';
 import { tenantStorage } from '@/database/tenant-storage';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import {
   TariffPlan,
   TariffType,
@@ -64,7 +65,9 @@ export class TariffPlanRelationalRepository extends TariffPlanRepository {
     if (patch.name !== undefined) setPayload.name = patch.name;
     if (patch.description !== undefined)
       setPayload.description = patch.description;
-    if (patch.amount !== undefined) setPayload.amount = patch.amount;
+    if (patch.amount !== undefined) {
+      setPayload.amount = MoneyKzt.fromKzt(patch.amount);
+    }
     if (patch.appliesTo !== undefined) setPayload.appliesTo = patch.appliesTo;
     if (patch.groupId !== undefined) setPayload.groupId = patch.groupId;
     if (patch.ageMinMonths !== undefined) {

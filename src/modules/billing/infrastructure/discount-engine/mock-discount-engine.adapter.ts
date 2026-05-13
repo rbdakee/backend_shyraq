@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { roundKzt } from '@/shared-kernel/domain/money';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import {
   evaluateConditions,
   EvalContext,
@@ -19,7 +19,7 @@ interface BasicAppliedRule {
 
 interface AppliedCustom {
   snapshot: CustomDiscountSnapshot;
-  amountApplied: number;
+  amountApplied: MoneyKzt;
   reason: string;
 }
 
@@ -145,10 +145,14 @@ export class MockDiscountEngine extends DiscountEnginePort {
     // `amountDue`. We expose ONE combined `discountPct` for the invoice
     // (preserving B13 backward-compat); custom-applications are emitted
     // separately via `customApplicationsToWrite` for the audit ledger.
-    const customKzt = customApplied.reduce((s, x) => s + x.amountApplied, 0);
+    const customKzt = customApplied.reduce(
+      (s, x) => s.add(x.amountApplied),
+      MoneyKzt.zero(),
+    );
     const amountDue = input.invoice.amountDue;
-    const customPct =
-      amountDue > 0 ? roundKzt((customKzt / amountDue) * 100) : 0;
+    const customPct = amountDue.isPositive()
+      ? customKzt.mul(100).div(amountDue.toNumber()).toNumber()
+      : 0;
 
     // Combined cap at 100% — basic + custom never exceeds amountDue.
     const totalPct = Math.min(100, basicPct + customPct);
@@ -170,14 +174,16 @@ export class MockDiscountEngine extends DiscountEnginePort {
       appliedRules: appliedRuleIds,
       customApplicationsToWrite: customApplied.map((c) => ({
         customDiscountId: c.snapshot.id,
-        amountApplied: c.amountApplied,
+        amountApplied: c.amountApplied.toNumber(),
         reason: c.reason,
       })),
       // T8 SO-1: keep the precise KZT total so the invoice line item
       // subtracts the exact amount (3333 not 3330). `null` when only
       // sibling/prepay basic-rules contributed — caller falls back to
       // discountPct (the B13 path).
-      customDiscountAmount: customKzt > 0 ? customKzt : null,
+      customDiscountAmount: customKzt.isPositive()
+        ? customKzt.toNumber()
+        : null,
     };
     this.logger.debug(
       `[MockDiscount] invoice=${input.invoice.invoiceId} → ${out.discountPct ?? 'null'}% (${
@@ -222,7 +228,7 @@ export class MockDiscountEngine extends DiscountEnginePort {
   }
 
   private applyStackingAndAmounts(
-    amountDue: number,
+    amountDue: MoneyKzt,
     matches: CustomDiscountSnapshot[],
   ): AppliedCustom[] {
     if (matches.length === 0) return [];
@@ -259,23 +265,27 @@ export class MockDiscountEngine extends DiscountEnginePort {
     }
 
     const applied: AppliedCustom[] = [];
-    let alreadyStacked = 0;
+    let alreadyStacked = MoneyKzt.zero();
     for (const snap of winners) {
-      const remaining = amountDue - alreadyStacked;
-      if (remaining <= 0) break;
-      let amountApplied: number;
+      const remaining = amountDue.sub(alreadyStacked);
+      if (!remaining.isPositive()) break;
+      let amountApplied: MoneyKzt;
       if (snap.discountType === 'percentage') {
-        amountApplied = roundKzt(amountDue * (snap.amount / 100));
+        // Single-rounding chain — `amountDue * pct / 100`. The
+        // percentage value lives on snap.amount as a raw KZT-typed
+        // MoneyKzt; pull the scalar out via `.toNumber()` for the
+        // pct factor.
+        amountApplied = amountDue.mul(snap.amount.toNumber()).div(100);
       } else {
-        // fixed_amount
-        amountApplied = Math.min(snap.amount, remaining);
+        // fixed_amount — snap.amount is the fixed KZT amount to apply.
+        amountApplied = snap.amount.lte(remaining) ? snap.amount : remaining;
       }
       // Cap each individual at remaining so combined never exceeds amountDue.
-      if (amountApplied > remaining) amountApplied = remaining;
-      if (amountApplied <= 0) continue;
+      if (amountApplied.gt(remaining)) amountApplied = remaining;
+      if (!amountApplied.isPositive()) continue;
       const reason = snap.name.ru ?? Object.values(snap.name)[0] ?? snap.id;
       applied.push({ snapshot: snap, amountApplied, reason });
-      alreadyStacked += amountApplied;
+      alreadyStacked = alreadyStacked.add(amountApplied);
     }
     return applied;
   }
@@ -289,7 +299,7 @@ export class MockDiscountEngine extends DiscountEnginePort {
         invoiceType: input.invoice.invoiceType,
         periodStart: input.invoice.periodStart,
         periodEnd: input.invoice.periodEnd,
-        amountDue: input.invoice.amountDue,
+        amountDue: input.invoice.amountDue.toNumber(),
         dueDate: input.invoice.dueDate ?? input.invoice.periodEnd,
       },
       child: {

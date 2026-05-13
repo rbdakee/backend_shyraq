@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { NotificationPort } from '@/common/notifications/notification.port';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { InvariantViolationError } from '@/shared-kernel/domain/errors';
-import { roundKzt } from '@/shared-kernel/domain/money';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import { Refund, RefundState } from './domain/entities/refund.entity';
 import {
   PaymentNotFoundError,
@@ -100,11 +100,11 @@ export class RefundService {
     if (payment.status !== 'completed') {
       throw new PaymentStatusInvalidError(payment.status, 'create_refund');
     }
-    const amount = roundKzt(input.amount);
-    if (!(amount > 0)) {
+    const amount = MoneyKzt.fromKzt(input.amount);
+    if (!amount.isPositive()) {
       throw new InvariantViolationError('refund_amount_invalid');
     }
-    if (amount > roundKzt(payment.amount)) {
+    if (amount.gt(payment.amount)) {
       throw new InvariantViolationError('refund_amount_invalid');
     }
 
@@ -232,7 +232,7 @@ export class RefundService {
     try {
       providerResult = await this.paymentProvider.refund({
         providerPaymentId: payment.providerTxnId ?? payment.id,
-        amountKzt: refund.amount,
+        amountKzt: refund.amount.toNumber(),
         reason: refund.reason,
         idempotencyKey: `refund:${refund.id}`,
       });
@@ -290,18 +290,18 @@ export class RefundService {
       kindergartenId,
       payment.invoiceId,
     );
-    const paidSum = await this.invoiceRepo.getPaidSumForInvoice(
-      kindergartenId,
-      invoice.id,
+    const paidSum = MoneyKzt.fromKzt(
+      await this.invoiceRepo.getPaidSumForInvoice(kindergartenId, invoice.id),
     );
-    const priorRefundedSum =
+    const priorRefundedSum = MoneyKzt.fromKzt(
       await this.refundRepo.getProcessedRefundsSumForInvoice(
         kindergartenId,
         invoice.id,
-      );
-    const effectiveNet = roundKzt(paidSum - priorRefundedSum);
+      ),
+    );
+    const effectiveNet = paidSum.sub(priorRefundedSum);
 
-    if (effectiveNet <= 0) {
+    if (!effectiveNet.isPositive()) {
       const flippedInvoice = await this.invoiceRepo.markRefundedConditional(
         kindergartenId,
         invoice.id,
@@ -312,7 +312,7 @@ export class RefundService {
           `refund.process: invoice ${invoice.id} could not flip → refunded (status=${invoice.status})`,
         );
       }
-    } else if (effectiveNet < invoice.amountAfterDiscount) {
+    } else if (effectiveNet.lt(invoice.amountAfterDiscount)) {
       // Partial refund: invoice was paid in full but we just refunded part
       // of it. Downgrade paid → partial so the parent's "amount owed" view
       // reflects the new outstanding balance. Conditional UPDATE is a no-op
@@ -352,7 +352,7 @@ export class RefundService {
       paymentId: payment.id,
       childId: invoice.childId,
       invoiceId: invoice.id,
-      amount: processed.amount,
+      amount: processed.amount.toNumber(),
       processedBy: processed.processedBy ?? '',
     });
     await this.notificationPort.notifyPaymentRefunded({
@@ -360,7 +360,7 @@ export class RefundService {
       paymentId: payment.id,
       childId: invoice.childId,
       invoiceId: invoice.id,
-      amount: processed.amount,
+      amount: processed.amount.toNumber(),
       refundId: processed.id,
     });
 
@@ -383,5 +383,6 @@ export class RefundService {
   }
 }
 
-// Note: legacy `round2(...)` was removed in T11 H7 — `roundKzt(...)` from
-// `@/shared-kernel/domain/money` is the canonical helper now.
+// Note: legacy `round2(...)`/`roundKzt(...)` retired in B22b T2 —
+// `MoneyKzt` is the canonical type. The service wraps DTO numbers at the
+// boundary via `MoneyKzt.fromKzt(dto.amount)` and unwraps via `.toNumber()`.

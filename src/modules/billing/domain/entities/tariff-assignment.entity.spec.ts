@@ -1,3 +1,4 @@
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import {
   TariffAssignment,
   TariffAssignmentState,
@@ -6,6 +7,8 @@ import { TariffPlan, TariffPlanState } from './tariff-plan.entity';
 
 const NOW = new Date('2026-05-07T10:00:00Z');
 const LATER = new Date('2026-05-07T11:00:00Z');
+
+const m = (n: number): MoneyKzt => MoneyKzt.fromKzt(n);
 
 function makeAssignment(
   overrides: Partial<TariffAssignmentState> = {},
@@ -33,7 +36,7 @@ function makePlan(amount = 100_000): TariffPlan {
     name: 'Plan',
     description: {},
     tariffType: 'monthly',
-    amount,
+    amount: m(amount),
     currency: 'KZT',
     appliesTo: 'all_children',
     groupId: null,
@@ -57,7 +60,7 @@ describe('TariffAssignment domain entity', () => {
   it('constructs successfully with positive customAmount', () => {
     expect(() =>
       TariffAssignment.fromState(
-        makeAssignment({ customAmount: 50_000, customReason: 'discount' }),
+        makeAssignment({ customAmount: m(50_000), customReason: 'discount' }),
       ),
     ).not.toThrow();
   });
@@ -65,14 +68,17 @@ describe('TariffAssignment domain entity', () => {
   it('constructs successfully with customAmount of 0', () => {
     expect(() =>
       TariffAssignment.fromState(
-        makeAssignment({ customAmount: 0, customReason: 'sponsored' }),
+        makeAssignment({
+          customAmount: MoneyKzt.zero(),
+          customReason: 'sponsored',
+        }),
       ),
     ).not.toThrow();
   });
 
   it('throws when customAmount is negative', () => {
     expect(() =>
-      TariffAssignment.fromState(makeAssignment({ customAmount: -1 })),
+      TariffAssignment.fromState(makeAssignment({ customAmount: m(-1) })),
     ).toThrow(/customAmount must be >= 0/);
   });
 
@@ -111,21 +117,24 @@ describe('TariffAssignment domain entity', () => {
   describe('effectiveAmount', () => {
     it('returns customAmount when set', () => {
       const a = TariffAssignment.fromState(
-        makeAssignment({ customAmount: 75_000, customReason: 'sibling' }),
+        makeAssignment({ customAmount: m(75_000), customReason: 'sibling' }),
       );
-      expect(a.effectiveAmount(makePlan(100_000))).toBe(75_000);
+      expect(a.effectiveAmount(makePlan(100_000)).toNumber()).toBe(75_000);
     });
 
     it('returns plan.amount when customAmount is null', () => {
       const a = TariffAssignment.fromState(makeAssignment());
-      expect(a.effectiveAmount(makePlan(120_000))).toBe(120_000);
+      expect(a.effectiveAmount(makePlan(120_000)).toNumber()).toBe(120_000);
     });
 
     it('returns 0 when customAmount is 0 (sponsored child)', () => {
       const a = TariffAssignment.fromState(
-        makeAssignment({ customAmount: 0, customReason: 'sponsored' }),
+        makeAssignment({
+          customAmount: MoneyKzt.zero(),
+          customReason: 'sponsored',
+        }),
       );
-      expect(a.effectiveAmount(makePlan(100_000))).toBe(0);
+      expect(a.effectiveAmount(makePlan(100_000)).toNumber()).toBe(0);
     });
   });
 });

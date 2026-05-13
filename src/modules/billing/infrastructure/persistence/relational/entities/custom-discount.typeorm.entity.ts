@@ -6,7 +6,8 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
-import { numericTransformer } from '../numeric.transformer';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
+import { moneyKztTransformer } from '@/shared-kernel/infrastructure/typeorm/money-kzt.transformer';
 
 export const CUSTOM_DISCOUNT_STATUS_VALUES = [
   'draft',
@@ -61,9 +62,9 @@ export class CustomDiscountTypeOrmEntity {
     type: 'numeric',
     precision: 10,
     scale: 2,
-    transformer: numericTransformer,
+    transformer: moneyKztTransformer,
   })
-  amount!: number;
+  amount!: MoneyKzt;
 
   @Column({ name: 'conditions', type: 'jsonb', default: () => `'{}'::jsonb` })
   conditions!: Record<string, unknown>;

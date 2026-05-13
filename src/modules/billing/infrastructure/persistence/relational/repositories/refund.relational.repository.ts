@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Repository } from 'typeorm';
 import { tenantStorage } from '@/database/tenant-storage';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import { Refund } from '../../../../domain/entities/refund.entity';
 import { ListRefundsFilter, RefundRepository } from '../../refund.repository';
 import { RefundTypeOrmEntity } from '../entities/refund.typeorm.entity';
@@ -191,7 +192,7 @@ export class RefundRelationalRepository extends RefundRepository {
         kindergartenId: raw.kindergarten_id as string,
         paymentId: raw.payment_id as string,
         invoiceId: (raw.invoice_id as string) ?? null,
-        amount: Number(raw.amount),
+        amount: MoneyKzt.fromString(String(raw.amount)),
         reason: raw.reason as string,
         status: raw.status as 'pending' | 'approved' | 'processed' | 'rejected',
         processedBy: (raw.processed_by as string) ?? null,

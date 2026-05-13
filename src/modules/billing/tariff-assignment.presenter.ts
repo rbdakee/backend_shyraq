@@ -13,7 +13,7 @@ export const TariffAssignmentPresenter = {
       kindergarten_id: s.kindergartenId,
       child_id: s.childId,
       tariff_plan_id: s.tariffPlanId,
-      custom_amount: s.customAmount,
+      custom_amount: s.customAmount === null ? null : s.customAmount.toNumber(),
       custom_reason: s.customReason,
       valid_from: toIsoDate(s.validFrom),
       valid_until: s.validUntil ? toIsoDate(s.validUntil) : null,

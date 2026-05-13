@@ -20,6 +20,7 @@ import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
 import { DataSource } from 'typeorm';
 import { InMemoryNotificationAdapter } from '@/common/notifications/in-memory-notification.adapter';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import { tenantStorage } from '@/database/tenant-storage';
 import { OtpStorePort, StoredOtp } from '@/modules/auth/otp-store.port';
 import { CameraEntity } from '@/modules/camera/infrastructure/persistence/relational/entities/camera.entity';
@@ -297,10 +298,10 @@ describeIntegration('EnrollmentService — service-integration', () => {
           invoiceType: 'monthly',
           periodStart: input.enrollmentDate,
           periodEnd: input.enrollmentDate,
-          amountDue: 0,
+          amountDue: MoneyKzt.zero(),
           discountPct: null,
           discountReason: null,
-          amountAfterDiscount: 0,
+          amountAfterDiscount: MoneyKzt.zero(),
           status: 'pending',
           dueDate: input.enrollmentDate,
           description: null,

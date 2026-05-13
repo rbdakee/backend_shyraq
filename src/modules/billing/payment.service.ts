@@ -4,7 +4,7 @@ import { DataSource } from 'typeorm';
 import { NotificationPort } from '@/common/notifications/notification.port';
 import { tenantStorage } from '@/database/tenant-storage';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
-import { roundKzt } from '@/shared-kernel/domain/money';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import {
   Payment,
   PaymentProvider,
@@ -153,21 +153,21 @@ export class PaymentService {
       throw new InvoiceStatusInvalidError(invoice.status, 'initiate_payment');
     }
 
-    const paidSum = await this.invoiceRepo.getPaidSumForInvoice(
-      kindergartenId,
-      invoice.id,
+    const paidSum = MoneyKzt.fromKzt(
+      await this.invoiceRepo.getPaidSumForInvoice(kindergartenId, invoice.id),
     );
-    const remaining = roundKzt(invoice.amountAfterDiscount - paidSum);
+    const remaining = invoice.amountAfterDiscount.sub(paidSum);
+    const inputAmount = MoneyKzt.fromKzt(input.amount);
 
     if (input.paymentMode === 'full') {
-      if (roundKzt(input.amount) !== remaining) {
+      if (!inputAmount.equals(remaining)) {
         throw new InvoiceStatusInvalidError(
           invoice.status,
           'amount_mismatch_full',
         );
       }
     } else {
-      if (input.amount <= 0 || roundKzt(input.amount) > remaining) {
+      if (!inputAmount.isPositive() || inputAmount.gt(remaining)) {
         throw new InvoiceStatusInvalidError(
           invoice.status,
           'amount_mismatch_partial',
@@ -187,7 +187,7 @@ export class PaymentService {
       invoiceId: invoice.id,
       childId: invoice.childId,
       payerUserId: input.payerUserId ?? null,
-      amount: roundKzt(input.amount),
+      amount: inputAmount,
       provider: input.provider,
       providerTxnId: null,
       idempotencyKey: input.idempotencyKey,
@@ -228,7 +228,7 @@ export class PaymentService {
     try {
       providerResult = await this.paymentProvider.createPayment({
         invoiceId: invoice.id,
-        amountKzt: payment.amount,
+        amountKzt: payment.amount.toNumber(),
         currency: 'KZT',
         returnUrl: input.returnUrl,
         payerUserId: input.payerUserId ?? undefined,
@@ -456,11 +456,13 @@ export class PaymentService {
       kindergartenId,
       current.invoiceId,
     );
-    const paidSum = await this.invoiceRepo.getPaidSumForInvoice(
-      kindergartenId,
-      current.invoiceId,
+    const paidSum = MoneyKzt.fromKzt(
+      await this.invoiceRepo.getPaidSumForInvoice(
+        kindergartenId,
+        current.invoiceId,
+      ),
     );
-    if (paidSum >= invoice.amountAfterDiscount) {
+    if (paidSum.gte(invoice.amountAfterDiscount)) {
       const flipped = await this.invoiceRepo.markPaidConditional(
         kindergartenId,
         current.invoiceId,
@@ -472,7 +474,7 @@ export class PaymentService {
         );
       }
     } else if (
-      paidSum > 0 &&
+      paidSum.isPositive() &&
       (invoice.status === 'pending' || invoice.status === 'overdue')
     ) {
       // B22a T1 H14: also flip an `overdue` invoice → `partial` when a
@@ -512,7 +514,7 @@ export class PaymentService {
         paymentId: updated.id,
         invoiceId: invoice.id,
         kindergartenId,
-        amountKzt: updated.amount,
+        amountKzt: updated.amount.toNumber(),
         paidAt,
         // Mock adapter ignores payer fields; B15 will wire real lookups.
         payerName: undefined,
@@ -538,18 +540,18 @@ export class PaymentService {
       paymentId: updated.id,
       childId: invoice.childId,
       invoiceId: invoice.id,
-      amount: updated.amount,
+      amount: updated.amount.toNumber(),
       provider: updated.provider,
       paidAt: updated.paidAt ?? now,
     });
-    if (paidSum >= invoice.amountAfterDiscount) {
+    if (paidSum.gte(invoice.amountAfterDiscount)) {
       // Invoice transitioned to `paid` (full settlement). Partial payments
       // skip the invoice.paid event — the invoice is in `partial`, not paid.
       await this.notificationPort.notifyInvoicePaid({
         kindergartenId,
         invoiceId: invoice.id,
         childId: invoice.childId,
-        amountAfterDiscount: invoice.amountAfterDiscount,
+        amountAfterDiscount: invoice.amountAfterDiscount.toNumber(),
         paidAt: updated.paidAt ?? now,
       });
     }
@@ -611,7 +613,7 @@ export class PaymentService {
       paymentId: updated.id,
       childId: updated.childId,
       invoiceId: updated.invoiceId,
-      amount: updated.amount,
+      amount: updated.amount.toNumber(),
       provider: updated.provider,
       failureReason: verified.failureReason ?? 'webhook_failed',
     });

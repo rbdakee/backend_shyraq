@@ -5,7 +5,8 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
-import { numericTransformer } from '../numeric.transformer';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
+import { moneyKztTransformer } from '@/shared-kernel/infrastructure/typeorm/money-kzt.transformer';
 
 export const REFUND_STATUS_VALUES = [
   'pending',
@@ -39,9 +40,9 @@ export class RefundTypeOrmEntity {
     type: 'numeric',
     precision: 12,
     scale: 2,
-    transformer: numericTransformer,
+    transformer: moneyKztTransformer,
   })
-  amount!: number;
+  amount!: MoneyKzt;
 
   @Column({ name: 'reason', type: 'text' })
   reason!: string;

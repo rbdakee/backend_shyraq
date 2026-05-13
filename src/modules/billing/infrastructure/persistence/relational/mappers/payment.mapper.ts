@@ -17,7 +17,8 @@ export class PaymentMapper {
       invoiceId: row.invoiceId,
       childId: row.childId,
       payerUserId: row.payerUserId,
-      amount: Number(row.amount),
+      // Transformer hands `MoneyKzt` directly — pass through.
+      amount: row.amount,
       provider: row.provider as PaymentProvider,
       providerTxnId: row.providerTxnId,
       idempotencyKey: row.idempotencyKey,

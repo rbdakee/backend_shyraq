@@ -1,10 +1,10 @@
-import { roundKzt } from '@/shared-kernel/domain/money';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 
 export interface PaymentAccountState {
   id: string;
   kindergartenId: string;
   childId: string;
-  balance: number;
+  balance: MoneyKzt;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -44,7 +44,7 @@ export class PaymentAccount {
     return this.state.childId;
   }
 
-  get balance(): number {
+  get balance(): MoneyKzt {
     return this.state.balance;
   }
 
@@ -58,19 +58,19 @@ export class PaymentAccount {
 
   // ── methods ─────────────────────────────────────────────────────────────
 
-  credit(amount: number, now: Date): void {
-    if (!(amount > 0)) {
+  credit(amount: MoneyKzt, now: Date): void {
+    if (!amount.isPositive()) {
       throw new Error('PaymentAccount.credit: amount must be > 0');
     }
-    this.state.balance = roundKzt(this.state.balance + amount);
+    this.state.balance = this.state.balance.add(amount);
     this.state.updatedAt = now;
   }
 
-  debit(amount: number, now: Date): void {
-    if (!(amount > 0)) {
+  debit(amount: MoneyKzt, now: Date): void {
+    if (!amount.isPositive()) {
       throw new Error('PaymentAccount.debit: amount must be > 0');
     }
-    this.state.balance = roundKzt(this.state.balance - amount);
+    this.state.balance = this.state.balance.sub(amount);
     this.state.updatedAt = now;
   }
 }

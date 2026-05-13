@@ -1,3 +1,4 @@
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import { Invoice, InvoiceState } from './invoice.entity';
 import { InvoiceAlreadyPaidError } from '../errors/invoice-already-paid.error';
 import { InvoiceStatusInvalidError } from '../errors/invoice-status-invalid.error';
@@ -5,6 +6,8 @@ import { InvoiceStatusInvalidError } from '../errors/invoice-status-invalid.erro
 const NOW = new Date('2026-05-07T10:00:00Z');
 const LATER = new Date('2026-05-07T11:00:00Z');
 const PAST_DUE = new Date('2026-06-15T10:00:00Z');
+
+const m = (n: number): MoneyKzt => MoneyKzt.fromKzt(n);
 
 function makePending(overrides: Partial<InvoiceState> = {}): Invoice {
   return Invoice.fromState({
@@ -16,10 +19,10 @@ function makePending(overrides: Partial<InvoiceState> = {}): Invoice {
     invoiceType: 'monthly',
     periodStart: new Date('2026-05-01'),
     periodEnd: new Date('2026-05-31'),
-    amountDue: 100_000,
+    amountDue: m(100_000),
     discountPct: null,
     discountReason: null,
-    amountAfterDiscount: 100_000,
+    amountAfterDiscount: m(100_000),
     status: 'pending',
     dueDate: new Date('2026-05-31'),
     description: null,
@@ -35,48 +38,66 @@ describe('Invoice domain entity', () => {
 
   describe('computeAmountAfterDiscount', () => {
     it('returns amountDue unchanged when discountPct is null', () => {
-      expect(Invoice.computeAmountAfterDiscount(100_000, null)).toBe(100_000);
+      expect(
+        Invoice.computeAmountAfterDiscount(m(100_000), null).toNumber(),
+      ).toBe(100_000);
     });
 
     it('returns amountDue unchanged when discountPct is 0', () => {
-      expect(Invoice.computeAmountAfterDiscount(100_000, 0)).toBe(100_000);
+      expect(Invoice.computeAmountAfterDiscount(m(100_000), 0).toNumber()).toBe(
+        100_000,
+      );
     });
 
     it('applies a 10 percent discount and rounds to two decimals', () => {
-      expect(Invoice.computeAmountAfterDiscount(100_000, 10)).toBe(90_000);
+      expect(
+        Invoice.computeAmountAfterDiscount(m(100_000), 10).toNumber(),
+      ).toBe(90_000);
     });
 
     it('rounds half-cent values to nearest cent', () => {
-      // 99.999 → 99.99 nope — Math.round((99.999*0.5)*100)/100 → just verify a known case
-      expect(Invoice.computeAmountAfterDiscount(99.99, 50)).toBe(50);
+      // 99.99 * 0.5 = 49.995 → banker's rounding to 50.00.
+      expect(Invoice.computeAmountAfterDiscount(m(99.99), 50).toNumber()).toBe(
+        50,
+      );
     });
 
     it('handles 100 percent discount as zero', () => {
-      expect(Invoice.computeAmountAfterDiscount(100_000, 100)).toBe(0);
+      expect(
+        Invoice.computeAmountAfterDiscount(m(100_000), 100).toNumber(),
+      ).toBe(0);
     });
 
     // ── B16 T8 SO-1 — absolute KZT amount precision ────────────────────────
     it('subtracts absoluteDiscountKzt exactly when present (3333 KZT off 100000)', () => {
       // Without the absolute path: 3333/100000*100 = 3.333% → rounds to 3.33%
       // → 100000*(100-3.33)/100 = 96670, lossy.
-      expect(Invoice.computeAmountAfterDiscount(100_000, 3.33, 3333)).toBe(
-        96_667,
-      );
+      expect(
+        Invoice.computeAmountAfterDiscount(
+          m(100_000),
+          3.33,
+          m(3333),
+        ).toNumber(),
+      ).toBe(96_667);
     });
 
     it('absolute path beats discountPct when both supplied', () => {
       // amount-after = 100000 - 1500 = 98500 (NOT 100000*0.95 = 95000)
-      expect(Invoice.computeAmountAfterDiscount(100_000, 5, 1500)).toBe(98_500);
+      expect(
+        Invoice.computeAmountAfterDiscount(m(100_000), 5, m(1500)).toNumber(),
+      ).toBe(98_500);
     });
 
     it('falls back to percentage path when absoluteDiscountKzt is null', () => {
-      expect(Invoice.computeAmountAfterDiscount(100_000, 10, null)).toBe(
-        90_000,
-      );
+      expect(
+        Invoice.computeAmountAfterDiscount(m(100_000), 10, null).toNumber(),
+      ).toBe(90_000);
     });
 
     it('clamps absolute discount that exceeds amountDue to zero', () => {
-      expect(Invoice.computeAmountAfterDiscount(1_000, null, 5_000)).toBe(0);
+      expect(
+        Invoice.computeAmountAfterDiscount(m(1_000), null, m(5_000)).toNumber(),
+      ).toBe(0);
     });
   });
 
@@ -107,66 +128,66 @@ describe('Invoice domain entity', () => {
   describe('applyPayment', () => {
     it('transitions pending to paid when sum equals amountAfterDiscount', () => {
       const inv = makePending();
-      inv.applyPayment(100_000, LATER);
+      inv.applyPayment(m(100_000), LATER);
       expect(inv.status).toBe('paid');
       expect(inv.updatedAt).toBe(LATER);
     });
 
     it('transitions pending to paid when sum exceeds amountAfterDiscount', () => {
       const inv = makePending();
-      inv.applyPayment(150_000, LATER);
+      inv.applyPayment(m(150_000), LATER);
       expect(inv.status).toBe('paid');
     });
 
     it('transitions pending to partial when 0 < sum < amountAfterDiscount', () => {
       const inv = makePending();
-      inv.applyPayment(40_000, LATER);
+      inv.applyPayment(m(40_000), LATER);
       expect(inv.status).toBe('partial');
       expect(inv.updatedAt).toBe(LATER);
     });
 
     it('keeps pending when sum is 0', () => {
       const inv = makePending();
-      inv.applyPayment(0, LATER);
+      inv.applyPayment(MoneyKzt.zero(), LATER);
       expect(inv.status).toBe('pending');
       expect(inv.updatedAt).toBe(LATER);
     });
 
     it('promotes partial to paid when sum reaches full', () => {
       const inv = makePending({ status: 'partial' });
-      inv.applyPayment(100_000, LATER);
+      inv.applyPayment(m(100_000), LATER);
       expect(inv.status).toBe('paid');
     });
 
     it('promotes overdue to paid when sum reaches full', () => {
       const inv = makePending({ status: 'overdue' });
-      inv.applyPayment(100_000, LATER);
+      inv.applyPayment(m(100_000), LATER);
       expect(inv.status).toBe('paid');
     });
 
     it('promotes overdue to partial when sum is positive but below full', () => {
       const inv = makePending({ status: 'overdue' });
-      inv.applyPayment(40_000, LATER);
+      inv.applyPayment(m(40_000), LATER);
       expect(inv.status).toBe('partial');
     });
 
     it('throws InvoiceStatusInvalidError when status is cancelled', () => {
       const inv = makePending({ status: 'cancelled' });
-      expect(() => inv.applyPayment(100_000, LATER)).toThrow(
+      expect(() => inv.applyPayment(m(100_000), LATER)).toThrow(
         InvoiceStatusInvalidError,
       );
     });
 
     it('throws InvoiceStatusInvalidError when status is refunded', () => {
       const inv = makePending({ status: 'refunded' });
-      expect(() => inv.applyPayment(100_000, LATER)).toThrow(
+      expect(() => inv.applyPayment(m(100_000), LATER)).toThrow(
         InvoiceStatusInvalidError,
       );
     });
 
     it('throws InvoiceStatusInvalidError when currentPaidSum is negative', () => {
       const inv = makePending();
-      expect(() => inv.applyPayment(-1, LATER)).toThrow(
+      expect(() => inv.applyPayment(m(-1), LATER)).toThrow(
         InvoiceStatusInvalidError,
       );
     });
@@ -259,47 +280,47 @@ describe('Invoice domain entity', () => {
   describe('applyRefund', () => {
     it('transitions paid to refunded when refundedAmount equals net total', () => {
       const inv = makePending({ status: 'paid' });
-      inv.applyRefund(100_000, LATER);
+      inv.applyRefund(m(100_000), LATER);
       expect(inv.status).toBe('refunded');
       expect(inv.updatedAt).toBe(LATER);
     });
 
     it('transitions paid to refunded when refundedAmount exceeds net total', () => {
       const inv = makePending({ status: 'paid' });
-      inv.applyRefund(110_000, LATER);
+      inv.applyRefund(m(110_000), LATER);
       expect(inv.status).toBe('refunded');
     });
 
     it('transitions partial to refunded when refundedAmount equals net total', () => {
       const inv = makePending({ status: 'partial' });
-      inv.applyRefund(100_000, LATER);
+      inv.applyRefund(m(100_000), LATER);
       expect(inv.status).toBe('refunded');
     });
 
     it('throws InvoiceStatusInvalidError on partial-amount refund (full-only for now)', () => {
       const inv = makePending({ status: 'paid' });
-      expect(() => inv.applyRefund(50_000, LATER)).toThrow(
+      expect(() => inv.applyRefund(m(50_000), LATER)).toThrow(
         InvoiceStatusInvalidError,
       );
     });
 
     it('throws InvoiceStatusInvalidError when status is pending', () => {
       const inv = makePending({ status: 'pending' });
-      expect(() => inv.applyRefund(100_000, LATER)).toThrow(
+      expect(() => inv.applyRefund(m(100_000), LATER)).toThrow(
         InvoiceStatusInvalidError,
       );
     });
 
     it('throws InvoiceStatusInvalidError when status is cancelled', () => {
       const inv = makePending({ status: 'cancelled' });
-      expect(() => inv.applyRefund(100_000, LATER)).toThrow(
+      expect(() => inv.applyRefund(m(100_000), LATER)).toThrow(
         InvoiceStatusInvalidError,
       );
     });
 
     it('throws InvoiceStatusInvalidError when status is already refunded', () => {
       const inv = makePending({ status: 'refunded' });
-      expect(() => inv.applyRefund(100_000, LATER)).toThrow(
+      expect(() => inv.applyRefund(m(100_000), LATER)).toThrow(
         InvoiceStatusInvalidError,
       );
     });
@@ -310,7 +331,7 @@ describe('Invoice domain entity', () => {
   it('InvoiceStatusInvalidError carries currentStatus and attemptedAction', () => {
     const inv = makePending({ status: 'cancelled' });
     try {
-      inv.applyPayment(100_000, LATER);
+      inv.applyPayment(m(100_000), LATER);
       fail('expected error to be thrown');
     } catch (err) {
       expect(err).toBeInstanceOf(InvoiceStatusInvalidError);
@@ -333,10 +354,10 @@ describe('Invoice domain entity', () => {
       invoiceType: 'late_pickup_fee',
       periodStart: new Date('2026-05-07'),
       periodEnd: new Date('2026-05-07'),
-      amountDue: 1_500,
+      amountDue: m(1_500),
       discountPct: 5,
       discountReason: 'sibling',
-      amountAfterDiscount: 1_425,
+      amountAfterDiscount: m(1_425),
       status: 'pending',
       dueDate: new Date('2026-05-14'),
       description: 'late pickup 14 minutes',

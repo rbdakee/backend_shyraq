@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import { NotificationPort } from '@/common/notifications/notification.port';
 import { tenantStorage } from '@/database/tenant-storage';
 import {
@@ -162,7 +163,7 @@ export class CustomDiscountService {
       name: repoInput.name,
       description: repoInput.description,
       discountType: repoInput.discountType,
-      amount: repoInput.amount,
+      amount: MoneyKzt.fromKzt(repoInput.amount),
       conditions: repoInput.conditions,
       targetType: repoInput.targetType,
       targetIds: repoInput.targetIds,
@@ -223,7 +224,10 @@ export class CustomDiscountService {
             ? patch.description
             : merged.description,
         discountType: patch.discountType ?? merged.discountType,
-        amount: patch.amount ?? merged.amount,
+        amount:
+          patch.amount !== undefined
+            ? MoneyKzt.fromKzt(patch.amount)
+            : merged.amount,
         conditions: patch.conditions ?? merged.conditions,
         targetType: patch.targetType ?? merged.targetType,
         targetIds:

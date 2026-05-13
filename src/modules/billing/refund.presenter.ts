@@ -13,7 +13,7 @@ export const RefundPresenter = {
       kindergarten_id: s.kindergartenId,
       payment_id: s.paymentId,
       invoice_id: s.invoiceId,
-      amount: s.amount,
+      amount: s.amount.toNumber(),
       reason: s.reason,
       status: s.status,
       processed_by: s.processedBy,

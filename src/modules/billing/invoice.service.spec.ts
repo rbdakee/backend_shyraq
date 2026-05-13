@@ -1,5 +1,6 @@
 import { InMemoryNotificationAdapter } from '@/common/notifications/in-memory-notification.adapter';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import { Invoice, InvoiceState } from './domain/entities/invoice.entity';
 import { InvoiceLineItem } from './domain/entities/invoice-line-item.entity';
 import { PaymentAccount } from './domain/entities/payment-account.entity';
@@ -43,6 +44,8 @@ import {
   KindergartenHolidayRepository,
 } from './infrastructure/persistence/kindergarten-holiday.repository';
 import { KindergartenHoliday } from './domain/entities/kindergarten-holiday.entity';
+
+const m = (n: number): MoneyKzt => MoneyKzt.fromKzt(n);
 
 const KG = '11111111-1111-1111-1111-111111111111';
 const KG_OTHER = '22222222-2222-2222-2222-222222222222';
@@ -306,7 +309,10 @@ class FakeTariffAssignmentRepo extends TariffAssignmentRepository {
       kindergartenId: input.kindergartenId,
       childId: input.childId,
       tariffPlanId: input.tariffPlanId,
-      customAmount: input.customAmount,
+      customAmount:
+        input.customAmount === null
+          ? null
+          : MoneyKzt.fromKzt(input.customAmount),
       customReason: input.customReason,
       validFrom: input.validFrom,
       validUntil: input.validUntil,
@@ -432,7 +438,7 @@ class FakePaymentAccountRepo extends PaymentAccountRepository {
       id,
       kindergartenId,
       childId,
-      balance: 0,
+      balance: MoneyKzt.zero(),
       createdAt: NOW,
       updatedAt: NOW,
     });
@@ -521,7 +527,7 @@ function basePlanState(
     name: 'Standard',
     description: { ru: 'Стандарт' },
     tariffType: 'monthly',
-    amount: 50000,
+    amount: m(50000),
     currency: 'KZT',
     appliesTo: 'all_children',
     groupId: null,
@@ -615,10 +621,10 @@ describe('InvoiceService', () => {
           invoiceType: 'monthly',
           periodStart: new Date('2026-06-01T00:00:00.000Z'),
           periodEnd: new Date('2026-06-30T00:00:00.000Z'),
-          amountDue: 50000,
+          amountDue: m(50000),
           discountPct: null,
           discountReason: null,
-          amountAfterDiscount: 50000,
+          amountAfterDiscount: m(50000),
           status: 'pending',
           dueDate: new Date('2026-06-10T00:00:00.000Z'),
           description: null,
@@ -651,7 +657,7 @@ describe('InvoiceService', () => {
         periodEnd: new Date('2026-06-30T00:00:00.000Z'),
         lineItems: [{ description: 'Lunch', quantity: 1, unitPrice: 10000 }],
       });
-      expect(inv.amountDue).toBe(10000);
+      expect(inv.amountDue.toNumber()).toBe(10000);
       expect(invoiceRepo.rows.get(inv.id)).toBe(inv);
       const items = invoiceRepo.lineItems.get(inv.id);
       expect(items).toHaveLength(1);
@@ -671,7 +677,7 @@ describe('InvoiceService', () => {
         periodStart: new Date('2026-06-01T00:00:00.000Z'),
         periodEnd: new Date('2026-06-30T00:00:00.000Z'),
       });
-      expect(inv.amountAfterDiscount).toBe(45000);
+      expect(inv.amountAfterDiscount.toNumber()).toBe(45000);
     });
   });
 
@@ -691,10 +697,10 @@ describe('InvoiceService', () => {
           invoiceType: 'monthly',
           periodStart: new Date('2026-06-01T00:00:00.000Z'),
           periodEnd: new Date('2026-06-30T00:00:00.000Z'),
-          amountDue: 50000,
+          amountDue: m(50000),
           discountPct: null,
           discountReason: null,
-          amountAfterDiscount: 50000,
+          amountAfterDiscount: m(50000),
           status: 'pending',
           dueDate: new Date('2026-06-10T00:00:00.000Z'),
           description: null,
@@ -706,7 +712,7 @@ describe('InvoiceService', () => {
       const updated = await svc.manualMarkPaid(KG, id);
       expect(updated.status).toBe('paid');
       const acc = accountRepo.rows.get(account.id);
-      expect(acc?.balance).toBe(50000);
+      expect(acc?.balance.toNumber()).toBe(50000);
     });
 
     it('creates a synthetic Payment row with provider=cash (T11 C3)', async () => {
@@ -725,10 +731,10 @@ describe('InvoiceService', () => {
           invoiceType: 'monthly',
           periodStart: new Date('2026-06-01T00:00:00.000Z'),
           periodEnd: new Date('2026-06-30T00:00:00.000Z'),
-          amountDue: 50000,
+          amountDue: m(50000),
           discountPct: null,
           discountReason: null,
-          amountAfterDiscount: 50000,
+          amountAfterDiscount: m(50000),
           status: 'pending',
           dueDate: new Date('2026-06-10T00:00:00.000Z'),
           description: null,
@@ -748,7 +754,7 @@ describe('InvoiceService', () => {
       const p = payments[0];
       expect(p.provider).toBe('cash' as PaymentProvider);
       expect(p.status).toBe('completed');
-      expect(p.amount).toBe(50000);
+      expect(p.amount.toNumber()).toBe(50000);
       expect(p.payerUserId).toBe(PAYER);
       expect(p.idempotencyKey.startsWith(`cash:${id}:`)).toBe(true);
       expect(p.providerPayload).toMatchObject({
@@ -775,10 +781,10 @@ describe('InvoiceService', () => {
         invoiceType: 'monthly',
         periodStart: new Date('2026-06-01T00:00:00.000Z'),
         periodEnd: new Date('2026-06-30T00:00:00.000Z'),
-        amountDue: 50000,
+        amountDue: m(50000),
         discountPct: null,
         discountReason: null,
-        amountAfterDiscount: 50000,
+        amountAfterDiscount: m(50000),
         status: 'paid',
         dueDate: new Date('2026-06-10T00:00:00.000Z'),
         description: null,
@@ -814,10 +820,10 @@ describe('InvoiceService', () => {
           invoiceType: 'monthly',
           periodStart: new Date('2026-06-01T00:00:00.000Z'),
           periodEnd: new Date('2026-06-30T00:00:00.000Z'),
-          amountDue: 50000,
+          amountDue: m(50000),
           discountPct: null,
           discountReason: null,
-          amountAfterDiscount: 50000,
+          amountAfterDiscount: m(50000),
           status: 'cancelled',
           dueDate: new Date('2026-06-10T00:00:00.000Z'),
           description: null,
@@ -848,10 +854,10 @@ describe('InvoiceService', () => {
           invoiceType: 'monthly',
           periodStart: new Date('2026-06-01T00:00:00.000Z'),
           periodEnd: new Date('2026-06-30T00:00:00.000Z'),
-          amountDue: 50000,
+          amountDue: m(50000),
           discountPct: null,
           discountReason: null,
-          amountAfterDiscount: 50000,
+          amountAfterDiscount: m(50000),
           status: 'pending',
           dueDate: new Date('2026-06-10T00:00:00.000Z'),
           description: null,
@@ -879,10 +885,10 @@ describe('InvoiceService', () => {
           invoiceType: 'monthly',
           periodStart: new Date('2026-06-01T00:00:00.000Z'),
           periodEnd: new Date('2026-06-30T00:00:00.000Z'),
-          amountDue: 50000,
+          amountDue: m(50000),
           discountPct: null,
           discountReason: null,
-          amountAfterDiscount: 50000,
+          amountAfterDiscount: m(50000),
           status: 'paid',
           dueDate: new Date('2026-06-10T00:00:00.000Z'),
           description: null,
@@ -954,10 +960,10 @@ describe('InvoiceService', () => {
           invoiceType: 'prepayment_3m',
           periodStart: PERIOD_START,
           periodEnd: new Date('2026-08-31T00:00:00.000Z'),
-          amountDue: 150_000,
+          amountDue: m(150_000),
           discountPct: 5,
           discountReason: 'prepay_3m',
-          amountAfterDiscount: 142_500,
+          amountAfterDiscount: m(142_500),
           status: 'pending',
           dueDate: new Date('2026-06-08T00:00:00.000Z'),
           description: null,
@@ -1004,7 +1010,7 @@ describe('InvoiceService', () => {
       const inv = [...invoiceRepo.rows.values()][0];
       expect(inv.discountPct).toBe(10);
       expect(inv.discountReason).toBe('sibling_discount');
-      expect(inv.amountAfterDiscount).toBe(45000);
+      expect(inv.amountAfterDiscount.toNumber()).toBe(45000);
     });
 
     it('skips assignment when its tariff_plan is missing (logs)', async () => {
@@ -1021,7 +1027,7 @@ describe('InvoiceService', () => {
     it('pro-rates by non-billable holidays', async () => {
       const { svc, planRepo, assignmentRepo, holidayRepo, invoiceRepo } =
         buildSvc();
-      planRepo.put(TariffPlan.fromState(basePlanState({ amount: 30000 })));
+      planRepo.put(TariffPlan.fromState(basePlanState({ amount: m(30000) })));
       assignmentRepo.put(
         TariffAssignment.fromState(baseAssignmentState({ id: 'ta-a' })),
       );
@@ -1041,7 +1047,7 @@ describe('InvoiceService', () => {
       }
       await svc.generateMonthly(KG, PERIOD_START);
       const inv = [...invoiceRepo.rows.values()][0];
-      expect(inv.amountAfterDiscount).toBe(25000);
+      expect(inv.amountAfterDiscount.toNumber()).toBe(25000);
       expect(inv.proratedForDays).toBe(25);
     });
   });
@@ -1074,7 +1080,7 @@ describe('InvoiceService', () => {
 
     it('pro-rates a partial enrollment month', async () => {
       const { svc, planRepo, assignmentRepo, invoiceRepo } = buildSvc();
-      planRepo.put(TariffPlan.fromState(basePlanState({ amount: 30000 })));
+      planRepo.put(TariffPlan.fromState(basePlanState({ amount: m(30000) })));
       assignmentRepo.put(
         TariffAssignment.fromState(baseAssignmentState({ id: 'ta-a' })),
       );
@@ -1084,7 +1090,7 @@ describe('InvoiceService', () => {
         assignedBy: STAFF,
       });
       // 15 days remaining out of 30 → 15000
-      expect(result.amountAfterDiscount).toBe(15000);
+      expect(result.amountAfterDiscount.toNumber()).toBe(15000);
       expect(result.proratedForDays).toBe(15);
       expect(invoiceRepo.rows.size).toBe(1);
     });
@@ -1100,7 +1106,7 @@ describe('InvoiceService', () => {
           basePlanState({
             id: 'lp-plan',
             tariffType: 'late_pickup_fee',
-            amount: 5000,
+            amount: m(5000),
           }),
         ),
       );
@@ -1112,7 +1118,7 @@ describe('InvoiceService', () => {
         date: DATE,
         requestedBy: STAFF,
       });
-      expect(inv.amountAfterDiscount).toBe(5000);
+      expect(inv.amountAfterDiscount.toNumber()).toBe(5000);
       expect(inv.invoiceType).toBe('late_pickup_fee');
       expect(inv.tariffPlanId).toBe('lp-plan');
     });
@@ -1128,7 +1134,7 @@ describe('InvoiceService', () => {
         requestedBy: STAFF,
         lateFeeAmountKzt: 3000,
       });
-      expect(inv.amountAfterDiscount).toBe(3000);
+      expect(inv.amountAfterDiscount.toNumber()).toBe(3000);
       expect(inv.tariffPlanId).toBeNull();
     });
 
@@ -1170,10 +1176,10 @@ describe('InvoiceService', () => {
           invoiceType: 'monthly',
           periodStart: new Date('2026-06-01T00:00:00.000Z'),
           periodEnd: new Date('2026-06-30T00:00:00.000Z'),
-          amountDue: 50000,
+          amountDue: m(50000),
           discountPct: null,
           discountReason: null,
-          amountAfterDiscount: 50000,
+          amountAfterDiscount: m(50000),
           status: 'pending',
           dueDate: new Date('2026-06-10T00:00:00.000Z'),
           description: null,
@@ -1219,10 +1225,10 @@ describe('InvoiceService', () => {
           invoiceType: 'monthly',
           periodStart: new Date('2026-06-01T00:00:00.000Z'),
           periodEnd: new Date('2026-06-30T00:00:00.000Z'),
-          amountDue: 1000,
+          amountDue: m(1000),
           discountPct: null,
           discountReason: null,
-          amountAfterDiscount: 1000,
+          amountAfterDiscount: m(1000),
           status: 'pending',
           dueDate: new Date('2026-06-10T00:00:00.000Z'),
           description: null,
@@ -1251,10 +1257,10 @@ describe('InvoiceService', () => {
           invoiceType: 'monthly',
           periodStart: new Date('2026-06-01T00:00:00.000Z'),
           periodEnd: new Date('2026-06-30T00:00:00.000Z'),
-          amountDue: 1000,
+          amountDue: m(1000),
           discountPct: null,
           discountReason: null,
-          amountAfterDiscount: 1000,
+          amountAfterDiscount: m(1000),
           status: 'pending',
           dueDate: new Date('2026-06-10T00:00:00.000Z'),
           description: null,
@@ -1289,10 +1295,10 @@ describe('InvoiceService', () => {
           invoiceType: 'monthly',
           periodStart: new Date('2026-05-01T00:00:00.000Z'),
           periodEnd: new Date('2026-05-31T00:00:00.000Z'),
-          amountDue: 100_000,
+          amountDue: m(100_000),
           discountPct: null,
           discountReason: null,
-          amountAfterDiscount: 100_000,
+          amountAfterDiscount: m(100_000),
           status,
           dueDate: new Date('2026-05-10T00:00:00.000Z'),
           description: null,
@@ -1342,10 +1348,10 @@ describe('InvoiceService', () => {
           invoiceType: 'monthly',
           periodStart: new Date('2026-05-01T00:00:00.000Z'),
           periodEnd: new Date('2026-05-31T00:00:00.000Z'),
-          amountDue: 100_000,
+          amountDue: m(100_000),
           discountPct: null,
           discountReason: null,
-          amountAfterDiscount: 100_000,
+          amountAfterDiscount: m(100_000),
           status: 'overdue',
           dueDate: new Date('2026-05-10T00:00:00.000Z'),
           description: null,
@@ -1387,10 +1393,10 @@ describe('InvoiceService', () => {
           invoiceType: 'monthly',
           periodStart: new Date('2026-04-01T00:00:00.000Z'),
           periodEnd: new Date('2026-04-30T00:00:00.000Z'),
-          amountDue: 100_000,
+          amountDue: m(100_000),
           discountPct: null,
           discountReason: null,
-          amountAfterDiscount: 100_000,
+          amountAfterDiscount: m(100_000),
           status: 'cancelled',
           dueDate: new Date('2026-04-10T00:00:00.000Z'),
           description: null,
@@ -1419,10 +1425,10 @@ describe('InvoiceService', () => {
           invoiceType: 'monthly',
           periodStart: new Date('2026-04-01T00:00:00.000Z'),
           periodEnd: new Date('2026-04-30T00:00:00.000Z'),
-          amountDue: 100_000,
+          amountDue: m(100_000),
           discountPct: null,
           discountReason: null,
-          amountAfterDiscount: 100_000,
+          amountAfterDiscount: m(100_000),
           status: 'paid',
           dueDate: new Date('2026-04-10T00:00:00.000Z'),
           description: null,

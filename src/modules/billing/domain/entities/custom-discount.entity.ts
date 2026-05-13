@@ -1,4 +1,5 @@
 import { InvariantViolationError } from '@/shared-kernel/domain/errors';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import {
   ConditionsRoot,
   validateConditionsSchema,
@@ -55,7 +56,7 @@ export interface CustomDiscountState {
   name: LocalisedText;
   description: LocalisedText | null;
   discountType: CustomDiscountType;
-  amount: number;
+  amount: MoneyKzt;
   conditions: ConditionsRoot;
   targetType: CustomDiscountTargetType;
   targetIds: string[] | null;
@@ -112,8 +113,8 @@ export interface CustomDiscountState {
 export class CustomDiscount {
   private constructor(private state: CustomDiscountState) {
     // amount must be strictly positive (mirrors DB chk)
-    if (!(state.amount > 0)) {
-      throw new CustomDiscountAmountInvalidError(state.amount);
+    if (!state.amount.isPositive()) {
+      throw new CustomDiscountAmountInvalidError(state.amount.toNumber());
     }
     // valid_until > valid_from
     if (
@@ -191,7 +192,7 @@ export class CustomDiscount {
   get discountType(): CustomDiscountType {
     return this.state.discountType;
   }
-  get amount(): number {
+  get amount(): MoneyKzt {
     return this.state.amount;
   }
   get conditions(): ConditionsRoot {

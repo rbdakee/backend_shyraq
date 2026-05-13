@@ -5,7 +5,8 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
-import { numericTransformer } from '../numeric.transformer';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
+import { moneyKztTransformer } from '@/shared-kernel/infrastructure/typeorm/money-kzt.transformer';
 
 @Entity({ name: 'tariff_assignments' })
 export class TariffAssignmentTypeOrmEntity {
@@ -27,9 +28,9 @@ export class TariffAssignmentTypeOrmEntity {
     precision: 12,
     scale: 2,
     nullable: true,
-    transformer: numericTransformer,
+    transformer: moneyKztTransformer,
   })
-  customAmount!: number | null;
+  customAmount!: MoneyKzt | null;
 
   @Column({ name: 'custom_reason', type: 'text', nullable: true })
   customReason!: string | null;

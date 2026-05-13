@@ -1,3 +1,4 @@
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import { TariffPlan } from './tariff-plan.entity';
 
 export interface TariffAssignmentState {
@@ -5,7 +6,7 @@ export interface TariffAssignmentState {
   kindergartenId: string;
   childId: string;
   tariffPlanId: string;
-  customAmount: number | null;
+  customAmount: MoneyKzt | null;
   customReason: string | null;
   validFrom: Date;
   validUntil: Date | null;
@@ -26,7 +27,7 @@ export interface TariffAssignmentState {
  */
 export class TariffAssignment {
   private constructor(private state: TariffAssignmentState) {
-    if (state.customAmount !== null && state.customAmount < 0) {
+    if (state.customAmount !== null && state.customAmount.isNegative()) {
       throw new Error('TariffAssignment: customAmount must be >= 0');
     }
     if (
@@ -63,7 +64,7 @@ export class TariffAssignment {
     return this.state.tariffPlanId;
   }
 
-  get customAmount(): number | null {
+  get customAmount(): MoneyKzt | null {
     return this.state.customAmount;
   }
 
@@ -110,7 +111,7 @@ export class TariffAssignment {
    * otherwise the linked plan's `amount`. Caller must pass the matching
    * `TariffPlan` (id alignment is the caller's responsibility).
    */
-  effectiveAmount(tariffPlan: TariffPlan): number {
+  effectiveAmount(tariffPlan: TariffPlan): MoneyKzt {
     return this.state.customAmount ?? tariffPlan.amount;
   }
 }

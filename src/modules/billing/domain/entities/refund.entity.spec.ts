@@ -1,3 +1,4 @@
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import { Refund, RefundState } from './refund.entity';
 import { RefundAlreadyProcessedError } from '../errors/refund-already-processed.error';
 
@@ -12,7 +13,7 @@ function makePending(overrides: Partial<RefundState> = {}): Refund {
     kindergartenId: 'kg-uuid-0001',
     paymentId: 'pay-uuid-0001',
     invoiceId: 'inv-uuid-0001',
-    amount: 100_000,
+    amount: MoneyKzt.fromKzt(100_000),
     reason: 'parent requested',
     status: 'pending',
     processedBy: null,
@@ -154,7 +155,7 @@ describe('Refund domain entity', () => {
       kindergartenId: 'kg-uuid-0009',
       paymentId: 'pay-uuid-0009',
       invoiceId: null,
-      amount: 5_000,
+      amount: MoneyKzt.fromKzt(5_000),
       reason: 'duplicate charge',
       status: 'approved',
       processedBy: STAFF_ID,

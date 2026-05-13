@@ -12,7 +12,8 @@ export class TariffAssignmentMapper {
       kindergartenId: row.kindergartenId,
       childId: row.childId,
       tariffPlanId: row.tariffPlanId,
-      customAmount: row.customAmount === null ? null : Number(row.customAmount),
+      // Transformer hands `MoneyKzt` directly — pass through.
+      customAmount: row.customAmount,
       customReason: row.customReason,
       validFrom: toDate(row.validFrom),
       validUntil: toDateOrNull(row.validUntil),

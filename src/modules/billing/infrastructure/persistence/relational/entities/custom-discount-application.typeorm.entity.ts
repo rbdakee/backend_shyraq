@@ -5,7 +5,8 @@ import {
   Index,
   PrimaryGeneratedColumn,
 } from 'typeorm';
-import { numericTransformer } from '../numeric.transformer';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
+import { moneyKztTransformer } from '@/shared-kernel/infrastructure/typeorm/money-kzt.transformer';
 
 /**
  * TypeORM entity for `custom_discount_applications` (B16). Immutable ledger
@@ -47,9 +48,9 @@ export class CustomDiscountApplicationTypeOrmEntity {
     type: 'numeric',
     precision: 12,
     scale: 2,
-    transformer: numericTransformer,
+    transformer: moneyKztTransformer,
   })
-  amountApplied!: number;
+  amountApplied!: MoneyKzt;
 
   @CreateDateColumn({
     name: 'applied_at',

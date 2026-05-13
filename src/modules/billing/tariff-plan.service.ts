@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import {
   DiscountRules,
   TariffAppliesTo,
@@ -62,7 +63,7 @@ export class TariffPlanService {
       name: input.name,
       description: input.description ?? {},
       tariffType: input.tariffType,
-      amount: input.amount,
+      amount: MoneyKzt.fromKzt(input.amount),
       currency: input.currency ?? 'KZT',
       appliesTo: input.appliesTo,
       groupId: input.groupId ?? null,

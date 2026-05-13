@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, Repository } from 'typeorm';
 import { tenantStorage } from '@/database/tenant-storage';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import { TariffAssignment } from '../../../../domain/entities/tariff-assignment.entity';
 import {
   CreateTariffAssignmentInput,
@@ -32,7 +33,10 @@ export class TariffAssignmentRelationalRepository extends TariffAssignmentReposi
       kindergartenId: input.kindergartenId,
       childId: input.childId,
       tariffPlanId: input.tariffPlanId,
-      customAmount: input.customAmount,
+      customAmount:
+        input.customAmount === null
+          ? null
+          : MoneyKzt.fromKzt(input.customAmount),
       customReason: input.customReason,
       validFrom: toIsoDate(input.validFrom),
       validUntil: toIsoDateOrNull(input.validUntil),
@@ -56,7 +60,10 @@ export class TariffAssignmentRelationalRepository extends TariffAssignmentReposi
       setPayload.tariffPlanId = patch.tariffPlanId;
     }
     if (patch.customAmount !== undefined) {
-      setPayload.customAmount = patch.customAmount;
+      setPayload.customAmount =
+        patch.customAmount === null
+          ? null
+          : MoneyKzt.fromKzt(patch.customAmount);
     }
     if (patch.customReason !== undefined) {
       setPayload.customReason = patch.customReason;

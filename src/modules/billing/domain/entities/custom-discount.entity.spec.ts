@@ -1,3 +1,4 @@
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import { CustomDiscountAmountInvalidError } from '../errors/custom-discount-amount-invalid.error';
 import { CustomDiscountConditionsInvalidError } from '../errors/custom-discount-conditions-invalid.error';
 import { CustomDiscountStatusInvalidError } from '../errors/custom-discount-status-invalid.error';
@@ -21,7 +22,7 @@ function makeState(
     name: { kk: 'Test', ru: 'Тест', en: 'Test' },
     description: null,
     discountType: 'percentage',
-    amount: 10,
+    amount: MoneyKzt.fromKzt(10),
     conditions: {},
     targetType: 'all',
     targetIds: null,
@@ -52,13 +53,13 @@ describe('CustomDiscount domain entity', () => {
 
   describe('invariants', () => {
     it('throws CustomDiscountAmountInvalidError when amount is zero', () => {
-      expect(() => make({ amount: 0 })).toThrow(
+      expect(() => make({ amount: MoneyKzt.zero() })).toThrow(
         CustomDiscountAmountInvalidError,
       );
     });
 
     it('throws CustomDiscountAmountInvalidError when amount is negative', () => {
-      expect(() => make({ amount: -5 })).toThrow(
+      expect(() => make({ amount: MoneyKzt.fromKzt(-5) })).toThrow(
         CustomDiscountAmountInvalidError,
       );
     });

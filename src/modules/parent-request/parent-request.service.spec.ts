@@ -47,6 +47,7 @@ import {
 } from '@/modules/billing/domain/entities/invoice.entity';
 import { TariffPlanNotFoundError } from '@/modules/billing/domain/errors/tariff-plan-not-found.error';
 import { InvoiceService } from '@/modules/billing/invoice.service';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import { OtpInvalidError } from '@/modules/auth/domain/errors/otp-invalid.error';
 import { OtpExpiredError } from '@/modules/auth/domain/errors/otp-expired.error';
 import { OtpLockedError } from '@/modules/auth/domain/errors/otp-locked.error';
@@ -839,10 +840,10 @@ class StubInvoiceService {
       invoiceType: 'late_pickup_fee',
       periodStart: input.date,
       periodEnd: input.date,
-      amountDue: 5000,
+      amountDue: MoneyKzt.fromKzt(5000),
       discountPct: null,
       discountReason: null,
-      amountAfterDiscount: 5000,
+      amountAfterDiscount: MoneyKzt.fromKzt(5000),
       status: 'pending',
       dueDate: input.date,
       description: null,

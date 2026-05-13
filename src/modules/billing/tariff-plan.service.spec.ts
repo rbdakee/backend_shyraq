@@ -1,4 +1,5 @@
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import {
   TariffPlan,
   TariffPlanState,
@@ -33,7 +34,7 @@ function basePlanState(
     name: 'Standard',
     description: { ru: 'Стандарт' },
     tariffType: 'monthly',
-    amount: 50000,
+    amount: MoneyKzt.fromKzt(50000),
     currency: 'KZT',
     appliesTo: 'all_children',
     groupId: null,
@@ -76,7 +77,8 @@ class FakeTariffPlanRepo extends TariffPlanRepository {
       ...s,
       name: patch.name ?? s.name,
       description: patch.description ?? s.description,
-      amount: patch.amount ?? s.amount,
+      amount:
+        patch.amount !== undefined ? MoneyKzt.fromKzt(patch.amount) : s.amount,
       appliesTo: patch.appliesTo ?? s.appliesTo,
       groupId: patch.groupId !== undefined ? patch.groupId : s.groupId,
       ageMinMonths:
@@ -189,7 +191,7 @@ describe('TariffPlanService', () => {
     it('returns the patched plan', async () => {
       repo.put(TariffPlan.fromState(basePlanState()));
       const updated = await svc.update(KG, 'tp-1', { amount: 60000 });
-      expect(updated.amount).toBe(60000);
+      expect(updated.amount.toNumber()).toBe(60000);
     });
 
     it('throws TariffPlanNotFoundError for unknown id', async () => {
