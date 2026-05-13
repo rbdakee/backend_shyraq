@@ -1365,11 +1365,14 @@ function formatAmount(v: unknown): string {
  *      `classifyPushError` — permanent-token errors delete the token,
  *      transient errors abort the event so the worker re-tries).
  *
- * On `failed`, `dispatch()` THROWS `SavepointRollback` rather than
- * returning. The worker's per-event savepoint then rolls back, undoing the
- * history-row inserts — the next retry will not duplicate them. This keeps
- * the at-least-once outbox contract while staying exactly-once for history
- * rows.
+ * On `failed`, `dispatch()` RETURNS `{ status: 'failed', reason }` — it does
+ * NOT throw. The worker (`outbox-poller.processor`) catches that return and
+ * itself throws `SavepointRollback(result.reason)` so the per-event savepoint
+ * rolls back, undoing the history-row inserts — the next retry will not
+ * duplicate them. This keeps the at-least-once outbox contract while staying
+ * exactly-once for history rows. Keeping the throw in the worker (not here)
+ * lets future consumers call `dispatch()` synchronously without inheriting the
+ * savepoint-rollback control-flow concern.
  *
  * Recipient-resolution rules see `RECIPIENT_RESOLVERS` above; nanny policy
  * see `NANNY_ALLOWED_EVENT_KEYS` and `applyNannyPolicy`.
@@ -1494,8 +1497,13 @@ export class NotificationDispatcher {
     } catch (err) {
       // Unhandled exception (DB write, lookup, programmer bug). Surface as
       // `failed` so the worker's savepoint rolls back and the row retries.
+      // No code path inside `dispatch()` currently throws `SavepointRollback`
+      // — only the worker re-wraps a `failed` return into one (see class
+      // JSDoc above). If a future change inside `dispatch()` ever throws
+      // `SavepointRollback` directly, treat it as a deliberate rollback and
+      // promote back to the original signal rather than swallowing as a
+      // generic failure.
       if (err instanceof SavepointRollback) {
-        // Already a deliberate rollback — re-throw to the worker.
         throw err;
       }
       const reason = err instanceof Error ? err.message : String(err);

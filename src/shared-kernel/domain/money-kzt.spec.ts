@@ -75,8 +75,8 @@ describe('MoneyKzt — arithmetic', () => {
     expect(MoneyKzt.fromKzt(1000).mul(0.15).toString()).toBe('150.00');
   });
 
-  it("div rounds to 2dp via banker's rounding", () => {
-    // 100 / 3 → 33.333... → banker rounds to 33.33 (last digit 3 is below 5)
+  it("div quantizes to 2dp via banker's rounding at toString()", () => {
+    // 100 / 3 → 33.333... → banker rounds to 33.33 at the output boundary.
     expect(MoneyKzt.fromKzt(100).div(3).toString()).toBe('33.33');
     // 50000 / 30 → 1666.666... → 1666.67
     expect(MoneyKzt.fromKzt(50_000).div(30).toString()).toBe('1666.67');
@@ -91,13 +91,63 @@ describe('MoneyKzt — arithmetic', () => {
     expect(a.round().equals(a)).toBe(true);
   });
 
-  it('fluent chains preserve precision until the final round', () => {
+  it('fluent chains preserve precision until the final round (single-round contract)', () => {
     // Pro-rata refund: amount * remainingDays / totalDays where the
     // intermediate ratio is irrational. Single-step rounding here
     // matches the corrected pro-rata processor formula.
     const amount = MoneyKzt.fromKzt(50_000);
     const refund = amount.mul(7).div(30);
     expect(refund.toString()).toBe('11666.67');
+  });
+
+  // ── B22b T15 Codex H1 — single-round contract regressions ───────────────
+
+  it('preserves precision in chained mul/div until explicit round (Codex H1 case)', () => {
+    // Repro from B22b T14 Codex review: pre-T15 the .mul() rounded
+    // 0.03 * 16.67 = 0.5001 → 0.50 at mul(), then .div(100) rounded
+    // 0.005 → 0.00 (banker half-even on the trailing 5). Full-precision
+    // propagation yields 0.005001 → round → 0.01.
+    const result = MoneyKzt.fromKzt(0.03).mul(16.67).div(100);
+    expect(result.round().equals(MoneyKzt.fromKzt(0.01))).toBe(true);
+    expect(result.toString()).toBe('0.01');
+  });
+
+  it('chains percentage application without precision loss', () => {
+    // 100 * 33.33% = 33.33 (exact when boundary-rounded once).
+    const amount = MoneyKzt.fromKzt(100).mul(33.33).div(100);
+    expect(amount.round().equals(MoneyKzt.fromKzt(33.33))).toBe(true);
+    expect(amount.toString()).toBe('33.33');
+  });
+
+  it('pro-rata refund single-round contract (5 days of 30, monthly 100000)', () => {
+    // 100000 * 5 / 30 = 500000 / 30 = 16666.666... → 16666.67 at boundary.
+    const monthly = MoneyKzt.fromKzt(100_000);
+    const refund = monthly.mul(5).div(30);
+    expect(refund.round().equals(MoneyKzt.fromKzt(16666.67))).toBe(true);
+    expect(refund.toString()).toBe('16666.67');
+  });
+
+  it('toString quantizes a still-unrounded intermediate (DB boundary)', () => {
+    // The DB transformer routes through toString() — confirm the
+    // wire-format invariant (2dp) holds even when the receiver carries
+    // a higher-precision Decimal internally.
+    const intermediate = MoneyKzt.fromKzt(1).div(3); // 0.333...
+    expect(intermediate.toString()).toBe('0.33');
+    expect(intermediate.toNumber()).toBe(0.33);
+  });
+
+  it('mul→div sub-tiyn case does not double-round to zero', () => {
+    // Pre-T15: 0.01 * 0.5 = 0.005 → mul() rounded banker-half-even to 0.00,
+    // then 0.00 / 1 = 0.00. Now: 0.005 preserved → div(1) = 0.005 →
+    // round() at boundary → 0.00 (banker on 5 followed by zero rounds
+    // to even-zero — that part of the contract holds).
+    const r = MoneyKzt.fromKzt(0.01).mul(0.5);
+    // The unrounded carrier still serialises to 2dp:
+    expect(r.toString()).toBe('0.00');
+    // …but compounding with another step preserves the underlying 0.005
+    // until we round once at the end.
+    const r2 = MoneyKzt.fromKzt(0.01).mul(0.5).mul(2);
+    expect(r2.toString()).toBe('0.01');
   });
 });
 

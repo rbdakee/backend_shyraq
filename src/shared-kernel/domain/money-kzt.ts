@@ -3,8 +3,30 @@
  *
  * B22b T2 / closes B13 T11 H7 — eliminates the IEEE-754 trap that lossy
  * `number`-backed arithmetic introduced. All math here goes through
- * `decimal.js` and rounds to 2dp at every public boundary using
- * banker's rounding (`ROUND_HALF_EVEN`), the financial-industry default.
+ * `decimal.js`. Quantization to `numeric(12,2)` semantics (banker's
+ * rounding, `ROUND_HALF_EVEN`) happens ONLY at boundaries:
+ *
+ *   - `fromKzt(n)` / `fromString(s)` — input boundary (wire format is ≤2dp).
+ *   - `round()` — caller-requested explicit re-round.
+ *   - `toString()` — DB-canonical fixed-point string (also forces 2dp).
+ *   - `toNumber()` / `toJSON()` — JS-number output boundary.
+ *   - `moneyKztTransformer.to()` — DB serialization boundary.
+ *
+ * Internally, `mul()` / `div()` / `add()` / `sub()` PROPAGATE FULL
+ * `Decimal` precision (banker's rounding still applied process-wide on
+ * any explicit `.toDecimalPlaces`). This matters for chained percentage /
+ * pro-rata calculations like `amount.mul(pct).div(100)` or
+ * `monthly.mul(remainingDays).div(totalDays)` — rounding ONLY at the
+ * outer boundary matches the BP contract that financial values are
+ * "single-rounded" per expression.
+ *
+ * B22b T15 — closes Codex H1: previously `.mul()` / `.div()` rounded to
+ * 2dp inside each call, so a chain like
+ * `MoneyKzt.fromKzt(0.03).mul(16.67).div(100)` first rounded
+ * `0.5001 → 0.50`, then `0.005 → 0.00` (banker, half-even on the 5).
+ * Full-precision propagation yields `0.005001 → round → 0.01`. The fix
+ * preserves the original at-rest invariant (every persisted/serialised
+ * MoneyKzt is 2dp) by quantizing at the output boundaries.
  *
  * Storage decision (intentional deviation from §5 Part B T2 of the plan):
  * the DB schema stays at `numeric(12,2)` — Postgres `numeric` is already
@@ -40,9 +62,14 @@ Decimal.set({ rounding: Decimal.ROUND_HALF_EVEN, precision: 30 });
 const SCALE = 2;
 
 /**
- * Value object for KZT amounts. Always carries a 2dp-rounded `Decimal`
- * internally; arithmetic methods round once at the boundary so
- * intermediate precision is preserved within an expression chain.
+ * Value object for KZT amounts. Carries a full-precision `Decimal`
+ * internally so chained arithmetic (`mul`/`div`/`add`/`sub`) does not
+ * lose information mid-expression. Quantization to the canonical 2dp
+ * representation occurs only at boundaries (`fromKzt`, explicit
+ * `round()`, `toString`, `toNumber`/`toJSON`, DB transformer). The
+ * combination preserves the at-rest invariant — every value that
+ * crosses an output boundary is exactly 2dp — without forcing
+ * intermediate rounds that would corrupt single-round chains.
  */
 export class MoneyKzt {
   private readonly value: Decimal;
@@ -57,7 +84,8 @@ export class MoneyKzt {
   /**
    * Build a `MoneyKzt` from a JS `number` or numeric string.
    *
-   * Rounds to 2dp using banker's rounding. Throws `TypeError` on
+   * Rounds to 2dp using banker's rounding (input boundary — wire format
+   * is `numeric(12,2)`-compatible). Throws `TypeError` on
    * `null`/`undefined`/`NaN`/`±Infinity` — matches the legacy
    * `roundKzt(NaN)` behaviour so callers don't silently coerce
    * malformed input.
@@ -100,44 +128,53 @@ export class MoneyKzt {
 
   /** Zero. The neutral element for `add`/`sub`. */
   static zero(): MoneyKzt {
-    return new MoneyKzt(new Decimal(0).toDecimalPlaces(SCALE));
+    return new MoneyKzt(new Decimal(0));
   }
 
   // ── arithmetic ────────────────────────────────────────────────────────
+  //
+  // Arithmetic methods PROPAGATE FULL precision — they do NOT quantize
+  // to 2dp. Quantization happens only at the boundaries listed in the
+  // class JSDoc. This makes `a.mul(p).div(100)` single-rounded at the
+  // sink (e.g. `.toString()` for the DB write, or explicit `.round()`).
 
   add(other: MoneyKzt): MoneyKzt {
-    return new MoneyKzt(this.value.plus(other.value).toDecimalPlaces(SCALE));
+    return new MoneyKzt(this.value.plus(other.value));
   }
 
   sub(other: MoneyKzt): MoneyKzt {
-    return new MoneyKzt(this.value.minus(other.value).toDecimalPlaces(SCALE));
+    return new MoneyKzt(this.value.minus(other.value));
   }
 
   /**
    * Multiply by a unitless scalar (e.g. discount factor, day count). The
-   * scalar may be a JS `number` or a `Decimal`; intermediate precision is
-   * preserved before the final 2dp rounding.
+   * scalar may be a JS `number` or a `Decimal`. Full intermediate
+   * precision is preserved; quantize at the outer boundary
+   * (`.round()` / `.toString()` / DB transformer).
    */
   mul(factor: number | Decimal): MoneyKzt {
-    return new MoneyKzt(this.value.mul(factor).toDecimalPlaces(SCALE));
+    return new MoneyKzt(this.value.mul(factor));
   }
 
   /**
    * Divide by a unitless scalar. Throws `RangeError` on zero (matches
    * the legacy `divideKzt` behaviour — never silently emits Infinity).
+   * Full intermediate precision is preserved; quantize at the outer
+   * boundary (`.round()` / `.toString()` / DB transformer).
    */
   div(divisor: number | Decimal): MoneyKzt {
     const d = new Decimal(divisor);
     if (d.isZero()) {
       throw new RangeError('MoneyKzt.div: divisor is zero');
     }
-    return new MoneyKzt(this.value.div(d).toDecimalPlaces(SCALE));
+    return new MoneyKzt(this.value.div(d));
   }
 
   /**
-   * Re-round to 2dp via banker's rounding. No-op when the value is
-   * already canonical (every method returns a 2dp value), exposed for
-   * code-clarity in fluent chains that explicitly want a rounding marker.
+   * Re-quantize to 2dp via banker's rounding. Use this when an explicit
+   * "snap to wire-format" is required mid-chain (e.g. inserting a
+   * pro-rata refund whose downstream comparison expects the same 2dp
+   * value the DB will hold).
    */
   round(): MoneyKzt {
     return new MoneyKzt(this.value.toDecimalPlaces(SCALE));
@@ -191,10 +228,13 @@ export class MoneyKzt {
 
   /**
    * Plain `number` (lossy for sufficiently-large values — fine for the
-   * numeric(12,2) ceiling). Used at the DTO/HTTP boundary.
+   * numeric(12,2) ceiling). Used at the DTO/HTTP boundary. Quantizes to
+   * 2dp via banker's rounding so the wire-format invariant
+   * (`numeric(12,2)`) holds even when called on an unrounded
+   * intermediate (e.g. straight after `.mul().div()`).
    */
   toNumber(): number {
-    return this.value.toNumber();
+    return this.value.toDecimalPlaces(SCALE).toNumber();
   }
 
   /**

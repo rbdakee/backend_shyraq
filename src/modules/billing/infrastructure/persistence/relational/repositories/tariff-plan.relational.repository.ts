@@ -26,8 +26,10 @@ export class TariffPlanRelationalRepository extends TariffPlanRepository {
     super();
   }
 
-  private manager(): EntityManager {
-    return tenantStorage.getStore()?.entityManager ?? this.repo.manager;
+  private manager(override?: EntityManager): EntityManager {
+    return (
+      override ?? tenantStorage.getStore()?.entityManager ?? this.repo.manager
+    );
   }
 
   async create(plan: TariffPlan): Promise<TariffPlan> {
@@ -239,5 +241,23 @@ export class TariffPlanRelationalRepository extends TariffPlanRepository {
 
     const count = await qb.getCount();
     return count > 0;
+  }
+
+  async acquireOverlapAdvisoryLock(
+    kindergartenId: string,
+    tariffType: TariffType,
+    appliesTo: TariffAppliesTo,
+    groupId: string | null,
+    manager?: EntityManager,
+  ): Promise<void> {
+    const m = this.manager(manager);
+    // Key includes `applies_to` so a `group` plan with a null `group_id`
+    // and an `all_children` plan don't share a lock. The literal `null`
+    // segment for `group_id` follows the existing M11 convention used by
+    // billing repos (cf. payment / refund).
+    const scope = `tariff-overlap:${kindergartenId}:${tariffType}:${appliesTo}:${groupId ?? 'null'}`;
+    await m.query(`SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`, [
+      scope,
+    ]);
   }
 }

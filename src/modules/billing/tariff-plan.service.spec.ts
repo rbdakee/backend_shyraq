@@ -1,4 +1,8 @@
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import {
+  EntityManager,
+  TransactionRunnerPort,
+} from '@/shared-kernel/application/ports/transaction-runner.port';
 import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import {
   TariffPlan,
@@ -51,11 +55,35 @@ function basePlanState(
   };
 }
 
+// In-memory TransactionRunnerPort that invokes the callback with a stub
+// EntityManager. The stub.query() is a no-op so service-layer
+// `SET set_config(...)` calls don't fail. Mirrors the pattern other
+// service-unit specs (custom-discount, payment, etc.) use.
+class FakeTransactionRunner extends TransactionRunnerPort {
+  query = jest.fn().mockResolvedValue(undefined);
+  run<T>(cb: (manager: EntityManager) => Promise<T>): Promise<T> {
+    const em = {
+      query: this.query,
+    } as unknown as EntityManager;
+    return cb(em);
+  }
+}
+
 class FakeTariffPlanRepo extends TariffPlanRepository {
   rows = new Map<string, TariffPlan>();
+  // Ordering audit — populated whenever `acquireOverlapAdvisoryLock` or
+  // `existsOverlap` fire. The B22b T15 Codex H2 invariant is that the
+  // lock is acquired BEFORE `existsOverlap` for every code path that
+  // mutates the catalogue. The unit spec asserts on this trace.
+  callOrder: string[] = [];
 
   put(plan: TariffPlan): void {
     this.rows.set(plan.id, plan);
+  }
+
+  override acquireOverlapAdvisoryLock(): Promise<void> {
+    this.callOrder.push('acquireOverlapAdvisoryLock');
+    return Promise.resolve();
   }
 
   // Mirrors the relational impl: matches active rows with the same
@@ -70,6 +98,7 @@ class FakeTariffPlanRepo extends TariffPlanRepository {
     validUntil: Date | null,
     excludeId?: string,
   ): Promise<boolean> {
+    this.callOrder.push('existsOverlap');
     if (appliesTo === 'individual') return Promise.resolve(false);
     const fromMs = validFrom.getTime();
     const untilMs =
@@ -189,12 +218,14 @@ class FakeTariffPlanRepo extends TariffPlanRepository {
 describe('TariffPlanService', () => {
   let repo: FakeTariffPlanRepo;
   let clock: FakeClock;
+  let tx: FakeTransactionRunner;
   let svc: TariffPlanService;
 
   beforeEach(() => {
     repo = new FakeTariffPlanRepo();
     clock = new FakeClock(NOW);
-    svc = new TariffPlanService(repo, clock);
+    tx = new FakeTransactionRunner();
+    svc = new TariffPlanService(repo, clock, tx);
   });
 
   describe('create', () => {
@@ -497,6 +528,58 @@ describe('TariffPlanService', () => {
       // but here we only patch amount on the existing row.
       const updated = await svc.update(KG, 'tp-x', { amount: 99000 });
       expect(updated.amount.toNumber()).toBe(99000);
+    });
+
+    // ── B22b T15 Codex H2 — race-safe lock ordering ──────────────────────
+
+    it('acquires the overlap advisory lock BEFORE existsOverlap on create', async () => {
+      await svc.create(KG, {
+        name: 'Standard',
+        tariffType: 'monthly',
+        amount: 50000,
+        appliesTo: 'all_children',
+        validFrom: new Date('2026-01-01T00:00:00.000Z'),
+      });
+      const lockIdx = repo.callOrder.indexOf('acquireOverlapAdvisoryLock');
+      const checkIdx = repo.callOrder.indexOf('existsOverlap');
+      expect(lockIdx).toBeGreaterThanOrEqual(0);
+      expect(checkIdx).toBeGreaterThan(lockIdx);
+    });
+
+    it('acquires the overlap advisory lock BEFORE existsOverlap on window-changing update', async () => {
+      repo.put(
+        TariffPlan.fromState(
+          basePlanState({
+            id: 'tp-1',
+            validFrom: new Date('2026-01-01T00:00:00.000Z'),
+            validUntil: new Date('2026-05-31T00:00:00.000Z'),
+          }),
+        ),
+      );
+      repo.callOrder = [];
+      await svc.update(KG, 'tp-1', {
+        validUntil: new Date('2026-07-31T00:00:00.000Z'),
+      });
+      const lockIdx = repo.callOrder.indexOf('acquireOverlapAdvisoryLock');
+      const checkIdx = repo.callOrder.indexOf('existsOverlap');
+      expect(lockIdx).toBeGreaterThanOrEqual(0);
+      expect(checkIdx).toBeGreaterThan(lockIdx);
+    });
+
+    it('skips the lock + overlap check entirely when update has no window changes', async () => {
+      repo.put(
+        TariffPlan.fromState(
+          basePlanState({
+            id: 'tp-no-window',
+            validFrom: new Date('2026-01-01T00:00:00.000Z'),
+            validUntil: null,
+          }),
+        ),
+      );
+      repo.callOrder = [];
+      await svc.update(KG, 'tp-no-window', { amount: 88000 });
+      expect(repo.callOrder).not.toContain('acquireOverlapAdvisoryLock');
+      expect(repo.callOrder).not.toContain('existsOverlap');
     });
   });
 });

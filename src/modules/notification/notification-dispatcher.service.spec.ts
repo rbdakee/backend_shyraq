@@ -1445,6 +1445,13 @@ describe('NotificationDispatcher', () => {
       // ── B21 Child lifecycle ────────────────────────────────────────────
       'child.archived',
       'child.reactivated',
+      // ── B17 Content (parent-facing news / stories / qundylyq / birthday) ─
+      'content.birthday',
+      'content.news_published',
+      'content.qundylyq_new',
+      'content.story_new',
+      // ── Enrollment (first-invoice skipped notice) ──────────────────────
+      'enrollment.first_invoice_skipped',
     ];
 
     it.each(COVERED_KEYS)(

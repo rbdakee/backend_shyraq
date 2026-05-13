@@ -55,11 +55,15 @@ import { formatDateInTimezone } from '@/shared-kernel/domain/value-objects/day-o
 const SUPER_ADMIN_EMAIL = 'super-content@shyraq.test';
 const SUPER_ADMIN_PASSWORD = 'admin12345';
 
-// ── minimal 1×1 PNG buffer (89 bytes) ────────────────────────────────────────
+// ── minimal 1×1 RGBA PNG buffer (68 bytes) ───────────────────────────────────
+// Single contiguous hex string — spaces inside the hex would cause
+// `Buffer.from(..., 'hex')` to silently truncate at the first non-hex pair.
+// Verified valid via the standard PNG signature (`89504e47…`), IHDR (1×1
+// width/height, RGBA color-type=6), zlib-deflated IDAT (one filter byte + 4
+// zero RGBA bytes), and IEND chunk.
 const TINY_PNG = Buffer.from(
-  '89504e470d0a1a0a0000000d494844520000000100000001' +
-    '0806000000 1f15c489 00000011 49444154 789c6260 6060f8cf' +
-    '00004001ff002711f7 00000000 49454e44 ae426082',
+  '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489' +
+    '0000000b49444154789c6360000200000500017a5eab3f0000000049454e44ae426082',
   'hex',
 );
 

@@ -1,3 +1,4 @@
+import type { EntityManager } from '@/shared-kernel/application/ports/transaction-runner.port';
 import {
   TariffPlan,
   TariffType,
@@ -96,5 +97,29 @@ export abstract class TariffPlanRepository {
     _excludeId?: string,
   ): Promise<boolean> {
     return Promise.resolve(false);
+  }
+
+  /**
+   * B22b T15 Codex H2 — serialise overlap check+write so concurrent
+   * admin `create()`/`update()` calls for the same
+   * `(kg, tariffType, appliesTo, groupId/null)` cannot both pass
+   * `existsOverlap()` and both insert. Acquires
+   * `pg_advisory_xact_lock(hashtext('tariff-overlap:'||kg||':'||type||':'||
+   * appliesTo||':'||groupId/null)::bigint)` on the open TX. The lock is
+   * released at TX commit/rollback; callers must invoke this BEFORE
+   * `existsOverlap()` inside a `TransactionRunnerPort.run()` block.
+   *
+   * Uses non-`try_` advisory lock — we want concurrent callers to BLOCK
+   * (queueing), not race. Default impl is a no-op so existing test
+   * fakes (B13..B22a) keep compiling; the relational adapter overrides.
+   */
+  acquireOverlapAdvisoryLock(
+    _kindergartenId: string,
+    _tariffType: TariffPlan['tariffType'],
+    _appliesTo: TariffPlan['appliesTo'],
+    _groupId: string | null,
+    _manager?: EntityManager,
+  ): Promise<void> {
+    return Promise.resolve();
   }
 }
