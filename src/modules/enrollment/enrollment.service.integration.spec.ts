@@ -405,7 +405,7 @@ describeIntegration('EnrollmentService — service-integration', () => {
       const logRows = await m.query(
         `SELECT from_status, to_status FROM enrollment_status_log
           WHERE enrollment_id = $1
-          ORDER BY created_at ASC`,
+          ORDER BY created_at ASC, id ASC`,
         [enrollmentId],
       );
       expect(logRows).toHaveLength(2);

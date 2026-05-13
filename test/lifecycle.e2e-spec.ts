@@ -684,78 +684,129 @@ describe('Lifecycle E2E (B21 T5)', () => {
   // ═══════════════════════════════════════════════════════════════════════════
 
   it('computes refund amount excluding non-billable holidays', async () => {
-    const seed = await seedActiveChildWithPaidInvoice(kgAId);
+    // Pin time to a fixed mid-month date (2026-02-15) so this test is stable
+    // regardless of the actual wall-clock date. Feb 2026 is a non-leap year,
+    // giving 28 days — a useful boundary to exercise. The pinned "today" is
+    // day 15, so days 16-18 are used as future holidays (3 days available).
+    //
+    // The invoice period is seeded explicitly for 2026-02-01..2026-02-28 so
+    // `findCurrentInvoiceForChildAt(archivedAt=2026-02-15)` resolves correctly.
+    //
+    // B21 fragility: the old test used `new Date()` which on the last day of
+    // any month produced `futureDays.length === 0` and silently returned early.
+    const PINNED_YEAR = 2026;
+    const PINNED_MONTH = 2; // February
+    const PINNED_TODAY_DAY = 15;
+    const DAYS_IN_FEB_2026 = 28; // non-leap year
 
-    // Seed 3 non-billable holidays AFTER today (in the remaining part of month)
-    const now = new Date();
-    const year = now.getUTCFullYear();
-    const month = now.getUTCMonth() + 1;
-    const today = now.getUTCDate();
-    const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    const pinnedArchivedAt = new Date(
+      Date.UTC(PINNED_YEAR, PINNED_MONTH - 1, PINNED_TODAY_DAY, 12, 0, 0),
+    );
+    const pinnedPeriodStart = new Date(
+      Date.UTC(PINNED_YEAR, PINNED_MONTH - 1, 1),
+    );
+    const pinnedPeriodEnd = new Date(
+      Date.UTC(PINNED_YEAR, PINNED_MONTH - 1, DAYS_IN_FEB_2026),
+    );
 
-    // Pick up to 3 days after today
-    const futureDays: string[] = [];
-    for (let d = today + 1; d <= daysInMonth && futureDays.length < 3; d++) {
-      futureDays.push(
-        `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`,
+    // Seed a child + invoice for the pinned period
+    const childId = randomUUID();
+    const paymentAccountId = randomUUID();
+    const invoiceId = randomUUID();
+    const paymentId = randomUUID();
+    const amount = 60000;
+
+    await ds.transaction(async (m) => {
+      await m.query(`SET LOCAL app.bypass_rls = 'true'`);
+      await m.query(
+        `INSERT INTO children
+           (id, kindergarten_id, full_name, date_of_birth, status)
+         VALUES ($1, $2, 'K-Holidays Child', '2021-03-15', 'active')`,
+        [childId, kgAId],
       );
-    }
+      await m.query(
+        `INSERT INTO payment_accounts (id, kindergarten_id, child_id, balance)
+         VALUES ($1, $2, $3, 0)`,
+        [paymentAccountId, kgAId, childId],
+      );
+      await m.query(
+        `INSERT INTO invoices
+           (id, kindergarten_id, child_id, payment_account_id,
+            invoice_type, period_start, period_end,
+            amount_due, amount_after_discount, status, due_date)
+         VALUES ($1, $2, $3, $4, 'monthly', $5, $6, $7, $7, 'pending', $5)`,
+        [
+          invoiceId,
+          kgAId,
+          childId,
+          paymentAccountId,
+          pinnedPeriodStart,
+          pinnedPeriodEnd,
+          amount,
+        ],
+      );
+      await m.query(
+        `INSERT INTO payments
+           (id, kindergarten_id, invoice_id, child_id, amount,
+            provider, provider_txn_id, idempotency_key, status, paid_at)
+         VALUES ($1, $2, $3, $4, $5, 'mock', $6, $7, 'completed', now())`,
+        [
+          paymentId,
+          kgAId,
+          invoiceId,
+          childId,
+          amount,
+          `txn-k-${paymentId.slice(0, 8)}`,
+          `idem-k-${paymentId.slice(0, 8)}`,
+        ],
+      );
+    });
 
-    if (futureDays.length === 0) {
-      // Last day of month — can't add future holidays, skip K
-      // (month boundary edge case; not a bug in the production code)
-      return;
-    }
-
+    // Seed 3 non-billable holidays on days 16, 17, 18 (after pinned today=15)
+    const futureDays = ['2026-02-16', '2026-02-17', '2026-02-18'];
     await seedHolidays(kgAId, futureDays);
 
-    // Archive now
-    const archivedAt = new Date();
+    // Archive the child at the pinned timestamp
     await ds.transaction(async (m) => {
       await m.query(`SET LOCAL app.bypass_rls = 'true'`);
       await m.query(
         `UPDATE children
             SET status = 'archived', archived_at = $1, archive_reason = 'holidays test'
           WHERE id = $2`,
-        [archivedAt, seed.childId],
+        [pinnedArchivedAt, childId],
       );
     });
 
     const processor = ctx.app.get(ProRataRefundProcessor);
     const outcome = await processor.runForChild(
       kgAId,
-      seed.childId,
-      archivedAt,
+      childId,
+      pinnedArchivedAt,
     );
 
-    if (outcome.kind !== 'created') {
-      // Acceptable at month boundary
-      return;
-    }
+    // With a pinned date we expect a created refund (not a boundary skip)
+    expect(outcome.kind).toBe('created');
+    if (outcome.kind !== 'created') return; // narrow type
 
-    // Compute expected:
-    //   totalDays = daysInMonth
-    //   archivedDays = today (inclusive)
-    //   nonBillableTotal = futureDays.length
-    //   totalBillable = totalDays - futureDays.length
-    //   archivedBillable = today (no holidays before archive)
-    //   refundableDays = totalBillable - archivedBillable
-    //   refund = 60000 * refundableDays / totalBillable
-    const totalBillable = daysInMonth - futureDays.length;
-    const archivedBillable = today;
-    const refundableDays = Math.max(0, totalBillable - archivedBillable);
+    // Expected calculation (pinned Feb 2026, archive=day15, holidays=16,17,18):
+    //   totalDays           = 28
+    //   holidayDays         = 3
+    //   totalBillable       = 28 - 3 = 25
+    //   archivedBillable    = 15 (days 1..15, none are holidays)
+    //   refundableDays      = 25 - 15 = 10
+    //   refund              = 60000 * 10 / 25 = 24000
+    const totalBillable = DAYS_IN_FEB_2026 - futureDays.length; // 25
+    const archivedBillable = PINNED_TODAY_DAY; // 15
+    const refundableDays = totalBillable - archivedBillable; // 10
+    const expectedAmount =
+      Math.round(((amount * refundableDays) / totalBillable) * 100) / 100; // 24000
 
-    if (totalBillable > 0 && refundableDays > 0) {
-      const expectedAmount =
-        Math.round(((60000 * refundableDays) / totalBillable) * 100) / 100;
-      expect(outcome.amountKzt).toBeCloseTo(expectedAmount, 1);
-    }
+    expect(outcome.amountKzt).toBeCloseTo(expectedAmount, 1);
 
-    // Verify the computed amount is strictly less than without holidays
-    // (sanity: holidays reduce the refund denominator + refundable numerator)
-    const processWithoutHolidays =
-      (60000 * (daysInMonth - today)) / daysInMonth;
-    expect(outcome.amountKzt).toBeLessThanOrEqual(processWithoutHolidays + 1);
+    // Sanity: holidays reduce the refund vs the no-holiday case
+    const withoutHolidays =
+      (amount * (DAYS_IN_FEB_2026 - PINNED_TODAY_DAY)) / DAYS_IN_FEB_2026;
+    expect(outcome.amountKzt).toBeLessThanOrEqual(withoutHolidays + 1);
   });
 
   // ═══════════════════════════════════════════════════════════════════════════

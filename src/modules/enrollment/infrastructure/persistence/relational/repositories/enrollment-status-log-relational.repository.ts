@@ -66,6 +66,7 @@ export class EnrollmentStatusLogRelationalRepository extends EnrollmentStatusLog
       .where('l.kindergarten_id = :kg', { kg: kindergartenId })
       .andWhere('l.enrollment_id = :eid', { eid: enrollmentId })
       .orderBy('l.created_at', 'DESC')
+      .addOrderBy('l.id', 'DESC')
       .getMany();
     return rows.map((r) => EnrollmentStatusLogMapper.toDomain(r));
   }
