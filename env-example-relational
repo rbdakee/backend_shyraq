@@ -108,7 +108,7 @@ FACE_PROVIDER=mock
 # --- File storage (B17) ---
 # FILE_STORAGE_PROVIDER selects the FileStoragePort adapter for media uploads
 # (content_posts.media_urls, group_stories.media_url).
-# 'local' | 's3' | 'yandex'. Real S3/Yandex Object Storage adapters — Phase B (after B22).
+# WARNING: 's3' / 'yandex' currently throw `NotImplementedError` at adapter init — only 'local' is functional in Phase A. Real adapters are Phase B.
 FILE_STORAGE_PROVIDER=local
 # S3-compatible: requires credentials when FILE_STORAGE_PROVIDER=s3 or yandex.
 # FILE_STORAGE_BUCKET=
@@ -116,6 +116,15 @@ FILE_STORAGE_PROVIDER=local
 # FILE_STORAGE_ACCESS_KEY=
 # FILE_STORAGE_SECRET_KEY=
 # FILE_STORAGE_ENDPOINT=   # Yandex Object Storage: https://storage.yandexcloud.net
+
+# --- Push notifications (B9) ---
+# PUSH_PROVIDER selects the PushNotificationPort adapter for mobile push.
+# 'mock' | 'fcm'. Real FCM adapter is Phase B (stub exists today, switches by env).
+PUSH_PROVIDER=mock
+# FCM credentials only required when PUSH_PROVIDER=fcm.
+# FIREBASE_PROJECT_ID=
+# FIREBASE_CLIENT_EMAIL=
+# FIREBASE_PRIVATE_KEY=
 
 # --- Multi-tenancy (RLS) ---
 # DB role used by app — must NOT have BYPASSRLS. SuperAdmin queries use a separate role.

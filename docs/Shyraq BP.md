@@ -756,6 +756,10 @@ DTOs на уровне контроллера используют **snake_case*
 
 **Идемпотентность создания:** уникальный индекс `(kindergarten_id, date, group_id)` (где `group_id IS NULL` означает общее меню садика) предотвращает дублирование. При конфликте → 409 `meal_plan_already_exists`.
 
+**Notification policy**
+
+Auto-publish at `menu_pub` time is **silent by design** — no push/WS notification is emitted to parents on the auto-publish transition (i.e. when `ContentPublishProcessor` promotes a `scheduled` post to `published` via cron). Parents see the new menu on next app open. Manual admin publish via `POST /admin/content/posts/:id/publish` does emit `content.published` notifications. Rationale: nightly cron timing produces silent-hour noise (00:00 Asia/Almaty); explicit admin actions remain audible.
+
 ### 9.3 Обновление расписания
 
 **Структура данных:**
@@ -789,6 +793,10 @@ DTOs на уровне контроллера используют **snake_case*
 5. Родители видят актуальное расписание группы ребёнка в `Parent App`.
 
 **Видимость для родителя:** родитель видит `activity_events` группы, к которой принадлежит его ребёнок, на запрошенный диапазон дат. Показываются все статусы (scheduled/in_progress/completed/cancelled). Фильтрация по дате передаётся через query-параметры `date_from` / `date_to`.
+
+**Notification policy**
+
+Auto-publish at `schedule_pub` time is **silent by design** — no push/WS notification is emitted to parents on the auto-publish transition (i.e. when `ContentPublishProcessor` promotes a `scheduled` post to `published` via cron). Parents see the new schedule on next app open. Manual admin publish via `POST /admin/content/posts/:id/publish` does emit `content.published` notifications. Rationale: nightly cron timing produces silent-hour noise (00:00 Asia/Almaty); explicit admin actions remain audible.
 
 ### 9.4 Публикация нового Qundylyq
 
