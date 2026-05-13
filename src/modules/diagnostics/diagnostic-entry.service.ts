@@ -190,6 +190,34 @@ export class DiagnosticEntryService {
     return existing;
   }
 
+  /**
+   * Parent-scoped variant of `getById`. Loads the entry by id within the
+   * tenant AND asserts that `entry.childId === expectedChildId`. Returns
+   * 404 (`diagnostic_entry_not_found`) on cross-child mismatch — same
+   * shape as a missing row so we don't leak whether `entryId` exists for
+   * a sibling family.
+   *
+   * Closes FINDINGS M1 (B22a T8): the parent-side controller previously
+   * called `getById(kgId, entryId)` and trusted the URL `:childId` for
+   * authorization without checking it matched the loaded entry's child.
+   * A parent of child A could request `/parent/children/{A}/diagnostics/{entryB}`
+   * and receive child B's entry — IDOR. This method binds the entry
+   * lookup to the URL child so the controller's permission check
+   * (which is keyed on `:childId`) becomes the actual authorization
+   * boundary.
+   */
+  async getByIdForChild(
+    kgId: string,
+    expectedChildId: string,
+    id: string,
+  ): Promise<DiagnosticEntry> {
+    const existing = await this.entries.findById(kgId, id);
+    if (existing === null || existing.childId !== expectedChildId) {
+      throw new DiagnosticEntryNotFoundError(id);
+    }
+    return existing;
+  }
+
   async listByChild(
     kgId: string,
     childId: string,

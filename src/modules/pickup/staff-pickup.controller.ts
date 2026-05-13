@@ -80,7 +80,7 @@ export class StaffPickupController {
   @Get()
   @ApiOperation({
     summary:
-      'List pickup requests for the staff’s kindergarten. Filters: groupId, status.',
+      "List pickup requests for the staff's kindergarten. Filters: groupId, status. `trusted_person_phone` is masked to `+7***LAST4` (FINDINGS B11 H4) — open the single-get endpoint to see the full number.",
   })
   @ApiOkResponse({ type: [PickupRequestResponseDto] })
   @ApiUnauthorizedResponse({ description: 'Bearer missing/invalid/revoked.' })
@@ -94,7 +94,11 @@ export class StaffPickupController {
       groupId: q.groupId ?? null,
       status: q.status ?? null,
     });
-    return items.map((pr) => PickupPresenter.pickupRequest(pr));
+    // FINDINGS B11 H4 (B22a T8) — list response masks
+    // `trusted_person_phone` to `+7***LAST4`. Full phone remains
+    // available via `GET /staff/pickup-requests/:id` for staff who
+    // legitimately need to call the trusted person.
+    return items.map((pr) => PickupPresenter.pickupRequestForList(pr));
   }
 
   // ── Get ────────────────────────────────────────────────────────────────

@@ -537,6 +537,53 @@ describe('DiagnosticEntryService', () => {
     });
   });
 
+  describe('getByIdForChild (parent IDOR guard)', () => {
+    // B22a T8 / FINDINGS M1 — the parent controller previously called
+    // `getById(kgId, entryId)` and trusted the URL `:childId` for
+    // authorization without checking it matched the loaded entry's
+    // child. A guardian of child A could request
+    // `/parent/children/{A}/diagnostics/{entryOfB}` and receive
+    // child B's data. `getByIdForChild` re-binds the lookup to the
+    // URL child so the permission check becomes the actual
+    // authorization boundary.
+    const CHILD_OTHER = '55555555-5555-5555-5555-555555555555';
+
+    it('returns the entry when entry.childId matches', async () => {
+      const tmpl = buildTemplate();
+      const entry = buildEntry(tmpl);
+      entries.put(entry);
+      const e = await service.getByIdForChild(KG, CHILD, entry.id);
+      expect(e.id).toBe(entry.id);
+    });
+
+    it('throws 404 when entry exists but belongs to a different child (IDOR)', async () => {
+      // Parent A authorized for CHILD requests entry that actually
+      // belongs to CHILD_OTHER. Pre-fix this returned the foreign
+      // entry; post-fix it surfaces as `diagnostic_entry_not_found`
+      // (same shape as a missing row — no info-leak about whether
+      // a foreign sibling has an entry under that id).
+      const tmpl = buildTemplate();
+      const otherChildEntry = DiagnosticEntry.fromState(
+        {
+          ...buildEntry(tmpl).toState(),
+          id: randomUUID(),
+          childId: CHILD_OTHER,
+        },
+        NOW,
+      );
+      entries.put(otherChildEntry);
+      await expect(
+        service.getByIdForChild(KG, CHILD, otherChildEntry.id),
+      ).rejects.toBeInstanceOf(DiagnosticEntryNotFoundError);
+    });
+
+    it('throws 404 when entry does not exist at all', async () => {
+      await expect(
+        service.getByIdForChild(KG, CHILD, randomUUID()),
+      ).rejects.toBeInstanceOf(DiagnosticEntryNotFoundError);
+    });
+  });
+
   describe('list', () => {
     it('listByChild filters by childId', async () => {
       const tmpl = buildTemplate();

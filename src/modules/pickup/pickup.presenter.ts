@@ -1,3 +1,4 @@
+import { maskKzPhone } from '@/shared-kernel/utils/phone-mask';
 import { PickupRequest } from './domain/entities/pickup-request.entity';
 import { TrustedPerson } from './domain/entities/trusted-person.entity';
 import {
@@ -38,6 +39,24 @@ export const PickupPresenter = {
       parent_request_id: s.parentRequestId,
       expires_at: s.expiresAt.toISOString(),
       created_at: s.createdAt.toISOString(),
+    };
+  },
+
+  /**
+   * List-shaped variant of `pickupRequest` — identical shape, but
+   * `trusted_person_phone` is masked to `+7***LAST4`. Single-get
+   * (`GET /staff/pickup-requests/:id`) intentionally keeps the full
+   * phone available for staff who need to actually call the trusted
+   * person; the list endpoint reduces the surface so a casual
+   * dashboard scroll does not enumerate every contact.
+   *
+   * Closes FINDINGS B11 H4 (B22a T8).
+   */
+  pickupRequestForList(pr: PickupRequest): PickupRequestResponseDto {
+    const dto = PickupPresenter.pickupRequest(pr);
+    return {
+      ...dto,
+      trusted_person_phone: maskKzPhone(dto.trusted_person_phone),
     };
   },
 

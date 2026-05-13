@@ -1209,6 +1209,66 @@ describe('B18 Diagnostics & Progress (e2e)', () => {
         ),
       ).toBe(true);
     });
+
+    it(
+      'returns 404 when a guardian of child A requests an entry of child B ' +
+        'via /parent/children/{A}/diagnostics/{entryOfB} (B22a T8 IDOR guard / FINDINGS M1)',
+      async () => {
+        const { kgId, adminToken } = await createKgWithAdmin(
+          'parent-i-idor',
+          '+77010100085',
+        );
+        const template = await createTemplate(adminToken, {
+          specialist_type: 'psychologist',
+        });
+
+        // Two children in the SAME kindergarten — same RLS scope so the
+        // entry row is reachable by id; only the cross-child binding
+        // is what stops the leak.
+        const childA = await createChild(adminToken, { full_name: 'Child A' });
+        const childB = await createChild(adminToken, { full_name: 'Child B' });
+
+        // Specialist authors an entry against child B.
+        const specUserId = await seedUser('+77010100086');
+        await seedStaffMember(kgId, specUserId, 'specialist', 'psychologist');
+        const specToken = await mintToken({
+          sub: specUserId,
+          role: 'specialist',
+          kindergartenId: kgId,
+        });
+        const childBEntryRes = await request(server)
+          .post('/api/v1/staff/diagnostic-entries')
+          .set('Authorization', `Bearer ${specToken}`)
+          .send({
+            child_id: childB,
+            template_id: template.id,
+            assessment_date: isoToday(),
+            data: validEntryData(),
+          })
+          .expect(201);
+        const entryOfB = childBEntryRes.body.id as string;
+
+        // Parent is approved guardian of child A only — NOT child B.
+        const parentAUserId = await seedUser('+77010100087');
+        await seedApprovedGuardian(kgId, childA, parentAUserId, 'primary');
+        const parentAToken = await mintToken({
+          sub: parentAUserId,
+          role: 'parent',
+          kindergartenId: kgId,
+        });
+
+        // Pre-fix: this returned 200 with child B's entry body — IDOR.
+        // Post-fix: 404 `diagnostic_entry_not_found` (same shape as a
+        // missing row, no info-leak about whether the entry exists).
+        const res = await request(server)
+          .get(`/api/v1/parent/children/${childA}/diagnostics/${entryOfB}`)
+          .set('Authorization', `Bearer ${parentAToken}`)
+          .expect(404);
+        expect(res.body.message ?? res.body.error).toMatch(
+          /diagnostic_entry_not_found|not_found/,
+        );
+      },
+    );
   });
 
   // ══════════════════════════════════════════════════════════════════════════════

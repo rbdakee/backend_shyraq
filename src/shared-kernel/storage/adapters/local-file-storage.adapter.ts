@@ -120,19 +120,37 @@ export class LocalFileStorageAdapter extends FileStoragePort {
    * `<kg>/<yyyy-mm>/<uuid>.<ext>` so this is defence-in-depth — but
    * cheap insurance against future code paths that accept
    * caller-supplied keys.
+   *
+   * B22a T8 (FINDINGS B17 MEDIUM#5): a percent-encoded `..` (e.g.
+   * `%2E%2E` or `%2E%2E%2F`) bypassed the raw `..` substring check.
+   * We now `decodeURIComponent` first and re-validate against the
+   * decoded form so URL-encoded traversal sequences are caught.
+   * Malformed `%XX` escapes throw `URIError` — treated as invalid
+   * (a well-formed server-side key never round-trips through
+   * percent-decoding so this can only happen with attacker input).
    */
   private assertSafeKey(key: string): void {
     if (key.length === 0) {
       throw new FileUploadError('media_url_required');
     }
-    // Reject absolute paths AND any `..` segments. We tolerate forward-
-    // slashes only (S3-style keys) — backslashes are rejected to keep
-    // semantics consistent across platforms.
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(key);
+    } catch {
+      throw new FileUploadError('upload_failed', 'malformed_key');
+    }
+    // Reject absolute paths AND any `..` segments — evaluated against the
+    // decoded key so percent-encoded traversal sequences (e.g. `%2E%2E`,
+    // `%2E%2E%2F`) are caught. We tolerate forward-slashes only
+    // (S3-style keys) — backslashes are rejected to keep semantics
+    // consistent across platforms. NUL byte rejected to defeat
+    // null-truncation tricks in any downstream C-level path handler.
     if (
-      key.startsWith('/') ||
-      key.startsWith('\\') ||
-      key.includes('..') ||
-      key.includes('\\')
+      decoded.startsWith('/') ||
+      decoded.startsWith('\\') ||
+      decoded.includes('..') ||
+      decoded.includes('\\') ||
+      decoded.includes('\0')
     ) {
       throw new FileUploadError('upload_failed', 'invalid_key');
     }
