@@ -11,6 +11,8 @@ import { EnrollmentStatusLogEntity } from '../entities/enrollment-status-log.ent
  * `QueryDeepPartialEntity` shape used by `repo.insert`. Without this filter,
  * the relation properties' types include the entire foreign aggregate which
  * trips strict structural matching.
+ *
+ * `created_at` is INTENTIONALLY omitted — see `draftToInsert` below.
  */
 export interface EnrollmentStatusLogInsertColumns {
   enrollment_id: string;
@@ -19,14 +21,10 @@ export interface EnrollmentStatusLogInsertColumns {
   to_status: EnrollmentStatusValue;
   changed_by: string;
   comment: string | null;
-  created_at: Date;
 }
 
 /**
- * enrollment_status_log row ↔ POJO log-entry. Both shapes have flat optional
- * fields, so this is a straight copy. The Draft variant (id-less) feeds
- * `repo.insert` in the relational repo; the persisted variant comes back out
- * via `toDomain` for `listForEnrollment`.
+ * enrollment_status_log row ↔ POJO log-entry.
  */
 export class EnrollmentStatusLogMapper {
   static toDomain(entity: EnrollmentStatusLogEntity): EnrollmentStatusLogEntry {
@@ -42,6 +40,12 @@ export class EnrollmentStatusLogMapper {
     };
   }
 
+  // `created_at` is NOT forwarded — the column defaults to `clock_timestamp()`
+  // (migration `B22bEnrollmentLogClockTimestamp1778660000000`), which advances
+  // per row even inside a single TX. Two transitions written back-to-back from
+  // the service get distinct DB-assigned timestamps, so `ORDER BY created_at`
+  // is stable. The Draft's `createdAt` is the domain layer's logical timestamp
+  // — fine for in-memory fakes, but the persisted row is what readers see.
   static draftToInsert(
     draft: EnrollmentStatusLogEntryDraft,
   ): EnrollmentStatusLogInsertColumns {
@@ -52,7 +56,6 @@ export class EnrollmentStatusLogMapper {
       to_status: draft.toStatus,
       changed_by: draft.changedBy,
       comment: draft.comment,
-      created_at: draft.createdAt,
     };
   }
 }
