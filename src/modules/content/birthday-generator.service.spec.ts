@@ -267,9 +267,29 @@ class FakeNotificationPort extends NotificationPort {
   }
 }
 
+/**
+ * B22a T5 — fake DataSource whose `transaction` callback receives an EM
+ * with a NESTED `transaction(...)` so the per-child SAVEPOINT pattern
+ * (B17 MEDIUM#6) is exercisable. The nested `transaction` simulates
+ * SAVEPOINT semantics: it runs the inner callback inline; if the inner
+ * callback throws, the throw propagates (mirroring `ROLLBACK TO
+ * SAVEPOINT`) but the outer manager remains usable so the kg-batch loop
+ * can move to the next child.
+ */
+function buildFakeManager(): unknown {
+  const m: { query: () => Promise<unknown>; transaction: unknown } = {
+    query: () => Promise.resolve(undefined),
+    transaction: undefined,
+  };
+  m.transaction = async <T>(
+    cb: (savepoint: unknown) => Promise<T>,
+  ): Promise<T> => cb(buildFakeManager());
+  return m;
+}
+
 const fakeDataSource = {
   transaction: async <T>(cb: (em: unknown) => Promise<T>): Promise<T> =>
-    cb({ query: () => Promise.resolve(undefined) }),
+    cb(buildFakeManager()),
 } as unknown as DataSource;
 
 function buildService() {
@@ -398,5 +418,60 @@ describe('BirthdayGeneratorService.runDaily', () => {
     };
     const r = await service.runDaily(KG, NOW);
     expect(r.generatedCount).toBe(1);
+  });
+
+  /**
+   * B22a T5 / B17 MEDIUM#6 — per-child SAVEPOINT proves that a single
+   * child's render/persist failure does NOT abort the whole kg-batch.
+   * Setup: 4 children all born on 5-7. Child[1]'s `contentRepo.create`
+   * call throws (simulates a DB-level INSERT failure inside the
+   * savepoint).
+   *
+   * Without the savepoint, the throw would propagate up `runInTenantTx`
+   * and abort the outer kg-batch TX, losing children[0]'s INSERT and
+   * preventing children[2..3] from being processed. With the savepoint,
+   * only child[1]'s INSERT rolls back; children[0,2,3] commit cleanly.
+   *
+   * Note: failure is injected at `create()` (BEFORE the in-memory
+   * `posts.push(p)` runs) so the fake faithfully models post-rollback
+   * state without needing the helper to snapshot/restore. In production
+   * Postgres, ROLLBACK TO SAVEPOINT undoes any writes that happened
+   * inside the savepoint — including a `notify()` failure that already
+   * issued the prior INSERT.
+   */
+  it('isolates per-child failure via SAVEPOINT — posts[0,2,3] still committed when post[1] fails', async () => {
+    const { service, childRepo, contentRepo, notification } = buildService();
+    const c0 = makeChild('c0', new Date('2020-05-07T00:00:00.000Z'), 'A');
+    const c1 = makeChild('c1', new Date('2020-05-07T00:00:00.000Z'), 'B');
+    const c2 = makeChild('c2', new Date('2020-05-07T00:00:00.000Z'), 'C');
+    const c3 = makeChild('c3', new Date('2020-05-07T00:00:00.000Z'), 'D');
+    childRepo.byMonthDay.set('5-7', [c0, c1, c2, c3]);
+    // Fail the INSERT for child[1] only — savepoint should roll back
+    // and the loop should continue with c2, c3.
+    const origCreate = contentRepo.create.bind(contentRepo);
+    contentRepo.create = (p: ContentPost) => {
+      if (p.targetChildId === 'c1') {
+        return Promise.reject(new Error('outbox_insert_boom'));
+      }
+      return origCreate(p);
+    };
+
+    const r = await service.runDaily(KG, NOW);
+
+    expect(r.generatedCount).toBe(3);
+    expect(contentRepo.posts.map((p) => p.targetChildId)).toEqual([
+      'c0',
+      'c2',
+      'c3',
+    ]);
+    expect(notification.birthdays.map((b) => b.targetChildId)).toEqual([
+      'c0',
+      'c2',
+      'c3',
+    ]);
+    // Advisory lock taken for ALL 4 children — proves the outer
+    // kg-batch loop continued past the c1 failure (would be 1 if
+    // savepoint were missing and the throw aborted the outer TX).
+    expect(contentRepo.lockCalls).toHaveLength(4);
   });
 });

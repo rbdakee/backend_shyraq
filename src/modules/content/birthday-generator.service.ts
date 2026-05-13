@@ -148,21 +148,54 @@ export class BirthdayGeneratorService {
         if (created) generated += 1;
         else skipped += 1;
       } catch (err) {
+        // B22a T5 / B17 MEDIUM#6 — per-child SAVEPOINT already rolled
+        // the failing child's INSERT + outbox emit back; the outer
+        // kg-batch TX is alive and the loop continues with the next
+        // child so a single render/notify failure no longer aborts the
+        // whole kg's birthday generation.
         this.logger.warn(
-          `birthday_gen_failed kg=${kindergartenId} child=${childState.id}: ${(err as Error).message}`,
+          `birthday_gen_child_failed kg=${kindergartenId} child=${childState.id}: ${(err as Error).message}`,
         );
       }
     }
     return { generatedCount: generated, skippedCount: skipped };
   }
 
+  /**
+   * Run `fn` inside a per-child SAVEPOINT (B22a T5 / B17 MEDIUM#6). When
+   * the daily-cron processor opens an outer kg-batch TX, this method
+   * issues a TypeORM nested `manager.transaction(...)` — PostgreSQL
+   * encodes that as `SAVEPOINT … RELEASE/ROLLBACK TO SAVEPOINT`. A
+   * single-child render or notify failure rolls the savepoint back
+   * without poisoning the outer kg-batch TX, so previously-committed
+   * birthday posts for sibling children stay durable and the loop
+   * continues.
+   *
+   * When called WITHOUT an ambient TX (CLI / direct invocation) we open
+   * the kg-scoped outer TX ourselves; the per-child SAVEPOINT semantics
+   * still apply via the inner `em.transaction(...)` call.
+   */
   private async runInTenantTx<T>(
     kindergartenId: string,
     fn: () => Promise<T>,
   ): Promise<T> {
     const ambient = tenantStorage.getStore();
     if (ambient?.entityManager) {
-      return fn();
+      // Inside an outer TX (e.g. cron processor) — open a SAVEPOINT and
+      // re-publish the savepoint manager via `tenantStorage.run` so every
+      // repository call inside `fn` (advisory lock, exists check, INSERT,
+      // outbox emit) participates in the savepoint and rolls back
+      // atomically on failure without aborting the kg-batch TX.
+      return ambient.entityManager.transaction(async (savepointManager) => {
+        return tenantStorage.run(
+          {
+            kgId: kindergartenId,
+            bypass: ambient.bypass,
+            entityManager: savepointManager,
+          },
+          () => fn(),
+        );
+      });
     }
     return this.dataSource.transaction(async (em) => {
       await em.query(`SELECT set_config('app.kindergarten_id', $1, true)`, [
@@ -170,7 +203,18 @@ export class BirthdayGeneratorService {
       ]);
       return tenantStorage.run(
         { kgId: kindergartenId, bypass: false, entityManager: em },
-        () => fn(),
+        // Per-child SAVEPOINT inside the kg-batch TX we just opened.
+        () =>
+          em.transaction(async (savepointManager) =>
+            tenantStorage.run(
+              {
+                kgId: kindergartenId,
+                bypass: false,
+                entityManager: savepointManager,
+              },
+              () => fn(),
+            ),
+          ),
       );
     });
   }
