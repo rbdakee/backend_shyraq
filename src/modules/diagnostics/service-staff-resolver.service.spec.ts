@@ -80,10 +80,7 @@ class FakeStaffRepo extends StaffMemberRepository {
   findById(): Promise<StaffMember | null> {
     return Promise.resolve(null);
   }
-  listByKindergarten(
-    _: string,
-    __?: ListStaffFilters,
-  ): Promise<StaffMember[]> {
+  listByKindergarten(_: string, __?: ListStaffFilters): Promise<StaffMember[]> {
     return Promise.resolve([]);
   }
   update(
@@ -210,12 +207,12 @@ describe('DiagnosticTemplateService.findStaffMemberByUserIdOrThrow', () => {
   it('throws NotFoundException when no row exists', async () => {
     const staffRepo = new FakeStaffRepo();
     const svc = new DiagnosticTemplateService(stub, stub, staffRepo);
-    await expect(
-      svc.findStaffMemberByUserIdOrThrow(KG, USER),
-    ).rejects.toThrow(NotFoundException);
-    await expect(
-      svc.findStaffMemberByUserIdOrThrow(KG, USER),
-    ).rejects.toThrow('staff_member_not_found');
+    await expect(svc.findStaffMemberByUserIdOrThrow(KG, USER)).rejects.toThrow(
+      NotFoundException,
+    );
+    await expect(svc.findStaffMemberByUserIdOrThrow(KG, USER)).rejects.toThrow(
+      'staff_member_not_found',
+    );
   });
 
   it('throws NotFoundException for cross-tenant: kg_A staff, kg_B request', async () => {
@@ -229,9 +226,9 @@ describe('DiagnosticTemplateService.findStaffMemberByUserIdOrThrow', () => {
 
   it('fails closed when the port is unwired', async () => {
     const svc = new DiagnosticTemplateService(stub, stub);
-    await expect(
-      svc.findStaffMemberByUserIdOrThrow(KG, USER),
-    ).rejects.toThrow('staff_member_not_found');
+    await expect(svc.findStaffMemberByUserIdOrThrow(KG, USER)).rejects.toThrow(
+      'staff_member_not_found',
+    );
   });
 });
 
@@ -262,9 +259,9 @@ describe('DiagnosticEntryService.findStaffMemberByUserIdOrThrow', () => {
       stub,
       staffRepo,
     );
-    await expect(
-      svc.findStaffMemberByUserIdOrThrow(KG, USER),
-    ).rejects.toThrow('staff_member_not_found');
+    await expect(svc.findStaffMemberByUserIdOrThrow(KG, USER)).rejects.toThrow(
+      'staff_member_not_found',
+    );
   });
 });
 
@@ -376,16 +373,16 @@ describe('ProgressNoteService.findStaffMemberByUserIdOrThrow', () => {
   it('throws when missing', async () => {
     const staffRepo = new FakeStaffRepo();
     const svc = new ProgressNoteService(stub, stub, stub, stub, staffRepo);
-    await expect(
-      svc.findStaffMemberByUserIdOrThrow(KG, USER),
-    ).rejects.toThrow('staff_member_not_found');
+    await expect(svc.findStaffMemberByUserIdOrThrow(KG, USER)).rejects.toThrow(
+      'staff_member_not_found',
+    );
   });
 
   it('fails closed when port unwired', async () => {
     const svc = new ProgressNoteService(stub, stub, stub, stub);
-    await expect(
-      svc.findStaffMemberByUserIdOrThrow(KG, USER),
-    ).rejects.toThrow('staff_member_not_found');
+    await expect(svc.findStaffMemberByUserIdOrThrow(KG, USER)).rejects.toThrow(
+      'staff_member_not_found',
+    );
   });
 });
 
@@ -401,15 +398,15 @@ describe('MyTodosService.findStaffMemberByUserIdOrThrow', () => {
   it('throws when missing', async () => {
     const staffRepo = new FakeStaffRepo();
     const svc = new MyTodosService(stub, stub, stub, staffRepo);
-    await expect(
-      svc.findStaffMemberByUserIdOrThrow(KG, USER),
-    ).rejects.toThrow('staff_member_not_found');
+    await expect(svc.findStaffMemberByUserIdOrThrow(KG, USER)).rejects.toThrow(
+      'staff_member_not_found',
+    );
   });
 
   it('fails closed when port unwired', async () => {
     const svc = new MyTodosService(stub, stub, stub);
-    await expect(
-      svc.findStaffMemberByUserIdOrThrow(KG, USER),
-    ).rejects.toThrow('staff_member_not_found');
+    await expect(svc.findStaffMemberByUserIdOrThrow(KG, USER)).rejects.toThrow(
+      'staff_member_not_found',
+    );
   });
 });

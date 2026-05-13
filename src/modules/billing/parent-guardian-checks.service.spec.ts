@@ -123,9 +123,10 @@ class FakeChildGuardianRepo extends ChildGuardianRepository {
   }
 }
 
-function buildInvoiceServiceWithGuardian(
-  guardian: ChildGuardian | null,
-): { svc: InvoiceService; guardians: FakeChildGuardianRepo } {
+function buildInvoiceServiceWithGuardian(guardian: ChildGuardian | null): {
+  svc: InvoiceService;
+  guardians: FakeChildGuardianRepo;
+} {
   const guardians = new FakeChildGuardianRepo();
   guardians.store = guardian;
   // The first 10 args are unused by `assertNonNannyGuardianForRead` — any
@@ -152,9 +153,10 @@ function buildInvoiceServiceWithGuardian(
   return { svc, guardians };
 }
 
-function buildPaymentServiceWithGuardian(
-  guardian: ChildGuardian | null,
-): { svc: PaymentService; guardians: FakeChildGuardianRepo } {
+function buildPaymentServiceWithGuardian(guardian: ChildGuardian | null): {
+  svc: PaymentService;
+  guardians: FakeChildGuardianRepo;
+} {
   const guardians = new FakeChildGuardianRepo();
   guardians.store = guardian;
   const stub = null as unknown as never;
@@ -304,7 +306,9 @@ describe('PaymentService.assertCanPay', () => {
 describe('GuardianPermissions defaults (sanity)', () => {
   const make = (role: 'primary' | 'secondary' | 'nanny'): boolean => {
     const perms = GuardianPermissions.fromObject({});
-    return perms.effective(GuardianRelation.fromString(role)).pay_invoices ?? false;
+    return (
+      perms.effective(GuardianRelation.fromString(role)).pay_invoices ?? false
+    );
   };
   // `pay_invoices` defaults: primary/secondary true, nanny false.
   void GuardianStatus; // ensure the import is exercised even when unused
