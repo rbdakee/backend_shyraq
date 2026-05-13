@@ -5,9 +5,11 @@ import {
 import { ChildGroupHistoryRecord } from './infrastructure/persistence/child.repository';
 import { Child } from './domain/entities/child.entity';
 import { ChildGuardian } from './domain/entities/child-guardian.entity';
+import { ChildStatusHistory } from './domain/entities/child-status-history.entity';
 import {
   ChildDto,
   ChildGroupHistoryDto,
+  ChildStatusHistoryDto,
   EffectivePermissionsDto,
   GuardianDto,
 } from './dto';
@@ -79,6 +81,19 @@ export class ChildPresenter {
       transferred_at: r.transferredAt.toISOString(),
       transferred_by_staff_id: r.transferredByStaffId,
       reason: r.reason,
+    };
+  }
+
+  /** B22a T9 — present a single `child_status_history` row (admin audit). */
+  static statusHistory(h: ChildStatusHistory): ChildStatusHistoryDto {
+    return {
+      id: h.id,
+      previous_status: h.previousStatus,
+      new_status: h.newStatus,
+      previous_archive_reason: h.previousArchiveReason,
+      archive_reason: h.archiveReason,
+      changed_by_user_id: h.changedByUserId,
+      changed_at: h.changedAt.toISOString(),
     };
   }
 

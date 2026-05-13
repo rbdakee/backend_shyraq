@@ -45,10 +45,12 @@ import {
   ChildDto,
   ChildGroupHistoryDto,
   ChildListResponseDto,
+  ChildStatusHistoryListResponseDto,
   CreateChildDto,
   GuardianDto,
   InviteGuardianDto,
   ListChildrenQueryDto,
+  ListChildStatusHistoryQueryDto,
   ReactivateChildDto,
   TransferChildGroupDto,
   UpdateChildDto,
@@ -312,6 +314,51 @@ export class ChildController {
     return rows.map((r) => ChildPresenter.groupHistory(r));
   }
 
+  /**
+   * B22a T9 — append-only audit of `children.status` transitions
+   * (archive / reactivate / future card_created→active). Admin-only;
+   * mentors and parents see the current status through the regular
+   * child-detail endpoint. Paginated via `?limit=&offset=` (per-child
+   * volume is small — offset pagination is sufficient).
+   */
+  @Get(':id/status-history')
+  @ApiOperation({
+    summary: 'Child status-change audit history (newest → oldest).',
+    description:
+      'Returns paginated rows from `child_status_history`. Each row records ' +
+      'the previous and new status, the (optional) archive reason, and the ' +
+      'users.id of the actor who triggered the change. Admin-only.',
+  })
+  @ApiOkResponse({ type: ChildStatusHistoryListResponseDto })
+  @ApiNotFoundResponse({
+    description: 'Child not found in this tenant.',
+    schema: {
+      example: {
+        statusCode: 404,
+        error: 'child_not_found',
+        message: 'child_not_found',
+      },
+    },
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Bearer missing / invalid / revoked.',
+  })
+  @ApiForbiddenResponse({ description: 'Caller is not admin.' })
+  async statusHistory(
+    @Tenant() t: TenantContext,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Query() query: ListChildStatusHistoryQueryDto,
+  ): Promise<ChildStatusHistoryListResponseDto> {
+    const kgId = requireTenant(t);
+    const limit = query.limit ?? 50;
+    const offset = query.offset ?? 0;
+    const page = await this.service.listStatusHistory(kgId, id, limit, offset);
+    return {
+      items: page.items.map((r) => ChildPresenter.statusHistory(r)),
+      total: page.total,
+    };
+  }
+
   @Post(':id/archive')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
@@ -376,6 +423,7 @@ export class ChildController {
       id,
       dto.archive_reason,
       staffId,
+      user!.sub,
     );
     return ChildPresenter.child(child);
   }
@@ -430,7 +478,12 @@ export class ChildController {
       kgId,
       user!.sub,
     );
-    const result = await this.service.reactivateChild(kgId, id, staffId);
+    const result = await this.service.reactivateChild(
+      kgId,
+      id,
+      staffId,
+      user!.sub,
+    );
     return {
       child: ChildPresenter.child(result.child),
       requires_new_tariff_assignment: true,
@@ -466,7 +519,12 @@ export class ChildController {
       kgId,
       user!.sub,
     );
-    const result = await this.service.reactivateChild(kgId, id, staffId);
+    const result = await this.service.reactivateChild(
+      kgId,
+      id,
+      staffId,
+      user!.sub,
+    );
     return ChildPresenter.child(result.child);
   }
 

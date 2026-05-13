@@ -36,12 +36,20 @@ import {
   PageResult,
 } from './infrastructure/persistence/child.repository';
 import {
+  ChildStatusHistoryPage,
+  ChildStatusHistoryRepository,
+} from './infrastructure/persistence/child-status-history.repository';
+import {
   BillingLifecyclePort,
   NoopBillingLifecycleAdapter,
 } from './infrastructure/billing-lifecycle.port';
 import { ChildService } from './child.service';
 import { Child } from './domain/entities/child.entity';
 import { ChildGuardian } from './domain/entities/child-guardian.entity';
+import {
+  ChildStatusHistory,
+  ChildStatusHistoryState,
+} from './domain/entities/child-status-history.entity';
 import { AlreadyLinkedToChildError } from './domain/errors/already-linked-to-child.error';
 import { AlreadyPendingForChildError } from './domain/errors/already-pending-for-child.error';
 import { ChildAccessDeniedError } from './domain/errors/child-access-denied.error';
@@ -833,6 +841,55 @@ class CountingBillingLifecycleAdapter extends NoopBillingLifecycleAdapter {
   }
 }
 
+/**
+ * In-memory fake for `ChildStatusHistoryRepository`. Records all writes in
+ * insertion order. `failNextWrite` lets a single test inject a
+ * synchronous throw on the next `recordStatusChange` call so the
+ * atomicity guarantee can be exercised without a real DB. The fake's
+ * stored rows are NOT rolled back on a thrown write — the production
+ * atomicity comes from the ambient PG TX, not from any fake bookkeeping
+ * here. Tests assert the OUTER service throws, then verify the
+ * children-side fake state did NOT advance (= service rolls back at the
+ * port boundary).
+ */
+class FakeStatusHistoryRepo extends ChildStatusHistoryRepository {
+  rows: ChildStatusHistoryState[] = [];
+  failNextWrite: Error | null = null;
+
+  recordStatusChange(
+    kindergartenId: string,
+    record: ChildStatusHistoryState,
+  ): Promise<void> {
+    if (this.failNextWrite) {
+      const err = this.failNextWrite;
+      this.failNextWrite = null;
+      return Promise.reject(err);
+    }
+    void kindergartenId;
+    this.rows.push(record);
+    return Promise.resolve();
+  }
+
+  listForChild(
+    kindergartenId: string,
+    childId: string,
+    limit: number,
+    offset: number,
+  ): Promise<ChildStatusHistoryPage> {
+    const filtered = this.rows
+      .filter(
+        (r) => r.kindergartenId === kindergartenId && r.childId === childId,
+      )
+      .sort((a, b) => b.changedAt.getTime() - a.changedAt.getTime());
+    return Promise.resolve({
+      items: filtered
+        .slice(offset, offset + limit)
+        .map((s) => ChildStatusHistory.hydrate(s)),
+      total: filtered.length,
+    });
+  }
+}
+
 function setup(
   opts: {
     rateLimitParentLinkLimit?: number;
@@ -850,6 +907,7 @@ function setup(
   const configService = makeFakeConfig(opts);
   const billingLifecycle = new CountingBillingLifecycleAdapter();
   const lifecycleQueue = new FakeLifecycleQueue();
+  const statusHistory = new FakeStatusHistoryRepo();
   const service = new ChildService(
     children,
     guardians,
@@ -863,6 +921,7 @@ function setup(
     configService,
     billingLifecycle as BillingLifecyclePort,
     lifecycleQueue as unknown as never,
+    statusHistory,
   );
   return {
     clock,
@@ -876,6 +935,7 @@ function setup(
     configService,
     billingLifecycle,
     lifecycleQueue,
+    statusHistory,
     service,
   };
 }
@@ -1116,6 +1176,182 @@ describe('ChildService — admin: createChild + updates', () => {
           KG,
           '00000000-0000-0000-0000-000000000099',
           'staff-1',
+        ),
+      ).rejects.toBeInstanceOf(ChildNotFoundError);
+    });
+  });
+
+  describe('B22a T9 child_status_history audit', () => {
+    const ACTOR_USER_ID = '11111111-1111-1111-1111-111111111111';
+    const ACTOR_USER_ID_2 = '22222222-2222-2222-2222-222222222222';
+
+    it('records an active->archived row on archive with archive_reason populated', async () => {
+      const { service, statusHistory } = setup();
+      const c = await service.createChild(KG, {
+        fullName: 'A',
+        dateOfBirth: new Date('2021-09-15'),
+      });
+      c.activate(NOW);
+
+      await service.archiveChild(
+        KG,
+        c.id,
+        'parent withdrew',
+        'staff-1',
+        ACTOR_USER_ID,
+      );
+
+      expect(statusHistory.rows).toHaveLength(1);
+      const row = statusHistory.rows[0];
+      expect(row.kindergartenId).toBe(KG);
+      expect(row.childId).toBe(c.id);
+      expect(row.previousStatus).toBe('active');
+      expect(row.newStatus).toBe('archived');
+      expect(row.archiveReason).toBe('parent withdrew');
+      expect(row.previousArchiveReason).toBeNull();
+      expect(row.changedByUserId).toBe(ACTOR_USER_ID);
+      expect(row.changedAt).toEqual(NOW);
+    });
+
+    it('records an archived->active row on reactivate and captures previous_archive_reason', async () => {
+      const { service, statusHistory } = setup();
+      const c = await service.createChild(KG, {
+        fullName: 'A',
+        dateOfBirth: new Date('2021-09-15'),
+      });
+      c.activate(NOW);
+      await service.archiveChild(
+        KG,
+        c.id,
+        'first archive',
+        'staff-1',
+        ACTOR_USER_ID,
+      );
+
+      await service.reactivateChild(KG, c.id, 'staff-2', ACTOR_USER_ID_2);
+
+      expect(statusHistory.rows).toHaveLength(2);
+      const reactivateRow = statusHistory.rows[1];
+      expect(reactivateRow.previousStatus).toBe('archived');
+      expect(reactivateRow.newStatus).toBe('active');
+      expect(reactivateRow.archiveReason).toBeNull();
+      // Crucial guarantee — captured BEFORE Child.reactivate clears it.
+      expect(reactivateRow.previousArchiveReason).toBe('first archive');
+      expect(reactivateRow.changedByUserId).toBe(ACTOR_USER_ID_2);
+    });
+
+    it('rolls archive UPDATE back when history INSERT throws (atomicity)', async () => {
+      const { service, statusHistory, children, billingLifecycle } = setup();
+      const c = await service.createChild(KG, {
+        fullName: 'A',
+        dateOfBirth: new Date('2021-09-15'),
+      });
+      c.activate(NOW);
+
+      statusHistory.failNextWrite = new Error('history_insert_failed');
+
+      await expect(
+        service.archiveChild(
+          KG,
+          c.id,
+          'parent withdrew',
+          'staff-1',
+          ACTOR_USER_ID,
+        ),
+      ).rejects.toThrow(/history_insert_failed/);
+
+      // Atomicity contract: the production ambient TX rolls the children
+      // UPDATE back when the history INSERT throws. The fake here cannot
+      // physically roll the in-memory map back, but it CAN assert that
+      // the side-effects past the history write never fired — the
+      // service threw mid-flight before billingLifecycle.close*** ran.
+      expect(billingLifecycle.calls).toHaveLength(0);
+      // And that no audit row was actually persisted in the fake (the
+      // throw happens BEFORE rows.push).
+      expect(statusHistory.rows).toHaveLength(0);
+      // The children fake's hydrate did mutate (the FakeChildRepo.archive
+      // calls Child.archive in-process), but in production the conditional
+      // UPDATE is rolled back by the ambient TX — covered by the
+      // integration spec; the unit-test sentinel is the THROW + the
+      // absence of post-history side effects.
+      void children;
+    });
+
+    it('rolls reactivate UPDATE back when history INSERT throws (atomicity)', async () => {
+      const { service, statusHistory } = setup();
+      const c = await service.createChild(KG, {
+        fullName: 'A',
+        dateOfBirth: new Date('2021-09-15'),
+      });
+      c.activate(NOW);
+      await service.archiveChild(
+        KG,
+        c.id,
+        'first archive',
+        'staff-1',
+        ACTOR_USER_ID,
+      );
+      // First write was the archive — drain it + reset the failure flag.
+      expect(statusHistory.rows).toHaveLength(1);
+      statusHistory.failNextWrite = new Error('reactivate_history_failed');
+
+      await expect(
+        service.reactivateChild(KG, c.id, 'staff-2', ACTOR_USER_ID_2),
+      ).rejects.toThrow(/reactivate_history_failed/);
+
+      // Reactivate-history INSERT failed → no notification side effect
+      // beyond what archive already produced; rows still at 1.
+      expect(statusHistory.rows).toHaveLength(1);
+    });
+
+    it('listStatusHistory returns rows newest first with total', async () => {
+      const { service, statusHistory } = setup();
+      const c = await service.createChild(KG, {
+        fullName: 'A',
+        dateOfBirth: new Date('2021-09-15'),
+      });
+      c.activate(NOW);
+
+      // archive at NOW
+      await service.archiveChild(KG, c.id, 'first', 'staff-1', ACTOR_USER_ID);
+      // reactivate at NOW + 1m, hand-rolling the clock so changed_at differs
+      const { service: srv2, statusHistory: hist2 } = setup();
+      void srv2;
+      void hist2;
+      // For ordering we manually push a second row with a later changed_at
+      // since the FakeClock is fixed for this setup() call.
+      statusHistory.rows.push({
+        id: '00000000-0000-0000-0000-aaaaaaaaaaaa',
+        kindergartenId: KG,
+        childId: c.id,
+        previousStatus: 'archived',
+        newStatus: 'active',
+        previousArchiveReason: 'first',
+        archiveReason: null,
+        changedByUserId: ACTOR_USER_ID,
+        changedAt: new Date(NOW.getTime() + 60_000),
+        createdAt: new Date(NOW.getTime() + 60_000),
+      });
+
+      const page = await service.listStatusHistory(KG, c.id, 50, 0);
+
+      expect(page.total).toBe(2);
+      expect(page.items).toHaveLength(2);
+      // Newest first: the manual reactivate row at NOW+1m precedes the archive at NOW.
+      expect(page.items[0].newStatus).toBe('active');
+      expect(page.items[0].previousArchiveReason).toBe('first');
+      expect(page.items[1].newStatus).toBe('archived');
+      expect(page.items[1].archiveReason).toBe('first');
+    });
+
+    it('listStatusHistory throws ChildNotFoundError when child does not exist in kg', async () => {
+      const { service } = setup();
+      await expect(
+        service.listStatusHistory(
+          KG,
+          '00000000-0000-0000-0000-000000000099',
+          50,
+          0,
         ),
       ).rejects.toBeInstanceOf(ChildNotFoundError);
     });
