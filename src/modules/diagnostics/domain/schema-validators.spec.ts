@@ -1,4 +1,8 @@
 import {
+  MAX_FIELDS_PER_SECTION,
+  MAX_OPTIONS_PER_FIELD,
+  MAX_SECTIONS,
+  MAX_STRING_LENGTH,
   TemplateSchema,
   validateTemplateSchemaShape,
   validateEntryData,
@@ -6,6 +10,7 @@ import {
 } from './schema-validators';
 import { DiagnosticTemplateSchemaInvalidError } from './errors/diagnostic-template-schema-invalid.error';
 import { DiagnosticEntryDataInvalidError } from './errors/diagnostic-entry-data-invalid.error';
+import { SchemaTooLargeError } from './errors/schema-too-large.error';
 
 const minimalSchema: TemplateSchema = {
   sections: [
@@ -519,6 +524,304 @@ describe('validateEntryData', () => {
       expect(err.details.expected).toBe('required');
       expect(err.details.actual).toBe('missing');
     }
+  });
+});
+
+describe('B22a-T6 hardening — DoS caps + date round-trip + multiselect/scale', () => {
+  // --- helpers --------------------------------------------------------
+
+  const makeField = (key: string) => ({
+    key,
+    label: `Label ${key}`,
+    type: 'text' as const,
+    required: false,
+  });
+
+  const makeSection = (title: string, fieldCount: number, prefix: string) => ({
+    title,
+    fields: Array.from({ length: fieldCount }, (_, i) =>
+      makeField(`${prefix}_${i}`),
+    ),
+  });
+
+  // --- H10 — DoS caps -------------------------------------------------
+
+  describe('H10 — schema DoS caps (validateTemplateSchemaShape)', () => {
+    it('throws SchemaTooLargeError when sections.length === MAX_SECTIONS + 1', () => {
+      const schema = {
+        sections: Array.from({ length: MAX_SECTIONS + 1 }, (_, i) =>
+          makeSection(`Section ${i}`, 1, `s${i}`),
+        ),
+      };
+      expect(() => validateTemplateSchemaShape(schema)).toThrow(
+        SchemaTooLargeError,
+      );
+    });
+
+    it('accepts sections.length === MAX_SECTIONS (boundary)', () => {
+      const schema = {
+        sections: Array.from({ length: MAX_SECTIONS }, (_, i) =>
+          makeSection(`Section ${i}`, 1, `s${i}`),
+        ),
+      };
+      expect(() => validateTemplateSchemaShape(schema)).not.toThrow();
+    });
+
+    it('throws SchemaTooLargeError when fields.length === MAX_FIELDS_PER_SECTION + 1', () => {
+      const schema = {
+        sections: [makeSection('S', MAX_FIELDS_PER_SECTION + 1, 'f')],
+      };
+      expect(() => validateTemplateSchemaShape(schema)).toThrow(
+        SchemaTooLargeError,
+      );
+    });
+
+    it('accepts fields.length === MAX_FIELDS_PER_SECTION (boundary)', () => {
+      const schema = {
+        sections: [makeSection('S', MAX_FIELDS_PER_SECTION, 'f')],
+      };
+      expect(() => validateTemplateSchemaShape(schema)).not.toThrow();
+    });
+
+    it('throws SchemaTooLargeError when multi_select options.length === MAX_OPTIONS_PER_FIELD + 1', () => {
+      const schema = {
+        sections: [
+          {
+            title: 'S',
+            fields: [
+              {
+                key: 'tags',
+                label: 'Tags',
+                type: 'multiselect' as const,
+                required: false,
+                options: Array.from(
+                  { length: MAX_OPTIONS_PER_FIELD + 1 },
+                  (_, i) => `opt_${i}`,
+                ),
+              },
+            ],
+          },
+        ],
+      };
+      expect(() => validateTemplateSchemaShape(schema)).toThrow(
+        SchemaTooLargeError,
+      );
+    });
+
+    it('accepts options.length === MAX_OPTIONS_PER_FIELD (boundary)', () => {
+      const schema = {
+        sections: [
+          {
+            title: 'S',
+            fields: [
+              {
+                key: 'tags',
+                label: 'Tags',
+                type: 'multiselect' as const,
+                required: false,
+                options: Array.from(
+                  { length: MAX_OPTIONS_PER_FIELD },
+                  (_, i) => `opt_${i}`,
+                ),
+              },
+            ],
+          },
+        ],
+      };
+      expect(() => validateTemplateSchemaShape(schema)).not.toThrow();
+    });
+
+    it('throws SchemaTooLargeError when a field label trim length === MAX_STRING_LENGTH + 1', () => {
+      const overlongLabel = 'x'.repeat(MAX_STRING_LENGTH + 1);
+      const schema = {
+        sections: [
+          {
+            title: 'S',
+            fields: [
+              {
+                key: 'note',
+                label: overlongLabel,
+                type: 'text' as const,
+                required: false,
+              },
+            ],
+          },
+        ],
+      };
+      expect(() => validateTemplateSchemaShape(schema)).toThrow(
+        SchemaTooLargeError,
+      );
+    });
+
+    it('throws SchemaTooLargeError when an option label exceeds MAX_STRING_LENGTH', () => {
+      const overlong = 'o'.repeat(MAX_STRING_LENGTH + 1);
+      const schema = {
+        sections: [
+          {
+            title: 'S',
+            fields: [
+              {
+                key: 'mood',
+                label: 'Mood',
+                type: 'select' as const,
+                required: false,
+                options: ['ok', overlong],
+              },
+            ],
+          },
+        ],
+      };
+      expect(() => validateTemplateSchemaShape(schema)).toThrow(
+        SchemaTooLargeError,
+      );
+    });
+
+    it('accepts a string of exactly MAX_STRING_LENGTH (boundary)', () => {
+      const exact = 'x'.repeat(MAX_STRING_LENGTH);
+      const schema = {
+        sections: [
+          {
+            title: exact,
+            fields: [makeField('note')],
+          },
+        ],
+      };
+      expect(() => validateTemplateSchemaShape(schema)).not.toThrow();
+    });
+
+    it('attaches details with path + limit on cap violation', () => {
+      const schema = {
+        sections: Array.from({ length: MAX_SECTIONS + 1 }, (_, i) =>
+          makeSection(`Section ${i}`, 1, `s${i}`),
+        ),
+      };
+      try {
+        validateTemplateSchemaShape(schema);
+        fail('should have thrown');
+      } catch (e) {
+        expect(e).toBeInstanceOf(SchemaTooLargeError);
+        const err = e as SchemaTooLargeError;
+        expect(err.code).toBe('schema_too_large');
+        expect(err.details.path).toBe('sections');
+        expect(err.details.limit).toContain(String(MAX_SECTIONS));
+      }
+    });
+  });
+
+  // --- H11 — date round-trip ------------------------------------------
+
+  describe('H11 — date field round-trip (validateEntryData)', () => {
+    const dateSchema: TemplateSchema = {
+      sections: [
+        {
+          title: 'S',
+          fields: [
+            { key: 'observed_at', label: 'Date', type: 'date', required: true },
+          ],
+        },
+      ],
+    };
+
+    it('throws on Feb 30 (regex passes, calendar rejects)', () => {
+      expect(() =>
+        validateEntryData(dateSchema, { observed_at: '2026-02-30' }),
+      ).toThrow(DiagnosticEntryDataInvalidError);
+    });
+
+    it('throws on month 13', () => {
+      expect(() =>
+        validateEntryData(dateSchema, { observed_at: '2026-13-05' }),
+      ).toThrow(DiagnosticEntryDataInvalidError);
+    });
+
+    it('throws on April 31 (30-day month overflow)', () => {
+      expect(() =>
+        validateEntryData(dateSchema, { observed_at: '2026-04-31' }),
+      ).toThrow(DiagnosticEntryDataInvalidError);
+    });
+
+    it('throws on Feb 29 in a non-leap year', () => {
+      expect(() =>
+        validateEntryData(dateSchema, { observed_at: '2025-02-29' }),
+      ).toThrow(DiagnosticEntryDataInvalidError);
+    });
+
+    it('accepts Feb 29 in a leap year (2024)', () => {
+      expect(() =>
+        validateEntryData(dateSchema, { observed_at: '2024-02-29' }),
+      ).not.toThrow();
+    });
+
+    it('accepts a normal valid date 2026-05-13', () => {
+      expect(() =>
+        validateEntryData(dateSchema, { observed_at: '2026-05-13' }),
+      ).not.toThrow();
+    });
+  });
+
+  // --- H13 — multiselect duplicates + scale integer -------------------
+
+  describe('H13 — multiselect duplicates (validateEntryData)', () => {
+    const multiSchema: TemplateSchema = {
+      sections: [
+        {
+          title: 'S',
+          fields: [
+            {
+              key: 'tags',
+              label: 'Tags',
+              type: 'multiselect',
+              required: false,
+              options: ['a', 'b', 'c'],
+            },
+          ],
+        },
+      ],
+    };
+
+    it('throws on duplicate elements in multiselect', () => {
+      expect(() =>
+        validateEntryData(multiSchema, { tags: ['a', 'b', 'a'] }),
+      ).toThrow(DiagnosticEntryDataInvalidError);
+    });
+
+    it('accepts unique multiselect elements', () => {
+      expect(() =>
+        validateEntryData(multiSchema, { tags: ['a', 'b'] }),
+      ).not.toThrow();
+    });
+  });
+
+  describe('H13 — scale must be integer (validateEntryData)', () => {
+    const scaleSchema: TemplateSchema = {
+      sections: [
+        {
+          title: 'S',
+          fields: [
+            {
+              key: 'engagement',
+              label: 'Engagement',
+              type: 'scale',
+              required: true,
+              min: 1,
+              max: 5,
+            },
+          ],
+        },
+      ],
+    };
+
+    it('throws on non-integer scale value 3.5', () => {
+      expect(() => validateEntryData(scaleSchema, { engagement: 3.5 })).toThrow(
+        DiagnosticEntryDataInvalidError,
+      );
+    });
+
+    it('accepts an integer scale value', () => {
+      expect(() =>
+        validateEntryData(scaleSchema, { engagement: 4 }),
+      ).not.toThrow();
+    });
   });
 });
 

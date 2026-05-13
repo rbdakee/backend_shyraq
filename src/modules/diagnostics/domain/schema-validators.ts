@@ -1,5 +1,20 @@
 import { DiagnosticTemplateSchemaInvalidError } from './errors/diagnostic-template-schema-invalid.error';
 import { DiagnosticEntryDataInvalidError } from './errors/diagnostic-entry-data-invalid.error';
+import { SchemaTooLargeError } from './errors/schema-too-large.error';
+
+/**
+ * Hard caps on template-schema dimensions (B22a-T6 / H10 — DoS hardening).
+ * Exceeding any of these throws `SchemaTooLargeError` (HTTP 422). Exported
+ * so unit tests and the admin UI can pin to the same numbers.
+ *
+ * Rationale: the schema is stored as JSONB and walked by `validateEntryData`
+ * on every entry create/patch — uncapped a malicious admin could push a
+ * multi-MB schema with O(N*M) entry-validation cost per request.
+ */
+export const MAX_SECTIONS = 20;
+export const MAX_FIELDS_PER_SECTION = 50;
+export const MAX_OPTIONS_PER_FIELD = 100;
+export const MAX_STRING_LENGTH = 200;
 
 /**
  * Pure validators for diagnostic templates and entries. No NestJS, no I/O,
@@ -59,6 +74,22 @@ function fail(path: string, message: string): never {
   throw new DiagnosticTemplateSchemaInvalidError({ path, message });
 }
 
+function failTooLarge(path: string, limit: string): never {
+  throw new SchemaTooLargeError({ path, limit });
+}
+
+function assertStringWithinCap(
+  path: string,
+  raw: string,
+  cap: number = MAX_STRING_LENGTH,
+): void {
+  // Trim before measuring — leading/trailing whitespace doesn't count toward
+  // the storage cap, mirroring how labels are normally rendered.
+  if (raw.trim().length > cap) {
+    failTooLarge(path, `string length > ${cap}`);
+  }
+}
+
 /**
  * Validates that an arbitrary value matches the TemplateSchema shape.
  * Throws `DiagnosticTemplateSchemaInvalidError` on first violation with
@@ -80,6 +111,9 @@ export function validateTemplateSchemaShape(
   if (sections.length < 1) {
     fail('sections', 'sections must contain at least one section');
   }
+  if (sections.length > MAX_SECTIONS) {
+    failTooLarge('sections', `sections.length > ${MAX_SECTIONS}`);
+  }
 
   const seenKeys = new Set<string>();
 
@@ -92,12 +126,19 @@ export function validateTemplateSchemaShape(
     if (typeof title !== 'string' || title.trim() === '') {
       fail(`${sectionPath}.title`, 'section title must be a non-empty string');
     }
+    assertStringWithinCap(`${sectionPath}.title`, title);
     const fields = section.fields;
     if (!Array.isArray(fields)) {
       fail(`${sectionPath}.fields`, 'fields must be an array');
     }
     if (fields.length < 1) {
       fail(`${sectionPath}.fields`, 'section must contain at least one field');
+    }
+    if (fields.length > MAX_FIELDS_PER_SECTION) {
+      failTooLarge(
+        `${sectionPath}.fields`,
+        `fields.length > ${MAX_FIELDS_PER_SECTION}`,
+      );
     }
     fields.forEach((field, fieldIdx) => {
       const fieldPath = `${sectionPath}.fields[${fieldIdx}]`;
@@ -114,6 +155,7 @@ export function validateTemplateSchemaShape(
           'field key must match /^[a-z][a-z0-9_]*$/ (snake_case)',
         );
       }
+      assertStringWithinCap(`${fieldPath}.key`, key);
       if (seenKeys.has(key)) {
         fail(`${fieldPath}.key`, `duplicate field key: ${key}`);
       }
@@ -122,6 +164,7 @@ export function validateTemplateSchemaShape(
       if (typeof label !== 'string' || label.trim() === '') {
         fail(`${fieldPath}.label`, 'field label must be a non-empty string');
       }
+      assertStringWithinCap(`${fieldPath}.label`, label);
       const type = field.type;
       if (typeof type !== 'string' || !VALID_TYPES.has(type)) {
         fail(
@@ -144,6 +187,12 @@ export function validateTemplateSchemaShape(
             `${type} field requires at least 2 options`,
           );
         }
+        if (options.length > MAX_OPTIONS_PER_FIELD) {
+          failTooLarge(
+            `${fieldPath}.options`,
+            `options.length > ${MAX_OPTIONS_PER_FIELD}`,
+          );
+        }
         options.forEach((opt, optIdx) => {
           if (typeof opt !== 'string' || opt === '') {
             fail(
@@ -151,6 +200,7 @@ export function validateTemplateSchemaShape(
               'option must be a non-empty string',
             );
           }
+          assertStringWithinCap(`${fieldPath}.options[${optIdx}]`, opt);
         });
       }
 
@@ -292,6 +342,14 @@ export function validateEntryData(
               actual: 'empty_array',
             });
           }
+          // H13 — reject duplicate elements (semantically a set, not a list).
+          if (new Set(raw).size !== raw.length) {
+            throw new DiagnosticEntryDataInvalidError({
+              path: key,
+              expected: 'unique elements',
+              actual: 'duplicates',
+            });
+          }
           for (const el of raw) {
             if (typeof el !== 'string') {
               throw new DiagnosticEntryDataInvalidError({
@@ -320,6 +378,21 @@ export function validateEntryData(
               actual: typeof raw === 'string' ? raw : typeof raw,
             });
           }
+          // H11 — regex passes 2026-02-30, 2026-13-05, 2026-04-31 etc.
+          // Round-trip via Date to enforce real Gregorian calendar dates.
+          // Some inputs (e.g. month 13) yield Invalid Date whose
+          // .toISOString() throws RangeError — guard with getTime() first.
+          const parsed = new Date(`${raw}T00:00:00Z`);
+          const reconstructed = Number.isNaN(parsed.getTime())
+            ? null
+            : parsed.toISOString().slice(0, 10);
+          if (reconstructed !== raw) {
+            throw new DiagnosticEntryDataInvalidError({
+              path: key,
+              expected: 'valid calendar date (YYYY-MM-DD)',
+              actual: raw,
+            });
+          }
           break;
         }
         case 'scale': {
@@ -328,6 +401,14 @@ export function validateEntryData(
               path: key,
               expected: 'number',
               actual: typeof raw,
+            });
+          }
+          // H13 — scale is integer-valued; `typeof === 'number'` lets 3.5 in.
+          if (!Number.isInteger(raw)) {
+            throw new DiagnosticEntryDataInvalidError({
+              path: key,
+              expected: 'integer',
+              actual: String(raw),
             });
           }
           const minScale = typeof field.min === 'number' ? field.min : 1;

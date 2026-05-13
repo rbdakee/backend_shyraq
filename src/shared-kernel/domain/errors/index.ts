@@ -2,6 +2,7 @@ export { DomainError } from './domain.error';
 export { InvariantViolationError } from './invariant-violation.error';
 export { NotFoundError } from './not-found.error';
 export { ConflictError } from './conflict.error';
+export { UnprocessableEntityError } from './unprocessable-entity.error';
 export { OptimisticLockError } from './optimistic-lock.error';
 export { GoneError } from './gone.error';
 export { TooManyRequestsError } from './too-many-requests.error';
