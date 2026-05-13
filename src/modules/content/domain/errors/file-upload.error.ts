@@ -1,4 +1,8 @@
-import { InvariantViolationError } from '@/shared-kernel/domain/errors';
+import {
+  InvariantViolationError,
+  NotFoundError,
+  DomainError,
+} from '@/shared-kernel/domain/errors';
 
 /**
  * Subcodes for file upload / media-url validation failures.
@@ -40,5 +44,44 @@ export class FileUploadError extends InvariantViolationError {
   constructor(reason: FileUploadErrorReason, cause?: string) {
     super('file_upload_error');
     this.details = cause === undefined ? { reason } : { reason, cause };
+  }
+}
+
+/**
+ * B22b T9 — discriminated storage error variants.
+ *
+ * Callers can distinguish error classes instead of inspecting `details.cause`
+ * strings, enabling targeted retry policies:
+ *
+ *   - `FileStorageMalformedKeyError` (400)  — key is structurally invalid
+ *     (empty, path-traversal attempt, percent-decode failure).  Never retry.
+ *   - `FileStorageNotFoundError`    (404)  — key does not exist in the store
+ *     (ENOENT on local disk, 404/NoSuchKey on S3).  Never retry.
+ *   - `FileStorageTransientError`   (503)  — infrastructure failure that may
+ *     be temporary (disk-full ENOSPC, S3 5xx, network error). Safe to retry.
+ *
+ * All three extend `DomainError` directly; `DomainErrorFilter` maps them
+ * explicitly so callers get the right HTTP status.
+ */
+export class FileStorageMalformedKeyError extends DomainError {
+  constructor(cause?: string) {
+    super('file_storage_malformed_key', cause ?? 'file_storage_malformed_key');
+  }
+}
+
+export class FileStorageNotFoundError extends NotFoundError {
+  constructor(key: string) {
+    super('file', key);
+    // Override the code so DomainErrorFilter sees 'file_not_found'.
+    Object.defineProperty(this, 'code', { value: 'file_not_found' });
+  }
+}
+
+export class FileStorageTransientError extends DomainError {
+  public readonly details: { cause: string };
+
+  constructor(cause: string) {
+    super('file_storage_transient_error', cause);
+    this.details = { cause };
   }
 }

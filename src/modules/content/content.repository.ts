@@ -116,6 +116,28 @@ export abstract class ContentRepository {
   ): Promise<boolean>;
 
   /**
+   * B22b T9 — ContentFeedService UNION ALL optimisation.
+   *
+   * Returns `published` news posts that are visible to the given child:
+   *   - `target_type = 'all'`
+   *   - `target_type = 'group' AND target_group_id = groupId`  (skipped when
+   *     `groupId` is null — child has no current group)
+   *   - `target_type = 'child' AND target_child_id = childId`
+   *
+   * A single query with an OR predicate replaces the three separate `list()`
+   * calls that `getParentChildFeed` previously issued in parallel.
+   * Result is ordered by `published_at DESC, created_at DESC, id DESC` and
+   * capped at `limit` rows.  Deduplication is guaranteed by the query (each
+   * row appears at most once) so the in-memory merge step is eliminated.
+   */
+  abstract listNewsForChild(
+    kindergartenId: string,
+    childId: string,
+    groupId: string | null,
+    limit: number,
+  ): Promise<ContentPost[]>;
+
+  /**
    * B17 T8 HIGH#5 — per-(kg, child, calendar-date) advisory lock keyed by
    * `pg_advisory_xact_lock(hashtext('birthday:'||kg||':'||childId||':'||yyyy-mm-dd))`.
    * Held until the surrounding TX boundary so concurrent

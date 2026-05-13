@@ -120,6 +120,11 @@ class FakeContentRepo extends ContentRepository {
     this.lockCalls.push({ kg, childId, date });
     return Promise.resolve();
   }
+  listNewsForChild(): Promise<
+    import('./domain/entities/content-post.entity').ContentPost[]
+  > {
+    return Promise.resolve([]);
+  }
 }
 
 function makeChild(id: string, dob: Date, fullName = 'Test'): Child {

@@ -298,7 +298,16 @@ export class StoryService {
       }
     }
 
-    await this.storyRepo.incrementViews(kindergartenId, storyId);
+    // B22b T9 — handle the boolean return value.
+    // `false` means the UPDATE matched 0 rows — the story was deleted between
+    // our `findById` check above and the atomic UPDATE (race window).
+    // Throw `GroupStoryNotFoundError` so the caller sees 404 rather than
+    // silently returning success with an unchanged view count.
+    const updated = await this.storyRepo.incrementViews(
+      kindergartenId,
+      storyId,
+    );
+    if (!updated) throw new GroupStoryNotFoundError(storyId);
   }
 
   private async runInTenantTx<T>(

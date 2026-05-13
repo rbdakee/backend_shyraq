@@ -150,6 +150,9 @@ class FakeContentRepo extends ContentRepository {
   existsBirthdayForChildOnDate(): Promise<boolean> {
     return Promise.resolve(false);
   }
+  listNewsForChild(): Promise<ContentPost[]> {
+    return Promise.resolve([]);
+  }
   // helpers
   setStatus(id: string, status: ContentStatus): void {
     const cur = this.posts.get(id);

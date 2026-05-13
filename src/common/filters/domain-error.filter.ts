@@ -64,6 +64,11 @@ import { InvalidEventKeyError } from '@/modules/notification/domain/errors/inval
 import { NotificationNotFoundError } from '@/modules/notification/domain/errors/notification-not-found.error';
 import { PushTokenNotFoundError } from '@/modules/notification/domain/errors/push-token-not-found.error';
 import { PaymentProviderError } from '@/modules/billing/domain/errors/payment-provider.error';
+import {
+  FileStorageMalformedKeyError,
+  FileStorageNotFoundError,
+  FileStorageTransientError,
+} from '@/modules/content/domain/errors/file-upload.error';
 
 /**
  * Single source of truth for mapping AuthService / UsersService domain errors
@@ -192,6 +197,15 @@ export class DomainErrorFilter implements ExceptionFilter {
     // PaymentProviderError → 502 Bad Gateway; the raw provider reason is
     // intentionally NOT propagated to the response body (only `details.provider`).
     if (err instanceof PaymentProviderError) return HttpStatus.BAD_GATEWAY;
+    // B22b T9 — discriminated file-storage errors.
+    // MalformedKey → 400 (bad request, never retry)
+    // NotFound     → 404 (key missing from store)
+    // Transient    → 503 (infrastructure failure, caller may retry)
+    if (err instanceof FileStorageMalformedKeyError)
+      return HttpStatus.BAD_REQUEST;
+    if (err instanceof FileStorageNotFoundError) return HttpStatus.NOT_FOUND;
+    if (err instanceof FileStorageTransientError)
+      return HttpStatus.SERVICE_UNAVAILABLE;
     if (err instanceof KindergartenNotFoundError) return HttpStatus.NOT_FOUND;
     if (err instanceof NotFoundError) return HttpStatus.NOT_FOUND;
     if (err instanceof ConflictError) return HttpStatus.CONFLICT;

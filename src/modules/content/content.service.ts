@@ -485,10 +485,16 @@ function extractKeyFromUrl(url: string): string | null {
   return null;
 }
 
+/**
+ * B22b T9 — empty-string guard: `??` (nullish-coalescing) only skips
+ * `null`/`undefined`, not `''`. Treat empty strings as absent so a row
+ * persisted with `{ ru: '', kk: 'Алибек' }` still falls through to the
+ * populated Kazakh value rather than returning an empty string.
+ */
 function pickName(i18n: LocalisedText | null): string {
   if (!i18n) return '';
   // B22b T1: prefer canonical BCP-47 `kk` over legacy `kz`. The legacy
   // `kz` fallback is kept for one release to cover rows persisted before
   // the `B22I18nKzToKk` data migration; drop in B23.
-  return i18n.ru ?? i18n.kk ?? i18n.kz ?? i18n.en ?? '';
+  return i18n.ru || i18n.kk || i18n.kz || i18n.en || '';
 }

@@ -35,7 +35,7 @@
  *   J. Story increment views; expired story → 410
  *   K. Story cleanup cron deletes expired (file removed from disk)
  *   L. Birthday auto-gen (idempotent on rerun)
- *   M. Parent feed aggregates news + qundylyq + birthday + stories; nanny 403
+ *   M. Parent feed aggregates news + qundylyq + birthday + stories; unapproved user → 403
  *   N. Cross-tenant phantom (kg_B cannot see kg_A's content/stories)
  */
 import type { Server } from 'node:http';
@@ -1150,11 +1150,18 @@ describe('B17 Content & Stories (e2e)', () => {
   // ══════════════════════════════════════════════════════════════════════════════
   // Scenario M — Parent feed aggregates news + qundylyq + birthday + stories
   // ══════════════════════════════════════════════════════════════════════════════
-
-  describe('Scenario M: Parent feed aggregates news + qundylyq + birthday + stories; nanny 403', () => {
+  //
+  // B22b T9 nanny-label fix: the original label "nanny 403" was misleading.
+  // The test verifies that a user with a JWT but WITHOUT an approved-guardian
+  // relation for the child is blocked by ChildAccessGuard (403). This applies
+  // to ANY role that lacks the guardian link, not specifically a nanny role.
+  // The user is minted with role='parent' to exercise the parent-scope guard
+  // path; a real nanny with an approved guardian record would get 200.
+  //
+  describe('Scenario M: Parent feed aggregates news + qundylyq + birthday + stories', () => {
     it(
       'GET /parent/children/:childId/content returns news, qundylyq, birthdays, stories arrays; ' +
-        'nanny with same child gets 403',
+        'user without approved-guardian relation for the child gets 403',
       async () => {
         const { kgId, adminToken } = await createKgWithAdmin(
           'cnt-m',
@@ -1279,24 +1286,22 @@ describe('B17 Content & Stories (e2e)', () => {
         expect(feedRes.body.birthdays.length).toBeGreaterThanOrEqual(1);
         expect(Array.isArray(feedRes.body.stories)).toBe(true);
 
-        // Nanny with same child → 403 (nanny role doesn't have child_access
-        // unless properly seeded — ChildAccessGuard verifies guardian relation).
-        // Note: nanny CAN access content (unlike diagnostics). The prompt says
-        // "nanny gets 403 if attempting same endpoint (per BP §10 nanny doesn't
-        // get content)". Checking if ChildAccessGuard blocks nanny role at all.
-        // Per ChildAccessGuard logic, nanny (role=nanny, status=approved) is
-        // still an approved guardian so they DO get access per B12 logic.
-        // The 403 scenario is only if the nanny is NOT an approved guardian at all.
-        const nannyUserId = await seedUser('+77050100123');
-        // Seed nanny WITHOUT guardian relation → ChildAccessGuard rejects
-        const nannyToken = await mintToken({
-          sub: nannyUserId,
+        // A user WITHOUT an approved-guardian relation for this child is
+        // blocked by ChildAccessGuard regardless of role label.
+        // The user is minted with role='parent' (the content endpoint is
+        // restricted to role='parent'). A real nanny with an approved
+        // guardian record for the child would receive 200 — this test
+        // exercises the missing-guardian-relation path only.
+        const unauthorizedUserId = await seedUser('+77050100123');
+        // No guardian record seeded → ChildAccessGuard rejects with 403.
+        const unauthorizedToken = await mintToken({
+          sub: unauthorizedUserId,
           role: 'parent',
           kindergartenId: kgId,
         });
         await request(server)
           .get(`/api/v1/parent/children/${childId}/content`)
-          .set('Authorization', `Bearer ${nannyToken}`)
+          .set('Authorization', `Bearer ${unauthorizedToken}`)
           .expect(403);
       },
     );

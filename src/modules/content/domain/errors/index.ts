@@ -12,5 +12,8 @@ export { GroupStoryExpiredError } from './group-story-expired.error';
 export {
   FileUploadError,
   type FileUploadErrorReason,
+  FileStorageMalformedKeyError,
+  FileStorageNotFoundError,
+  FileStorageTransientError,
 } from './file-upload.error';
 export { MediaTypeInvalidError } from './media-type-invalid.error';

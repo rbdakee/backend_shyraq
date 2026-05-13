@@ -107,6 +107,48 @@ class FakeContentRepo extends ContentRepository {
       }),
     );
   }
+  /**
+   * B22b T9 — in-memory implementation of the UNION ALL news query.
+   * Mirrors the SQL OR predicate:
+   *   target_type='all' OR (target_type='group' AND target_group_id=groupId) OR
+   *   (target_type='child' AND target_child_id=childId)
+   *
+   * The SQL query uses a single table scan with OR so each row appears at
+   * most once; no dedup needed at the SQL level. Here in the fake we also
+   * deduplicate by id to remain faithful to the SQL contract (the test that
+   * verifies deduplication inserts two records with the same id to simulate
+   * the pre-optimisation scenario — the fake should behave consistently).
+   */
+  listNewsForChild(
+    _kg: string,
+    childId: string,
+    groupId: string | null,
+    limit: number,
+  ): Promise<ContentPost[]> {
+    const seen = new Set<string>();
+    const matching: ContentPost[] = [];
+    for (const p of this.records) {
+      if (p.contentType !== 'news') continue;
+      if (p.status !== 'published') continue;
+      if (seen.has(p.id)) continue; // dedupe by id — mirrors SQL single-table OR
+      if (
+        p.targetType === 'all' ||
+        (p.targetType === 'group' && groupId && p.targetGroupId === groupId) ||
+        (p.targetType === 'child' && p.targetChildId === childId)
+      ) {
+        seen.add(p.id);
+        matching.push(p);
+      }
+    }
+    // Sort by publishedAt DESC, createdAt DESC (mirrors SQL ORDER BY).
+    matching.sort((a, b) => {
+      const aP = a.publishedAt?.getTime() ?? a.createdAt.getTime();
+      const bP = b.publishedAt?.getTime() ?? b.createdAt.getTime();
+      if (aP !== bP) return bP - aP;
+      return b.createdAt.getTime() - a.createdAt.getTime();
+    });
+    return Promise.resolve(matching.slice(0, limit));
+  }
   transitionStatus(
     _kg: string,
     _id: string,
@@ -332,5 +374,55 @@ describe('ContentFeedService.getParentChildFeed', () => {
     const feed = await service.getParentChildFeed(KG, CHILD);
     const ids = feed.news.map((n) => n.id);
     expect(ids.filter((i) => i === 'dup').length).toBe(1);
+  });
+
+  // ── B22b T9 — UNION ALL news query ordering/dedup ──────────────────────────
+
+  it('news is ordered by publishedAt DESC when posts span all/group/child targets', async () => {
+    const { service, contentRepo, childRepo } = buildService();
+    childRepo.byId.set(CHILD, makeChild(CHILD, GROUP));
+    // Three news posts with different publishedAt to verify ordering.
+    const oldest = makePost('old', 'news', {
+      targetType: 'all',
+      publishedAt: new Date('2026-05-01T00:00:00.000Z'),
+    });
+    const mid = makePost('mid', 'news', {
+      targetType: 'group',
+      targetGroupId: GROUP,
+      publishedAt: new Date('2026-05-05T00:00:00.000Z'),
+    });
+    const newest = makePost('new', 'news', {
+      targetType: 'child',
+      targetChildId: CHILD,
+      publishedAt: new Date('2026-05-10T00:00:00.000Z'),
+    });
+    contentRepo.records.push(oldest, mid, newest);
+
+    const feed = await service.getParentChildFeed(KG, CHILD);
+
+    // Expect newest → mid → oldest (publishedAt DESC).
+    expect(feed.news.map((n) => n.id)).toEqual(['new', 'mid', 'old']);
+  });
+
+  it('news uses listNewsForChild (single query) not separate per-bucket list calls', async () => {
+    const { service, contentRepo, childRepo } = buildService();
+    childRepo.byId.set(CHILD, makeChild(CHILD, GROUP));
+    // Track whether listNewsForChild was called.
+    let newsForChildCalled = false;
+    const originalListNewsForChild =
+      contentRepo.listNewsForChild.bind(contentRepo);
+    contentRepo.listNewsForChild = (
+      kg: string,
+      cid: string,
+      gid: string | null,
+      lim: number,
+    ) => {
+      newsForChildCalled = true;
+      return originalListNewsForChild(kg, cid, gid, lim);
+    };
+
+    await service.getParentChildFeed(KG, CHILD);
+
+    expect(newsForChildCalled).toBe(true);
   });
 });

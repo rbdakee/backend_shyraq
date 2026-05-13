@@ -285,12 +285,15 @@ export class ContentPublishProcessor extends WorkerHost {
   }
 }
 
+/**
+ * B22b T9 — empty-string guard (see content.service.ts for explanation).
+ */
 function pickName(i18n: LocalisedText | null): string {
   if (!i18n) return '';
   // B22b T1: prefer canonical BCP-47 `kk` over legacy `kz`. The legacy
   // `kz` fallback is kept for one release to cover rows persisted before
   // the `B22I18nKzToKk` data migration; drop in B23.
-  return i18n.ru ?? i18n.kk ?? i18n.kz ?? i18n.en ?? '';
+  return i18n.ru || i18n.kk || i18n.kz || i18n.en || '';
 }
 
 /**

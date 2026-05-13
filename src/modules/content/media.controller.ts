@@ -20,6 +20,7 @@ import {
 } from '@nestjs/swagger';
 import type { Response } from 'express';
 import { FileStoragePort } from '@/shared-kernel/storage/file-storage.port';
+import { FileStorageNotFoundError } from './domain/errors/file-upload.error';
 import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-context';
 import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
 
@@ -121,8 +122,14 @@ export class MediaController {
     try {
       buffer = await this.storage.download(key);
     } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code === 'ENOENT') {
+      // B22b T9 — adapter now throws FileStorageNotFoundError for ENOENT;
+      // keep the raw ENOENT fallback for adapters that have not yet been
+      // updated (e.g. future S3 Phase-B adapter before it adopts the
+      // discriminated error hierarchy).
+      if (
+        err instanceof FileStorageNotFoundError ||
+        (err as NodeJS.ErrnoException).code === 'ENOENT'
+      ) {
         throw new NotFoundException({ code: 'media_not_found' });
       }
       throw err;

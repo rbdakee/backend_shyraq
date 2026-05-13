@@ -317,9 +317,10 @@ export class AdminContentController {
     };
     if (newMediaUrls.length > 0) {
       patch.mediaUrls = newMediaUrls;
-    } else if ('media_urls' in dto) {
-      patch.mediaUrls = null;
     }
+    // Note: explicit `media_urls = null` path removed (B22b T9 dead-code
+    // cleanup). `UpdateContentDto` has no `media_urls` field — the `in`
+    // check was always false. Media URLs are only set via uploaded files.
 
     const post = await this.service.update(kgId, id, patch);
     return ContentPresenter.contentPost(post);

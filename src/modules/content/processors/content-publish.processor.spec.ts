@@ -139,6 +139,9 @@ class FakeContentRepo extends ContentRepository {
   existsBirthdayForChildOnDate(): Promise<boolean> {
     return Promise.resolve(false);
   }
+  listNewsForChild(): Promise<ContentPost[]> {
+    return Promise.resolve([]);
+  }
 }
 
 class FakeNotificationPort extends NotificationPort {
@@ -378,5 +381,75 @@ describe('ContentPublishProcessor.process', () => {
     expect(notification.newsEmitted.map((e) => e.contentPostId)).toEqual([
       'p0',
     ]);
+  });
+
+  // ── B22b T9 — pickName empty-string guard ───────────────────────────────────
+  // `pickName` uses `||` (falsy-coalescing) instead of `??` (nullish-only)
+  // so an empty-string `ru` falls through to the populated `kk` value rather
+  // than being returned as-is.
+
+  it('pickName falls back past empty-string ru to populated kk for birthday notification', async () => {
+    const { processor, contentRepo, notification } = buildProcessor();
+    const post = ContentPost.fromState({
+      id: 'bday-pick',
+      kindergartenId: KG,
+      contentType: 'birthday',
+      targetType: 'child',
+      targetGroupId: null,
+      targetChildId: 'child-x',
+      title: null,
+      body: null,
+      // ru is an empty string — should fall through to kk.
+      titleI18n: { ru: '', kk: 'Алибек' },
+      bodyI18n: null,
+      mediaUrls: null,
+      // No child_full_name in metadata → pickName path is used.
+      metadata: { age: 3 },
+      scheduledFor: new Date('2026-05-12T06:00:00.000Z'),
+      publishedAt: null,
+      expiresAt: null,
+      status: 'scheduled',
+      createdBy: null,
+      createdAt: new Date('2026-05-11T00:00:00.000Z'),
+      updatedAt: new Date('2026-05-11T00:00:00.000Z'),
+    });
+    contentRepo.posts = [post];
+
+    await processor.process(makeJob());
+
+    expect(notification.birthdayEmitted).toHaveLength(1);
+    // pickName should return 'Алибек' (kk), not '' (empty ru).
+    expect(notification.birthdayEmitted[0].childFullName).toBe('Алибек');
+  });
+
+  it('pickName returns empty string when all i18n values are empty strings', async () => {
+    const { processor, contentRepo, notification } = buildProcessor();
+    const post = ContentPost.fromState({
+      id: 'bday-empty',
+      kindergartenId: KG,
+      contentType: 'birthday',
+      targetType: 'child',
+      targetGroupId: null,
+      targetChildId: 'child-y',
+      title: null,
+      body: null,
+      titleI18n: { ru: '', kk: '', en: '' },
+      bodyI18n: null,
+      mediaUrls: null,
+      metadata: { age: 2 },
+      scheduledFor: new Date('2026-05-12T06:00:00.000Z'),
+      publishedAt: null,
+      expiresAt: null,
+      status: 'scheduled',
+      createdBy: null,
+      createdAt: new Date('2026-05-11T00:00:00.000Z'),
+      updatedAt: new Date('2026-05-11T00:00:00.000Z'),
+    });
+    contentRepo.posts = [post];
+
+    await processor.process(makeJob());
+
+    expect(notification.birthdayEmitted).toHaveLength(1);
+    expect(notification.birthdayEmitted[0].childFullName).toBe('');
   });
 });
