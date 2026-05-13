@@ -401,8 +401,22 @@ export class UpdateCustomDiscountDto {
     example: { ru: 'Новое название скидки', kk: 'Жаңа жеңілдік атауы' },
     required: false,
     nullable: true,
+    description:
+      'Updated localised push title. **REQUIRED when the same PATCH sets `notify_on_activation=true`** (M9 cross-field invariant). Otherwise optional. PATCHing `notify_on_activation=false` clears the requirement; absent `notify_on_activation` keeps the existing persisted title as-is.',
   })
-  @IsOptional()
+  // B22b T7 M9: cross-field invariant on the PATCH. The Create-DTO already
+  // requires title+body whenever `notify_on_activation` is on (default true).
+  // For PATCH we only fire the requirement when this very patch explicitly
+  // flips `notify_on_activation=true`: at that point the persisted title/body
+  // may still be null (e.g. discount created with notify off), so requiring
+  // the pair in the same patch keeps the entity invariant intact without
+  // touching unrelated rows. Returns 400 with `notification_title` in the
+  // validation-error list. When `notify_on_activation` is undefined or
+  // explicitly `false`, the chained validators below are skipped → title
+  // remains optional (e.g. cosmetic copy update with notify off).
+  @ValidateIf((o: UpdateCustomDiscountDto) => o.notify_on_activation === true)
+  @IsDefined()
+  @IsNotEmpty()
   @Transform(({ value }) => normalizeLegacyKzLocale(value))
   @ValidateNested()
   @Type(() => I18nFieldDto)
@@ -415,8 +429,12 @@ export class UpdateCustomDiscountDto {
     },
     required: false,
     nullable: true,
+    description:
+      'Updated localised push body. **REQUIRED when the same PATCH sets `notify_on_activation=true`** (paired with `notification_title`, M9).',
   })
-  @IsOptional()
+  @ValidateIf((o: UpdateCustomDiscountDto) => o.notify_on_activation === true)
+  @IsDefined()
+  @IsNotEmpty()
   @Transform(({ value }) => normalizeLegacyKzLocale(value))
   @ValidateNested()
   @Type(() => I18nFieldDto)

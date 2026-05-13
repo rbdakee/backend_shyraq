@@ -4,6 +4,8 @@ export type CustomDiscountConditionsInvalidReason =
   | 'unknown_condition_type'
   | 'invalid_condition_field'
   | 'conditions_depth_limit_exceeded'
+  /** B22b T7 M10: per-composite branch count cap (`MAX_WIDTH`). */
+  | 'conditions_width_limit_exceeded'
   | 'invalid_date_format'
   | 'invalid_root_shape';
 

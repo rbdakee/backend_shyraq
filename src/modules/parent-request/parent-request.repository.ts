@@ -17,6 +17,20 @@ export interface CreateParentRequestInput {
   recipientStaffId: string | null;
 }
 
+/**
+ * Cursor anchor for `(created_at DESC, id DESC)` pagination on parent_requests.
+ *
+ * B22b T7 M16: typed struct, not a raw string. The service is responsible
+ * for base64-encoding/decoding at the HTTP edge — repos never see the
+ * wire format. Composite `(createdAt, id)` is required because two
+ * requests can share a `created_at` millisecond and a naive single-key
+ * cursor would either skip rows or echo duplicates across pages.
+ */
+export interface ParentRequestCursor {
+  createdAt: Date;
+  id: string;
+}
+
 export interface ListParentRequestsFilter {
   kindergartenId: string;
   status?: ParentRequestStatus;
@@ -31,8 +45,14 @@ export interface ListParentRequestsFilter {
   requesterUserId?: string;
   recipientStaffId?: string;
   recipientType?: 'admin' | 'mentor' | 'specialist';
-  /** Optional cursor-based pagination anchor: `created_at,id` (ISO string + uuid). */
-  cursor?: string;
+  /**
+   * Optional pagination anchor — see `ParentRequestCursor`. The repository
+   * applies it as
+   * `WHERE (created_at < $cursorAt OR (created_at = $cursorAt AND id < $cursorId))`
+   * over the canonical `(created_at DESC, id DESC)` ordering. Service
+   * decodes the wire base64 cursor before passing it down.
+   */
+  cursor?: ParentRequestCursor;
   limit?: number;
 }
 

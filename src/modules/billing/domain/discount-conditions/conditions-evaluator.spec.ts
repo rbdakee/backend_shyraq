@@ -566,6 +566,67 @@ describe('conditions evaluator', () => {
       ).toThrow(CustomDiscountConditionsInvalidError);
     });
 
+    it('rejects all_of with more than 20 branches (M10 width cap)', () => {
+      const wide = {
+        all_of: Array.from({ length: 21 }, () => ({ type: 'first_invoice' })),
+      };
+      try {
+        validateConditionsSchema(wide);
+        throw new Error('expected validateConditionsSchema to throw');
+      } catch (e) {
+        expect(e).toBeInstanceOf(CustomDiscountConditionsInvalidError);
+        const err = e as CustomDiscountConditionsInvalidError;
+        expect(err.details.reason).toBe('conditions_width_limit_exceeded');
+        expect(err.details.path).toBe('$.all_of');
+      }
+    });
+
+    it('rejects any_of with more than 20 branches (M10 width cap)', () => {
+      const wide = {
+        any_of: Array.from({ length: 25 }, () => ({ type: 'first_invoice' })),
+      };
+      try {
+        validateConditionsSchema(wide);
+        throw new Error('expected validateConditionsSchema to throw');
+      } catch (e) {
+        expect(e).toBeInstanceOf(CustomDiscountConditionsInvalidError);
+        const err = e as CustomDiscountConditionsInvalidError;
+        expect(err.details.reason).toBe('conditions_width_limit_exceeded');
+      }
+    });
+
+    it('accepts exactly MAX_WIDTH=20 branches (boundary)', () => {
+      const exactly20 = {
+        all_of: Array.from({ length: 20 }, () => ({ type: 'first_invoice' })),
+      };
+      const out = validateConditionsSchema(exactly20);
+      expect(Array.isArray((out as { all_of: unknown[] }).all_of)).toBe(true);
+      expect((out as { all_of: unknown[] }).all_of.length).toBe(20);
+    });
+
+    it('rejects a nested over-cap composite (width applies recursively)', () => {
+      // Outer all_of has 2 branches (fine); inner any_of has 21 branches.
+      const nested = {
+        all_of: [
+          { type: 'first_invoice' },
+          {
+            any_of: Array.from({ length: 21 }, () => ({
+              type: 'first_invoice',
+            })),
+          },
+        ],
+      };
+      try {
+        validateConditionsSchema(nested);
+        throw new Error('expected validateConditionsSchema to throw');
+      } catch (e) {
+        expect(e).toBeInstanceOf(CustomDiscountConditionsInvalidError);
+        const err = e as CustomDiscountConditionsInvalidError;
+        expect(err.details.reason).toBe('conditions_width_limit_exceeded');
+        expect(err.details.path).toBe('$.all_of[1].any_of');
+      }
+    });
+
     it('accepts and returns canonical leaf for tariff_types', () => {
       const out = validateConditionsSchema({
         type: 'tariff_types',

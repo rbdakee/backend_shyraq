@@ -782,7 +782,7 @@ Qundylyq реализуется как `content_posts` с `content_type='qundyly
 
 | Метод | Путь | Назначение |
 |---|---|---|
-| GET | `/admin/parent-requests` | Все заявки kg (фильтр: `status`, `request_type`, `child_id`). Без ограничения по recipient. |
+| GET | `/admin/parent-requests` | Все заявки kg (фильтр: `status`, `request_type`, `child_id`, `group_id`, `recipient_type`). Без ограничения по recipient. **B22b T7 M16:** cursor-paged по `(created_at DESC, id DESC)`; `next_cursor` — base64 JSON `{createdAt,id}`, передаётся `?cursor=` для следующей страницы; невалидный cursor → 400 `parent_request_cursor_invalid`. |
 | GET | `/admin/parent-requests/:id` | Детали + `parent_request_messages`. |
 | POST | `/admin/parent-requests/:id/accept` | Принять: body `{review_note?}`. Conditional UPDATE WHERE status='pending'; 409 при race. |
 | POST | `/admin/parent-requests/:id/reject` | Отклонить: body `{review_note?}`. Conditional UPDATE WHERE status='pending'. |
@@ -1003,7 +1003,7 @@ Qundylyq реализуется как `content_posts` с `content_type='qundyly
 
 | Метод | Путь | Назначение |
 |---|---|---|
-| GET | `/staff/parent-requests` | Заявки по моей роли (фильтр: `status`, `type`, `group_id`). |
+| GET | `/staff/parent-requests` | Заявки по моей роли (фильтр: `status`, `type`, `group_id`). **B22b T7 M16:** cursor-paged по `(created_at DESC, id DESC)`; `next_cursor` = base64-JSON `{createdAt,id}` или `null`. |
 | GET | `/staff/parent-requests/:id` | Детали + messages. |
 | POST | `/staff/parent-requests/:id/accept` | Принять: body `{review_note?}`. Conditional UPDATE WHERE status='pending'; 409 `parent_request_already_processed` при race. |
 | POST | `/staff/parent-requests/:id/reject` | Отклонить: body `{review_note?}`. Conditional UPDATE WHERE status='pending'. |
@@ -1276,7 +1276,7 @@ Reception может работать с заявками — см. Admin API `/
 
 | Метод | Путь | Назначение |
 |---|---|---|
-| GET | `/parent/requests` | Мои заявки (фильтр: `status`, `type`, `child_id`). |
+| GET | `/parent/requests` | Мои заявки (фильтр: `status`, `type`, `child_id`). **B22b T7 M16:** cursor-paged по `(created_at DESC, id DESC)`; `next_cursor` = base64-JSON `{createdAt,id}` или `null`. |
 | GET | `/parent/requests/:id` | Детали + messages. |
 | POST | `/parent/requests/otp-request` | Запрос OTP для trusted_person заявки. Body: `{child_id}`. Rate-limit `rate:otp:{phone}` (5/hour, shared с auth). Redis `otp:request:trusted-person:{userId}` TTL 300с. SMS на `users.phone`. |
 | POST | `/parent/requests/trusted-person` | Заявка на доверенное лицо — **одностадийно** (код + заявка в одной TX). Body (snake_case): `{code, child_id, full_name, phone, iin?, relation, photo_url?, is_one_time?, create_pickup_request?}`. Валидирует OTP в ambient TX; создаёт заявку `trusted_person`. Если `create_pickup_request=true` — также создаёт `pickup_requests` row атомарно с `parent_request_id` FK. Доступен только `primary`. |

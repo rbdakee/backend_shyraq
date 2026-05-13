@@ -233,7 +233,30 @@ class FakeParentRequestRepo extends ParentRequestRepository {
         return false;
       return true;
     });
-    return Promise.resolve(all);
+    // B22b T7 M16: mirror the relational repo's (created_at DESC, id DESC)
+    // ordering + composite cursor predicate so the service-spec exercises
+    // the same pagination contract.
+    all.sort((a, b) => {
+      const at = b.createdAt.getTime() - a.createdAt.getTime();
+      if (at !== 0) return at;
+      return b.id.localeCompare(a.id);
+    });
+    let scoped = all;
+    if (filter.cursor) {
+      const cursorAtTs = filter.cursor.createdAt.getTime();
+      const cursorId = filter.cursor.id;
+      scoped = all.filter((pr) => {
+        const atTs = pr.createdAt.getTime();
+        if (atTs < cursorAtTs) return true;
+        if (atTs === cursorAtTs && pr.id.localeCompare(cursorId) < 0)
+          return true;
+        return false;
+      });
+    }
+    if (filter.limit !== undefined) {
+      scoped = scoped.slice(0, filter.limit);
+    }
+    return Promise.resolve(scoped);
   }
 
   updateStatusConditional(
@@ -2159,6 +2182,106 @@ describe('ParentRequestService', () => {
       });
       expect(filtered.items).toHaveLength(1);
       expect(filtered.items[0].childId).toBe(CHILD_OTHER);
+    });
+
+    // ── B22b T7 M16 cursor pagination ──────────────────────────────────
+    describe('cursor pagination', () => {
+      it('emits a non-null next_cursor when more than limit rows exist (M16 close)', async () => {
+        const h = buildHarness();
+        for (let i = 0; i < 3; i++) {
+          await h.service.createDayOffRequest(KG, PARENT_USER, {
+            childId: CHILD,
+            weekendDates: ['2026-05-09'],
+            comment: null,
+          });
+        }
+        const first = await h.service.listForParent(KG, PARENT_USER, {
+          limit: 2,
+        });
+        expect(first.items).toHaveLength(2);
+        // M16 closure — pre-T7 this was unconditionally null.
+        expect(first.nextCursor).not.toBeNull();
+        expect(typeof first.nextCursor).toBe('string');
+      });
+
+      it('the next page (cursor round-trip) returns the remaining rows', async () => {
+        const h = buildHarness();
+        for (let i = 0; i < 3; i++) {
+          await h.service.createDayOffRequest(KG, PARENT_USER, {
+            childId: CHILD,
+            weekendDates: ['2026-05-09'],
+            comment: null,
+          });
+        }
+        const first = await h.service.listForParent(KG, PARENT_USER, {
+          limit: 2,
+        });
+        const second = await h.service.listForParent(KG, PARENT_USER, {
+          limit: 2,
+          cursor: first.nextCursor,
+        });
+        expect(second.items).toHaveLength(1);
+        // No overlap between pages.
+        const firstIds = first.items.map((p) => p.id);
+        const secondIds = second.items.map((p) => p.id);
+        for (const id of secondIds) {
+          expect(firstIds).not.toContain(id);
+        }
+        // Final page → null cursor.
+        expect(second.nextCursor).toBeNull();
+      });
+
+      it('emits null when the result fits in one page', async () => {
+        const h = buildHarness();
+        await h.service.createDayOffRequest(KG, PARENT_USER, {
+          childId: CHILD,
+          weekendDates: ['2026-05-09'],
+          comment: null,
+        });
+        const result = await h.service.listForParent(KG, PARENT_USER, {
+          limit: 50,
+        });
+        expect(result.items).toHaveLength(1);
+        expect(result.nextCursor).toBeNull();
+      });
+
+      it('rejects a malformed cursor with InvariantViolationError (400)', async () => {
+        const h = buildHarness();
+        await expect(
+          h.service.listForParent(KG, PARENT_USER, {
+            cursor: '!!!not-base64-json!!!',
+          }),
+        ).rejects.toBeInstanceOf(InvariantViolationError);
+      });
+
+      it('disambiguates rows that share an identical createdAt via id tie-break', async () => {
+        // FakeParentRequestRepo stamps every row with `new Date(NOW.getTime())`,
+        // so all created rows have an identical createdAt millisecond — the
+        // exact case where a single-key cursor would drop or duplicate rows.
+        const h = buildHarness();
+        for (let i = 0; i < 4; i++) {
+          await h.service.createDayOffRequest(KG, PARENT_USER, {
+            childId: CHILD,
+            weekendDates: ['2026-05-09'],
+            comment: null,
+          });
+        }
+        const page1 = await h.service.listForParent(KG, PARENT_USER, {
+          limit: 2,
+        });
+        const page2 = await h.service.listForParent(KG, PARENT_USER, {
+          limit: 2,
+          cursor: page1.nextCursor,
+        });
+        expect(page1.items).toHaveLength(2);
+        expect(page2.items).toHaveLength(2);
+        const allIds = new Set([
+          ...page1.items.map((p) => p.id),
+          ...page2.items.map((p) => p.id),
+        ]);
+        // 4 distinct ids across two pages (no duplicates, no drops).
+        expect(allIds.size).toBe(4);
+      });
     });
   });
 
