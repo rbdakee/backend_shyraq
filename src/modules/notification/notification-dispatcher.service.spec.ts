@@ -655,12 +655,15 @@ describe('NotificationDispatcher', () => {
           id: '99999999-9999-9999-9999-99999999cccc',
           kindergartenId: KG,
           eventKey: 'child.transferred',
+          // M5 (B22a): recipientUserIds intentionally omitted — the
+          // resolver is `resolveByChildGuardians` which fans out from the
+          // guardian repo at delivery time. The producer no longer round-
+          // trips the list through the outbox payload (PII hardening).
           payload: {
             childId: CHILD,
             fromGroupId: null,
             toGroupId: GROUP_NEW,
             transferredBy: USER_A,
-            recipientUserIds: [USER_A, USER_NANNY],
           },
         },
         NOW,
@@ -995,12 +998,13 @@ describe('NotificationDispatcher', () => {
           id: '99999999-9999-9999-9999-99999999dddd',
           kindergartenId: KG,
           eventKey: 'child.transferred',
+          // M5 (B22a): no recipientUserIds in payload — see comment on
+          // sibling test above.
           payload: {
             childId: CHILD,
             fromGroupId: null,
             toGroupId: GROUP_NEW,
             transferredBy: USER_A,
-            recipientUserIds: [USER_A, USER_B],
           },
         },
         NOW,

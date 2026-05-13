@@ -8,7 +8,10 @@ import { DomainError } from './domain.error';
  * identifier.
  *
  * Subclasses override `code` with a module-specific string
- * (e.g. `qr_token_expired`) so API clients can disambiguate.
+ * (e.g. `qr_token_expired`) so API clients can disambiguate. They may
+ * additionally declare a `details` property — `DomainErrorFilter`
+ * duck-types on `'details' in exception` and renders it into the response
+ * body. (See `GroupStoryExpiredError` for an existing example.)
  */
 export class GoneError extends DomainError {
   constructor(code: string, message?: string) {

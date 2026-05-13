@@ -1310,8 +1310,13 @@ describe('B13 Billing & Invoices (e2e)', () => {
 
   // ── Q. Webhook invalid signature ──────────────────────────────────────────
 
-  describe('Scenario Q: Webhook invalid signature → 200 acked, no state change', () => {
-    it('returns 200 ok on invalid signature but payment status remains unchanged', async () => {
+  describe('Scenario Q: Webhook invalid signature → 400 webhook_signature_invalid, no state change', () => {
+    it('returns 400 webhook_signature_invalid and leaves payment status unchanged', async () => {
+      // B22a M2: previously this path returned 200 (signature errors were
+      // swallowed). The new contract surfaces signature mismatches as 400
+      // so a misconfigured provider integration fails loudly and provider-
+      // side alerting fires (endpoints.md §4.5). Other unexpected errors
+      // still ack 200 to prevent retry storms.
       const a = await createKgWithAdmin('bi-q', '+77020100171');
       const childId = await createChild(a.adminToken, {
         full_name: 'Child Q',
@@ -1357,9 +1362,10 @@ describe('B13 Billing & Invoices (e2e)', () => {
           provider_payment_id: providerPaymentId,
           status: 'completed',
         })
-        .expect(200);
+        .expect(400);
 
-      expect(webhookRes.body.status).toBe('ok');
+      expect(webhookRes.body.error).toBe('webhook_signature_invalid');
+      expect(webhookRes.body.details).toEqual({ provider: 'mock' });
 
       // Payment must remain 'initiated' (not changed)
       const payRows = (await ctx.dataSource.transaction(async (m) => {

@@ -235,7 +235,7 @@ describe('P5 children & guardians (e2e)', () => {
     expect(res.body.meta.total).toBe(3);
   });
 
-  it('PATCH /children/:id updates profile, archive→409-on-replay→restore flow', async () => {
+  it('PATCH /children/:id updates profile, archive→409-on-replay→reactivate flow; legacy /restore returns 410', async () => {
     const a = await createKgWithAdmin('children-4', '+77011115004');
     const created = await request(server)
       .post('/api/v1/children')
@@ -273,11 +273,24 @@ describe('P5 children & guardians (e2e)', () => {
       .send({ archive_reason: 'second attempt' })
       .expect(409)
       .expect((r) => expect(r.body.error).toBe('child_already_archived'));
-    await request(server)
+    // B22a T11: /restore is now a 410 Gone shim. Callers must migrate to
+    // /reactivate. The Location header advertises the successor.
+    const goneRes = await request(server)
       .post(`/api/v1/children/${id}/restore`)
       .set('Authorization', `Bearer ${a.adminToken}`)
+      .expect(410);
+    expect(goneRes.body.error).toBe('endpoint_gone');
+    expect(goneRes.body.details).toEqual({
+      successor: `/api/v1/children/${id}/reactivate`,
+    });
+    expect(goneRes.headers.location).toBe(`/api/v1/children/${id}/reactivate`);
+    // Sanity: /reactivate (the documented successor) actually works.
+    await request(server)
+      .post(`/api/v1/children/${id}/reactivate`)
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .send({})
       .expect(200)
-      .expect((r) => expect(r.body.status).toBe('active'));
+      .expect((r) => expect(r.body.child.status).toBe('active'));
   });
 
   it('POST /children/:id/transfer logs a child_group_history row', async () => {
