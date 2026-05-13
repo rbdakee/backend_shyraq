@@ -18,6 +18,8 @@ import {
   KindergartenUpdateInput,
 } from '@/modules/kindergarten/infrastructure/persistence/kindergarten.repository';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import type { EntityManager } from '@/shared-kernel/application/ports/transaction-runner.port';
+import { TransactionRunnerPort } from '@/shared-kernel/application/ports/transaction-runner.port';
 import { WeeklyRolloutService } from './weekly-rollout.service';
 
 // ── Fakes ───────────────────────────────────────────────────────────────
@@ -164,12 +166,12 @@ class FakeMealService {
 }
 
 /**
- * Minimal DataSource fake — only `transaction(cb)` is exercised. The
+ * Minimal `TransactionRunnerPort` fake — only `run(cb)` is exercised. The
  * service uses it to scope the bypass-rls directory scan and per-kg
  * `SET LOCAL`. The fake collects every `manager.query` call so the test
  * can assert the GUC dance.
  */
-class FakeDataSource {
+class FakeTransactionRunner extends TransactionRunnerPort {
   queries: string[] = [];
   // Captures bind parameters for the parameterized `SELECT set_config(...)`
   // tenant-id calls (B22a T3 / FINDINGS H3). The legacy
@@ -177,7 +179,7 @@ class FakeDataSource {
   // form because they pass no untrusted input.
   paramCalls: Array<{ q: string; params: unknown[] }> = [];
 
-  transaction<T>(cb: (manager: unknown) => Promise<T>): Promise<T> {
+  run<T>(cb: (manager: EntityManager) => Promise<T>): Promise<T> {
     const manager = {
       query: (q: string, params?: unknown[]): Promise<unknown[]> => {
         this.queries.push(q);
@@ -185,7 +187,7 @@ class FakeDataSource {
         return Promise.resolve([]);
       },
     };
-    return cb(manager);
+    return cb(manager as unknown as EntityManager);
   }
 }
 
@@ -194,12 +196,12 @@ function makeService(): {
   kgRepo: FakeKindergartenRepository;
   scheduleSvc: FakeScheduleService;
   mealSvc: FakeMealService;
-  dataSource: FakeDataSource;
+  dataSource: FakeTransactionRunner;
 } {
   const kgRepo = new FakeKindergartenRepository();
   const scheduleSvc = new FakeScheduleService();
   const mealSvc = new FakeMealService();
-  const dataSource = new FakeDataSource();
+  const dataSource = new FakeTransactionRunner();
   const service = new WeeklyRolloutService(
     scheduleSvc as unknown as ConstructorParameters<
       typeof WeeklyRolloutService
@@ -207,9 +209,7 @@ function makeService(): {
     mealSvc as unknown as ConstructorParameters<typeof WeeklyRolloutService>[1],
     kgRepo,
     new FixedClock(NOW),
-    dataSource as unknown as ConstructorParameters<
-      typeof WeeklyRolloutService
-    >[4],
+    dataSource,
   );
   return { service, kgRepo, scheduleSvc, mealSvc, dataSource };
 }

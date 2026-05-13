@@ -1,13 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { extname } from 'node:path';
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { DataSource } from 'typeorm';
 import { NotificationPort } from '@/common/notifications/notification.port';
 import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
 import { ChildGuardianRepository } from '@/modules/child/infrastructure/persistence/child-guardian.repository';
 import { GroupRepository } from '@/modules/group/infrastructure/persistence/group.repository';
 import { GroupNotFoundError } from '@/modules/group/domain/errors/group-not-found.error';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { TransactionRunnerPort } from '@/shared-kernel/application/ports/transaction-runner.port';
 import { ForbiddenActionError } from '@/shared-kernel/domain/errors';
 import { tenantStorage } from '@/database/tenant-storage';
 import { FileStoragePort } from '@/shared-kernel/storage/file-storage.port';
@@ -59,7 +59,8 @@ export class StoryService {
     private readonly groupRepo: GroupRepository,
     private readonly fileStorage: FileStoragePort,
     private readonly notificationPort: NotificationPort,
-    private readonly dataSource: DataSource,
+    @Inject(TransactionRunnerPort)
+    private readonly tx: TransactionRunnerPort,
     @Inject(ClockPort) private readonly clock: ClockPort,
     private readonly childRepo: ChildRepository,
     private readonly childGuardianRepo: ChildGuardianRepository,
@@ -308,7 +309,7 @@ export class StoryService {
     if (ambient?.entityManager) {
       return fn();
     }
-    return this.dataSource.transaction(async (em) => {
+    return this.tx.run(async (em) => {
       await em.query(`SELECT set_config('app.kindergarten_id', $1, true)`, [
         kindergartenId,
       ]);

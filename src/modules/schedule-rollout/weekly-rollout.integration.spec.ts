@@ -34,6 +34,7 @@ import { LocationEntity } from '@/modules/location/infrastructure/persistence/re
 import { StaffMemberEntity } from '@/modules/staff/infrastructure/persistence/relational/entities/staff-member.entity';
 import { UserEntity } from '@/modules/users/infrastructure/persistence/relational/entities/user.entity';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { TypeOrmTransactionRunnerAdapter } from '@/shared-kernel/infrastructure/adapters/typeorm-transaction-runner.adapter';
 import { MealItemEntity } from '@/modules/meal/infrastructure/persistence/relational/entities/meal-item.entity';
 import { MealPlanEntity } from '@/modules/meal/infrastructure/persistence/relational/entities/meal-plan.entity';
 import { MealPlanRelationalRepository } from '@/modules/meal/infrastructure/persistence/relational/repositories/meal-plan-relational.repository';
@@ -310,7 +311,7 @@ describeIntegration('WeeklyRolloutService — integration', () => {
       mealSvc,
       kgRepo,
       clock,
-      dataSource,
+      new TypeOrmTransactionRunnerAdapter(dataSource),
     );
   }
 

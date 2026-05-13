@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { DataSource, EntityManager } from 'typeorm';
+import type { EntityManager } from '@/shared-kernel/application/ports/transaction-runner.port';
+import { TransactionRunnerPort } from '@/shared-kernel/application/ports/transaction-runner.port';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import { InMemoryNotificationAdapter } from '@/common/notifications/in-memory-notification.adapter';
@@ -42,11 +43,11 @@ class FakeClock extends ClockPort {
   }
 }
 
-class FakeDataSource {
-  // Just enough surface to call transaction(em => …) — we pass a stub EM
-  // whose `query` is a no-op (the GUC SET LOCAL is a runtime-only concern;
-  // the in-memory fake repo doesn't read GUC).
-  transaction<T>(cb: (em: EntityManager) => Promise<T>): Promise<T> {
+class FakeTransactionRunner extends TransactionRunnerPort {
+  // Just enough surface to call run(em => …) — we pass a stub EM whose
+  // `query` is a no-op (the GUC SET LOCAL is a runtime-only concern; the
+  // in-memory fake repo doesn't read GUC).
+  run<T>(cb: (em: EntityManager) => Promise<T>): Promise<T> {
     const stub = {
       query: () => Promise.resolve([]),
     } as unknown as EntityManager;
@@ -408,7 +409,7 @@ function buildSvc(): {
     repo,
     appRepo,
     notif,
-    new FakeDataSource() as unknown as DataSource,
+    new FakeTransactionRunner(),
     resolver as unknown as DiscountTargetResolver,
     new FakeClock(NOW),
   );

@@ -1,13 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { extname } from 'node:path';
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { DataSource } from 'typeorm';
 import { NotificationPort } from '@/common/notifications/notification.port';
 import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
 import { GroupRepository } from '@/modules/group/infrastructure/persistence/group.repository';
 import { ChildNotFoundError } from '@/modules/child/domain/errors/child-not-found.error';
 import { GroupNotFoundError } from '@/modules/group/domain/errors/group-not-found.error';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { TransactionRunnerPort } from '@/shared-kernel/application/ports/transaction-runner.port';
 import { tenantStorage } from '@/database/tenant-storage';
 import { ContentRepository, ListContentFilters } from './content.repository';
 import {
@@ -119,7 +119,8 @@ export class ContentService {
     private readonly childRepo: ChildRepository,
     private readonly fileStorage: FileStoragePort,
     private readonly notificationPort: NotificationPort,
-    private readonly dataSource: DataSource,
+    @Inject(TransactionRunnerPort)
+    private readonly tx: TransactionRunnerPort,
     @Inject(ClockPort) private readonly clock: ClockPort,
   ) {}
 
@@ -460,7 +461,7 @@ export class ContentService {
       // Already in a tenant TX — the outbox repo will pick up the same EM.
       return fn();
     }
-    return this.dataSource.transaction(async (em) => {
+    return this.tx.run(async (em) => {
       await em.query(`SELECT set_config('app.kindergarten_id', $1, true)`, [
         kindergartenId,
       ]);

@@ -1,14 +1,14 @@
 import { Injectable } from '@nestjs/common';
-import { DataSource } from 'typeorm';
 import { RedisService } from '@/redis/redis.service';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { DatabasePingPort } from '@/shared-kernel/application/ports/database-ping.port';
 import { HealthReadyDto, HealthStatusDto } from './dto/health-status.dto';
 
 @Injectable()
 export class HealthService {
   constructor(
     private readonly clock: ClockPort,
-    private readonly dataSource: DataSource,
+    private readonly dbPing: DatabasePingPort,
     private readonly redis: RedisService,
   ) {}
 
@@ -32,7 +32,7 @@ export class HealthService {
 
   private async checkDb(): Promise<'up' | 'down'> {
     try {
-      await this.dataSource.query('SELECT 1');
+      await this.dbPing.ping();
       return 'up';
     } catch {
       return 'down';

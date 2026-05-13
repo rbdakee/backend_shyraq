@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { DataSource } from 'typeorm';
 import { NotificationPort } from '@/common/notifications/notification.port';
 import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { TransactionRunnerPort } from '@/shared-kernel/application/ports/transaction-runner.port';
 import { formatDateInTimezone } from '@/shared-kernel/domain/value-objects/day-of-week.vo';
 import { tenantStorage } from '@/database/tenant-storage';
 import { ContentRepository } from './content.repository';
@@ -39,7 +39,8 @@ export class BirthdayGeneratorService {
     private readonly contentRepo: ContentRepository,
     private readonly childRepo: ChildRepository,
     private readonly notificationPort: NotificationPort,
-    private readonly dataSource: DataSource,
+    @Inject(TransactionRunnerPort)
+    private readonly tx: TransactionRunnerPort,
     @Inject(ClockPort) private readonly clock: ClockPort,
   ) {}
 
@@ -197,7 +198,7 @@ export class BirthdayGeneratorService {
         );
       });
     }
-    return this.dataSource.transaction(async (em) => {
+    return this.tx.run(async (em) => {
       await em.query(`SELECT set_config('app.kindergarten_id', $1, true)`, [
         kindergartenId,
       ]);

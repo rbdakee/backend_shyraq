@@ -1,5 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
+import { ChildService } from '@/modules/child/child.service';
 import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
 import { StaffMember } from '@/modules/staff/domain/entities/staff-member.entity';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
@@ -66,7 +66,11 @@ function diffDaysAlmaty(later: Date, earlier: Date): number {
 @Injectable()
 export class MyTodosService {
   constructor(
-    private readonly children: ChildRepository,
+    // B22b T4: consume `ChildService.listActiveLightByKg` instead of reaching
+    // into `ChildRepository` directly. Cross-module dependencies must flow
+    // through the OWNING module's service surface (CLAUDE.md §4) so the
+    // child catalogue keeps a single read entry point.
+    private readonly children: ChildService,
     private readonly entries: DiagnosticEntryRepository,
     private readonly clock: ClockPort,
     // Optional so older spec wiring keeps compiling. Used by

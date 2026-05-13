@@ -1,4 +1,5 @@
-import { DataSource, EntityManager } from 'typeorm';
+import type { EntityManager } from '@/shared-kernel/application/ports/transaction-runner.port';
+import { TransactionRunnerPort } from '@/shared-kernel/application/ports/transaction-runner.port';
 import { InMemoryNotificationAdapter } from '@/common/notifications/in-memory-notification.adapter';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
@@ -467,17 +468,20 @@ function makeAccount(): PaymentAccount {
   });
 }
 
-// DataSource fake — `transaction(cb)` invokes the callback with a stub
+// TransactionRunnerPort fake — `run(cb)` invokes the callback with a stub
 // EntityManager. PaymentService does not actually interact with the EM
 // (the unit-level path does not exercise tenantStorage); this is enough
 // for the webhook orchestration to run.
-function makeFakeDataSource(): DataSource {
-  return {
-    transaction: <T>(cb: (em: EntityManager) => Promise<T>): Promise<T> =>
-      cb({
-        query: () => Promise.resolve(undefined),
-      } as unknown as EntityManager),
-  } as unknown as DataSource;
+class FakeTxRunner extends TransactionRunnerPort {
+  run<T>(cb: (em: EntityManager) => Promise<T>): Promise<T> {
+    return cb({
+      query: () => Promise.resolve(undefined),
+    } as unknown as EntityManager);
+  }
+}
+
+function makeFakeTxRunner(): TransactionRunnerPort {
+  return new FakeTxRunner();
 }
 
 // ── Wiring ───────────────────────────────────────────────────────────────
@@ -514,7 +518,7 @@ function buildHarness(): Harness {
       return inv;
     },
   } as unknown as InvoiceService;
-  const dataSource = makeFakeDataSource();
+  const txRunner = makeFakeTxRunner();
   const service = new PaymentService(
     paymentRepo,
     invoiceRepo,
@@ -524,7 +528,7 @@ function buildHarness(): Harness {
     fiscal,
     notifier,
     clock,
-    dataSource,
+    txRunner,
   );
   return {
     service,

@@ -21,6 +21,7 @@ import { randomUUID } from 'node:crypto';
 import { DataSource } from 'typeorm';
 import { InMemoryNotificationAdapter } from '@/common/notifications/in-memory-notification.adapter';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { TypeOrmTransactionRunnerAdapter } from '@/shared-kernel/infrastructure/adapters/typeorm-transaction-runner.adapter';
 import { CustomDiscountTypeOrmEntity } from './infrastructure/persistence/relational/entities/custom-discount.typeorm.entity';
 import { CustomDiscountApplicationTypeOrmEntity } from './infrastructure/persistence/relational/entities/custom-discount-application.typeorm.entity';
 import { CustomDiscountRelationalRepository } from './infrastructure/persistence/relational/repositories/custom-discount.relational.repository';
@@ -104,7 +105,7 @@ describeIntegration(
         repo,
         appRepo,
         notif,
-        dataSource,
+        new TypeOrmTransactionRunnerAdapter(dataSource),
         resolver,
         new FixedClock(),
       );

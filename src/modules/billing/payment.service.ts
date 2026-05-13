@@ -1,9 +1,9 @@
 import { ForbiddenException, Inject, Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { DataSource } from 'typeorm';
 import { NotificationPort } from '@/common/notifications/notification.port';
 import { tenantStorage } from '@/database/tenant-storage';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { TransactionRunnerPort } from '@/shared-kernel/application/ports/transaction-runner.port';
 import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import { ChildGuardianRepository } from '@/modules/child/infrastructure/persistence/child-guardian.repository';
 import {
@@ -112,7 +112,8 @@ export class PaymentService {
     private readonly fiscalReceiptPort: FiscalReceiptPort,
     private readonly notificationPort: NotificationPort,
     @Inject(ClockPort) private readonly clock: ClockPort,
-    private readonly dataSource: DataSource,
+    @Inject(TransactionRunnerPort)
+    private readonly tx: TransactionRunnerPort,
     // Optional so legacy spec wiring (which builds PaymentService without
     // the parent-side dependency) keeps working. `assertCanPay` fails
     // closed when missing.
@@ -381,7 +382,7 @@ export class PaymentService {
     //    webhook controller does not (and cannot) carry kg context, so
     //    we set it up here using the kg id we just resolved.
     const kgId = found.kindergartenId;
-    await this.dataSource.transaction(async (em) => {
+    await this.tx.run(async (em) => {
       await em.query(`SELECT set_config('app.kindergarten_id', $1, true)`, [
         kgId,
       ]);

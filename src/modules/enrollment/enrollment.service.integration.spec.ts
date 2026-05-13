@@ -46,6 +46,7 @@ import { StaffMemberRelationalRepository } from '@/modules/staff/infrastructure/
 import { UserEntity } from '@/modules/users/infrastructure/persistence/relational/entities/user.entity';
 import { UserRelationalRepository } from '@/modules/users/infrastructure/persistence/relational/repositories/user.repository';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { TypeOrmTransactionRunnerAdapter } from '@/shared-kernel/infrastructure/adapters/typeorm-transaction-runner.adapter';
 import { EnrollmentEntity } from './infrastructure/persistence/relational/entities/enrollment.entity';
 import { EnrollmentStatusLogEntity } from './infrastructure/persistence/relational/entities/enrollment-status-log.entity';
 import { EnrollmentRelationalRepository } from './infrastructure/persistence/relational/repositories/enrollment-relational.repository';
@@ -257,7 +258,7 @@ describeIntegration('EnrollmentService — service-integration', () => {
       userRepo,
       notification,
       clock,
-      dataSource,
+      new TypeOrmTransactionRunnerAdapter(dataSource),
       otpStore,
       configService,
       new NoopBillingLifecycleAdapter(),

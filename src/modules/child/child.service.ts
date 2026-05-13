@@ -1,10 +1,8 @@
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { ConfigService } from '@nestjs/config';
-import { InjectDataSource } from '@nestjs/typeorm';
 import { Queue } from 'bullmq';
 import { randomUUID } from 'node:crypto';
-import { DataSource } from 'typeorm';
 import { NotificationPort } from '@/common/notifications/notification.port';
 import { AllConfigType } from '@/config/config.type';
 import { tenantStorage } from '@/database/tenant-storage';
@@ -15,6 +13,7 @@ import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistenc
 import { StaffNotFoundError } from '@/modules/staff/domain/errors/staff-not-found.error';
 import { UserRepository } from '@/modules/users/infrastructure/persistence/user.repository';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { TransactionRunnerPort } from '@/shared-kernel/application/ports/transaction-runner.port';
 import { NotFoundError } from '@/shared-kernel/domain/errors';
 import { BillingLifecyclePort } from './infrastructure/billing-lifecycle.port';
 import {
@@ -151,7 +150,8 @@ export class ChildService {
     private readonly users: UserRepository,
     @Inject(NotificationPort) private readonly notification: NotificationPort,
     @Inject(ClockPort) private readonly clock: ClockPort,
-    @InjectDataSource() private readonly dataSource: DataSource,
+    @Inject(TransactionRunnerPort)
+    private readonly tx: TransactionRunnerPort,
     @Inject(OtpStorePort) private readonly otpStore: OtpStorePort,
     private readonly configService: ConfigService<AllConfigType>,
     @Inject(BillingLifecyclePort)
@@ -1049,7 +1049,7 @@ export class ChildService {
     const child = candidates[0];
     const targetKgId = child.kindergartenId as string;
 
-    return this.dataSource.transaction(async (manager) => {
+    return this.tx.run(async (manager) => {
       // SET LOCAL does not accept parameter binds; defend against non-UUID
       // tenant ids the same way TenantContextInterceptor does.
       if (!KG_UUID_RE.test(targetKgId)) {
@@ -1299,6 +1299,19 @@ export class ChildService {
     if (guardians.length === 0) return [];
     const childIds = Array.from(new Set(guardians.map((g) => g.childId)));
     return this.children.findByIdsCrossTenant(childIds);
+  }
+
+  /**
+   * Lightweight `{ id, fullName }` projection over every non-archived child in
+   * the kg, ordered by `full_name ASC`. Service surface for cross-module
+   * consumers (currently `DiagnosticsModule.MyTodosService`) so they do not
+   * need to reach into `ChildRepository` directly — CLAUDE.md §4 module
+   * boundary (B22b T4).
+   */
+  async listActiveLightByKg(
+    kindergartenId: string,
+  ): Promise<Array<{ id: string; fullName: string }>> {
+    return this.children.listActiveLightByKg(kindergartenId);
   }
 
   // ── helpers ─────────────────────────────────────────────────────────────

@@ -24,11 +24,18 @@ import { ProgressNoteRelationalRepository } from './infrastructure/persistence/r
 
 /**
  * DiagnosticsModule (B18) — wires the four services + 3 abstract repository
- * ports → relational adapters. Imports `ChildModule` for `ChildRepository`
- * (used by `MyTodosService.listActiveLightByKg`) and `ChildGuardianRepository`
- * (used by `ParentDiagnosticController`). Imports `StaffModule` for
+ * ports → relational adapters. Imports `ChildModule` for `ChildService`
+ * (`MyTodosService` consumes the child catalogue through the owning
+ * module's service surface — B22b T4) and `StaffModule` for
  * `StaffMemberRepository` (used by all staff controllers to resolve
  * caller → staff_member_id).
+ *
+ * Module boundary discipline (CLAUDE.md §4):
+ *   - `exports` lists ONLY the four service classes. The 3 repository
+ *     ports are module-internal infrastructure — exporting them would
+ *     leak persistence details into consumers (B22b T4 module-boundary
+ *     leak closed). Cross-module consumers must always go through the
+ *     service surface.
  *
  * `ClockPort` resolves via the @Global `SharedKernelModule`.
  * `NotificationPort` is supplied at the application root.
@@ -70,9 +77,6 @@ import { ProgressNoteRelationalRepository } from './infrastructure/persistence/r
     MyTodosService,
   ],
   exports: [
-    DiagnosticTemplateRepository,
-    DiagnosticEntryRepository,
-    ProgressNoteRepository,
     DiagnosticTemplateService,
     DiagnosticEntryService,
     ProgressNoteService,
