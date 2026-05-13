@@ -15,6 +15,7 @@ import authConfig from '@/modules/auth/config/auth.config';
 import { BillingModule } from '@/modules/billing/billing.module';
 import { BillingLifecycleBridgeModule } from '@/modules/billing/billing-lifecycle-bridge.module';
 import { ChildModule } from '@/modules/child/child.module';
+import { ContentModule } from '@/modules/content/content.module';
 import { GroupModule } from '@/modules/group/group.module';
 import { KindergartenModule } from '@/modules/kindergarten/kindergarten.module';
 import { MealModule } from '@/modules/meal/meal.module';
@@ -154,6 +155,17 @@ const resolveI18nPath = (): string => {
     // archives) see the same binding as the API process.
     BillingModule,
     BillingLifecycleBridgeModule,
+    // B22a T3 (FINDINGS H1): host the three B17 ContentModule processors
+    // (`ContentPublishProcessor`, `BirthdayGenerationProcessor`,
+    // `StoryCleanupProcessor`) on the worker process so that horizontal
+    // scaling of the api never duplicates these crons. ContentModule
+    // already `BullModule.registerQueue`s the three corresponding queues
+    // (`content-publish`, `birthday-generation`, `story-cleanup`) and
+    // re-exports BullModule, so importing the module is enough — no
+    // direct queue registration here. Pair with `*_CRON=disabled` env
+    // toggles when the api should stop scheduling these cron jobs (see
+    // `env-example-relational`).
+    ContentModule,
     // `WorkerWebsocketModule` is the worker's counterpart of the api's
     // `WebsocketModule`. It provides the same global tokens
     // (`WsBroadcaster` + `SocketIoServerProvider`) but bound to a

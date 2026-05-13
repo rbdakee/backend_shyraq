@@ -1,4 +1,5 @@
 import {
+  Inject,
   Injectable,
   Logger,
   OnApplicationBootstrap,
@@ -65,9 +66,14 @@ export class ContentPublishProcessor extends WorkerHost {
 
   constructor(
     private readonly contentRepo: ContentRepository,
+    // SP1 (FINDINGS): explicit `@Inject(NotificationPort)` + `@Inject(ClockPort)`
+    // so the worker process resolves these abstract ports via reflect-metadata
+    // (BullMQ workers boot under a different DI graph and can otherwise see
+    // `undefined` for abstract-class tokens).
+    @Inject(NotificationPort)
     private readonly notificationPort: NotificationPort,
     private readonly dataSource: DataSource,
-    private readonly clock: ClockPort,
+    @Inject(ClockPort) private readonly clock: ClockPort,
   ) {
     super();
   }

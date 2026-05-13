@@ -122,3 +122,21 @@ FILE_STORAGE_PROVIDER=local
 # DATABASE_USERNAME above is the regular tenant-scoped role.
 DATABASE_SUPERADMIN_USERNAME=shyraq_superadmin
 DATABASE_SUPERADMIN_PASSWORD=shyraq_superadmin
+
+# --- BullMQ cron toggles (B22a T3) ---
+# Each processor schedules its repeatable BullMQ job at OnApplicationBootstrap
+# unless the matching `*_CRON` env var is set to `disabled`. When the worker
+# process hosts the recurring slot (`npm run start:worker`), set the SAME
+# variable to `disabled` for the api process so the two never compete to
+# enqueue the same tick. Default (unset / `enabled`) keeps the api scheduling
+# the cron — single-process dev mode "just works".
+#
+# Pattern:
+#   api  .env: BILLING_MONTHLY_CRON=disabled (etc.)
+#   worker .env: BILLING_MONTHLY_CRON=enabled (or unset)
+# BILLING_MONTHLY_CRON=enabled
+# BILLING_DISCOUNT_EXPIRE_CRON=enabled
+# BILLING_OVERDUE_CRON=enabled
+# CONTENT_PUBLISH_CRON=enabled
+# BIRTHDAY_GENERATION_CRON=enabled
+# STORY_CLEANUP_CRON=enabled

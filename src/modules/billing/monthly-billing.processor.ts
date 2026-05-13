@@ -1,4 +1,4 @@
-import { Logger } from '@nestjs/common';
+import { Inject, Logger } from '@nestjs/common';
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
 import { DataSource } from 'typeorm';
@@ -99,7 +99,11 @@ export class MonthlyBillingProcessor extends WorkerHost {
   constructor(
     private readonly invoiceService: InvoiceService,
     private readonly dataSource: DataSource,
-    private readonly clock: ClockPort,
+    // SP1 (FINDINGS): explicit `@Inject(ClockPort)` so the worker process
+    // resolves the abstract port via reflect-metadata (BullMQ workers boot
+    // under a different DI graph and can otherwise see `undefined` for
+    // abstract-class tokens).
+    @Inject(ClockPort) private readonly clock: ClockPort,
   ) {
     super();
   }

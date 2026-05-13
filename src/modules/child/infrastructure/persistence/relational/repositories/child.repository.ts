@@ -342,6 +342,33 @@ export class ChildRelationalRepository extends ChildRepository {
     return entity;
   }
 
+  // ── B22a T3 (FINDINGS B21-T6-M3) — Monthly billing archive-race guard ─
+
+  /**
+   * `SELECT 1 FROM children WHERE id = $1 AND kindergarten_id = $2 AND
+   *  status <> 'archived' FOR UPDATE` — the row-level lock is the
+   * defence against the archive-vs-invoice race surfaced by B21-T6-M3.
+   * Returns boolean; the service layer treats `false` as "skip this
+   * child this period". Caller must already be inside the ambient TX
+   * (the monthly cron's per-kg TX) — `manager()` falls back to the
+   * default repo manager only for legacy CLI/testing paths where
+   * `FOR UPDATE` would be functionally a no-op.
+   */
+  async existsActiveByIdForUpdate(
+    kindergartenId: string,
+    childId: string,
+  ): Promise<boolean> {
+    const rows = (await this.manager().query(
+      `SELECT 1 FROM children
+        WHERE id = $1
+          AND kindergarten_id = $2
+          AND status <> 'archived'
+        FOR UPDATE`,
+      [childId, kindergartenId],
+    )) as Array<unknown>;
+    return rows.length > 0;
+  }
+
   // ── B16 — DiscountTargetResolver helpers ──────────────────────────────
 
   async listAllActiveIdsByKg(kindergartenId: string): Promise<string[]> {

@@ -22,6 +22,7 @@ import {
 import { Payment, PaymentState } from './domain/entities/payment.entity';
 import { TariffPlan } from './domain/entities/tariff-plan.entity';
 import { TariffAssignment } from './domain/entities/tariff-assignment.entity';
+import { ChildArchivedDuringRunError } from './domain/errors/child-archived-during-run.error';
 import { InvoiceAlreadyPaidError } from './domain/errors/invoice-already-paid.error';
 import { InvoiceNotFoundError } from './domain/errors/invoice-not-found.error';
 import { InvoiceStatusInvalidError } from './domain/errors/invoice-status-invalid.error';
@@ -444,6 +445,7 @@ export class InvoiceService {
     );
 
     let generated = 0;
+    let skipped = 0;
     for (const assignment of assignments) {
       // B21 T3 step5: defence-in-depth gate against billing archived
       // children. T3 step3 closes their tariff_assignment at the archive
@@ -464,6 +466,7 @@ export class InvoiceService {
           this.logger.log(
             `monthly: skipping child=${assignment.childId} — status=${child?.status.value ?? 'missing'}`,
           );
+          skipped++;
           continue;
         }
       }
@@ -478,24 +481,41 @@ export class InvoiceService {
         this.logger.warn(
           `monthly: skipping child=${assignment.childId} — tariff_plan ${assignment.tariffPlanId} not found`,
         );
+        skipped++;
         continue;
       }
-      await this.generateAndPersistInvoice({
-        kindergartenId,
-        assignment,
-        tariffPlan,
-        invoiceType: 'monthly',
-        periodStart,
-        periodEnd,
-        dueDate,
-        totalDays,
-        nonBillableHolidays,
-        prepaymentMonths: undefined,
-      });
-      generated++;
+      try {
+        await this.generateAndPersistInvoice({
+          kindergartenId,
+          assignment,
+          tariffPlan,
+          invoiceType: 'monthly',
+          periodStart,
+          periodEnd,
+          dueDate,
+          totalDays,
+          nonBillableHolidays,
+          prepaymentMonths: undefined,
+        });
+        generated++;
+      } catch (err) {
+        if (err instanceof ChildArchivedDuringRunError) {
+          // FINDINGS B21-T6-M3: archive landed between this loop's
+          // top-of-iteration status read and the per-child INSERT TX.
+          // The `existsActiveByIdForUpdate` guard inside
+          // `generateAndPersistInvoice` aborted the INSERT, so no
+          // invoice row exists for this child this period. Count it
+          // as skipped (NOT generated, NOT errored) — the cron summary
+          // surfaces the count, the inner warn-log captures the
+          // forensic detail.
+          skipped++;
+          continue;
+        }
+        throw err;
+      }
     }
 
-    return { generated, skipped: 0 };
+    return { generated, skipped };
   }
 
   /**
@@ -989,6 +1009,35 @@ export class InvoiceService {
       createdAt: now,
     };
     const lineItem = InvoiceLineItem.fromState(lineState);
+
+    // B22a T3 (FINDINGS B21-T6-M3): archive-vs-invoice race protection.
+    // The top-of-loop status read in `generateMonthly` happens BEFORE
+    // discount evaluation + child entity hydrate; a parent / staff
+    // archive call landing between that read and this INSERT would
+    // silently invoice an archived child. We re-check ONLY for the
+    // monthly cron path (where the loop is long-running enough to make
+    // the race observable in production) and acquire a `FOR UPDATE`
+    // row-level lock so a concurrent archive UPDATE blocks until our
+    // INSERT TX commits or rolls back. `generateFirstInvoice`
+    // (`invoiceType='monthly'` for the first month) intentionally also
+    // benefits — its call site is enrollment-driven and the
+    // window is microseconds rather than minutes, so the cost (one
+    // extra round-trip) is negligible.
+    if (invoiceType === 'monthly' && this.children) {
+      const stillActive = await this.children.existsActiveByIdForUpdate(
+        kindergartenId,
+        assignment.childId,
+      );
+      if (!stillActive) {
+        this.logger.warn(
+          `monthly: child_archived_during_run kg=${kindergartenId} child=${assignment.childId} — skipping INSERT (archive raced with invoice)`,
+        );
+        // Throw a tagged error the cron loop catches; service-layer
+        // sentinel keeps the contract clean (the caller does not care
+        // about ChildRepository details).
+        throw new ChildArchivedDuringRunError(assignment.childId);
+      }
+    }
 
     const persisted = await this.invoices.create(invoice, [lineItem]);
     await this.persistCustomDiscountApplications(

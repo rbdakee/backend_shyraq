@@ -1,4 +1,5 @@
 import {
+  Inject,
   Injectable,
   Logger,
   OnApplicationBootstrap,
@@ -55,7 +56,11 @@ export class StoryCleanupProcessor extends WorkerHost {
     private readonly storyRepo: GroupStoryRepository,
     private readonly fileStorage: FileStoragePort,
     private readonly dataSource: DataSource,
-    private readonly clock: ClockPort,
+    // SP1 (FINDINGS): explicit `@Inject(ClockPort)` so the worker process
+    // resolves the abstract port via reflect-metadata (BullMQ workers boot
+    // under a different DI graph and can otherwise see `undefined` for
+    // abstract-class tokens).
+    @Inject(ClockPort) private readonly clock: ClockPort,
   ) {
     super();
   }

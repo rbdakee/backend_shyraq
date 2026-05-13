@@ -1,4 +1,4 @@
-import { Logger } from '@nestjs/common';
+import { Inject, Logger } from '@nestjs/common';
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
@@ -46,7 +46,11 @@ export class WeeklyRolloutProcessor extends WorkerHost {
 
   constructor(
     private readonly rollout: WeeklyRolloutService,
-    private readonly clock: ClockPort,
+    // SP1 (FINDINGS): explicit `@Inject(ClockPort)` so the worker process
+    // resolves the abstract port via reflect-metadata even when emit-decorator
+    // metadata gets stripped (BullMQ workers boot under a different DI graph
+    // and can otherwise see `undefined` for abstract-class tokens).
+    @Inject(ClockPort) private readonly clock: ClockPort,
   ) {
     super();
   }

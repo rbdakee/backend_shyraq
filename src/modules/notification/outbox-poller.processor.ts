@@ -1,4 +1,4 @@
-import { Logger } from '@nestjs/common';
+import { Inject, Logger } from '@nestjs/common';
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
 import { DataSource, EntityManager } from 'typeorm';
@@ -83,7 +83,11 @@ export class OutboxPollerProcessor extends WorkerHost {
     private readonly outboxRepo: OutboxEventRepository,
     private readonly dispatcher: NotificationDispatcher,
     private readonly dataSource: DataSource,
-    private readonly clock: ClockPort,
+    // SP1 (FINDINGS): explicit `@Inject(ClockPort)` so the worker process
+    // resolves the abstract port via reflect-metadata (BullMQ workers boot
+    // under a different DI graph and can otherwise see `undefined` for
+    // abstract-class tokens).
+    @Inject(ClockPort) private readonly clock: ClockPort,
   ) {
     super();
   }
