@@ -11,6 +11,8 @@
  * of this type without leaking TypeORM details to the service. No
  * `@nestjs/*`, `typeorm`, `class-validator` imports here — POJO only.
  */
+import { ChildStatusHistoryInvalidTransitionError } from '../errors/child-status-history-invalid-transition.error';
+import { ChildStatusHistoryMissingArchiveReasonError } from '../errors/child-status-history-missing-archive-reason.error';
 
 export type ChildStatusValue = 'card_created' | 'active' | 'archived';
 
@@ -102,14 +104,13 @@ export class ChildStatusHistory {
       ([from, to]) => from === input.previousStatus && to === input.newStatus,
     );
     if (!ok) {
-      throw new Error(
-        `child_status_history_invalid_transition: ${input.previousStatus}->${input.newStatus}`,
+      throw new ChildStatusHistoryInvalidTransitionError(
+        input.previousStatus,
+        input.newStatus,
       );
     }
     if (input.newStatus === 'archived' && !input.archiveReason) {
-      throw new Error(
-        'child_status_history_missing_archive_reason: new_status=archived requires archive_reason',
-      );
+      throw new ChildStatusHistoryMissingArchiveReasonError();
     }
     return new ChildStatusHistory({
       id: input.id,

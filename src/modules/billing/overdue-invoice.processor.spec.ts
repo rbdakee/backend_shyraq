@@ -89,6 +89,7 @@ class FakeInvoiceRepo extends InvoiceRepository {
 
   override markOverdueBatch(
     kgId: string,
+    today: string,
     now: Date,
   ): Promise<
     Array<{
@@ -98,7 +99,6 @@ class FakeInvoiceRepo extends InvoiceRepository {
       dueDate: string;
     }>
   > {
-    const nowDate = now.toISOString().slice(0, 10);
     const flipped: Array<{
       id: string;
       childId: string;
@@ -109,7 +109,7 @@ class FakeInvoiceRepo extends InvoiceRepository {
       if (inv.kindergartenId !== kgId) continue;
       if (inv.status !== 'pending' && inv.status !== 'partial') continue;
       const due = inv.dueDate.toISOString().slice(0, 10);
-      if (due >= nowDate) continue;
+      if (due >= today) continue;
       // Mutate in place — mirror the relational UPDATE.
       const s = inv.toState();
       const updated = Invoice.fromState({
@@ -126,6 +126,10 @@ class FakeInvoiceRepo extends InvoiceRepository {
       });
     }
     return Promise.resolve(flipped);
+  }
+
+  override acquireOverdueRunAdvisoryLock(): Promise<void> {
+    return Promise.resolve();
   }
 }
 

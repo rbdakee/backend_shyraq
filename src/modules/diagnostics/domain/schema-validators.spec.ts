@@ -689,6 +689,26 @@ describe('B22a-T6 hardening — DoS caps + date round-trip + multiselect/scale',
       expect(() => validateTemplateSchemaShape(schema)).not.toThrow();
     });
 
+    it('rejects a trim-bypass attempt where raw length exceeds the cap (T13 M6)', () => {
+      // Trim length === MAX_STRING_LENGTH (would have passed the old
+      // trim-based check), raw length == MAX_STRING_LENGTH + 1000.
+      const trimmedCore = 'x'.repeat(MAX_STRING_LENGTH);
+      const padded = trimmedCore + ' '.repeat(1000);
+      expect(padded.trim().length).toBe(MAX_STRING_LENGTH);
+      expect(padded.length).toBe(MAX_STRING_LENGTH + 1000);
+      const schema = {
+        sections: [
+          {
+            title: padded,
+            fields: [makeField('note')],
+          },
+        ],
+      };
+      expect(() => validateTemplateSchemaShape(schema)).toThrow(
+        SchemaTooLargeError,
+      );
+    });
+
     it('attaches details with path + limit on cap violation', () => {
       const schema = {
         sections: Array.from({ length: MAX_SECTIONS + 1 }, (_, i) =>

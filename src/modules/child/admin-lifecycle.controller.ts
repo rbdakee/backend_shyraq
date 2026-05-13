@@ -11,6 +11,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import {
+  ApiAcceptedResponse,
   ApiBadRequestResponse,
   ApiBearerAuth,
   ApiBody,
@@ -109,7 +110,7 @@ export class AdminLifecycleController {
       'Re-enqueue a failed `lifecycle` queue job. Only failed jobs can be retried; non-failed states return 409. Per-kg admins can only retry jobs whose `payload.kindergartenId` matches.',
   })
   @ApiBody({ schema: { type: 'object', additionalProperties: false } })
-  @ApiOkResponse({
+  @ApiAcceptedResponse({
     type: RetryLifecycleFailedJobResponseDto,
     description: 'Job re-enqueued (HTTP 202).',
   })

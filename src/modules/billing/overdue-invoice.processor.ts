@@ -10,7 +10,10 @@ import { Job, Queue } from 'bullmq';
 import { DataSource } from 'typeorm';
 import { NotificationPort } from '@/common/notifications/notification.port';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
-import { KG_DEFAULT_TIMEZONE } from '@/shared-kernel/domain/value-objects/day-of-week.vo';
+import {
+  formatDateInTimezone,
+  KG_DEFAULT_TIMEZONE,
+} from '@/shared-kernel/domain/value-objects/day-of-week.vo';
 import { tenantStorage } from '@/database/tenant-storage';
 import { InvoiceRepository } from './infrastructure/persistence/invoice.repository';
 
@@ -148,11 +151,24 @@ export class OverdueInvoiceProcessor extends WorkerHost {
    * the relational repo's manager() resolves to the per-tx EntityManager
    * (RLS scoped). Exposed (not private) so e2e + integration specs can
    * drive it directly without BullMQ transport.
+   *
+   * B22a T13:
+   *   - M5 (opus): acquires `billing:overdue:<kg>:<YYYY-MM-DD>` advisory
+   *     lock at the top of the per-kg TX. Held until COMMIT/ROLLBACK so
+   *     a concurrent manual saas trigger or a re-run of the recurring
+   *     job cannot double-emit `invoice.overdue` notifications for rows
+   *     a sibling tick already flipped.
+   *   - M1 (codex): the cut-off date is computed in JS as
+   *     `formatDateInTimezone(now, 'Asia/Almaty')` and forwarded to the
+   *     repo. Earlier the repo cast `now::date` in the DB session
+   *     timezone (typically UTC) so a 03:00 Almaty cron tick still saw
+   *     "yesterday" and silently skipped invoices due that local day.
    */
   async runForKindergarten(
     kgId: string,
     now: Date,
   ): Promise<{ flippedIds: string[] }> {
+    const today = formatDateInTimezone(now, KG_DEFAULT_TIMEZONE);
     return this.dataSource.transaction(async (em) => {
       await em.query(`SELECT set_config('app.kindergarten_id', $1, true)`, [
         kgId,
@@ -160,7 +176,12 @@ export class OverdueInvoiceProcessor extends WorkerHost {
       return tenantStorage.run(
         { kgId, bypass: false, entityManager: em },
         async () => {
-          const flipped = await this.invoiceRepo.markOverdueBatch(kgId, now);
+          await this.invoiceRepo.acquireOverdueRunAdvisoryLock(kgId, today);
+          const flipped = await this.invoiceRepo.markOverdueBatch(
+            kgId,
+            today,
+            now,
+          );
           for (const row of flipped) {
             const daysOverdue = computeDaysOverdue(row.dueDate, now);
             await this.notificationPort.notifyInvoiceOverdue({

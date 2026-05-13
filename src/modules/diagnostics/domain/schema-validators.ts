@@ -83,9 +83,13 @@ function assertStringWithinCap(
   raw: string,
   cap: number = MAX_STRING_LENGTH,
 ): void {
-  // Trim before measuring — leading/trailing whitespace doesn't count toward
-  // the storage cap, mirroring how labels are normally rendered.
-  if (raw.trim().length > cap) {
+  // B22a T13 M6 (opus) — measure RAW length (untrimmed). Earlier
+  // revisions called `raw.trim().length` so an attacker could submit
+  // `"a".repeat(200) + " ".repeat(10000)`: trim brought the measure
+  // back to 200 (cap-passing) but the raw string still persisted at
+  // ~10kB. We still store the raw string; the cap now matches the
+  // bytes-written reality.
+  if (raw.length > cap) {
     failTooLarge(path, `string length > ${cap}`);
   }
 }

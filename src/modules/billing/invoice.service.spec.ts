@@ -1505,4 +1505,113 @@ describe('InvoiceService', () => {
       expect(rows.get('cd-uncapped')?.usedCount).toBe(10);
     });
   });
+
+  /**
+   * B22a T13 H1 — compensation pattern coverage.
+   *
+   * Direct private-method test (cast to any) for `releaseUnusedReservations`.
+   * Mirrors the production call-site contract: the helper is invoked AFTER
+   * the engine returns and BEFORE invoice persist; it must release exactly
+   * the discounts that were reserved but not in `customApplicationsToWrite`.
+   */
+  describe('B22a T13 H1 — releaseUnusedReservations compensation', () => {
+    type ReleaseCall = { kgId: string; discountId: string };
+
+    function buildFakeCustomDiscountRepo() {
+      const releaseCalls: ReleaseCall[] = [];
+      const fake = {
+        releaseUsage(kgId: string, discountId: string): Promise<void> {
+          releaseCalls.push({ kgId, discountId });
+          return Promise.resolve();
+        },
+      };
+      return { fake, releaseCalls };
+    }
+
+    function makeSvcWithFake(
+      fakeRepo: ReturnType<typeof buildFakeCustomDiscountRepo>['fake'],
+    ): InvoiceService {
+      const { svc } = buildSvc();
+      // Inject the fake into the optional `customDiscounts` slot. The
+      // helper only needs `releaseUsage` from the port surface.
+
+      (svc as any).customDiscounts = fakeRepo;
+      return svc;
+    }
+
+    it('releases reservations that the engine did not include in customApplicationsToWrite', async () => {
+      const { fake, releaseCalls } = buildFakeCustomDiscountRepo();
+      const svc = makeSvcWithFake(fake);
+      const reserved = ['d-keep', 'd-drop-1', 'd-drop-2'];
+      const engineResult: DiscountEvaluationResult = {
+        discountPct: 10,
+        discountReason: 'kept',
+        appliedRules: ['custom:d-keep'],
+        customApplicationsToWrite: [
+          { customDiscountId: 'd-keep', amountApplied: 1000, reason: 'kept' },
+        ],
+        customDiscountAmount: 1000,
+      };
+
+      await (svc as any).releaseUnusedReservations(KG, reserved, engineResult);
+      expect(releaseCalls).toEqual([
+        { kgId: KG, discountId: 'd-drop-1' },
+        { kgId: KG, discountId: 'd-drop-2' },
+      ]);
+    });
+
+    it('releases nothing when every reserved id is a winner', async () => {
+      const { fake, releaseCalls } = buildFakeCustomDiscountRepo();
+      const svc = makeSvcWithFake(fake);
+      const reserved = ['d-1', 'd-2'];
+      const engineResult: DiscountEvaluationResult = {
+        discountPct: 25,
+        discountReason: '1,2',
+        appliedRules: ['custom:d-1', 'custom:d-2'],
+        customApplicationsToWrite: [
+          { customDiscountId: 'd-1', amountApplied: 500, reason: '1' },
+          { customDiscountId: 'd-2', amountApplied: 500, reason: '2' },
+        ],
+        customDiscountAmount: 1000,
+      };
+
+      await (svc as any).releaseUnusedReservations(KG, reserved, engineResult);
+      expect(releaseCalls).toEqual([]);
+    });
+
+    it('releases all reservations when the engine returns zero applications', async () => {
+      const { fake, releaseCalls } = buildFakeCustomDiscountRepo();
+      const svc = makeSvcWithFake(fake);
+      const reserved = ['d-a', 'd-b', 'd-c'];
+      const engineResult: DiscountEvaluationResult = {
+        discountPct: null,
+        discountReason: null,
+        appliedRules: [],
+        customApplicationsToWrite: [],
+        customDiscountAmount: null,
+      };
+
+      await (svc as any).releaseUnusedReservations(KG, reserved, engineResult);
+      expect(releaseCalls.map((c) => c.discountId).sort()).toEqual([
+        'd-a',
+        'd-b',
+        'd-c',
+      ]);
+    });
+
+    it('is a no-op when reservedDiscountIds is empty', async () => {
+      const { fake, releaseCalls } = buildFakeCustomDiscountRepo();
+      const svc = makeSvcWithFake(fake);
+      const engineResult: DiscountEvaluationResult = {
+        discountPct: null,
+        discountReason: null,
+        appliedRules: [],
+        customApplicationsToWrite: [],
+        customDiscountAmount: null,
+      };
+
+      await (svc as any).releaseUnusedReservations(KG, [], engineResult);
+      expect(releaseCalls).toEqual([]);
+    });
+  });
 });

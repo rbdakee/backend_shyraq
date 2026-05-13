@@ -256,12 +256,19 @@ export class InvoiceRelationalRepository extends InvoiceRepository {
    * for newly-flipped rows without a follow-up SELECT loop.
    *
    * Date arithmetic: `due_date < $2::date` compares the `date` column
-   * against the cron's "now" cast to a date — strictly past-due rows
-   * only. The flipped invoice's `updated_at` becomes `$2` so the audit
-   * trail reflects the cron's tick time.
+   * against the caller-supplied Asia/Almaty calendar date string — NOT
+   * a JS `Date` cast in the DB session timezone. Earlier revisions used
+   * `now::date` and silently skipped invoices due "today" in Almaty when
+   * the DB session was UTC (03:00 Almaty = 22:00 prev-day UTC). The
+   * processor passes `formatDateInTimezone(now, 'Asia/Almaty')` so the
+   * cut-off matches the local calendar day the cron is targeting (B22a
+   * T13 M1 codex fix). The flipped invoice's `updated_at` becomes the
+   * timestamp `$3` so the audit trail still reflects the precise
+   * instant of the cron tick.
    */
   async markOverdueBatch(
     kindergartenId: string,
+    today: string,
     now: Date,
   ): Promise<
     Array<{
@@ -284,12 +291,12 @@ export class InvoiceRelationalRepository extends InvoiceRepository {
       await m.query(
         `UPDATE invoices
             SET status = 'overdue',
-                updated_at = $2
+                updated_at = $3
           WHERE kindergarten_id = $1
             AND status IN ('pending', 'partial')
             AND due_date < $2::date
           RETURNING id, child_id, amount_after_discount, due_date`,
-        [kindergartenId, now],
+        [kindergartenId, today, now],
       ),
     );
     return rows.map((r) => ({
@@ -309,6 +316,17 @@ export class InvoiceRelationalRepository extends InvoiceRepository {
   ): Promise<void> {
     const periodKey = periodStart.toISOString().slice(0, 7);
     const scope = `billing:monthly:${kindergartenId}:${periodKey}`;
+    await this.manager().query(
+      `SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`,
+      [scope],
+    );
+  }
+
+  async acquireOverdueRunAdvisoryLock(
+    kindergartenId: string,
+    today: string,
+  ): Promise<void> {
+    const scope = `billing:overdue:${kindergartenId}:${today}`;
     await this.manager().query(
       `SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`,
       [scope],

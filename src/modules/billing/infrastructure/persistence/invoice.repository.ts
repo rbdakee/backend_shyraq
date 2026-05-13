@@ -156,6 +156,28 @@ export abstract class InvoiceRepository {
     periodStart: Date,
   ): Promise<void>;
 
+  /**
+   * B22a T13 M5 — `pg_advisory_xact_lock(hashtext('billing:overdue:'||
+   * kgId||':'||YYYY-MM-DD)::bigint)` for the overdue-invoice nightly
+   * cron. Held for the duration of the per-kg ambient TX so two
+   * concurrent ticks (manual saas trigger + recurring) cannot
+   * double-emit `invoice.overdue` notifications for the same flipped
+   * row. Released automatically on TX commit / rollback.
+   *
+   * `today` is the Asia/Almaty calendar date (`YYYY-MM-DD`) so the same
+   * Almaty day across multiple ticks contends for the same lock. Two
+   * ticks anchored on different local days target different invoices
+   * anyway and need not contend.
+   *
+   * Default no-op so older fakes compile; relational impl overrides.
+   */
+  acquireOverdueRunAdvisoryLock(
+    _kindergartenId: string,
+    _today: string,
+  ): Promise<void> {
+    return Promise.resolve();
+  }
+
   // ── B22a T1 — OverdueInvoiceProcessor batch helper ─────────────────────
 
   /**
@@ -166,11 +188,19 @@ export abstract class InvoiceRepository {
    * `invoice.overdue` event producer).
    *
    *   `UPDATE invoices
-   *       SET status = 'overdue', updated_at = $2
+   *       SET status = 'overdue', updated_at = $3
    *     WHERE kindergarten_id = $1
    *       AND status IN ('pending', 'partial')
    *       AND due_date < $2::date
    *     RETURNING id, child_id, amount_after_discount, due_date`
+   *
+   * `today` is an explicit Asia/Almaty calendar date (`YYYY-MM-DD`)
+   * supplied by the caller (B22a T13 M1 codex fix). Earlier revisions
+   * cast `now::date` inside SQL — that evaluated in the DB session
+   * timezone (typically UTC), so a 03:00 Almaty cron tick was still
+   * "yesterday" in UTC and silently skipped invoices due that very day.
+   * Computing the local calendar date in JS via `formatDateInTimezone`
+   * removes the implicit dependency on PG session timezone.
    *
    * Re-running the same cron tick is idempotent: rows already in
    * `overdue` are filtered out by the status guard.
@@ -180,6 +210,7 @@ export abstract class InvoiceRepository {
    */
   markOverdueBatch(
     _kindergartenId: string,
+    _today: string,
     _now: Date,
   ): Promise<
     Array<{

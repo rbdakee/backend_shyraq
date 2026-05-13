@@ -763,6 +763,12 @@ class FakeNotification extends NotificationPort {
 const KG = '11111111-1111-1111-1111-111111111111';
 const KG2 = '22222222-2222-2222-2222-222222222222';
 const NOW = new Date('2026-04-28T12:00:00.000Z');
+// T13 L1 (opus) — `archiveChild` / `reactivateChild` now require an
+// explicit `users.id` actor. Older tests in this file invoked them with
+// the 4-arg form (no actor) — they now thread this constant through so
+// the legacy assertions stay focused on the side effect under test
+// without each test having to invent a fresh user id.
+const LEGACY_ACTOR_USER_ID = '99999999-9999-9999-9999-999999999999';
 
 function makeGroup(id: string, kg = KG): Group {
   return Group.hydrate({
@@ -1006,11 +1012,17 @@ describe('ChildService — admin: createChild + updates', () => {
     });
     // archive requires status='active'; createChild leaves card_created.
     c.activate(NOW);
-    await service.archiveChild(KG, c.id, 'parent withdrew', 'staff-1');
+    await service.archiveChild(
+      KG,
+      c.id,
+      'parent withdrew',
+      'staff-1',
+      LEGACY_ACTOR_USER_ID,
+    );
     const got = await service.getChild(KG, c.id);
     expect(got.child.status.value).toBe('archived');
     expect(got.child.archiveReason).toBe('parent withdrew');
-    await service.restoreChild(KG, c.id, 'staff-1');
+    await service.restoreChild(KG, c.id, 'staff-1', LEGACY_ACTOR_USER_ID);
     const after = await service.getChild(KG, c.id);
     expect(after.child.status.value).toBe('active');
     expect(after.child.archivedAt).toBeUndefined();
@@ -1025,7 +1037,13 @@ describe('ChildService — admin: createChild + updates', () => {
         dateOfBirth: new Date('2021-09-15'),
       });
       c.activate(NOW);
-      await service.archiveChild(KG, c.id, 'parent withdrew', 'staff-1');
+      await service.archiveChild(
+        KG,
+        c.id,
+        'parent withdrew',
+        'staff-1',
+        LEGACY_ACTOR_USER_ID,
+      );
       expect(billingLifecycle.calls).toHaveLength(1);
       expect(billingLifecycle.calls[0]).toMatchObject({
         kg: KG,
@@ -1040,7 +1058,13 @@ describe('ChildService — admin: createChild + updates', () => {
         dateOfBirth: new Date('2021-09-15'),
       });
       c.activate(NOW);
-      await service.archiveChild(KG, c.id, 'parent withdrew', 'staff-1');
+      await service.archiveChild(
+        KG,
+        c.id,
+        'parent withdrew',
+        'staff-1',
+        LEGACY_ACTOR_USER_ID,
+      );
       expect(lifecycleQueue.jobs).toHaveLength(1);
       const job = lifecycleQueue.jobs[0];
       expect(job.name).toBe('lifecycle:pro-rata-refund');
@@ -1062,7 +1086,13 @@ describe('ChildService — admin: createChild + updates', () => {
         dateOfBirth: new Date('2021-09-15'),
       });
       c.activate(NOW);
-      await service.archiveChild(KG, c.id, 'parent withdrew', 'staff-1');
+      await service.archiveChild(
+        KG,
+        c.id,
+        'parent withdrew',
+        'staff-1',
+        LEGACY_ACTOR_USER_ID,
+      );
       const ev = notification.events.find((e) => e.type === 'child_archived');
       expect(ev).toBeDefined();
       expect(ev?.payload).toMatchObject({
@@ -1080,9 +1110,21 @@ describe('ChildService — admin: createChild + updates', () => {
         dateOfBirth: new Date('2021-09-15'),
       });
       c.activate(NOW);
-      await service.archiveChild(KG, c.id, 'parent withdrew', 'staff-1');
+      await service.archiveChild(
+        KG,
+        c.id,
+        'parent withdrew',
+        'staff-1',
+        LEGACY_ACTOR_USER_ID,
+      );
       await expect(
-        service.archiveChild(KG, c.id, 'parent withdrew', 'staff-1'),
+        service.archiveChild(
+          KG,
+          c.id,
+          'parent withdrew',
+          'staff-1',
+          LEGACY_ACTOR_USER_ID,
+        ),
       ).rejects.toBeInstanceOf(ChildAlreadyArchivedError);
     });
 
@@ -1094,6 +1136,7 @@ describe('ChildService — admin: createChild + updates', () => {
           '00000000-0000-0000-0000-000000000099',
           'parent withdrew',
           'staff-1',
+          LEGACY_ACTOR_USER_ID,
         ),
       ).rejects.toBeInstanceOf(ChildNotFoundError);
     });
@@ -1106,7 +1149,13 @@ describe('ChildService — admin: createChild + updates', () => {
       });
       c.activate(NOW);
       await expect(
-        service.archiveChild(KG2, c.id, 'parent withdrew', 'staff-1'),
+        service.archiveChild(
+          KG2,
+          c.id,
+          'parent withdrew',
+          'staff-1',
+          LEGACY_ACTOR_USER_ID,
+        ),
       ).rejects.toBeInstanceOf(ChildNotFoundError);
     });
 
@@ -1118,7 +1167,7 @@ describe('ChildService — admin: createChild + updates', () => {
       });
       c.activate(NOW);
       await expect(
-        service.archiveChild(KG, c.id, '   ', 'staff-1'),
+        service.archiveChild(KG, c.id, '   ', 'staff-1', LEGACY_ACTOR_USER_ID),
       ).rejects.toBeInstanceOf(ArchiveReasonRequiredError);
     });
 
@@ -1129,8 +1178,19 @@ describe('ChildService — admin: createChild + updates', () => {
         dateOfBirth: new Date('2021-09-15'),
       });
       c.activate(NOW);
-      await service.archiveChild(KG, c.id, 'parent withdrew', 'staff-1');
-      const result = await service.reactivateChild(KG, c.id, 'staff-2');
+      await service.archiveChild(
+        KG,
+        c.id,
+        'parent withdrew',
+        'staff-1',
+        LEGACY_ACTOR_USER_ID,
+      );
+      const result = await service.reactivateChild(
+        KG,
+        c.id,
+        'staff-2',
+        LEGACY_ACTOR_USER_ID,
+      );
       expect(result.requires_new_tariff_assignment).toBe(true);
       expect(result.child.status.value).toBe('active');
       expect(result.child.archivedAt).toBeUndefined();
@@ -1144,8 +1204,14 @@ describe('ChildService — admin: createChild + updates', () => {
         dateOfBirth: new Date('2021-09-15'),
       });
       c.activate(NOW);
-      await service.archiveChild(KG, c.id, 'parent withdrew', 'staff-1');
-      await service.reactivateChild(KG, c.id, 'staff-2');
+      await service.archiveChild(
+        KG,
+        c.id,
+        'parent withdrew',
+        'staff-1',
+        LEGACY_ACTOR_USER_ID,
+      );
+      await service.reactivateChild(KG, c.id, 'staff-2', LEGACY_ACTOR_USER_ID);
       const ev = notification.events.find(
         (e) => e.type === 'child_reactivated',
       );
@@ -1165,7 +1231,7 @@ describe('ChildService — admin: createChild + updates', () => {
       });
       c.activate(NOW);
       await expect(
-        service.reactivateChild(KG, c.id, 'staff-1'),
+        service.reactivateChild(KG, c.id, 'staff-1', LEGACY_ACTOR_USER_ID),
       ).rejects.toBeInstanceOf(ChildNotArchivedError);
     });
 
@@ -1176,6 +1242,7 @@ describe('ChildService — admin: createChild + updates', () => {
           KG,
           '00000000-0000-0000-0000-000000000099',
           'staff-1',
+          LEGACY_ACTOR_USER_ID,
         ),
       ).rejects.toBeInstanceOf(ChildNotFoundError);
     });

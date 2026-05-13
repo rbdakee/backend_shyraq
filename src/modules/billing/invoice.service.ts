@@ -830,6 +830,18 @@ export class InvoiceService {
       },
     });
 
+    // B22a T13 H1 — release reservations for any pre-engine-reserved
+    // discount that the engine ultimately did NOT include in
+    // `customApplicationsToWrite` (e.g. dropped by a non-stackable gate or
+    // by `evaluateConditions` returning false). Without this compensation
+    // the slot stays consumed forever, prematurely exhausting capped
+    // discounts. Runs in the same ambient TX so the release is durable.
+    await this.releaseUnusedReservations(
+      kindergartenId,
+      customCtx.reservedDiscountIds,
+      discount,
+    );
+
     const amountAfter = Invoice.computeAmountAfterDiscount(
       baseAmount,
       discount.discountPct,
@@ -957,6 +969,13 @@ export class InvoiceService {
         familyContext: customCtx.familyContext ?? undefined,
       },
     });
+
+    // B22a T13 H1 — see prepayInvoice for rationale.
+    await this.releaseUnusedReservations(
+      kindergartenId,
+      customCtx.reservedDiscountIds,
+      discount,
+    );
 
     let amountAfter = Invoice.computeAmountAfterDiscount(
       baseAmount,
@@ -1104,6 +1123,13 @@ export class InvoiceService {
     customDiscounts: CustomDiscountSnapshot[];
     childContext: DiscountEvaluationInput['context']['childContext'] | null;
     familyContext: DiscountEvaluationInput['context']['familyContext'] | null;
+    /**
+     * IDs of discounts that consumed a `total_max_uses` slot via
+     * `tryReserveUsage` BEFORE engine evaluation. Returned so the caller
+     * can compensate (T13 H1) any IDs that the engine ultimately drops
+     * — see `releaseUnusedReservations`.
+     */
+    reservedDiscountIds: string[];
   }> {
     if (
       !this.customDiscounts ||
@@ -1112,7 +1138,12 @@ export class InvoiceService {
       !this.children ||
       !this.childGuardians
     ) {
-      return { customDiscounts: [], childContext: null, familyContext: null };
+      return {
+        customDiscounts: [],
+        childContext: null,
+        familyContext: null,
+        reservedDiscountIds: [],
+      };
     }
 
     // Step 1 — kg-wide active set.
@@ -1183,7 +1214,6 @@ export class InvoiceService {
       }
       eligible.push(snap);
     }
-    void reservedDiscountIds; // surface in logs only — TX rollback releases on its own
 
     // Build child + family context.
     const child = await this.children.findById(kindergartenId, childId);
@@ -1232,7 +1262,56 @@ export class InvoiceService {
     void _invoiceType;
     void periodStart;
 
-    return { customDiscounts: eligible, childContext, familyContext };
+    return {
+      customDiscounts: eligible,
+      childContext,
+      familyContext,
+      reservedDiscountIds,
+    };
+  }
+
+  /**
+   * B22a T13 H1 — compensation for `tryReserveUsage` slots that the
+   * discount engine did NOT include in `customApplicationsToWrite`.
+   *
+   * Why this is needed: `buildCustomDiscountInputs` reserves a
+   * `total_max_uses` slot for every targeting-passing discount BEFORE
+   * the engine evaluates conditions / applies stacking. The engine then
+   * may drop a reserved snapshot when:
+   *   1. `evaluateConditions(snap.conditions, ctx)` returns false (e.g.
+   *      "child age < 24 months" excludes the discount for older kids).
+   *   2. `evaluateConditions` throws (logged + skipped).
+   *   3. Stacking gates the discount (top non-stackable wins outright; a
+   *      mid-list non-stackable terminates the stackable prefix).
+   *   4. `remaining <= 0` after higher-priority winners filled the cap.
+   *   5. `amountApplied <= 0` after rounding.
+   *
+   * For every dropped snapshot the `used_count` increment from step 1
+   * must be released, otherwise the cap leaks and a legitimate later
+   * invoice loses the discount. We call `releaseUsage` (single
+   * `UPDATE … SET used_count = GREATEST(used_count - 1, 0)`) inside the
+   * ambient TX so a downstream INSERT failure rolls both the original
+   * reserve AND the release back together.
+   *
+   * Logged at debug; the loud `discount.cap_raced` log fires upstream in
+   * `buildCustomDiscountInputs` for the cap-race case.
+   */
+  private async releaseUnusedReservations(
+    kindergartenId: string,
+    reservedDiscountIds: string[],
+    discount: DiscountEvaluationResult,
+  ): Promise<void> {
+    if (!this.customDiscounts || reservedDiscountIds.length === 0) return;
+    const winners = new Set(
+      discount.customApplicationsToWrite.map((a) => a.customDiscountId),
+    );
+    for (const reservedId of reservedDiscountIds) {
+      if (winners.has(reservedId)) continue;
+      await this.customDiscounts.releaseUsage(kindergartenId, reservedId);
+      this.logger.debug(
+        `discount.reserve_released: kg=${kindergartenId} discount=${reservedId} — engine dropped post-reserve.`,
+      );
+    }
   }
 
   /**

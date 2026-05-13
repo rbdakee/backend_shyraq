@@ -85,7 +85,10 @@ import { ParentLinkController } from './parent-link.controller';
   exports: [
     ChildRepository,
     ChildGuardianRepository,
-    ChildStatusHistoryRepository,
+    // ChildStatusHistoryRepository intentionally NOT exported (T13 M7
+    // opus): it's only consumed by ChildService inside this module, so
+    // exporting it would leak module-internal persistence detail per
+    // CLAUDE.md §4 module-boundary discipline.
     ChildService,
     BillingLifecyclePort,
     // Re-export the queue token via the BullMQ module so consumers that

@@ -469,11 +469,12 @@ export class ChildService {
      * `archivedByStaffId` (`staff_members.id`) because the
      * `child_status_history` audit row keys actor at the user level —
      * staff churn (terminate + re-add in different role) keeps the audit
-     * link intact. Optional only so legacy service-unit fakes keep
-     * compiling without an immediate spec rewrite — production
-     * controllers always pass `req.user.sub`.
+     * link intact. T13 L1 (opus) — required (no default). Earlier the
+     * default value was `archivedByStaffId`, which silently wrote a
+     * `staff_members.id` value into the `users.id` FK column for legacy
+     * spec callers; production controllers always pass `req.user.sub`.
      */
-    changedByUserId: string = archivedByStaffId,
+    changedByUserId: string,
   ): Promise<Child> {
     // Reason validation is a domain invariant. Mirror `Child.archive`'s
     // rule (non-empty + <= 500 chars after trim) so we surface the same
@@ -625,11 +626,12 @@ export class ChildService {
     reactivatedByStaffId: string,
     /**
      * `users.id` of the actor (`req.user.sub`). See `archiveChild` doc on
-     * why we key the audit row at user level (B22a T9). Optional only
-     * for legacy service-unit fakes — production controllers always
-     * pass `req.user.sub`.
+     * why we key the audit row at user level (B22a T9). T13 L1 (opus)
+     * — required (no default). Earlier the default was
+     * `reactivatedByStaffId`, which silently wrote a `staff_members.id`
+     * value into the `users.id` FK column for legacy spec callers.
      */
-    changedByUserId: string = reactivatedByStaffId,
+    changedByUserId: string,
   ): Promise<{ child: Child; requires_new_tariff_assignment: true }> {
     const now = this.clock.now();
 
@@ -689,17 +691,20 @@ export class ChildService {
   /**
    * Back-compat alias for the old `restoreChild` name. New callers (T4
    * controller) should use `reactivateChild`. Kept until the controller
-   * lands so `child.service.spec.ts` keeps compiling.
+   * lands so `child.service.spec.ts` keeps compiling. T13 L1 (opus) —
+   * `changedByUserId` is now required (no `staff_members.id` fallback).
    */
   async restoreChild(
     kindergartenId: string,
     childId: string,
-    reactivatedByStaffId = '',
+    reactivatedByStaffId: string,
+    changedByUserId: string,
   ): Promise<Child> {
     const { child } = await this.reactivateChild(
       kindergartenId,
       childId,
       reactivatedByStaffId,
+      changedByUserId,
     );
     return child;
   }
