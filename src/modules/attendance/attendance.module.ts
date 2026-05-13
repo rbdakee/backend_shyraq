@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ChildModule } from '@/modules/child/child.module';
+import { GroupModule } from '@/modules/group/group.module';
 import { StaffModule } from '@/modules/staff/staff.module';
 import { AdminAttendanceController } from './admin-attendance.controller';
 import { AttendanceService } from './attendance.service';
@@ -39,6 +40,7 @@ import { TimelineEntryRelationalRepository } from './infrastructure/persistence/
       TimelineEntryTypeOrmEntity,
     ]),
     ChildModule,
+    GroupModule,
     StaffModule,
   ],
   controllers: [

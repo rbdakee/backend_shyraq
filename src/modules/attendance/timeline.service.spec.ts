@@ -37,6 +37,14 @@ import {
   PageRequest,
   PageResult,
 } from '@/modules/child/infrastructure/persistence/child.repository';
+import {
+  GroupRepository,
+  CreateGroupInput,
+  ListGroupsFilters,
+  UpdateGroupInput,
+} from '@/modules/group/infrastructure/persistence/group.repository';
+import { Group } from '@/modules/group/domain/entities/group.entity';
+import { GroupMentor } from '@/modules/group/domain/entities/group-mentor.entity';
 import { StaffMember } from '@/modules/staff/domain/entities/staff-member.entity';
 import { StaffNotFoundError } from '@/modules/staff/domain/errors/staff-not-found.error';
 import {
@@ -49,6 +57,7 @@ import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { TimelineEntry } from './domain/entities/timeline-entry.entity';
 import { InvalidAttendanceTimestampError } from './domain/errors/invalid-attendance-timestamp.error';
 import { InvalidTimelineEntryTypeError } from './domain/errors/invalid-timeline-entry-type.error';
+import { MentorScopeViolatedError } from './domain/errors/mentor-scope-violated.error';
 import { TimelineEntryNotAuthorError } from './domain/errors/timeline-entry-not-author.error';
 import { TimelineEntryNotFoundError } from './domain/errors/timeline-entry-not-found.error';
 import {
@@ -66,6 +75,7 @@ const STAFF_USER = 'aaaaaaaa-1111-1111-1111-aaaaaaaaaaaa';
 const STAFF_ID = 'bbbbbbbb-1111-1111-1111-bbbbbbbbbbbb';
 const OTHER_STAFF_USER = 'aaaaaaaa-3333-3333-3333-aaaaaaaaaaaa';
 const OTHER_STAFF_ID = 'bbbbbbbb-3333-3333-3333-bbbbbbbbbbbb';
+const GROUP_ID = 'gggggggg-gggg-gggg-gggg-gggggggggggg';
 const NOW = new Date('2026-05-01T09:00:00.000Z');
 
 // ── Fakes ────────────────────────────────────────────────────────────────
@@ -283,9 +293,67 @@ class FakeNotificationPort extends NotificationPort {
   }
 }
 
+class FakeGroupRepo extends GroupRepository {
+  /**
+   * Map of `userId` → Set of groupIds the user is the active mentor of.
+   * Set via `setMentorForGroups` in tests.
+   */
+  mentorships = new Map<string, Set<string>>();
+
+  setMentorForGroups(userId: string, groupIds: string[]): void {
+    this.mentorships.set(userId, new Set(groupIds));
+  }
+
+  create(_kg: string, _i: CreateGroupInput): Promise<Group> {
+    return Promise.reject(new Error('not used'));
+  }
+  findById(): Promise<Group | null> {
+    return Promise.resolve(null);
+  }
+  list(_kg: string, _f?: ListGroupsFilters): Promise<Group[]> {
+    return Promise.resolve([]);
+  }
+  update(
+    _kg: string,
+    _id: string,
+    _p: UpdateGroupInput,
+  ): Promise<Group | null> {
+    return Promise.resolve(null);
+  }
+  save(g: Group): Promise<Group> {
+    return Promise.resolve(g);
+  }
+  assignMentor(): Promise<GroupMentor> {
+    return Promise.reject(new Error('not used'));
+  }
+  unassignMentor(): Promise<GroupMentor | null> {
+    return Promise.resolve(null);
+  }
+  unassignMentorByStaffMember(): Promise<number> {
+    return Promise.resolve(0);
+  }
+  findActiveMentor(): Promise<GroupMentor | null> {
+    return Promise.resolve(null);
+  }
+  listMentorHistory(): Promise<GroupMentor[]> {
+    return Promise.resolve([]);
+  }
+  findActiveMentorAssignmentsByUserIdCrossTenant(): Promise<GroupMentor[]> {
+    return Promise.resolve([]);
+  }
+  isUserActiveMentorForGroup(
+    _kg: string,
+    userId: string,
+    groupId: string,
+  ): Promise<boolean> {
+    const groups = this.mentorships.get(userId);
+    return Promise.resolve(groups?.has(groupId) ?? false);
+  }
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────
 
-function makeChild(): Child {
+function makeChild(currentGroupId: string | null = null): Child {
   return Child.hydrate({
     id: CHILD,
     kindergartenId: KG,
@@ -295,7 +363,7 @@ function makeChild(): Child {
     gender: null,
     photoUrl: null,
     status: 'active',
-    currentGroupId: null,
+    currentGroupId,
     enrollmentDate: NOW,
     archivedAt: null,
     archiveReason: null,
@@ -329,18 +397,20 @@ interface Wired {
   timelineRepo: FakeTimelineRepo;
   childRepo: FakeChildRepo;
   staffRepo: FakeStaffRepo;
+  groupRepo: FakeGroupRepo;
   notifications: FakeNotificationPort;
   clock: FixedClock;
 }
 
-function wire(): Wired {
+function wire(childGroupId: string | null = null): Wired {
   const timelineRepo = new FakeTimelineRepo();
   const childRepo = new FakeChildRepo();
   const staffRepo = new FakeStaffRepo();
+  const groupRepo = new FakeGroupRepo();
   const notifications = new FakeNotificationPort();
   const clock = new FixedClock(NOW);
 
-  childRepo.put(makeChild());
+  childRepo.put(makeChild(childGroupId));
   staffRepo.put(makeStaff(STAFF_USER, STAFF_ID));
   staffRepo.put(makeStaff(OTHER_STAFF_USER, OTHER_STAFF_ID));
 
@@ -348,10 +418,19 @@ function wire(): Wired {
     timelineRepo,
     childRepo,
     staffRepo,
+    groupRepo,
     clock,
     notifications,
   );
-  return { service, timelineRepo, childRepo, staffRepo, notifications, clock };
+  return {
+    service,
+    timelineRepo,
+    childRepo,
+    staffRepo,
+    groupRepo,
+    notifications,
+    clock,
+  };
 }
 
 /** No-op helper kept for test readability — notifications are now synchronous
@@ -571,6 +650,102 @@ describe('TimelineService — service-unit', () => {
           { isAdmin: false },
         ),
       ).rejects.toBeInstanceOf(InvalidAttendanceTimestampError);
+    });
+  });
+
+  // ── B22b T13 — mentor-group scope ─────────────────────────────────────────
+
+  describe('mentor-group scope (B22b T13)', () => {
+    it('throws MentorScopeViolatedError when child has no group', async () => {
+      // Child has currentGroupId=null — mentor cannot claim scope.
+      const w = wire(null);
+      w.groupRepo.setMentorForGroups(STAFF_USER, [GROUP_ID]);
+      await expect(
+        w.service.createEntry(
+          KG,
+          CHILD,
+          STAFF_USER,
+          { entryType: 'note' },
+          { isAdmin: false, callerRole: 'mentor' },
+        ),
+      ).rejects.toBeInstanceOf(MentorScopeViolatedError);
+    });
+
+    it('throws MentorScopeViolatedError when mentor is not assigned to the child group', async () => {
+      // Child is in GROUP_ID but STAFF_USER is not the active mentor there.
+      const w = wire(GROUP_ID);
+      // No mentorship set → isUserActiveMentorForGroup returns false.
+      await expect(
+        w.service.createEntry(
+          KG,
+          CHILD,
+          STAFF_USER,
+          { entryType: 'note' },
+          { isAdmin: false, callerRole: 'mentor' },
+        ),
+      ).rejects.toBeInstanceOf(MentorScopeViolatedError);
+    });
+
+    it('returns created entry when mentor is assigned to the child group', async () => {
+      const w = wire(GROUP_ID);
+      w.groupRepo.setMentorForGroups(STAFF_USER, [GROUP_ID]);
+      const entry = await w.service.createEntry(
+        KG,
+        CHILD,
+        STAFF_USER,
+        { entryType: 'activity', title: 'Group activity' },
+        { isAdmin: false, callerRole: 'mentor' },
+      );
+      expect(entry.entryType.value).toBe('activity');
+      expect(w.timelineRepo.rows.size).toBe(1);
+    });
+
+    it('bypasses mentor-group scope when isAdmin=true', async () => {
+      // Admin may write for any child regardless of mentor assignment.
+      const w = wire(GROUP_ID);
+      // No mentorship set — but isAdmin=true so scope is not checked.
+      const entry = await w.service.createEntry(
+        KG,
+        CHILD,
+        STAFF_USER,
+        { entryType: 'note', title: 'Admin note' },
+        { isAdmin: true, callerRole: 'mentor' },
+      );
+      expect(entry.entryType.value).toBe('note');
+    });
+
+    it('bypasses mentor-group scope for non-mentor roles (specialist)', async () => {
+      // Specialist role is kg-scoped, not group-scoped — no check applied.
+      const w = wire(GROUP_ID);
+      // No mentorship set but callerRole=specialist → no scope check.
+      const entry = await w.service.createEntry(
+        KG,
+        CHILD,
+        STAFF_USER,
+        { entryType: 'note', title: 'Specialist note' },
+        { isAdmin: false, callerRole: 'specialist' },
+      );
+      expect(entry.entryType.value).toBe('note');
+    });
+
+    it('throws MentorScopeViolatedError on deleteEntry when mentor is not in child group', async () => {
+      const w = wire(GROUP_ID);
+      // Create entry as admin so we bypass scope on create.
+      const entry = await w.service.createEntry(
+        KG,
+        CHILD,
+        STAFF_USER,
+        { entryType: 'photo' },
+        { isAdmin: true },
+      );
+      // Now try to delete as a mentor not assigned to the child's group.
+      await expect(
+        w.service.deleteEntry(KG, entry.id, STAFF_USER, {
+          isAdmin: false,
+          callerRole: 'mentor',
+        }),
+      ).rejects.toBeInstanceOf(MentorScopeViolatedError);
+      expect(w.timelineRepo.rows.size).toBe(1);
     });
   });
 });

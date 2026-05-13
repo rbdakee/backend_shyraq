@@ -1502,6 +1502,85 @@ describe('NotificationDispatcher', () => {
     });
   });
 
+  // ── B22b T13 — per-user locale push localisation ─────────────────────────
+
+  describe('per-user locale', () => {
+    it('sends push title in kk when recipient locale is kk', async () => {
+      const w = wire();
+      w.guardianRepo.setGuardiansForChild(CHILD, [
+        approvedGuardian(USER_A, 'primary'),
+      ]);
+      // USER_A has locale=kk.
+      w.userRepo.set(makeUser(USER_A, 'Айгүл'));
+      // Override the user locale via the fake — create a kk-locale user.
+      const kkUser = User.hydrate({
+        id: USER_A,
+        phone: '+77770000000',
+        fullName: 'Айгүл',
+        avatarUrl: null,
+        iin: null,
+        dateOfBirth: null,
+        locale: 'kk',
+      });
+      w.userRepo.set(kkUser);
+      w.tokenRepo.set(USER_A, [
+        { id: 't1', userId: USER_A, platform: 'ios', token: 'tok-a' },
+      ]);
+
+      const result = await w.dispatcher.dispatch(makeAttendanceEvent());
+
+      expect(result).toEqual({ status: 'dispatched' });
+      expect(w.pushPort.calls).toHaveLength(1);
+      // Should use kk title: 'Бала балабақшаға келді'
+      expect(w.pushPort.calls[0].payload.title).toBe('Бала балабақшаға келді');
+    });
+
+    it('falls back to ru when user locale is not found in template', async () => {
+      const w = wire();
+      w.guardianRepo.setGuardiansForChild(CHILD, [
+        approvedGuardian(USER_A, 'primary'),
+      ]);
+      // USER_A has locale=en which exists in attendance template.
+      const enUser = User.hydrate({
+        id: USER_A,
+        phone: '+77770000000',
+        fullName: 'John',
+        avatarUrl: null,
+        iin: null,
+        dateOfBirth: null,
+        locale: 'en',
+      });
+      w.userRepo.set(enUser);
+      w.tokenRepo.set(USER_A, [
+        { id: 't1', userId: USER_A, platform: 'ios', token: 'tok-a' },
+      ]);
+
+      const result = await w.dispatcher.dispatch(makeAttendanceEvent());
+
+      expect(result).toEqual({ status: 'dispatched' });
+      expect(w.pushPort.calls).toHaveLength(1);
+      // en title is 'Child checked in'
+      expect(w.pushPort.calls[0].payload.title).toBe('Child checked in');
+    });
+
+    it('falls back to ru when userRepo returns null for the userId', async () => {
+      const w = wire();
+      w.guardianRepo.setGuardiansForChild(CHILD, [
+        approvedGuardian(USER_A, 'primary'),
+      ]);
+      // No user set → userRepo.findById returns null → locale falls back to ru.
+      w.tokenRepo.set(USER_A, [
+        { id: 't1', userId: USER_A, platform: 'ios', token: 'tok-a' },
+      ]);
+
+      const result = await w.dispatcher.dispatch(makeAttendanceEvent());
+
+      expect(result).toEqual({ status: 'dispatched' });
+      expect(w.pushPort.calls).toHaveLength(1);
+      expect(w.pushPort.calls[0].payload.title).toBe('Ребёнок прибыл в сад');
+    });
+  });
+
   // ── HIGH#2 SavepointRollback contract ──────────────────────────────────
 
   describe('SavepointRollback', () => {

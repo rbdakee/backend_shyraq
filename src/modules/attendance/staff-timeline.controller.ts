@@ -91,14 +91,20 @@ export class StaffTimelineController {
     @Body() dto: CreateTimelineEntryDto,
   ): Promise<TimelineEntryResponseDto> {
     const kgId = requireTenant(t);
-    const entry = await this.service.createEntry(kgId, dto.childId, user.sub, {
-      entryType: dto.entryType,
-      title: dto.title ?? null,
-      body: dto.body ?? null,
-      mediaUrls: dto.mediaUrls ?? null,
-      metadata: dto.metadata ?? null,
-      entryTime: dto.entryTime,
-    });
+    const entry = await this.service.createEntry(
+      kgId,
+      dto.childId,
+      user.sub,
+      {
+        entryType: dto.entryType,
+        title: dto.title ?? null,
+        body: dto.body ?? null,
+        mediaUrls: dto.mediaUrls ?? null,
+        metadata: dto.metadata ?? null,
+        entryTime: dto.entryTime,
+      },
+      { isAdmin: false, callerRole: user.role },
+    );
     return TimelinePresenter.entry(entry);
   }
 
@@ -133,7 +139,7 @@ export class StaffTimelineController {
         metadata: dto.metadata,
         entryTime: dto.entryTime,
       },
-      { isAdmin: false },
+      { isAdmin: false, callerRole: user.role },
     );
     return TimelinePresenter.entry(updated);
   }
@@ -158,6 +164,7 @@ export class StaffTimelineController {
     const kgId = requireTenant(t);
     await this.service.deleteEntry(kgId, entryId, user.sub, {
       isAdmin: false,
+      callerRole: user.role,
     });
   }
 

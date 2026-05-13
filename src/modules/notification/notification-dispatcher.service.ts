@@ -1475,7 +1475,12 @@ export class NotificationDispatcher {
         }
       }
 
-      // 6) Push fan-out — per-token classification.
+      // 6) Push fan-out — per-token classification with per-user locale.
+      //    Resolve each push-user's preferred locale so the push title/body
+      //    is delivered in the user's own language (kk/ru/en). Best-effort:
+      //    a locale lookup failure falls back to 'ru'. This is the read-side
+      //    of B22b T13 per-user locale; the write-side (PATCH /users/me/locale
+      //    endpoint) is a separate feature not changed here.
       const transientFailures = await this.fanoutPush(
         event.eventKey,
         pushUsers.map((u) => u.userId),
@@ -1505,6 +1510,14 @@ export class NotificationDispatcher {
    * Per-token push fan-out. Returns the number of transient (retriable)
    * failures; permanent-token errors delete the token and are treated as
    * success for the dispatch's purposes.
+   *
+   * Per-user locale (B22b T13): title and body are localised to the
+   * recipient's preferred locale (`users.locale`). Supported locales: `kk`,
+   * `ru`, `en`. Falls back to `ru` when the user's locale is not present in
+   * the rendered template or the user record cannot be found. The locale is
+   * resolved lazily per-user via `userRepo.findById` — results are cached
+   * for the lifetime of this fan-out call to avoid N lookups for users with
+   * multiple push tokens.
    */
   private async fanoutPush(
     eventKey: string,
@@ -1526,15 +1539,36 @@ export class NotificationDispatcher {
       tokensByUser.set(t.userId, arr);
     }
 
-    const pushTitle =
-      rendered.titleI18n.ru ?? Object.values(rendered.titleI18n)[0] ?? '';
-    const pushBody =
-      rendered.bodyI18n.ru ?? Object.values(rendered.bodyI18n)[0] ?? '';
+    // Locale cache: userId → locale string. Populated lazily per user.
+    const localeCache = new Map<string, string>();
+    const resolveLocale = async (userId: string): Promise<string> => {
+      if (localeCache.has(userId)) return localeCache.get(userId)!;
+      try {
+        const user = await this.userRepo.findById(userId);
+        const locale = user?.locale ?? 'ru';
+        localeCache.set(userId, locale);
+        return locale;
+      } catch {
+        localeCache.set(userId, 'ru');
+        return 'ru';
+      }
+    };
+
+    const pickText = (
+      i18nMap: Record<string, string>,
+      locale: string,
+    ): string =>
+      i18nMap[locale] ?? i18nMap.ru ?? Object.values(i18nMap)[0] ?? '';
 
     let transientFailures = 0;
     for (const userId of userIds) {
       const userTokens = tokensByUser.get(userId);
       if (!userTokens || userTokens.length === 0) continue;
+
+      const locale = await resolveLocale(userId);
+      const pushTitle = pickText(rendered.titleI18n, locale);
+      const pushBody = pickText(rendered.bodyI18n, locale);
+
       for (const t of userTokens) {
         try {
           await this.pushPort.send(

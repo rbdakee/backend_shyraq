@@ -106,6 +106,16 @@ export class OutboxPollerProcessor extends WorkerHost {
       );
       if (events.length === 0) return;
 
+      // Events are dispatched SEQUENTIALLY — intentional ordering guarantee.
+      //
+      // Why not Promise.allSettled (parallel):
+      //   Some event-key sequences for the same child carry logical ordering
+      //   (e.g. `guardian.approved` must be visible before
+      //   `guardian.permissions_updated`). Parallelising within a batch
+      //   would race those writes and break at-least-once ordering. The
+      //   2-second tick + SKIP LOCKED allow multiple *workers* to run
+      //   disjoint batches in parallel — that is the intended concurrency
+      //   primitive, not in-batch parallelism. Keep this loop sequential.
       for (const event of events) {
         await this.processOne(outerManager, event, now);
       }

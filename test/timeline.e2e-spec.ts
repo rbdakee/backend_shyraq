@@ -197,22 +197,58 @@ describe('B8 timeline (e2e)', () => {
   async function seedStaffMember(
     kgId: string,
     phone: string,
-  ): Promise<{ userId: string; staffToken: string }> {
+  ): Promise<{ userId: string; staffMemberId: string; staffToken: string }> {
     const userId = await seedUser(phone);
+    const staffMemberId = randomUUID();
     await ctx.dataSource.transaction(async (m) => {
       await m.query(`SET LOCAL app.bypass_rls = 'true'`);
       await m.query(
         `INSERT INTO staff_members
            (id, kindergarten_id, user_id, role, is_active)
          VALUES ($1, $2, $3, 'mentor', true)`,
-        [randomUUID(), kgId, userId],
+        [staffMemberId, kgId, userId],
       );
     });
     const staffToken = await mintStaffAccess({
       sub: userId,
       kindergartenId: kgId,
     });
-    return { userId, staffToken };
+    return { userId, staffMemberId, staffToken };
+  }
+
+  /**
+   * Create a group in the kg, assign `childId` to that group
+   * (`children.current_group_id`), and make `staffMemberId` the active mentor.
+   *
+   * Required for B22b T13 mentor-group scope: a mentor JWT may only write
+   * timeline entries for children in their actively-assigned group.
+   */
+  async function seedGroupAndMentorForChild(opts: {
+    kgId: string;
+    childId: string;
+    staffMemberId: string;
+  }): Promise<string> {
+    const groupId = randomUUID();
+    await ctx.dataSource.transaction(async (m) => {
+      await m.query(`SET LOCAL app.bypass_rls = 'true'`);
+      await m.query(
+        `INSERT INTO groups (id, kindergarten_id, name, capacity)
+         VALUES ($1, $2, 'Test Group', 20)`,
+        [groupId, opts.kgId],
+      );
+      await m.query(
+        `UPDATE children SET current_group_id = $1
+         WHERE id = $2`,
+        [groupId, opts.childId],
+      );
+      await m.query(
+        `INSERT INTO group_mentors
+           (id, kindergarten_id, group_id, staff_member_id, is_primary, assigned_at)
+         VALUES ($1, $2, $3, $4, true, now())`,
+        [randomUUID(), opts.kgId, groupId, opts.staffMemberId],
+      );
+    });
+    return groupId;
   }
 
   // ── lifecycle ─────────────────────────────────────────────────────────────
@@ -247,6 +283,14 @@ describe('B8 timeline (e2e)', () => {
     const childId = await createChild(a.adminToken, {
       full_name: 'A-Child',
       date_of_birth: '2022-01-01',
+    });
+
+    // B22b T13: assign child to a group and make the staff member its mentor so
+    // the mentor-scope check in TimelineService.createEntry passes.
+    await seedGroupAndMentorForChild({
+      kgId: a.kgId,
+      childId,
+      staffMemberId: a.staffMemberId,
     });
 
     // POST → 201
@@ -339,6 +383,13 @@ describe('B8 timeline (e2e)', () => {
       date_of_birth: '2022-03-01',
     });
 
+    // B22b T13: staff A must be mentor of child's group to create.
+    await seedGroupAndMentorForChild({
+      kgId: a.kgId,
+      childId,
+      staffMemberId: a.staffMemberId,
+    });
+
     // Staff A (admin user acting as staff) creates entry
     const createRes = await request(server)
       .post('/api/v1/staff/timeline-entries')
@@ -375,8 +426,16 @@ describe('B8 timeline (e2e)', () => {
       date_of_birth: '2022-04-01',
     });
 
-    // Seed a separate staff member who creates the entry
+    // Seed a separate staff member who creates the entry.
     const staffB = await seedStaffMember(a.kgId, '+77011140041');
+
+    // B22b T13: staffB must be mentor of child's group to create.
+    await seedGroupAndMentorForChild({
+      kgId: a.kgId,
+      childId,
+      staffMemberId: staffB.staffMemberId,
+    });
+
     const createRes = await request(server)
       .post('/api/v1/staff/timeline-entries')
       .set('Authorization', `Bearer ${staffB.staffToken}`)
@@ -416,11 +475,22 @@ describe('B8 timeline (e2e)', () => {
     // Admin DELETE the entry via staff endpoint (admin user as staff) — if admin
     // is not the author this will 403 on staff endpoint; that is expected.
     // The real admin read bypass is confirmed via the GET above.
-    // Create an entry as admin's own staff member then delete it
+    // Create an entry as admin's own staff member (needs a separate group + child
+    // because the child above is in staffB's group). B22b T13: a.staffMemberId
+    // must be the active mentor of its own group to write via staff endpoint.
+    const childD2 = await createChild(a.adminToken, {
+      full_name: 'D-Child-2',
+      date_of_birth: '2022-04-02',
+    });
+    await seedGroupAndMentorForChild({
+      kgId: a.kgId,
+      childId: childD2,
+      staffMemberId: a.staffMemberId,
+    });
     const ownCreateRes = await request(server)
       .post('/api/v1/staff/timeline-entries')
       .set('Authorization', `Bearer ${a.staffToken}`)
-      .send({ childId, entryType: 'nap', title: 'Тихий час' })
+      .send({ childId: childD2, entryType: 'nap', title: 'Тихий час' })
       .expect(201);
     await request(server)
       .delete(
@@ -458,6 +528,13 @@ describe('B8 timeline (e2e)', () => {
     const childId = await createChild(a.adminToken, {
       full_name: 'F-Child',
       date_of_birth: '2022-06-01',
+    });
+
+    // B22b T13: staff must be mentor of child's group.
+    await seedGroupAndMentorForChild({
+      kgId: a.kgId,
+      childId,
+      staffMemberId: a.staffMemberId,
     });
 
     // Staff creates an entry
@@ -506,6 +583,18 @@ describe('B8 timeline (e2e)', () => {
     const childB = await createChild(b.adminToken, {
       full_name: 'G-Child-B',
       date_of_birth: '2022-07-02',
+    });
+
+    // B22b T13: mentor-group scope for both kg-A and kg-B staff.
+    await seedGroupAndMentorForChild({
+      kgId: a.kgId,
+      childId: childA,
+      staffMemberId: a.staffMemberId,
+    });
+    await seedGroupAndMentorForChild({
+      kgId: b.kgId,
+      childId: childB,
+      staffMemberId: b.staffMemberId,
     });
 
     // KG-A creates an entry for childA

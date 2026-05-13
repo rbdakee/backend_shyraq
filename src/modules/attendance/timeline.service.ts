@@ -3,12 +3,14 @@ import { randomUUID } from 'node:crypto';
 import { NotificationPort } from '@/common/notifications/notification.port';
 import { ChildNotFoundError } from '@/modules/child/domain/errors/child-not-found.error';
 import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
+import { GroupRepository } from '@/modules/group/infrastructure/persistence/group.repository';
 import { StaffNotFoundError } from '@/modules/staff/domain/errors/staff-not-found.error';
 import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { TimelineEntry } from './domain/entities/timeline-entry.entity';
 import { InvalidAttendanceTimestampError } from './domain/errors/invalid-attendance-timestamp.error';
 import { InvalidTimelineEntryTypeError } from './domain/errors/invalid-timeline-entry-type.error';
+import { MentorScopeViolatedError } from './domain/errors/mentor-scope-violated.error';
 import { TimelineEntryNotFoundError } from './domain/errors/timeline-entry-not-found.error';
 import { TimelineEntryType } from './domain/value-objects/timeline-entry-type.vo';
 import {
@@ -39,6 +41,8 @@ export interface UpdateTimelineEntryInput {
 
 export interface TimelineEntryOpts {
   isAdmin: boolean;
+  /** Role of the caller — used to enforce mentor-group scope. */
+  callerRole?: string;
 }
 
 /**
@@ -51,6 +55,14 @@ export interface TimelineEntryOpts {
  *   - updateEntry / deleteEntry: non-admin callers must be the author
  *     (`recorded_by = callerStaffMemberId`). Admins bypass. Enforced via
  *     `TimelineEntry.assertEditableBy()`.
+ *
+ * Mentor-group scope contract (B22b T13):
+ *   - createEntry / updateEntry / deleteEntry: when the caller has
+ *     `role=mentor`, the child must belong to a group the mentor is
+ *     currently actively assigned to (`group_mentors.unassigned_at IS NULL`
+ *     + `staff_member_id` matches the caller). Throws
+ *     `MentorScopeViolatedError` (403) when violated. Admin callers
+ *     (opts.isAdmin=true) and other roles (specialist, reception) bypass.
  *
  * Outbox notification (createEntry only):
  *   Awaited inside the ambient TX so the outbox row is committed atomically
@@ -68,6 +80,7 @@ export class TimelineService {
     private readonly timelineRepo: TimelineEntryRepository,
     private readonly childRepo: ChildRepository,
     private readonly staffRepo: StaffMemberRepository,
+    private readonly groupRepo: GroupRepository,
     @Inject(ClockPort) private readonly clock: ClockPort,
     @Inject(NotificationPort)
     private readonly notifications: NotificationPort,
@@ -80,6 +93,7 @@ export class TimelineService {
     childId: string,
     callerUserId: string,
     dto: CreateTimelineEntryInput,
+    opts: TimelineEntryOpts = { isAdmin: false },
   ): Promise<TimelineEntry> {
     // Guard: reserved types only written by AttendanceService.
     if (RESERVED_ENTRY_TYPES.has(dto.entryType)) {
@@ -90,7 +104,20 @@ export class TimelineService {
       kindergartenId,
       callerUserId,
     );
-    await this.assertChildExists(kindergartenId, childId);
+    const child = await this.findChildOrThrow(kindergartenId, childId);
+
+    // Mentor-group scope: a mentor may only write entries for children in
+    // their actively-assigned group. Admin callers bypass. Other roles
+    // (specialist, reception) also bypass — they are kg-scoped, not
+    // group-scoped.
+    if (!opts.isAdmin && opts.callerRole === 'mentor') {
+      await this.assertMentorScopeForChild(
+        kindergartenId,
+        callerUserId,
+        child.currentGroupId ?? null,
+        childId,
+      );
+    }
 
     const entryTime = dto.entryTime
       ? new Date(dto.entryTime)
@@ -147,6 +174,17 @@ export class TimelineService {
     // Throws TimelineEntryNotAuthorError (403) when non-admin non-author.
     entry.assertEditableBy(staffMemberId, opts.isAdmin);
 
+    // Mentor-group scope: verify the mentor is assigned to the child's group.
+    if (!opts.isAdmin && opts.callerRole === 'mentor') {
+      const child = await this.findChildOrThrow(kindergartenId, entry.childId);
+      await this.assertMentorScopeForChild(
+        kindergartenId,
+        callerUserId,
+        child.currentGroupId ?? null,
+        entry.childId,
+      );
+    }
+
     const patchedEntryTime = dto.entryTime
       ? new Date(dto.entryTime)
       : undefined;
@@ -183,6 +221,17 @@ export class TimelineService {
     // Throws TimelineEntryNotAuthorError (403) when non-admin non-author.
     entry.assertEditableBy(staffMemberId, opts.isAdmin);
 
+    // Mentor-group scope: verify the mentor is assigned to the child's group.
+    if (!opts.isAdmin && opts.callerRole === 'mentor') {
+      const child = await this.findChildOrThrow(kindergartenId, entry.childId);
+      await this.assertMentorScopeForChild(
+        kindergartenId,
+        callerUserId,
+        child.currentGroupId ?? null,
+        entry.childId,
+      );
+    }
+
     await this.timelineRepo.delete(kindergartenId, entryId);
     // No post-commit notification on delete per spec.
   }
@@ -194,7 +243,7 @@ export class TimelineService {
     childId: string,
     paging: ListTimelineEntriesFilter,
   ): Promise<PagedTimelineEntries> {
-    await this.assertChildExists(kindergartenId, childId);
+    await this.findChildOrThrow(kindergartenId, childId);
     return this.timelineRepo.findByChild(kindergartenId, childId, paging);
   }
 
@@ -212,13 +261,41 @@ export class TimelineService {
     return staff.id;
   }
 
-  private async assertChildExists(
-    kindergartenId: string,
-    childId: string,
-  ): Promise<void> {
+  private async findChildOrThrow(kindergartenId: string, childId: string) {
     const child = await this.childRepo.findById(kindergartenId, childId);
     if (child === null) {
       throw new ChildNotFoundError(childId);
+    }
+    return child;
+  }
+
+  /**
+   * Asserts that the caller (by userId) is the active mentor for the group
+   * the given child belongs to. Throws `MentorScopeViolatedError` (403) if:
+   *   - the child has no `current_group_id` (unassigned), or
+   *   - the caller is not the active mentor of that group.
+   *
+   * Uses `GroupRepository.isUserActiveMentorForGroup` which joins
+   * `group_mentors` ↔ `staff_members` on `staff_member_id` and filters
+   * by `user_id` + `unassigned_at IS NULL`.
+   */
+  private async assertMentorScopeForChild(
+    kindergartenId: string,
+    callerUserId: string,
+    currentGroupId: string | null,
+    childId: string,
+  ): Promise<void> {
+    if (!currentGroupId) {
+      // Child has no group — mentor cannot claim scope for an unassigned child.
+      throw new MentorScopeViolatedError(childId);
+    }
+    const isMentor = await this.groupRepo.isUserActiveMentorForGroup(
+      kindergartenId,
+      callerUserId,
+      currentGroupId,
+    );
+    if (!isMentor) {
+      throw new MentorScopeViolatedError(childId);
     }
   }
 
