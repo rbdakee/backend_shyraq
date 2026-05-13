@@ -155,6 +155,12 @@ export abstract class CustomDiscountRepository {
    * reached (or wrong tenant). Caller decides whether to fail the
    * application or fall through (race: log + skip is the documented
    * trade-off in T3 §F).
+   *
+   * **B22a T1 H16**: prefer `tryReserveUsage` for the invoice-generation
+   * flow — it carries the same atomic semantics but is named to match
+   * the intent (reserve a usage slot BEFORE persisting the invoice). The
+   * legacy `incrementUsedCount` stays for compatibility but is no longer
+   * used by `InvoiceService.persistCustomDiscountApplications`.
    */
   abstract incrementUsedCount(
     kindergartenId: string,
@@ -162,6 +168,53 @@ export abstract class CustomDiscountRepository {
     by: number,
     manager?: EntityManager,
   ): Promise<boolean>;
+
+  /**
+   * B22a T1 H16 — Atomic single-statement RESERVE of one usage slot.
+   * Same semantics as `incrementUsedCount(by=1)` but the contract is
+   * inverted by name: "reserve before write, release on rollback".
+   * Mapped to:
+   *
+   *   `UPDATE custom_discounts
+   *       SET used_count = used_count + 1, updated_at = now()
+   *     WHERE id=$1 AND kindergarten_id=$2
+   *       AND (total_max_uses IS NULL OR used_count < total_max_uses)
+   *     RETURNING used_count`
+   *
+   * Returns `true` when the row reserved a slot, `false` when the cap
+   * raced (concurrent reserve already used the last slot, or wrong
+   * tenant). Caller MUST run this inside the ambient TX of the invoice
+   * INSERT — if the INSERT later throws, the surrounding TX rolls back
+   * and the reservation is naturally released (PG durable atomicity).
+   *
+   * `null` `total_max_uses` always reserves (cap disabled).
+   */
+  abstract tryReserveUsage(
+    kindergartenId: string,
+    id: string,
+    manager?: EntityManager,
+  ): Promise<boolean>;
+
+  /**
+   * B22a T1 H16 — Compensation for `tryReserveUsage` when the caller
+   * decides not to use the slot AFTER reservation but BEFORE TX commit
+   * (e.g. a follow-up validation failed). In practice this is rarely
+   * needed: the preferred pattern is "reserve + persist invoice in one
+   * TX, rely on TX rollback". `releaseUsage` exists for explicit
+   * deferred-failure paths (cron processors that loop across kgs and
+   * want per-child compensation without rolling back the whole batch).
+   *
+   *   `UPDATE custom_discounts
+   *       SET used_count = GREATEST(used_count - 1, 0),
+   *           updated_at = now()
+   *     WHERE id=$1 AND kindergarten_id=$2
+   *     RETURNING used_count`
+   */
+  abstract releaseUsage(
+    kindergartenId: string,
+    id: string,
+    manager?: EntityManager,
+  ): Promise<void>;
 
   /**
    * Pre-loaded by `InvoiceService` before invoice generation. Returns all

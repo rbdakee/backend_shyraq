@@ -248,12 +248,22 @@ export class StaffDiagnosticEntryController {
       const existing = await this.service.getById(kgId, id);
       callerStaffMemberId = existing.specialistId;
     }
-    const entry = await this.service.update(kgId, id, callerStaffMemberId, {
-      data: dto.data,
-      summary: dto.summary,
-      recommendations: dto.recommendations,
-      attachments: dto.attachments,
-    });
+    const entry = await this.service.update(
+      kgId,
+      id,
+      callerStaffMemberId,
+      // B22a T7 — pass the caller's `users.id` so the service can stamp
+      // `last_modified_by_user_id` (admin-bypass audit trail). Even when
+      // admin overrides the author check, this column captures the
+      // actual identity of the editor.
+      user.sub,
+      {
+        data: dto.data,
+        summary: dto.summary,
+        recommendations: dto.recommendations,
+        attachments: dto.attachments,
+      },
+    );
     const template = await this.templateService.getById(kgId, entry.templateId);
     const lookup = new Map<string, TemplateLookup>([
       [entry.templateId, { name: template.name, version: template.version }],

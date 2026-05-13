@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { InMemoryNotificationAdapter } from '@/common/notifications/in-memory-notification.adapter';
 import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
 import { ChildNotFoundError } from '@/modules/child/domain/errors/child-not-found.error';
+import { OptimisticLockError } from '@/shared-kernel/domain/errors';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { ProgressNoteService } from './progress-note.service';
 import {
@@ -18,6 +19,10 @@ const MENTOR_A = '22222222-2222-2222-2222-222222222222';
 const MENTOR_B = '33333333-3333-3333-3333-333333333333';
 const ADMIN = '44444444-4444-4444-4444-444444444444';
 const CHILD = '55555555-5555-5555-5555-555555555555';
+// B22a T7 — caller's `users.id` (separate from `staff_members.id`).
+const USER_A = '99999999-9999-9999-9999-999999999991';
+const USER_B = '99999999-9999-9999-9999-999999999992';
+const ADMIN_USER = '99999999-9999-9999-9999-999999999993';
 const NOW = new Date('2026-05-01T09:00:00.000Z');
 
 class FakeClock extends ClockPort {
@@ -44,7 +49,26 @@ class FakeNoteRepo extends ProgressNoteRepository {
     if (!n || n.kindergartenId !== kgId) return Promise.resolve(null);
     return Promise.resolve(n);
   }
-  update(n: ProgressNote): Promise<ProgressNote> {
+  /**
+   * In-memory mirror of the relational repo's optimistic-lock contract:
+   * see `diagnostic-template.service.spec.ts` for the shared rationale.
+   */
+  update(n: ProgressNote, expectedRowVersion?: number): Promise<ProgressNote> {
+    if (expectedRowVersion !== undefined) {
+      const current = this.rows.get(n.id);
+      if (!current || current.kindergartenId !== n.kindergartenId) {
+        throw new OptimisticLockError();
+      }
+      if (current.rowVersion !== expectedRowVersion) {
+        throw new OptimisticLockError();
+      }
+      const bumped = ProgressNote.rehydrate({
+        ...n.toState(),
+        rowVersion: current.rowVersion + 1,
+      });
+      this.rows.set(n.id, bumped);
+      return Promise.resolve(bumped);
+    }
     this.rows.set(n.id, n);
     return Promise.resolve(n);
   }
@@ -88,6 +112,7 @@ function buildNote(
     id: string;
     mentorId: string;
     body: string;
+    rowVersion: number;
   }> = {},
 ): ProgressNote {
   return ProgressNote.fromState(
@@ -100,6 +125,7 @@ function buildNote(
       mediaUrls: [],
       notedAt: NOW,
       createdAt: NOW,
+      rowVersion: overrides.rowVersion ?? 1,
     },
     NOW,
   );
@@ -178,7 +204,7 @@ describe('ProgressNoteService', () => {
     it('PATCHes body for the author', async () => {
       const note = buildNote();
       repo.put(note);
-      const updated = await service.update(KG, note.id, MENTOR_A, {
+      const updated = await service.update(KG, note.id, MENTOR_A, USER_A, {
         body: 'Edited',
       });
       expect(updated.body).toBe('Edited');
@@ -188,13 +214,13 @@ describe('ProgressNoteService', () => {
       const note = buildNote();
       repo.put(note);
       await expect(
-        service.update(KG, note.id, MENTOR_B, { body: 'x' }),
+        service.update(KG, note.id, MENTOR_B, USER_B, { body: 'x' }),
       ).rejects.toBeInstanceOf(ProgressNoteNotAuthoredByYouError);
     });
 
     it('throws 404 when note missing', async () => {
       await expect(
-        service.update(KG, randomUUID(), MENTOR_A, { body: 'x' }),
+        service.update(KG, randomUUID(), MENTOR_A, USER_A, { body: 'x' }),
       ).rejects.toBeInstanceOf(ProgressNoteNotFoundError);
     });
 
@@ -202,8 +228,57 @@ describe('ProgressNoteService', () => {
       const note = buildNote();
       repo.put(note);
       await expect(
-        service.update(KG, note.id, MENTOR_A, { body: '' }),
+        service.update(KG, note.id, MENTOR_A, USER_A, { body: '' }),
       ).rejects.toMatchObject({ code: 'empty_body' });
+    });
+
+    it('throws OptimisticLockError when repo signals stale row_version', async () => {
+      // Race-protection regression (B22a T4 / B18 T6-M4): the service
+      // must surface the repo's `OptimisticLockError` so DomainErrorFilter
+      // maps it to 409 `optimistic_lock_conflict`. We simulate the
+      // race by patching `findById` to return a stale snapshot while
+      // the underlying store has already advanced — exactly the
+      // SELECT-then-UPDATE window the optimistic lock guards.
+      const stale = buildNote({ rowVersion: 1 });
+      repo.put(stale);
+      // Concurrent writer landed first → store now at row_version=2.
+      repo.put(buildNote({ id: stale.id, rowVersion: 2 }));
+      jest.spyOn(repo, 'findById').mockResolvedValueOnce(stale);
+      await expect(
+        service.update(KG, stale.id, MENTOR_A, USER_A, { body: 'late' }),
+      ).rejects.toBeInstanceOf(OptimisticLockError);
+    });
+
+    it('stamps lastModifiedByUserId + lastModifiedAt on every PATCH', async () => {
+      // B22a T7 / B18 Concern 1 — admin-bypass-on-PATCH audit trail.
+      // The service must populate the audit columns from the supplied
+      // `callerUserId` + `clock.now()`, regardless of which patch
+      // fields were touched.
+      const note = buildNote();
+      repo.put(note);
+      const updated = await service.update(KG, note.id, MENTOR_A, USER_A, {
+        body: 'Audited',
+      });
+      expect(updated.lastModifiedByUserId).toBe(USER_A);
+      expect(updated.lastModifiedAt).toEqual(NOW);
+      expect(repo.rows.get(note.id)?.lastModifiedByUserId).toBe(USER_A);
+    });
+
+    it('stamps audit columns on the admin-override PATCH path', async () => {
+      // Admin overrides happen at the controller layer by passing the
+      // note's actual `mentor_id` as `callerMentorId` so the author
+      // check passes. The audit stamp uses the admin's own `users.id`.
+      const note = buildNote();
+      repo.put(note);
+      const updated = await service.update(
+        KG,
+        note.id,
+        note.mentorId,
+        ADMIN_USER,
+        { body: 'Admin override' },
+      );
+      expect(updated.lastModifiedByUserId).toBe(ADMIN_USER);
+      expect(updated.mentorId).toBe(MENTOR_A); // unchanged author
     });
   });
 

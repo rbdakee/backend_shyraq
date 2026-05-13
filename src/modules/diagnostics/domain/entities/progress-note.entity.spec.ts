@@ -18,6 +18,7 @@ function makeState(
     mediaUrls: [],
     notedAt: NOW,
     createdAt: NOW,
+    rowVersion: 1,
     ...overrides,
   };
 }

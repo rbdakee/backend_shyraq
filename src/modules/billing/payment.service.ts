@@ -471,7 +471,17 @@ export class PaymentService {
           `payment.completed: invoice ${current.invoiceId} could not flip → paid (concurrent cancel/already-paid)`,
         );
       }
-    } else if (paidSum > 0 && invoice.status === 'pending') {
+    } else if (
+      paidSum > 0 &&
+      (invoice.status === 'pending' || invoice.status === 'overdue')
+    ) {
+      // B22a T1 H14: also flip an `overdue` invoice → `partial` when a
+      // sub-total payment lands. Before this fix, a payment of LESS than
+      // the full remaining amount on an overdue invoice left the status
+      // pinned at `overdue` forever (markPartialConditional rejected
+      // `overdue` source rows), even though `partial` is the strictly
+      // more-informative state. `markPartialConditional` accepts
+      // {'pending','overdue'} as valid sources at the repo layer.
       const flipped = await this.invoiceRepo.markPartialConditional(
         kindergartenId,
         current.invoiceId,

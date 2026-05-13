@@ -18,6 +18,7 @@ import { JwtAuthGuard } from '@/common/guards/jwt-auth.guard';
 import { PendingRoleSelectGuard } from '@/common/guards/pending-role-select.guard';
 import { RolesGuard } from '@/common/guards/roles.guard';
 import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-context';
+import { todayInTimezone } from '@/shared-kernel/domain/value-objects/day-of-week.vo';
 import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
 import { ListMealPlansByDateQuery } from './dto/list-meal-plans.query';
 import { MealPlanResponseDto } from './dto/meal-plan.response.dto';
@@ -50,7 +51,9 @@ export class MealStaffController {
     @Query() query: ListMealPlansByDateQuery,
   ): Promise<MealPlanResponseDto[]> {
     const kgId = requireTenant(t);
-    const date = query.date ?? new Date().toISOString().slice(0, 10);
+    // SP4: default to today in Asia/Almaty so staff after-19:00-local don't
+    // see "yesterday's plan" because `new Date().toISOString()` is UTC.
+    const date = query.date ?? todayInTimezone();
     const plans = await this.service.listPlans(kgId, {
       dateFrom: date,
       dateTo: date,

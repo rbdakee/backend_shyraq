@@ -27,6 +27,8 @@ import {
   TriggerDiscountExpireRunResponseDto,
   TriggerMonthlyRunDto,
   TriggerMonthlyRunResponseDto,
+  TriggerOverdueRunDto,
+  TriggerOverdueRunResponseDto,
 } from './dto/saas-billing.dto';
 import {
   MONTHLY_BILLING_MANUAL_JOB,
@@ -38,6 +40,11 @@ import {
   DISCOUNT_EXPIRE_QUEUE,
   DiscountExpireJobData,
 } from './discount-expire.processor';
+import {
+  OVERDUE_INVOICE_MANUAL_JOB,
+  OVERDUE_INVOICE_QUEUE,
+  OverdueInvoiceJobData,
+} from './overdue-invoice.processor';
 
 /**
  * SaasBillingController — super-admin / support trigger that pushes a
@@ -71,6 +78,8 @@ export class SaasBillingController {
     private readonly monthlyQueue: Queue<MonthlyBillingJobData>,
     @InjectQueue(DISCOUNT_EXPIRE_QUEUE)
     private readonly discountExpireQueue: Queue<DiscountExpireJobData>,
+    @InjectQueue(OVERDUE_INVOICE_QUEUE)
+    private readonly overdueInvoiceQueue: Queue<OverdueInvoiceJobData>,
   ) {}
 
   @Post('monthly-run')
@@ -151,6 +160,43 @@ export class SaasBillingController {
     );
     return {
       job_id: job.id ?? `${DISCOUNT_EXPIRE_MANUAL_JOB}:${Date.now()}`,
+      status: 'enqueued',
+    };
+  }
+
+  @Post('overdue-run')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @ApiOperation({
+    summary:
+      'Manually enqueue the B22a T1 nightly overdue invoice pass (cross-tenant). Async — returns the BullMQ job id immediately. Used for back-fill or recovery from a missed cron tick.',
+  })
+  @ApiBody({ type: TriggerOverdueRunDto })
+  @ApiResponse({
+    status: HttpStatus.ACCEPTED,
+    type: TriggerOverdueRunResponseDto,
+    description:
+      'Job enqueued. Inspect BullMQ for completion / per-kg counts via the worker logs.',
+  })
+  @ApiBadRequestResponse({ description: 'Validation error.' })
+  @ApiUnauthorizedResponse({ description: 'Bearer missing/invalid/revoked.' })
+  @ApiForbiddenResponse({ description: 'Caller is not super_admin/support.' })
+  async triggerOverdueRun(
+    @Body() body: TriggerOverdueRunDto,
+  ): Promise<TriggerOverdueRunResponseDto> {
+    const jobData: OverdueInvoiceJobData = {};
+    if (body.now) {
+      jobData.now = body.now;
+    }
+    const job = await this.overdueInvoiceQueue.add(
+      OVERDUE_INVOICE_MANUAL_JOB,
+      jobData,
+      {
+        removeOnComplete: 100,
+        removeOnFail: 100,
+      },
+    );
+    return {
+      job_id: job.id ?? `${OVERDUE_INVOICE_MANUAL_JOB}:${Date.now()}`,
       status: 'enqueued',
     };
   }

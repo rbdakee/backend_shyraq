@@ -9,6 +9,23 @@
  * Add a new key here whenever a new notification type is introduced.
  * Removing a key is a breaking change (clients may have stored preferences
  * for it) — deprecate with a comment instead.
+ *
+ * ─────────────────────────────────────────────────────────────────────────
+ * B22a SP7 — 7 stale keys removed (2026-05-13):
+ *   payment.upcoming, payment.overdue, payment.receipt_issued,
+ *   request.reviewed, request.message_replied,
+ *   face.enrolled, fiscal.retry_failed
+ * Reason: no producer / template / resolver backed them, so a future
+ * accidental emit would silently fail in the dispatcher (latent bug). They
+ * will be re-introduced by their owning batches when the matching producer
+ * + template land:
+ *   - payment.upcoming / payment.overdue / payment.receipt_issued → B14
+ *     (real payment-provider integration adds dunning + receipts)
+ *   - request.reviewed / request.message_replied → B15
+ *     (parent-request review queue + threaded reply notifications)
+ *   - face.enrolled → B19 (face-enrollment confirmation)
+ *   - fiscal.retry_failed → B14 (OFD/fiscal-receipt retry escalation)
+ * ─────────────────────────────────────────────────────────────────────────
  */
 export const CANONICAL_EVENT_KEYS = [
   'attendance.checkin',
@@ -27,9 +44,6 @@ export const CANONICAL_EVENT_KEYS = [
   'guardian.revoked',
   'guardian.permissions_updated',
   'child.transferred',
-  'payment.upcoming',
-  'payment.overdue',
-  'payment.receipt_issued',
   'diagnostic.new',
   'progress_note.new',
   'pickup.otp_sent',
@@ -39,15 +53,11 @@ export const CANONICAL_EVENT_KEYS = [
   'content.qundylyq_new',
   'content.birthday',
   'discount.activated',
-  'request.reviewed',
-  'request.message_replied',
   // ── B12 Parent-request lifecycle events ───────────────────────────────
   'request.accepted',
   'request.rejected',
   'request.cancelled',
   'request.message_sent',
-  'face.enrolled',
-  'fiscal.retry_failed',
   // ── B13 Billing & Invoices lifecycle events ───────────────────────────
   'invoice.created',
   'invoice.paid',

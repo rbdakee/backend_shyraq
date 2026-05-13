@@ -11,8 +11,10 @@ import {
   Patch,
   Post,
   Query,
+  Res,
   UseGuards,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
@@ -20,6 +22,7 @@ import {
   ApiConflictResponse,
   ApiCreatedResponse,
   ApiForbiddenResponse,
+  ApiGoneResponse,
   ApiNotFoundResponse,
   ApiOkResponse,
   ApiOperation,
@@ -39,16 +42,19 @@ import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-co
 import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
 import { ChildPresenter } from './child.presenter';
 import { ChildService } from './child.service';
+import { RouteDeprecatedError } from './domain/errors/route-deprecated.error';
 import {
   ArchiveChildDto,
   AssignGroupDto,
   ChildDto,
   ChildGroupHistoryDto,
   ChildListResponseDto,
+  ChildStatusHistoryListResponseDto,
   CreateChildDto,
   GuardianDto,
   InviteGuardianDto,
   ListChildrenQueryDto,
+  ListChildStatusHistoryQueryDto,
   ReactivateChildDto,
   TransferChildGroupDto,
   UpdateChildDto,
@@ -312,6 +318,51 @@ export class ChildController {
     return rows.map((r) => ChildPresenter.groupHistory(r));
   }
 
+  /**
+   * B22a T9 — append-only audit of `children.status` transitions
+   * (archive / reactivate / future card_created→active). Admin-only;
+   * mentors and parents see the current status through the regular
+   * child-detail endpoint. Paginated via `?limit=&offset=` (per-child
+   * volume is small — offset pagination is sufficient).
+   */
+  @Get(':id/status-history')
+  @ApiOperation({
+    summary: 'Child status-change audit history (newest → oldest).',
+    description:
+      'Returns paginated rows from `child_status_history`. Each row records ' +
+      'the previous and new status, the (optional) archive reason, and the ' +
+      'users.id of the actor who triggered the change. Admin-only.',
+  })
+  @ApiOkResponse({ type: ChildStatusHistoryListResponseDto })
+  @ApiNotFoundResponse({
+    description: 'Child not found in this tenant.',
+    schema: {
+      example: {
+        statusCode: 404,
+        error: 'child_not_found',
+        message: 'child_not_found',
+      },
+    },
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Bearer missing / invalid / revoked.',
+  })
+  @ApiForbiddenResponse({ description: 'Caller is not admin.' })
+  async statusHistory(
+    @Tenant() t: TenantContext,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Query() query: ListChildStatusHistoryQueryDto,
+  ): Promise<ChildStatusHistoryListResponseDto> {
+    const kgId = requireTenant(t);
+    const limit = query.limit ?? 50;
+    const offset = query.offset ?? 0;
+    const page = await this.service.listStatusHistory(kgId, id, limit, offset);
+    return {
+      items: page.items.map((r) => ChildPresenter.statusHistory(r)),
+      total: page.total,
+    };
+  }
+
   @Post(':id/archive')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
@@ -376,6 +427,7 @@ export class ChildController {
       id,
       dto.archive_reason,
       staffId,
+      user!.sub,
     );
     return ChildPresenter.child(child);
   }
@@ -430,7 +482,12 @@ export class ChildController {
       kgId,
       user!.sub,
     );
-    const result = await this.service.reactivateChild(kgId, id, staffId);
+    const result = await this.service.reactivateChild(
+      kgId,
+      id,
+      staffId,
+      user!.sub,
+    );
     return {
       child: ChildPresenter.child(result.child),
       requires_new_tariff_assignment: true,
@@ -438,36 +495,43 @@ export class ChildController {
   }
 
   /**
-   * @deprecated Use POST :id/reactivate instead.
-   * Kept for backwards compatibility with any pre-T4 callers. Will be removed
-   * in a future phase once clients have migrated to /reactivate.
+   * B22a T11: removed — endpoint returns 410 Gone with `Location` header.
+   * The route definition stays so legacy clients receive a documented
+   * "endpoint_gone" code rather than the indistinguishable router-level 404
+   * they'd hit if we deleted the @Post() too. Full route-level removal is
+   * scheduled for B22b once client telemetry confirms zero hits.
+   *
+   * @deprecated Use POST /api/v1/children/:id/reactivate.
    */
   @Post(':id/restore')
-  @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary:
-      '[Deprecated] Restore an archived child — use /reactivate instead.',
+    summary: 'DEPRECATED — returns 410 Gone (use /reactivate).',
     deprecated: true,
+    description:
+      'Removed in B22a T11. All callers must migrate to ' +
+      'POST /api/v1/children/:id/reactivate. Response carries a Location ' +
+      'header pointing at the successor and an `endpoint_gone` error code.',
   })
-  @ApiOkResponse({ type: ChildDto })
-  @ApiUnauthorizedResponse({
-    description: 'Bearer missing / invalid / revoked.',
+  @ApiGoneResponse({
+    description: 'Endpoint replaced by /reactivate.',
+    schema: {
+      example: {
+        statusCode: 410,
+        error: 'endpoint_gone',
+        message: 'endpoint replaced by /api/v1/children/:id/reactivate',
+        details: {
+          successor: '/api/v1/children/:id/reactivate',
+        },
+      },
+    },
   })
-  @ApiForbiddenResponse({ description: 'Caller is not admin.' })
-  @ApiNotFoundResponse({ description: 'Child not found.' })
-  @ApiConflictResponse({ description: 'Child is not archived.' })
-  async restore(
-    @Tenant() t: TenantContext,
-    @CurrentUser() user: JwtPayload,
+  restore(
     @Param('id', new ParseUUIDPipe()) id: string,
-  ): Promise<ChildDto> {
-    const kgId = requireTenant(t);
-    const staffId = await this.service.resolveStaffMemberIdForUser(
-      kgId,
-      user!.sub,
-    );
-    const result = await this.service.reactivateChild(kgId, id, staffId);
-    return ChildPresenter.child(result.child);
+    @Res({ passthrough: true }) res: Response,
+  ): never {
+    const successor = `/api/v1/children/${id}/reactivate`;
+    res.setHeader('Location', successor);
+    throw new RouteDeprecatedError(successor);
   }
 
   // ── Guardians (admin) ──────────────────────────────────────────────────

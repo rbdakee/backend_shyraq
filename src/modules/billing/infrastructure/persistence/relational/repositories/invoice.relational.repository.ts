@@ -236,13 +236,78 @@ export class InvoiceRelationalRepository extends InvoiceRepository {
     id: string,
     now: Date,
   ): Promise<Invoice | null> {
+    // B22a T1 SM1: include `partial` so an invoice that received a small
+    // payment (and was flipped pending → partial) still flips to overdue
+    // once past its due_date. Without `partial` such invoices stayed
+    // forever in `partial` even after the due_date passed — the dunning
+    // pipeline missed them entirely.
     return this.transitionStatusConditional(
       kindergartenId,
       id,
-      ['pending'],
+      ['pending', 'partial'],
       'overdue',
       now,
     );
+  }
+
+  /**
+   * B22a T1 — Bulk overdue flip for the nightly cron. RETURNING gives
+   * the cron processor enough payload to emit `invoice.overdue` events
+   * for newly-flipped rows without a follow-up SELECT loop.
+   *
+   * Date arithmetic: `due_date < $2::date` compares the `date` column
+   * against the caller-supplied Asia/Almaty calendar date string — NOT
+   * a JS `Date` cast in the DB session timezone. Earlier revisions used
+   * `now::date` and silently skipped invoices due "today" in Almaty when
+   * the DB session was UTC (03:00 Almaty = 22:00 prev-day UTC). The
+   * processor passes `formatDateInTimezone(now, 'Asia/Almaty')` so the
+   * cut-off matches the local calendar day the cron is targeting (B22a
+   * T13 M1 codex fix). The flipped invoice's `updated_at` becomes the
+   * timestamp `$3` so the audit trail still reflects the precise
+   * instant of the cron tick.
+   */
+  async markOverdueBatch(
+    kindergartenId: string,
+    today: string,
+    now: Date,
+  ): Promise<
+    Array<{
+      id: string;
+      childId: string;
+      amountAfterDiscount: number;
+      dueDate: string;
+    }>
+  > {
+    const m = this.manager();
+    // TypeORM 0.3 `query()` for UPDATE…RETURNING returns
+    // `[rows, rowCount]`; unwrap so `.map` runs against the actual
+    // flipped rows. See `unwrapReturning` helper at file bottom.
+    const rows = unwrapReturning<{
+      id: string;
+      child_id: string;
+      amount_after_discount: string;
+      due_date: string | Date;
+    }>(
+      await m.query(
+        `UPDATE invoices
+            SET status = 'overdue',
+                updated_at = $3
+          WHERE kindergarten_id = $1
+            AND status IN ('pending', 'partial')
+            AND due_date < $2::date
+          RETURNING id, child_id, amount_after_discount, due_date`,
+        [kindergartenId, today, now],
+      ),
+    );
+    return rows.map((r) => ({
+      id: r.id,
+      childId: r.child_id,
+      amountAfterDiscount: Number(r.amount_after_discount),
+      dueDate:
+        r.due_date instanceof Date
+          ? r.due_date.toISOString().slice(0, 10)
+          : String(r.due_date).slice(0, 10),
+    }));
   }
 
   async acquireMonthlyGenerationAdvisoryLock(
@@ -251,6 +316,17 @@ export class InvoiceRelationalRepository extends InvoiceRepository {
   ): Promise<void> {
     const periodKey = periodStart.toISOString().slice(0, 7);
     const scope = `billing:monthly:${kindergartenId}:${periodKey}`;
+    await this.manager().query(
+      `SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`,
+      [scope],
+    );
+  }
+
+  async acquireOverdueRunAdvisoryLock(
+    kindergartenId: string,
+    today: string,
+  ): Promise<void> {
+    const scope = `billing:overdue:${kindergartenId}:${today}`;
     await this.manager().query(
       `SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`,
       [scope],
@@ -317,4 +393,22 @@ export class InvoiceRelationalRepository extends InvoiceRepository {
       .findOne({ where: { id, kindergartenId } });
     return row ? InvoiceMapper.toDomain(row) : null;
   }
+}
+
+/**
+ * B22a T1 H16 helper. TypeORM 0.3.x's `EntityManager.query()` returns
+ * `[Array<row>, rowCount]` for UPDATE…RETURNING (and just `Array<row>`
+ * for SELECT). Treating the tuple as `Array<row>` made `length` always
+ * 2 — silently nuking 0-row vs N-row checks. This helper extracts the
+ * rows half. Mirrors the helper in
+ * `custom-discount.relational.repository.ts`.
+ */
+function unwrapReturning<T>(raw: unknown): T[] {
+  if (Array.isArray(raw) && raw.length === 2 && Array.isArray(raw[0])) {
+    return raw[0] as T[];
+  }
+  if (Array.isArray(raw)) {
+    return raw as T[];
+  }
+  return [];
 }

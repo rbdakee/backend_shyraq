@@ -36,6 +36,14 @@ export class DiagnosticEntryMapper {
       attachments: row.attachments ?? [],
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
+      rowVersion: Number(row.rowVersion ?? 1),
+      // B22a T7 — round-trip the audit columns. NULL on never-patched
+      // rows is preserved as `null` (not `undefined`) so writers can
+      // distinguish "never patched" from "audit field intentionally
+      // cleared" — the latter is currently unreachable but the type is
+      // more honest.
+      lastModifiedByUserId: row.lastModifiedByUserId ?? null,
+      lastModifiedAt: row.lastModifiedAt ?? null,
     };
     // `rehydrate` skips the future-date invariant — historical rows can
     // legitimately predate today's clock.
@@ -59,6 +67,9 @@ export class DiagnosticEntryMapper {
       attachments: s.attachments.length > 0 ? s.attachments : null,
       createdAt: s.createdAt,
       updatedAt: s.updatedAt,
+      rowVersion: s.rowVersion,
+      lastModifiedByUserId: s.lastModifiedByUserId ?? null,
+      lastModifiedAt: s.lastModifiedAt ?? null,
     };
   }
 }

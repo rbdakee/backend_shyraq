@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { InMemoryNotificationAdapter } from '@/common/notifications/in-memory-notification.adapter';
 import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
 import { ChildNotFoundError } from '@/modules/child/domain/errors/child-not-found.error';
+import { OptimisticLockError } from '@/shared-kernel/domain/errors';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { DiagnosticEntryService } from './diagnostic-entry.service';
 import {
@@ -27,6 +28,10 @@ const KG = '11111111-1111-1111-1111-111111111111';
 const STAFF_A = '22222222-2222-2222-2222-222222222222';
 const STAFF_B = '33333333-3333-3333-3333-333333333333';
 const CHILD = '44444444-4444-4444-4444-444444444444';
+// B22a T7 — caller's `users.id` (separate from `staff_members.id`).
+// Used to assert the audit-stamp wiring without coupling tests to staff.
+const USER_A = '99999999-9999-9999-9999-999999999991';
+const USER_B = '99999999-9999-9999-9999-999999999992';
 const NOW = new Date('2026-05-01T09:00:00.000Z');
 const TODAY = new Date('2026-05-01T00:00:00.000Z');
 
@@ -60,7 +65,10 @@ class FakeTemplateRepo extends DiagnosticTemplateRepository {
   ): Promise<DiagnosticTemplate | null> {
     return this.findById(kgId, id);
   }
-  update(t: DiagnosticTemplate): Promise<DiagnosticTemplate> {
+  update(
+    t: DiagnosticTemplate,
+    _expectedRowVersion?: number,
+  ): Promise<DiagnosticTemplate> {
     this.rows.set(t.id, t);
     return Promise.resolve(t);
   }
@@ -69,6 +77,13 @@ class FakeTemplateRepo extends DiagnosticTemplateRepository {
     _filters: ListDiagnosticTemplatesFilter,
   ): Promise<DiagnosticTemplateListResult> {
     return Promise.resolve({ items: [], nextCursor: null });
+  }
+  countEntriesUsingTemplate(
+    _kgId: string,
+    _templateId: string,
+  ): Promise<number> {
+    // Not used by DiagnosticEntryService — return 0 for completeness.
+    return Promise.resolve(0);
   }
 }
 
@@ -105,7 +120,30 @@ class FakeEntryRepo extends DiagnosticEntryRepository {
     if (!e || e.kindergartenId !== kgId) return Promise.resolve(null);
     return Promise.resolve(e);
   }
-  update(e: DiagnosticEntry): Promise<DiagnosticEntry> {
+  /**
+   * In-memory mirror of the relational repo's optimistic-lock contract:
+   * see `diagnostic-template.service.spec.ts` for the shared rationale.
+   */
+  update(
+    e: DiagnosticEntry,
+    expectedRowVersion?: number,
+  ): Promise<DiagnosticEntry> {
+    if (expectedRowVersion !== undefined) {
+      const current = this.rows.get(e.id);
+      if (!current || current.kindergartenId !== e.kindergartenId) {
+        throw new OptimisticLockError();
+      }
+      if (current.rowVersion !== expectedRowVersion) {
+        throw new OptimisticLockError();
+      }
+      const bumped = DiagnosticEntry.rehydrate({
+        ...e.toState(),
+        rowVersion: current.rowVersion + 1,
+      });
+      this.rows.set(e.id, bumped);
+      this.updatedInOrder.push(bumped);
+      return Promise.resolve(bumped);
+    }
     this.rows.set(e.id, e);
     this.updatedInOrder.push(e);
     return Promise.resolve(e);
@@ -177,6 +215,7 @@ function buildTemplate(
     name: 'Initial assessment',
     description: null,
     version: 1,
+    rowVersion: 1,
     isActive: overrides.isActive ?? true,
     schema: overrides.schema ?? validSchema,
     createdBy: STAFF_A,
@@ -185,10 +224,13 @@ function buildTemplate(
   });
 }
 
-function buildEntry(template: DiagnosticTemplate): DiagnosticEntry {
+function buildEntry(
+  template: DiagnosticTemplate,
+  overrides: Partial<{ id: string; rowVersion: number }> = {},
+): DiagnosticEntry {
   return DiagnosticEntry.fromState(
     {
-      id: randomUUID(),
+      id: overrides.id ?? randomUUID(),
       kindergartenId: KG,
       childId: CHILD,
       templateId: template.id,
@@ -200,6 +242,7 @@ function buildEntry(template: DiagnosticTemplate): DiagnosticEntry {
       attachments: [],
       createdAt: NOW,
       updatedAt: NOW,
+      rowVersion: overrides.rowVersion ?? 1,
     },
     NOW,
   );
@@ -370,7 +413,7 @@ describe('DiagnosticEntryService', () => {
       templates.put(tmpl);
       const entry = buildEntry(tmpl);
       entries.put(entry);
-      const updated = await service.update(KG, entry.id, STAFF_A, {
+      const updated = await service.update(KG, entry.id, STAFF_A, USER_A, {
         summary: 'Calm',
       });
       expect(updated.summary).toBe('Calm');
@@ -382,7 +425,7 @@ describe('DiagnosticEntryService', () => {
       templates.put(tmpl);
       const entry = buildEntry(tmpl);
       entries.put(entry);
-      const updated = await service.update(KG, entry.id, STAFF_A, {
+      const updated = await service.update(KG, entry.id, STAFF_A, USER_A, {
         data: { mood: 5, notes: 'better' },
       });
       expect((updated.data as { mood: number }).mood).toBe(5);
@@ -394,7 +437,7 @@ describe('DiagnosticEntryService', () => {
       const entry = buildEntry(tmpl);
       entries.put(entry);
       await expect(
-        service.update(KG, entry.id, STAFF_A, {
+        service.update(KG, entry.id, STAFF_A, USER_A, {
           data: { mood: 'not-a-number' as unknown as number },
         }),
       ).rejects.toMatchObject({ code: 'diagnostic_entry_data_invalid' });
@@ -402,7 +445,7 @@ describe('DiagnosticEntryService', () => {
 
     it('throws 404 when entry not found', async () => {
       await expect(
-        service.update(KG, randomUUID(), STAFF_A, { summary: 'x' }),
+        service.update(KG, randomUUID(), STAFF_A, USER_A, { summary: 'x' }),
       ).rejects.toBeInstanceOf(DiagnosticEntryNotFoundError);
     });
 
@@ -412,8 +455,69 @@ describe('DiagnosticEntryService', () => {
       const entry = buildEntry(tmpl);
       entries.put(entry);
       await expect(
-        service.update(KG, entry.id, STAFF_B, { summary: 'x' }),
+        service.update(KG, entry.id, STAFF_B, USER_B, { summary: 'x' }),
       ).rejects.toBeInstanceOf(DiagnosticEntryNotAuthoredByYouError);
+    });
+
+    it('throws OptimisticLockError when repo signals stale row_version', async () => {
+      // Race-protection regression (B22a T4 / B18 T6-M4): the service
+      // must surface the repo's `OptimisticLockError` so DomainErrorFilter
+      // maps it to 409 `optimistic_lock_conflict`. We simulate the
+      // race by patching `findById` to return a stale snapshot while
+      // the underlying store has already advanced — exactly the
+      // SELECT-then-UPDATE window the optimistic lock guards.
+      const tmpl = buildTemplate();
+      templates.put(tmpl);
+      const stale = buildEntry(tmpl, { rowVersion: 1 });
+      entries.put(stale);
+      // Concurrent writer landed first → store now at row_version=2.
+      entries.put(buildEntry(tmpl, { id: stale.id, rowVersion: 2 }));
+      jest.spyOn(entries, 'findById').mockResolvedValueOnce(stale);
+      await expect(
+        service.update(KG, stale.id, STAFF_A, USER_A, { summary: 'late' }),
+      ).rejects.toBeInstanceOf(OptimisticLockError);
+    });
+
+    it('stamps lastModifiedByUserId + lastModifiedAt on every PATCH', async () => {
+      // B22a T7 / B18 Concern 1 — admin-bypass-on-PATCH audit trail.
+      // The service must populate the audit columns from the supplied
+      // `callerUserId` + `clock.now()`, regardless of which patch
+      // fields were touched. Asserts both the value reaching the entity
+      // and the persisted aggregate (FakeEntryRepo round-trips it).
+      const tmpl = buildTemplate();
+      templates.put(tmpl);
+      const entry = buildEntry(tmpl);
+      entries.put(entry);
+      const updated = await service.update(KG, entry.id, STAFF_A, USER_A, {
+        summary: 'Audited',
+      });
+      expect(updated.lastModifiedByUserId).toBe(USER_A);
+      expect(updated.lastModifiedAt).toEqual(NOW);
+      expect(entries.rows.get(entry.id)?.lastModifiedByUserId).toBe(USER_A);
+    });
+
+    it('stamps audit columns on the admin-override PATCH path', async () => {
+      // Admin overrides happen at the controller layer by passing the
+      // entry's actual `specialist_id` as `callerStaffMemberId` so the
+      // author check passes. The audit stamp uses the admin's own
+      // `users.id` (the controller passes `user.sub`) — so the DB row
+      // shows the admin's id even though the author check was a no-op.
+      const tmpl = buildTemplate();
+      templates.put(tmpl);
+      const entry = buildEntry(tmpl);
+      entries.put(entry);
+      // Simulate the controller's admin-override branch: callerStaffMemberId
+      // = the entry's authoring specialist (so assertAuthoredBy passes),
+      // callerUserId = the admin's own users.id (USER_B here).
+      const updated = await service.update(
+        KG,
+        entry.id,
+        entry.specialistId,
+        USER_B,
+        { summary: 'Admin override' },
+      );
+      expect(updated.lastModifiedByUserId).toBe(USER_B);
+      expect(updated.specialistId).toBe(STAFF_A); // unchanged author
     });
   });
 
@@ -430,6 +534,53 @@ describe('DiagnosticEntryService', () => {
       await expect(service.getById(KG, randomUUID())).rejects.toBeInstanceOf(
         DiagnosticEntryNotFoundError,
       );
+    });
+  });
+
+  describe('getByIdForChild (parent IDOR guard)', () => {
+    // B22a T8 / FINDINGS M1 — the parent controller previously called
+    // `getById(kgId, entryId)` and trusted the URL `:childId` for
+    // authorization without checking it matched the loaded entry's
+    // child. A guardian of child A could request
+    // `/parent/children/{A}/diagnostics/{entryOfB}` and receive
+    // child B's data. `getByIdForChild` re-binds the lookup to the
+    // URL child so the permission check becomes the actual
+    // authorization boundary.
+    const CHILD_OTHER = '55555555-5555-5555-5555-555555555555';
+
+    it('returns the entry when entry.childId matches', async () => {
+      const tmpl = buildTemplate();
+      const entry = buildEntry(tmpl);
+      entries.put(entry);
+      const e = await service.getByIdForChild(KG, CHILD, entry.id);
+      expect(e.id).toBe(entry.id);
+    });
+
+    it('throws 404 when entry exists but belongs to a different child (IDOR)', async () => {
+      // Parent A authorized for CHILD requests entry that actually
+      // belongs to CHILD_OTHER. Pre-fix this returned the foreign
+      // entry; post-fix it surfaces as `diagnostic_entry_not_found`
+      // (same shape as a missing row — no info-leak about whether
+      // a foreign sibling has an entry under that id).
+      const tmpl = buildTemplate();
+      const otherChildEntry = DiagnosticEntry.fromState(
+        {
+          ...buildEntry(tmpl).toState(),
+          id: randomUUID(),
+          childId: CHILD_OTHER,
+        },
+        NOW,
+      );
+      entries.put(otherChildEntry);
+      await expect(
+        service.getByIdForChild(KG, CHILD, otherChildEntry.id),
+      ).rejects.toBeInstanceOf(DiagnosticEntryNotFoundError);
+    });
+
+    it('throws 404 when entry does not exist at all', async () => {
+      await expect(
+        service.getByIdForChild(KG, CHILD, randomUUID()),
+      ).rejects.toBeInstanceOf(DiagnosticEntryNotFoundError);
     });
   });
 

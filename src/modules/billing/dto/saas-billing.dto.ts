@@ -65,3 +65,30 @@ export class TriggerDiscountExpireRunResponseDto {
   })
   status!: 'enqueued';
 }
+
+export class TriggerOverdueRunDto {
+  @ApiProperty({
+    example: '2026-05-13T03:00:00.000Z',
+    description:
+      'Optional ISO-8601 anchor for the overdue cut-off. Defaults to server now.',
+    required: false,
+    nullable: true,
+  })
+  @IsOptional()
+  @IsDateString()
+  now?: string | null;
+}
+
+export class TriggerOverdueRunResponseDto {
+  @ApiProperty({
+    example: 'billing:overdue-manual:1717200000',
+    description: 'BullMQ job id for the enqueued overdue invoice run.',
+  })
+  job_id!: string;
+
+  @ApiProperty({
+    example: 'enqueued',
+    description: 'Always "enqueued" on success.',
+  })
+  status!: 'enqueued';
+}

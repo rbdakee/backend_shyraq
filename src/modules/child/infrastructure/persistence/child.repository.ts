@@ -162,6 +162,36 @@ export abstract class ChildRepository {
     return Promise.resolve({ kind: 'not-found' });
   }
 
+  // ── B22a T3 (FINDINGS B21-T6-M3) — Monthly billing archive-race guard ─
+
+  /**
+   * Conditional existence check used by the monthly billing cron right
+   * before INSERTing the per-child invoice. Acquires a row-level lock
+   * (`FOR UPDATE`) on the matching child so a concurrent
+   * `archive` UPDATE blocks until the invoice INSERT TX commits or
+   * rolls back. This closes the narrow window where archive lands
+   * between `findAllActiveAtDate` (start of run) and the per-child
+   * INSERT inside `generateAndPersistInvoice`:
+   *
+   *   - `true`  → row exists in this kg AND `status <> 'archived'`. The
+   *     row is locked for the rest of the ambient TX, so a concurrent
+   *     archive can only commit AFTER the invoice INSERT completes.
+   *   - `false` → row missing OR archived. Service skips the INSERT.
+   *
+   * MUST be called inside an open ambient transaction (the manager()
+   * helper resolves to the tenant-scoped EntityManager) — otherwise
+   * `FOR UPDATE` is a no-op when the implicit autocommit fires.
+   *
+   * Default impl: false (older test fakes get a "missing" semantic for
+   * free; specs that exercise this path must override).
+   */
+  existsActiveByIdForUpdate(
+    _kindergartenId: string,
+    _childId: string,
+  ): Promise<boolean> {
+    return Promise.resolve(false);
+  }
+
   // ── B16 — DiscountTargetResolver helpers ──────────────────────────────
   // These are non-abstract default-no-op methods to keep older test
   // fakes compiling without forcing them to declare empty stubs. The

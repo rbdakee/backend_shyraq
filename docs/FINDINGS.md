@@ -586,13 +586,20 @@ Auth adapter уже фиксил тот же баг через Redis pipeline.
 
 H8 (controller new Date), H10 (DoS caps), H13 (validation), H18 (controller→repo), M11 (hashtext), M17 (TZ latent), M21 (DataSource in services), F5-M1/M2 (phantom specs).
 
-## 🟠 Migration timestamp ordering (discovered 2026-05-12 during fix-pass verification)
+## ✅ Migration timestamp ordering — RESOLVED 2026-05-12
 
 **File:** `src/database/migrations/`
-**Status:** 🟠 B22
+**Status:** ✅ **RESOLVED** (commits `34adacc` + `914660e` 2026-05-12)
 
-### Что
-Миграции B5/B7/B8 имеют timestamps РАНЬШЕ P0/P1/P3-P5:
+**Resolution:** 3 миграции переименованы:
+- `1777501179271-EnrollmentTables.ts` → `1777593604500-EnrollmentTables.ts`
+- `1777556957492-B7ScheduleAndMeal.ts` → `1777593605000-B7ScheduleAndMeal.ts`
+- `1777588264314-B8AttendanceAndTimeline.ts` → `1777593606000-B8AttendanceAndTimeline.ts`
+
+Fresh PG container теперь запускает миграции в правильном порядке (P0-P5 → B5 → B7 → B8 → B9+). Devs с long-lived volumes — либо drop-volume + re-bootstrap, либо `UPDATE migrations SET name = ... WHERE name = ...` ручной патч; production не затронут (никогда не было production deployment).
+
+### Что (historical)
+Миграции B5/B7/B8 имели timestamps РАНЬШЕ P0/P1/P3-P5:
 - `1777501179271-EnrollmentTables.ts` (B5)
 - `1777556957492-B7ScheduleAndMeal.ts` (B7)
 - `1777588264314-B8AttendanceAndTimeline.ts` (B8)

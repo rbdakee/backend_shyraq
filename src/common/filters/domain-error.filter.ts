@@ -14,6 +14,7 @@ import {
   InvariantViolationError,
   NotFoundError,
   TooManyRequestsError,
+  UnprocessableEntityError,
 } from '@/shared-kernel/domain/errors';
 import { IinAlreadyTakenError } from '@/modules/users/domain/errors/iin-already-taken.error';
 import { ProfileUniqueViolationError } from '@/modules/users/domain/errors/profile-unique-violation.error';
@@ -199,6 +200,8 @@ export class DomainErrorFilter implements ExceptionFilter {
       return HttpStatus.TOO_MANY_REQUESTS;
     if (err instanceof InvariantViolationError) return HttpStatus.BAD_REQUEST;
     if (err instanceof ForbiddenActionError) return HttpStatus.FORBIDDEN;
+    if (err instanceof UnprocessableEntityError)
+      return HttpStatus.UNPROCESSABLE_ENTITY;
     if (err instanceof DomainError) return HttpStatus.UNPROCESSABLE_ENTITY;
     return null;
   }

@@ -1,4 +1,5 @@
 import {
+  Inject,
   Injectable,
   Logger,
   OnApplicationBootstrap,
@@ -65,9 +66,14 @@ export class ContentPublishProcessor extends WorkerHost {
 
   constructor(
     private readonly contentRepo: ContentRepository,
+    // SP1 (FINDINGS): explicit `@Inject(NotificationPort)` + `@Inject(ClockPort)`
+    // so the worker process resolves these abstract ports via reflect-metadata
+    // (BullMQ workers boot under a different DI graph and can otherwise see
+    // `undefined` for abstract-class tokens).
+    @Inject(NotificationPort)
     private readonly notificationPort: NotificationPort,
     private readonly dataSource: DataSource,
-    private readonly clock: ClockPort,
+    @Inject(ClockPort) private readonly clock: ClockPort,
   ) {
     super();
   }
@@ -146,19 +152,63 @@ export class ContentPublishProcessor extends WorkerHost {
           let published = 0;
           let skipped = 0;
           for (const post of scheduled) {
-            const updated = await this.contentRepo.transitionStatus(
-              kgId,
-              post.id,
-              'scheduled',
-              'published',
-              { publishedAt: now, updatedAt: now },
-            );
-            if (!updated) {
+            // B22a T5 / H7 — per-post SAVEPOINT mirrors the B9 T11 fix in
+            // `outbox-poller.processor.ts`. TypeORM's nested
+            // `manager.transaction` issues a `SAVEPOINT` on the same
+            // connection, so the (transitionStatus + emitPublishedEvent)
+            // pair runs atomically per post WITHOUT poisoning the outer
+            // kg-batch TX. If the outbox INSERT (or any other DB op inside
+            // emitPublishedEvent) throws, only this post's status flip
+            // rolls back; earlier successful flips stay durable and the
+            // loop continues with the next post.
+            //
+            // tenantStorage.run is re-published with the savepoint manager
+            // so every relational repository called inside the savepoint
+            // (notably `OutboxNotificationAdapter` writing to
+            // `notification_outbox`) participates in the savepoint and not
+            // a fresh pool connection that would lack the
+            // `app.kindergarten_id` GUC.
+            try {
+              await em.transaction(async (savepointManager) => {
+                const updated = await tenantStorage.run(
+                  {
+                    kgId,
+                    bypass: false,
+                    entityManager: savepointManager,
+                  },
+                  async () => {
+                    const u = await this.contentRepo.transitionStatus(
+                      kgId,
+                      post.id,
+                      'scheduled',
+                      'published',
+                      { publishedAt: now, updatedAt: now },
+                    );
+                    if (!u) return null;
+                    await this.emitPublishedEvent(u, now);
+                    return u;
+                  },
+                );
+                if (!updated) {
+                  // Conditional UPDATE matched 0 rows (concurrent flip /
+                  // status change). Bubble a sentinel so the savepoint
+                  // releases without a row delta, and the outer loop
+                  // increments `skipped`.
+                  throw new TransitionMissedSentinel();
+                }
+              });
+              published += 1;
+            } catch (err) {
+              if (err instanceof TransitionMissedSentinel) {
+                skipped += 1;
+                continue;
+              }
+              const reason = err instanceof Error ? err.message : String(err);
+              this.logger.warn(
+                `content_publish_post_failed kg=${kgId} postId=${post.id}: ${reason}`,
+              );
               skipped += 1;
-              continue;
             }
-            await this.emitPublishedEvent(updated, now);
-            published += 1;
           }
           return { publishedCount: published, skippedCount: skipped };
         },
@@ -238,6 +288,21 @@ export class ContentPublishProcessor extends WorkerHost {
 function pickName(i18n: LocalisedText | null): string {
   if (!i18n) return '';
   return i18n.ru ?? i18n.kz ?? i18n.kk ?? i18n.en ?? '';
+}
+
+/**
+ * Internal sentinel used by the per-post SAVEPOINT loop to indicate that
+ * the conditional `transitionStatus` UPDATE matched 0 rows (concurrent
+ * publish / status changed underneath us). Throwing the sentinel rolls the
+ * savepoint back cleanly (so any spurious side-effects revert atomically)
+ * while the outer catch maps it to a `skipped += 1` increment instead of a
+ * warn log.
+ */
+class TransitionMissedSentinel extends Error {
+  constructor() {
+    super('transition_missed');
+    this.name = 'TransitionMissedSentinel';
+  }
 }
 
 @Injectable()

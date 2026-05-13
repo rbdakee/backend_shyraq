@@ -35,9 +35,12 @@ import bcrypt from 'bcryptjs';
 import request from 'supertest';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
+import { getQueueToken } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 import { DataSource } from 'typeorm';
 import { createTestApp, flushRedis, TestApp, truncateAll } from './helpers/app';
 import { ProRataRefundProcessor } from '@/modules/billing/pro-rata-refund.processor';
+import { LIFECYCLE_QUEUE } from '@/modules/child/lifecycle-queue.constants';
 
 const SUPER_ADMIN_EMAIL = 'super-lifecycle@shyraq.test';
 const SUPER_ADMIN_PASSWORD = 'Lifecycle12345!';
@@ -78,6 +81,7 @@ describe('Lifecycle E2E (B21 T5)', () => {
   /** kg_A — primary tenant for most scenarios */
   let kgAId: string;
   let kgAAdminToken: string;
+  let kgAAdminUserId: string;
 
   /** kg_B — cross-tenant attacker */
   let kgBAdminToken: string;
@@ -348,6 +352,7 @@ describe('Lifecycle E2E (B21 T5)', () => {
     const kgA = await createKgWithAdmin('lifecycle-kg-a', '+77021110001');
     kgAId = kgA.kgId;
     kgAAdminToken = kgA.adminToken;
+    kgAAdminUserId = kgA.userId;
 
     const kgB = await createKgWithAdmin('lifecycle-kg-b', '+77021110002');
     kgBAdminToken = kgB.adminToken;
@@ -819,5 +824,284 @@ describe('Lifecycle E2E (B21 T5)', () => {
     expect(rows[0].event_key).toBe('child.transferred');
     expect(rows[0].payload['childId']).toBe(child.id);
     expect(rows[0].payload['toGroupId']).toBe(groupId);
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Scenario M (B22a T9): child_status_history audit endpoint
+  // Full flow: archive → reactivate → archive again, then GET /status-history
+  // returns 3 rows ordered by changed_at DESC. previous_archive_reason is
+  // captured for the archived→active transition; archive_reason populated
+  // for both active→archived rows; changed_by_user_id matches the admin's
+  // users.id (NOT staff_members.id).
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  it('records status history on archive→reactivate→archive and surfaces it via GET /status-history', async () => {
+    const child = await createActiveChild(kgAAdminToken, 'M');
+
+    // 1. archive
+    await archiveChild(kgAAdminToken, child.id, 'First archive — relocation');
+
+    // 2. reactivate (returns child to active; clears archive_reason on the
+    //    children row, but the audit row preserves previous_archive_reason)
+    await request(server)
+      .post(`/api/v1/children/${child.id}/reactivate`)
+      .set('Authorization', `Bearer ${kgAAdminToken}`)
+      .expect(200);
+
+    // 3. archive again (previously-active children go straight to archived)
+    await archiveChild(kgAAdminToken, child.id, 'Second archive — final');
+
+    // GET the audit history
+    const res = await request(server)
+      .get(`/api/v1/children/${child.id}/status-history`)
+      .set('Authorization', `Bearer ${kgAAdminToken}`)
+      .expect(200);
+
+    const body = res.body as {
+      items: Array<{
+        id: string;
+        previous_status: string;
+        new_status: string;
+        previous_archive_reason: string | null;
+        archive_reason: string | null;
+        changed_by_user_id: string;
+        changed_at: string;
+      }>;
+      total: number;
+    };
+
+    expect(body.total).toBe(3);
+    expect(body.items).toHaveLength(3);
+
+    // Ordered changed_at DESC → newest first.
+    const [newest, middle, oldest] = body.items;
+
+    // Newest = the second archive
+    expect(newest.previous_status).toBe('active');
+    expect(newest.new_status).toBe('archived');
+    expect(newest.archive_reason).toBe('Second archive — final');
+    expect(newest.previous_archive_reason).toBeNull();
+    expect(newest.changed_by_user_id).toBe(kgAAdminUserId);
+
+    // Middle = the reactivate (archived → active). Crucially captures the
+    // archive_reason that was on the children row BEFORE Child.reactivate()
+    // wiped it.
+    expect(middle.previous_status).toBe('archived');
+    expect(middle.new_status).toBe('active');
+    expect(middle.archive_reason).toBeNull();
+    expect(middle.previous_archive_reason).toBe('First archive — relocation');
+    expect(middle.changed_by_user_id).toBe(kgAAdminUserId);
+
+    // Oldest = the first archive
+    expect(oldest.previous_status).toBe('active');
+    expect(oldest.new_status).toBe('archived');
+    expect(oldest.archive_reason).toBe('First archive — relocation');
+    expect(oldest.previous_archive_reason).toBeNull();
+    expect(oldest.changed_by_user_id).toBe(kgAAdminUserId);
+
+    // Sanity: every changed_at parses as a valid ISO timestamp.
+    for (const r of body.items) {
+      expect(Number.isFinite(new Date(r.changed_at).getTime())).toBe(true);
+    }
+
+    // The DB row also reflects the FK to users.id (not staff_members.id).
+    const dbRows = await ds.transaction(async (m) => {
+      await m.query(`SET LOCAL app.bypass_rls = 'true'`);
+      return m.query(
+        `SELECT changed_by_user_id FROM child_status_history
+          WHERE child_id = $1
+          ORDER BY changed_at ASC`,
+        [child.id],
+      ) as Promise<Array<{ changed_by_user_id: string }>>;
+    });
+    expect(dbRows.every((r) => r.changed_by_user_id === kgAAdminUserId)).toBe(
+      true,
+    );
+  });
+
+  it('returns 404 child_not_found for status-history of cross-tenant child', async () => {
+    const child = await createActiveChild(kgAAdminToken, 'M-cross');
+
+    const res = await request(server)
+      .get(`/api/v1/children/${child.id}/status-history`)
+      .set('Authorization', `Bearer ${kgBAdminToken}`)
+      .expect(404);
+    expect(res.body.error).toBe('not_found');
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Scenario N (B22a T10): Lifecycle DLQ admin surface
+  // GET /admin/lifecycle/failed-jobs + POST /admin/lifecycle/failed-jobs/:id/retry
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  describe('Lifecycle DLQ admin (B22a T10)', () => {
+    /**
+     * Seed a failed job in the `lifecycle` queue by directly writing to
+     * Redis. We avoid letting a Worker organically fail a job because
+     * the api process imports `BillingModule` which registers the
+     * `ProRataRefundProcessor` (`@Processor(LIFECYCLE_QUEUE)`) — for
+     * unknown job names it returns `{kind:'skipped'}` (success, not
+     * failure), and for genuine `lifecycle:pro-rata-refund` jobs the
+     * outcome depends on PG state and timing. Direct Redis seed keeps
+     * the test deterministic regardless of consumer behaviour.
+     *
+     * Approach: enqueue a job (BullMQ assigns it an id and pushes it to
+     * `wait`), then atomically pull it out of every consumable list /
+     * sorted set and add it to the `failed` sorted set, plus stamp the
+     * job hash with `failedReason`/`attemptsMade`/`finishedOn` so
+     * `getFailed`/`getJob`/`isFailed` return the expected values.
+     * `removeOnFail: false` is set so retention does not auto-clean the
+     * row mid-test.
+     */
+    async function seedFailedJob(payload: {
+      kindergartenId: string;
+      childId?: string;
+      archivedAt?: string;
+    }): Promise<string> {
+      const queue = ctx.app.get(getQueueToken(LIFECYCLE_QUEUE)) as Queue;
+      const data = {
+        kindergartenId: payload.kindergartenId,
+        childId: payload.childId ?? randomUUID(),
+        archivedAt: payload.archivedAt ?? new Date().toISOString(),
+      };
+
+      const job = await queue.add('e2e:dlq-failure', data, {
+        attempts: 1,
+        removeOnFail: false,
+        removeOnComplete: false,
+      });
+
+      const jobId = String(job.id);
+      const client = await queue.client;
+      const prefix = queue.opts?.prefix ?? 'bull';
+      const queueKey = `${prefix}:${LIFECYCLE_QUEUE}`;
+      const now = Date.now();
+      const failedReason = 'e2e DLQ seed failure';
+
+      // Atomic state move via MULTI: pull the job out of every list /
+      // sorted set a worker could pick from, add it to `failed`, and
+      // stamp the job hash with the fields the controller surfaces.
+      const pipeline = client.multi();
+      pipeline.lrem(`${queueKey}:wait`, 0, jobId);
+      pipeline.lrem(`${queueKey}:active`, 0, jobId);
+      pipeline.zrem(`${queueKey}:prioritized`, jobId);
+      pipeline.zadd(`${queueKey}:failed`, now, jobId);
+      pipeline.hset(
+        `${queueKey}:${jobId}`,
+        'failedReason',
+        failedReason,
+        'attemptsMade',
+        '1',
+        'finishedOn',
+        String(now),
+        'processedOn',
+        String(now - 100),
+        'stacktrace',
+        JSON.stringify(['Error: e2e DLQ seed failure']),
+      );
+      await pipeline.exec();
+
+      return jobId;
+    }
+
+    it('lists failed jobs scoped to the caller’s kindergarten', async () => {
+      const idA = await seedFailedJob({ kindergartenId: kgAId });
+
+      const res = await request(server)
+        .get('/api/v1/admin/lifecycle/failed-jobs')
+        .set('Authorization', `Bearer ${kgAAdminToken}`)
+        .expect(200);
+
+      const body = res.body as {
+        items: Array<{
+          id: string;
+          name: string;
+          payload: Record<string, unknown>;
+          failed_reason: string | null;
+          attempts_made: number;
+          timestamp: number;
+          finished_on: number | null;
+        }>;
+        next_cursor: string | null;
+      };
+
+      expect(Array.isArray(body.items)).toBe(true);
+      const seeded = body.items.find((it) => it.id === idA);
+      expect(seeded).toBeDefined();
+      expect(seeded!.name).toBe('e2e:dlq-failure');
+      expect(seeded!.payload['kindergartenId']).toBe(kgAId);
+      expect(seeded!.failed_reason).toContain('e2e DLQ seed failure');
+      expect(seeded!.attempts_made).toBeGreaterThanOrEqual(1);
+    });
+
+    it('filters out failed jobs from other kindergartens for per-kg admin', async () => {
+      const idA = await seedFailedJob({ kindergartenId: kgAId });
+      const idB = await seedFailedJob({ kindergartenId: 'cross-kg-id-zzz' });
+
+      const res = await request(server)
+        .get('/api/v1/admin/lifecycle/failed-jobs')
+        .set('Authorization', `Bearer ${kgAAdminToken}`)
+        .expect(200);
+
+      const ids = (res.body.items as Array<{ id: string }>).map((i) => i.id);
+      expect(ids).toContain(idA);
+      expect(ids).not.toContain(idB);
+    });
+
+    it('rejects list calls from a non-admin role with 403', async () => {
+      // Mint a fake parent JWT (role='parent'); RolesGuard should 403 on @Roles('admin').
+      const parentToken = await jwtService.signAsync(
+        {
+          sub: randomUUID(),
+          role: 'parent',
+          kindergarten_id: kgAId,
+          jti: randomUUID(),
+        },
+        { secret: jwtSecret, expiresIn: '1h' },
+      );
+
+      await request(server)
+        .get('/api/v1/admin/lifecycle/failed-jobs')
+        .set('Authorization', `Bearer ${parentToken}`)
+        .expect(403);
+    });
+
+    it('retries a failed job and returns enqueued + job_id', async () => {
+      const id = await seedFailedJob({ kindergartenId: kgAId });
+
+      const res = await request(server)
+        .post(`/api/v1/admin/lifecycle/failed-jobs/${id}/retry`)
+        .set('Authorization', `Bearer ${kgAAdminToken}`)
+        .send({})
+        .expect(202);
+
+      expect(res.body).toEqual({ enqueued: true, job_id: id });
+
+      // After retry the job is no longer in failed state — verify by
+      // checking that subsequent failed-list does not surface it.
+      const queue = ctx.app.get(getQueueToken(LIFECYCLE_QUEUE)) as Queue;
+      const stillFailed = await queue.getFailed(0, 200);
+      expect(stillFailed.find((j) => String(j.id) === id)).toBeUndefined();
+    });
+
+    it('rejects retry for a missing job with 404 lifecycle_job_not_found', async () => {
+      const res = await request(server)
+        .post('/api/v1/admin/lifecycle/failed-jobs/non-existent-id/retry')
+        .set('Authorization', `Bearer ${kgAAdminToken}`)
+        .send({})
+        .expect(404);
+      expect(res.body.error).toBe('lifecycle_job_not_found');
+    });
+
+    it('rejects cross-kg retry attempts with 403 forbidden', async () => {
+      const id = await seedFailedJob({ kindergartenId: kgAId });
+
+      const res = await request(server)
+        .post(`/api/v1/admin/lifecycle/failed-jobs/${id}/retry`)
+        .set('Authorization', `Bearer ${kgBAdminToken}`)
+        .send({})
+        .expect(403);
+      expect(res.body.error).toBe('forbidden');
+    });
   });
 });

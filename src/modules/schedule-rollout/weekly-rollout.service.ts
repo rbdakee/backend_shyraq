@@ -163,7 +163,17 @@ export class WeeklyRolloutService {
 
       try {
         await this.dataSource.transaction(async (manager) => {
-          await manager.query(`SET LOCAL app.kindergarten_id = '${kgId}'`);
+          // H3 (FINDINGS): parameterized `set_config(...)` instead of
+          // `SET LOCAL app.kindergarten_id = '<kgId>'` — kgId is a UUID that
+          // we already validate upstream, so the previous interpolation is
+          // not exploitable today, but every other processor on this code
+          // path uses bind variables (`monthly-billing`, `discount-expire`,
+          // `content-publish`, etc.). Keeping the pattern consistent
+          // protects against future copy-paste of an unvalidated value.
+          await manager.query(`SELECT set_config($1, $2, true)`, [
+            'app.kindergarten_id',
+            kgId,
+          ]);
           await tenantStorage.run(
             { kgId, bypass: false, entityManager: manager },
             async () => {

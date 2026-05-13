@@ -255,17 +255,75 @@ export class CustomDiscountRelationalRepository extends CustomDiscountRepository
     // Single-statement guarded UPDATE — RETURNING the id makes the
     // 0-row case detectable. If `total_max_uses IS NULL` the cap is
     // disabled and the update always succeeds (modulo tenant scope).
-    const result = (await m.query(
+    //
+    // B22a T1 H16 follow-on: TypeORM's `m.query()` returns
+    // `[rows, rowCount]` for UPDATE…RETURNING. Treating the tuple as
+    // `Array<row>` (length=2 always) silently nuked the cap check
+    // before this fix. `unwrapReturning` extracts the rows half.
+    const result = unwrapReturning<{ id: string }>(
+      await m.query(
+        `UPDATE custom_discounts
+            SET used_count = used_count + $3,
+                updated_at = now()
+          WHERE id = $1
+            AND kindergarten_id = $2
+            AND (total_max_uses IS NULL OR used_count + $3 <= total_max_uses)
+          RETURNING id`,
+        [id, kindergartenId, by],
+      ),
+    );
+    return result.length > 0;
+  }
+
+  async tryReserveUsage(
+    kindergartenId: string,
+    id: string,
+    manager?: EntityManager,
+  ): Promise<boolean> {
+    const m = this.manager(manager);
+    // B22a T1 H16: single-statement atomic reserve. PostgreSQL evaluates
+    // the WHERE inside the UPDATE under row-locking semantics — concurrent
+    // reservers serialise on the row. The first writer to flip
+    // `used_count` past the cap blocks all later reservers (their WHERE
+    // becomes false at re-check). RETURNING `used_count` lets the caller
+    // log the post-reserve count if useful.
+    //
+    // TypeORM `query()` for UPDATE…RETURNING returns `[rows, rowCount]`;
+    // we unwrap the rows half so `length` reflects the actual flipped
+    // row count (0 or 1).
+    const result = unwrapReturning<{ used_count: number }>(
+      await m.query(
+        `UPDATE custom_discounts
+            SET used_count = used_count + 1,
+                updated_at = now()
+          WHERE id = $1
+            AND kindergarten_id = $2
+            AND (total_max_uses IS NULL OR used_count < total_max_uses)
+          RETURNING used_count`,
+        [id, kindergartenId],
+      ),
+    );
+    return result.length > 0;
+  }
+
+  async releaseUsage(
+    kindergartenId: string,
+    id: string,
+    manager?: EntityManager,
+  ): Promise<void> {
+    const m = this.manager(manager);
+    // `GREATEST(used_count - 1, 0)` guards against underflow if a caller
+    // double-releases. The preferred path is TX-rollback (no release
+    // needed); this method exists for cron flows that don't roll back
+    // the whole batch on a per-child failure.
+    await m.query(
       `UPDATE custom_discounts
-          SET used_count = used_count + $3,
+          SET used_count = GREATEST(used_count - 1, 0),
               updated_at = now()
         WHERE id = $1
-          AND kindergarten_id = $2
-          AND (total_max_uses IS NULL OR used_count + $3 <= total_max_uses)
-        RETURNING id`,
-      [id, kindergartenId, by],
-    )) as Array<{ id: string }>;
-    return result.length > 0;
+          AND kindergarten_id = $2`,
+      [id, kindergartenId],
+    );
   }
 
   async findActiveCustomDiscounts(
@@ -310,17 +368,22 @@ export class CustomDiscountRelationalRepository extends CustomDiscountRepository
     manager?: EntityManager,
   ): Promise<{ rowIds: string[]; rowCount: number }> {
     const m = this.manager(manager);
-    const result = (await m.query(
-      `UPDATE custom_discounts
-          SET status = 'expired',
-              updated_at = $2
-        WHERE kindergarten_id = $1
-          AND status IN ('active', 'paused')
-          AND valid_until IS NOT NULL
-          AND valid_until <= $2
-        RETURNING id`,
-      [kindergartenId, now],
-    )) as Array<{ id: string }>;
+    // B22a T1 H16 ripple: TypeORM `query()` returns `[rows, rowCount]`
+    // for UPDATE…RETURNING. Unwrap so `rowCount` reflects the actual
+    // flipped count.
+    const result = unwrapReturning<{ id: string }>(
+      await m.query(
+        `UPDATE custom_discounts
+            SET status = 'expired',
+                updated_at = $2
+          WHERE kindergarten_id = $1
+            AND status IN ('active', 'paused')
+            AND valid_until IS NOT NULL
+            AND valid_until <= $2
+          RETURNING id`,
+        [kindergartenId, now],
+      ),
+    );
     return {
       rowIds: result.map((r) => r.id),
       rowCount: result.length,
@@ -351,4 +414,28 @@ export class CustomDiscountRelationalRepository extends CustomDiscountRepository
       scope,
     ]);
   }
+}
+
+/**
+ * B22a T1 H16 helper. TypeORM 0.3.x's `EntityManager.query()` returns
+ * different shapes depending on whether the SQL has `RETURNING`:
+ *
+ *   - Plain `SELECT ...` → `Array<row>`
+ *   - `INSERT/UPDATE/DELETE ... RETURNING ...` → `[Array<row>, rowCount]`
+ *     (a 2-element tuple — first element is the rows, second is the
+ *     affected count)
+ *
+ * Without unwrapping, `result.length` against the tuple is always `2`,
+ * which silently nukes any "did the WHERE match?" check downstream
+ * (e.g. cap-respecting reservers always think they reserved). This
+ * helper detects the tuple form and returns just the rows half.
+ */
+function unwrapReturning<T>(raw: unknown): T[] {
+  if (Array.isArray(raw) && raw.length === 2 && Array.isArray(raw[0])) {
+    return raw[0] as T[];
+  }
+  if (Array.isArray(raw)) {
+    return raw as T[];
+  }
+  return [];
 }

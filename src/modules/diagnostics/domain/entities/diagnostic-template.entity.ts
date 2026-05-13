@@ -20,7 +20,15 @@ export interface DiagnosticTemplateState {
   specialistType: string;
   name: string;
   description: string | null;
+  /** Schema version — bumped only when the JSONB schema deeply differs. */
   version: number;
+  /**
+   * Optimistic-lock token (B22a T4). Internal — not exposed via DTO.
+   * Mutated by the relational repo's conditional UPDATE; the domain
+   * carries the value through so service.update() can pass the freshly
+   * loaded snapshot back to the repo as `expectedRowVersion`.
+   */
+  rowVersion: number;
   isActive: boolean;
   schema: TemplateSchema;
   createdBy: string;
@@ -72,6 +80,10 @@ export class DiagnosticTemplate {
     return this.state.version;
   }
 
+  get rowVersion(): number {
+    return this.state.rowVersion;
+  }
+
   get isActive(): boolean {
     return this.state.isActive;
   }
@@ -106,6 +118,9 @@ export class DiagnosticTemplate {
     }
     if (!Number.isInteger(s.version) || s.version < 1) {
       throw new InvariantViolationError('invalid_version');
+    }
+    if (!Number.isInteger(s.rowVersion) || s.rowVersion < 1) {
+      throw new InvariantViolationError('invalid_row_version');
     }
     validateTemplateSchemaShape(s.schema);
   }

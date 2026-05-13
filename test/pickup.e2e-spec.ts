@@ -783,6 +783,61 @@ describe('B11 Pickup OTP (e2e)', () => {
     expect(populated.body[0].status).toBe('otp_sent');
   });
 
+  // ── L2. List masks trusted_person_phone; single-get keeps it full ─────────
+
+  it(
+    'masks trusted_person_phone in the list response (`+7***LAST4`) ' +
+      'while the single-get endpoint preserves the full phone ' +
+      '(B22a T8 / FINDINGS B11 H4)',
+    async () => {
+      const a = await createKgWithAdmin('pu-l2', '+77011000131');
+      const childId = await createChild(a.adminToken, {
+        full_name: 'Child L2',
+        date_of_birth: '2020-01-01',
+      });
+      const FULL_PHONE = '+77071234567';
+
+      const createRes = await request(server)
+        .post('/api/v1/staff/pickup-requests')
+        .set('Authorization', `Bearer ${a.staffToken}`)
+        .send({
+          child_id: childId,
+          trusted_person_name: 'Mask Test',
+          trusted_person_phone: FULL_PHONE,
+        })
+        .expect(201);
+      const requestId = createRes.body.id as string;
+      // POST response keeps the full phone (caller just provided it).
+      expect(createRes.body.trusted_person_phone).toBe(FULL_PHONE);
+
+      // List response — masked.
+      const listRes = await request(server)
+        .get('/api/v1/staff/pickup-requests')
+        .set('Authorization', `Bearer ${a.staffToken}`)
+        .expect(200);
+      const row = (
+        listRes.body as Array<{
+          id: string;
+          trusted_person_phone: string;
+        }>
+      ).find((r) => r.id === requestId);
+      expect(row).toBeDefined();
+      expect(row?.trusted_person_phone).toBe('+7***4567');
+      // Belt-and-braces: middle digits never appear in any list row.
+      for (const r of listRes.body as Array<{ trusted_person_phone: string }>) {
+        expect(r.trusted_person_phone).not.toContain('707123');
+      }
+
+      // Single-get — full phone restored (staff need to call the trusted
+      // person; they opt-in to PII exposure by opening the request).
+      const detailRes = await request(server)
+        .get(`/api/v1/staff/pickup-requests/${requestId}`)
+        .set('Authorization', `Bearer ${a.staffToken}`)
+        .expect(200);
+      expect(detailRes.body.trusted_person_phone).toBe(FULL_PHONE);
+    },
+  );
+
   // ── Q. T7-5 HIGH#1: revoke between create+send-otp and validate ─────────
 
   it('returns 410 trusted_person_revoked when parent revokes the whitelist row between send-otp and validate (Scenario Q, T7-5 HIGH#1)', async () => {

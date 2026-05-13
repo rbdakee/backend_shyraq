@@ -61,6 +61,8 @@ export class ProgressNoteService {
       mediaUrls: Array.isArray(input.mediaUrls) ? input.mediaUrls : [],
       notedAt: input.notedAt ?? now,
       createdAt: now,
+      // B22a T4 — optimistic-lock token starts at 1 (matches DB DEFAULT).
+      rowVersion: 1,
     };
     const note = ProgressNote.fromState(state, now);
     const persisted = await this.notes.create(note);
@@ -80,11 +82,23 @@ export class ProgressNoteService {
   /**
    * PATCH body / mediaUrls. Author-only — `assertAuthoredBy` throws 403
    * on mismatch. Empty body rejected by the entity invariant (400).
+   *
+   * Race protection (B22a T4 — closes B18 T6-M4): `expectedRowVersion`
+   * captured BEFORE the domain mutation; concurrent PATCHes serialise
+   * via the conditional UPDATE in the relational repo. Late writers
+   * receive `OptimisticLockError` (HTTP 409).
+   *
+   * Audit stamping (B22a T7 — closes B18 Concern 1): `callerUserId` is
+   * the caller's `users.id` (not `staff_members.id`) — see
+   * `DiagnosticEntryService.update` for the same rationale. Surfaces
+   * the admin-override audit trail in `last_modified_by_user_id` /
+   * `last_modified_at`.
    */
   async update(
     kgId: string,
     id: string,
     callerMentorId: string,
+    callerUserId: string,
     patch: ProgressNoteUpdatePatch,
   ): Promise<ProgressNote> {
     const existing = await this.notes.findById(kgId, id);
@@ -92,8 +106,17 @@ export class ProgressNoteService {
       throw new ProgressNoteNotFoundError(id);
     }
     existing.assertAuthoredBy(callerMentorId);
-    const updated = existing.update(patch, this.clock.now());
-    return this.notes.update(updated);
+    const expectedRowVersion = existing.rowVersion;
+    const now = this.clock.now();
+    const updated = existing.update(
+      {
+        ...patch,
+        lastModifiedByUserId: callerUserId,
+        lastModifiedAt: now,
+      },
+      now,
+    );
+    return this.notes.update(updated, expectedRowVersion);
   }
 
   /**

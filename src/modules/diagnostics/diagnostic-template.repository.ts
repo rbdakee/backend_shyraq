@@ -45,22 +45,47 @@ export abstract class DiagnosticTemplateRepository {
   ): Promise<DiagnosticTemplate | null>;
 
   /**
-   * Conditional UPDATE. When `expectedVersion` is supplied, the implementation
-   * issues `WHERE version = $expectedVersion` so a stale read does not
-   * silently overwrite. On version mismatch the impl returns the freshly-
-   * loaded row so the caller can decide; the service layer translates that
-   * into a 409 if needed.
+   * Conditional UPDATE for optimistic-lock race protection (B22a T4).
    *
-   * When `expectedVersion` is omitted, the update is unconditional (race-
-   * tolerant; admin-only writers + low contention).
+   * When `expectedRowVersion` is supplied, the implementation issues
+   * `WHERE row_version = $expectedRowVersion` and bumps `row_version`
+   * by 1 in the same statement. If zero rows match (someone else
+   * mutated the row between the caller's read and write), the impl
+   * throws `OptimisticLockError` (HTTP 409 `optimistic_lock_conflict`).
+   *
+   * When `expectedRowVersion` is omitted, the update is unconditional —
+   * retained for any internal callers (none today) that opt out of
+   * race protection. All HTTP-facing service paths supply it.
+   *
+   * NOTE: `row_version` is the OPTIMISTIC-LOCK token (internal only),
+   * distinct from the public `version` field which represents the
+   * SCHEMA version (semantic, exposed via DTO, bumped only on schema
+   * diff). See B22a T4 + SM3.
    */
   abstract update(
     template: DiagnosticTemplate,
-    expectedVersion?: number,
+    expectedRowVersion?: number,
   ): Promise<DiagnosticTemplate>;
 
   abstract list(
     kgId: string,
     filters: ListDiagnosticTemplatesFilter,
   ): Promise<DiagnosticTemplateListResult>;
+
+  /**
+   * Returns the number of `diagnostic_entries` rows that reference this
+   * template inside the given kindergarten. Used by H12
+   * (B22a T7) to guard schema-PATCH against a template that already has
+   * persisted entries — mutating the schema would invalidate every
+   * existing entry's `data` payload.
+   *
+   * Lives on the template repo (not the entry repo) because the use-case
+   * is template-side: the template's own `update()` flow needs the count
+   * BEFORE any mutation. Keeping it here also avoids cross-port plumbing
+   * inside `DiagnosticTemplateService`.
+   */
+  abstract countEntriesUsingTemplate(
+    kgId: string,
+    templateId: string,
+  ): Promise<number>;
 }

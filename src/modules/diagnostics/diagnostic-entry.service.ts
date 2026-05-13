@@ -4,6 +4,7 @@ import { NotificationPort } from '@/common/notifications/notification.port';
 import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
 import { ChildNotFoundError } from '@/modules/child/domain/errors/child-not-found.error';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { formatDateInTimezone } from '@/shared-kernel/domain/value-objects/day-of-week.vo';
 import { DiagnosticTemplateRepository } from './diagnostic-template.repository';
 import {
   DiagnosticEntryListResult,
@@ -95,6 +96,8 @@ export class DiagnosticEntryService {
       attachments: Array.isArray(input.attachments) ? input.attachments : [],
       createdAt: now,
       updatedAt: now,
+      // B22a T4 — optimistic-lock token starts at 1 (matches DB DEFAULT).
+      rowVersion: 1,
     };
     const entry = DiagnosticEntry.fromState(state, now);
     const persisted = await this.entries.create(entry);
@@ -112,7 +115,10 @@ export class DiagnosticEntryService {
       templateName: template.name,
       specialistId: persisted.specialistId,
       specialistType: template.specialistType,
-      assessmentDate: persisted.assessmentDate.toISOString().slice(0, 10),
+      // B18 T6-M7: assessment_date is a PG `date` column round-tripped as
+      // a midnight-UTC Date. Under Asia/Almaty contract we format in
+      // Asia/Almaty so the YYYY-MM-DD matches the staff-input wall-clock.
+      assessmentDate: formatDateInTimezone(persisted.assessmentDate),
       createdAt: persisted.createdAt,
     });
 
@@ -126,11 +132,25 @@ export class DiagnosticEntryService {
    * passes for admins too. If `data` is patched, re-validate against the
    * template stored on the entry (NOT a new templateId — entries are bound
    * to a single template per BP §8.4).
+   *
+   * Race protection (B22a T4 — closes B18 T6-M4): `expectedRowVersion`
+   * captured BEFORE the domain mutation; concurrent PATCHes serialise
+   * via the conditional UPDATE in the relational repo. Late writers
+   * receive `OptimisticLockError` (HTTP 409).
+   *
+   * Audit stamping (B22a T7 — closes B18 Concern 1): `callerUserId` is
+   * the caller's `users.id` (not their `staff_members.id`) — surfaces
+   * the admin-override audit trail at the user-identity layer so we
+   * can follow it across staff_member churn (terminate + re-add in
+   * different role would break a staff_member-FK link). Stamped on
+   * `last_modified_by_user_id` + `last_modified_at` columns alongside
+   * the business-field updates inside the same conditional UPDATE.
    */
   async update(
     kgId: string,
     id: string,
     callerStaffMemberId: string,
+    callerUserId: string,
     patch: DiagnosticEntryUpdatePatch,
   ): Promise<DiagnosticEntry> {
     const existing = await this.entries.findById(kgId, id);
@@ -149,13 +169,50 @@ export class DiagnosticEntryService {
       validateEntryData(template.schema, patch.data);
     }
 
-    const updated = existing.update(patch, this.clock.now());
-    return this.entries.update(updated);
+    const expectedRowVersion = existing.rowVersion;
+    const now = this.clock.now();
+    const updated = existing.update(
+      {
+        ...patch,
+        lastModifiedByUserId: callerUserId,
+        lastModifiedAt: now,
+      },
+      now,
+    );
+    return this.entries.update(updated, expectedRowVersion);
   }
 
   async getById(kgId: string, id: string): Promise<DiagnosticEntry> {
     const existing = await this.entries.findById(kgId, id);
     if (existing === null) {
+      throw new DiagnosticEntryNotFoundError(id);
+    }
+    return existing;
+  }
+
+  /**
+   * Parent-scoped variant of `getById`. Loads the entry by id within the
+   * tenant AND asserts that `entry.childId === expectedChildId`. Returns
+   * 404 (`diagnostic_entry_not_found`) on cross-child mismatch — same
+   * shape as a missing row so we don't leak whether `entryId` exists for
+   * a sibling family.
+   *
+   * Closes FINDINGS M1 (B22a T8): the parent-side controller previously
+   * called `getById(kgId, entryId)` and trusted the URL `:childId` for
+   * authorization without checking it matched the loaded entry's child.
+   * A parent of child A could request `/parent/children/{A}/diagnostics/{entryB}`
+   * and receive child B's entry — IDOR. This method binds the entry
+   * lookup to the URL child so the controller's permission check
+   * (which is keyed on `:childId`) becomes the actual authorization
+   * boundary.
+   */
+  async getByIdForChild(
+    kgId: string,
+    expectedChildId: string,
+    id: string,
+  ): Promise<DiagnosticEntry> {
+    const existing = await this.entries.findById(kgId, id);
+    if (existing === null || existing.childId !== expectedChildId) {
       throw new DiagnosticEntryNotFoundError(id);
     }
     return existing;

@@ -7,13 +7,18 @@ import { StaffModule } from '@/modules/staff/staff.module';
 import { UsersModule } from '@/modules/users/users.module';
 import { ChildGuardianRepository } from './infrastructure/persistence/child-guardian.repository';
 import { ChildRepository } from './infrastructure/persistence/child.repository';
+import { ChildStatusHistoryRepository } from './infrastructure/persistence/child-status-history.repository';
+import { AdminLifecycleController } from './admin-lifecycle.controller';
+import { AdminLifecycleService } from './admin-lifecycle.service';
 import { ChildController } from './child.controller';
 import { ChildService } from './child.service';
 import { ChildEntity } from './infrastructure/persistence/relational/entities/child.entity';
 import { ChildGroupHistoryEntity } from './infrastructure/persistence/relational/entities/child-group-history.entity';
 import { ChildGuardianEntity } from './infrastructure/persistence/relational/entities/child-guardian.entity';
+import { ChildStatusHistoryEntity } from './infrastructure/persistence/relational/entities/child-status-history.entity';
 import { ChildGuardianRelationalRepository } from './infrastructure/persistence/relational/repositories/child-guardian.repository';
 import { ChildRelationalRepository } from './infrastructure/persistence/relational/repositories/child.repository';
+import { ChildStatusHistoryRelationalRepository } from './infrastructure/persistence/relational/repositories/child-status-history.repository';
 import {
   BillingLifecyclePort,
   NoopBillingLifecycleAdapter,
@@ -38,6 +43,7 @@ import { ParentLinkController } from './parent-link.controller';
       ChildEntity,
       ChildGuardianEntity,
       ChildGroupHistoryEntity,
+      ChildStatusHistoryEntity,
     ]),
     // B21 T3: enqueue `lifecycle:pro-rata-refund` jobs from
     // `ChildService.archive`. Worker process (`WorkerModule`) registers the
@@ -52,14 +58,20 @@ import { ParentLinkController } from './parent-link.controller';
     ParentChildController,
     ParentApprovalController,
     ParentLinkController,
+    AdminLifecycleController,
   ],
   providers: [
     ChildService,
+    AdminLifecycleService,
     ChildAccessGuard,
     { provide: ChildRepository, useClass: ChildRelationalRepository },
     {
       provide: ChildGuardianRepository,
       useClass: ChildGuardianRelationalRepository,
+    },
+    {
+      provide: ChildStatusHistoryRepository,
+      useClass: ChildStatusHistoryRelationalRepository,
     },
     // Default no-op for the billing-lifecycle bridge so service-unit
     // wiring outside the full app graph compiles. The production binding
@@ -73,6 +85,10 @@ import { ParentLinkController } from './parent-link.controller';
   exports: [
     ChildRepository,
     ChildGuardianRepository,
+    // ChildStatusHistoryRepository intentionally NOT exported (T13 M7
+    // opus): it's only consumed by ChildService inside this module, so
+    // exporting it would leak module-internal persistence detail per
+    // CLAUDE.md §4 module-boundary discipline.
     ChildService,
     BillingLifecyclePort,
     // Re-export the queue token via the BullMQ module so consumers that

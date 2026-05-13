@@ -13,6 +13,10 @@ export class DiagnosticTemplateMapper {
       name: row.name,
       description: row.description,
       version: row.version,
+      // PG NUMERIC/INT can deserialize as string under some driver paths;
+      // the repository's raw INSERT/UPDATE always binds an int, but keep
+      // the coercion here for defense.
+      rowVersion: Number(row.rowVersion ?? 1),
       isActive: row.isActive,
       schema: row.schema,
       createdBy: row.createdBy,
@@ -33,6 +37,7 @@ export class DiagnosticTemplateMapper {
       name: s.name,
       description: s.description,
       version: s.version,
+      rowVersion: s.rowVersion,
       isActive: s.isActive,
       schema: s.schema,
       createdBy: s.createdBy,

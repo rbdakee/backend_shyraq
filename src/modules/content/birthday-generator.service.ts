@@ -4,6 +4,7 @@ import { DataSource } from 'typeorm';
 import { NotificationPort } from '@/common/notifications/notification.port';
 import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { formatDateInTimezone } from '@/shared-kernel/domain/value-objects/day-of-week.vo';
 import { tenantStorage } from '@/database/tenant-storage';
 import { ContentRepository } from './content.repository';
 import { ContentPost } from './domain/entities/content-post.entity';
@@ -46,8 +47,17 @@ export class BirthdayGeneratorService {
     kindergartenId: string,
     today: Date,
   ): Promise<BirthdayGenerationResult> {
-    const month = today.getUTCMonth() + 1; // 1-based
-    const day = today.getUTCDate();
+    // H9: normalize `today` once at the boundary to the Asia/Almaty calendar
+    // date. The cron fires at 07:00 Almaty so it is always safely inside one
+    // local day, but `runDaily` is also reachable from the manual saas
+    // trigger which passes arbitrary wall-clock instants. Deriving month/day
+    // via `getUTCMonth/UTCDate` rolls back a day for any 19:00-24:00 UTC
+    // input (= 00:00-05:00 next day Almaty).
+    const todayIso = formatDateInTimezone(today); // 'YYYY-MM-DD' Almaty
+    const [yearStr, monthStr, dayStr] = todayIso.split('-');
+    const year = Number(yearStr);
+    const month = Number(monthStr); // 1-based
+    const day = Number(dayStr);
 
     // Primary set — children born on (month, day).
     const children = await this.childRepo.listActiveByBirthdayMonthDay(
@@ -60,7 +70,7 @@ export class BirthdayGeneratorService {
     // on Feb 28. We DO NOT generate twice — when `today` is Feb 29 in a
     // leap year, the primary set already includes them.
     const leapYearChildren =
-      month === 2 && day === 28 && !isLeapYear(today.getUTCFullYear())
+      month === 2 && day === 28 && !isLeapYear(year)
         ? await this.childRepo.listActiveByBirthdayMonthDay(
             kindergartenId,
             2,
@@ -111,7 +121,7 @@ export class BirthdayGeneratorService {
             kindergartenId,
             targetChildId: childState.id,
             childFullName: childState.fullName,
-            childAge: computeAge(childState.dateOfBirth, today),
+            childAge: computeAge(childState.dateOfBirth, year, month, day),
             now: today,
           });
           // Stamp full name into metadata so the dispatcher template can
@@ -130,7 +140,7 @@ export class BirthdayGeneratorService {
             contentPostId: stamped.id,
             targetChildId: childState.id,
             childFullName: childState.fullName,
-            age: computeAge(childState.dateOfBirth, today),
+            age: computeAge(childState.dateOfBirth, year, month, day),
             publishedAt: today,
           });
           return true;
@@ -138,21 +148,54 @@ export class BirthdayGeneratorService {
         if (created) generated += 1;
         else skipped += 1;
       } catch (err) {
+        // B22a T5 / B17 MEDIUM#6 — per-child SAVEPOINT already rolled
+        // the failing child's INSERT + outbox emit back; the outer
+        // kg-batch TX is alive and the loop continues with the next
+        // child so a single render/notify failure no longer aborts the
+        // whole kg's birthday generation.
         this.logger.warn(
-          `birthday_gen_failed kg=${kindergartenId} child=${childState.id}: ${(err as Error).message}`,
+          `birthday_gen_child_failed kg=${kindergartenId} child=${childState.id}: ${(err as Error).message}`,
         );
       }
     }
     return { generatedCount: generated, skippedCount: skipped };
   }
 
+  /**
+   * Run `fn` inside a per-child SAVEPOINT (B22a T5 / B17 MEDIUM#6). When
+   * the daily-cron processor opens an outer kg-batch TX, this method
+   * issues a TypeORM nested `manager.transaction(...)` — PostgreSQL
+   * encodes that as `SAVEPOINT … RELEASE/ROLLBACK TO SAVEPOINT`. A
+   * single-child render or notify failure rolls the savepoint back
+   * without poisoning the outer kg-batch TX, so previously-committed
+   * birthday posts for sibling children stay durable and the loop
+   * continues.
+   *
+   * When called WITHOUT an ambient TX (CLI / direct invocation) we open
+   * the kg-scoped outer TX ourselves; the per-child SAVEPOINT semantics
+   * still apply via the inner `em.transaction(...)` call.
+   */
   private async runInTenantTx<T>(
     kindergartenId: string,
     fn: () => Promise<T>,
   ): Promise<T> {
     const ambient = tenantStorage.getStore();
     if (ambient?.entityManager) {
-      return fn();
+      // Inside an outer TX (e.g. cron processor) — open a SAVEPOINT and
+      // re-publish the savepoint manager via `tenantStorage.run` so every
+      // repository call inside `fn` (advisory lock, exists check, INSERT,
+      // outbox emit) participates in the savepoint and rolls back
+      // atomically on failure without aborting the kg-batch TX.
+      return ambient.entityManager.transaction(async (savepointManager) => {
+        return tenantStorage.run(
+          {
+            kgId: kindergartenId,
+            bypass: ambient.bypass,
+            entityManager: savepointManager,
+          },
+          () => fn(),
+        );
+      });
     }
     return this.dataSource.transaction(async (em) => {
       await em.query(`SELECT set_config('app.kindergarten_id', $1, true)`, [
@@ -160,7 +203,18 @@ export class BirthdayGeneratorService {
       ]);
       return tenantStorage.run(
         { kgId: kindergartenId, bypass: false, entityManager: em },
-        () => fn(),
+        // Per-child SAVEPOINT inside the kg-batch TX we just opened.
+        () =>
+          em.transaction(async (savepointManager) =>
+            tenantStorage.run(
+              {
+                kgId: kindergartenId,
+                bypass: false,
+                entityManager: savepointManager,
+              },
+              () => fn(),
+            ),
+          ),
       );
     });
   }
@@ -171,17 +225,24 @@ function isLeapYear(y: number): boolean {
 }
 
 /**
- * Years between `dob` and `today`, decremented by 1 if today is before
- * the birth-month-day in the current year.
+ * Years between `dob` (a date-only midnight-UTC marker, OK to read via
+ * `getUTC*` since the DB column is `date` not `timestamptz`) and a
+ * caller-supplied Almaty-calendar (year, month1-based, day). The caller
+ * normalises the wall-clock instant once at the boundary — see
+ * `formatDateInTimezone` upstream — so this helper does NOT take a Date
+ * for "today" anymore.
  */
-function computeAge(dob: Date, today: Date): number {
-  const tY = today.getUTCFullYear();
-  const tM = today.getUTCMonth();
-  const tD = today.getUTCDate();
+function computeAge(
+  dob: Date,
+  todayYear: number,
+  todayMonth1: number,
+  todayDay: number,
+): number {
   const bY = dob.getUTCFullYear();
-  const bM = dob.getUTCMonth();
+  const bM = dob.getUTCMonth(); // 0-based
   const bD = dob.getUTCDate();
-  let age = tY - bY;
-  if (tM < bM || (tM === bM && tD < bD)) age -= 1;
+  const tM = todayMonth1 - 1; // align with bM zero-base
+  let age = todayYear - bY;
+  if (tM < bM || (tM === bM && todayDay < bD)) age -= 1;
   return age < 0 ? 0 : age;
 }

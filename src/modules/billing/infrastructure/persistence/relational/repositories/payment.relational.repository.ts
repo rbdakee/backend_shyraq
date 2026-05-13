@@ -59,6 +59,31 @@ export class PaymentRelationalRepository extends PaymentRepository {
    * Released on TX commit / rollback. Goes through `manager()` so it
    * inherits the ambient TX from `TenantContextInterceptor` (parent-pay
    * path) or the per-event TX of the webhook controller (T5a).
+   *
+   * ───────────────────────────────────────────────────────────────────────
+   * Canonical M11 note (B22a) — applies to ALL `pg_advisory_xact_lock`
+   * call-sites in the repo (~13 across billing/content/identity-qr/meal/
+   * pickup/child).
+   *
+   * `hashtext(text)` returns `int` (32-bit signed). Postgres'
+   * `pg_advisory_xact_lock(bigint)` expects 64-bit. Postgres auto-casts
+   * `int → bigint` so the bare call is functionally correct, but the
+   * explicit `::bigint` cast:
+   *   1. Disambiguates the function-resolution at parse time (no risk of
+   *      future overload-introduction breaking us silently).
+   *   2. Documents at the call-site that we accept the 32-bit collision
+   *      space of hashtext (≈ 1 in 4 billion). For our keyspace shapes —
+   *      `'billing:payment:'||kg||':'||invoiceId` etc. — collision
+   *      probability is negligible (max ~10^4 distinct keys per minute
+   *      kingdom-wide; birthday-paradox bound puts P(collision) below
+   *      10^-7 over a single business day). Accepted trade-off vs the
+   *      cost of a content-addressed lock-table or a dedicated
+   *      `bigint(text)` extension.
+   *   3. Lint-safety: a future `hashtextextended` (64-bit) migration would
+   *      keep working with the cast in place.
+   * Functional change of adding `::bigint` is zero — kept as
+   * documentation + future-proofing only.
+   * ───────────────────────────────────────────────────────────────────────
    */
   async acquirePaymentAdvisoryLock(
     kindergartenId: string,

@@ -176,10 +176,17 @@ export class StaffProgressNoteController {
       const existing = await this.service.getById(kgId, id);
       callerMentorId = existing.mentorId;
     }
-    const note = await this.service.update(kgId, id, callerMentorId, {
-      body: dto.body,
-      mediaUrls: dto.media_urls,
-    });
+    const note = await this.service.update(
+      kgId,
+      id,
+      callerMentorId,
+      // B22a T7 — caller's `users.id` for the audit-trail stamp.
+      user.sub,
+      {
+        body: dto.body,
+        mediaUrls: dto.media_urls,
+      },
+    );
     return ProgressNotePresenter.one(note);
   }
 

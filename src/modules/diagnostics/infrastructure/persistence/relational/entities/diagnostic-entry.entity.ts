@@ -57,4 +57,25 @@ export class DiagnosticEntryRelationalEntity {
 
   @UpdateDateColumn({ name: 'updated_at', type: 'timestamptz' })
   updatedAt!: Date;
+
+  /**
+   * Optimistic-lock token (B22a T4). Bumped by the conditional UPDATE
+   * in the relational repository's `update()` method. Internal only —
+   * not exposed via DTO.
+   */
+  @Column({ name: 'row_version', type: 'int', default: 1 })
+  rowVersion!: number;
+
+  /**
+   * Admin-bypass-on-PATCH audit columns (B22a T7 — closes B18 Concern 1).
+   * Stamped on every PATCH (including the controller's admin-override
+   * branch) by the service layer. Nullable: NULL on rows that have never
+   * been patched (the create flow leaves them unset). Internal only —
+   * not exposed via DTO in B22a; future surface deferred to B22b.
+   */
+  @Column({ name: 'last_modified_by_user_id', type: 'uuid', nullable: true })
+  lastModifiedByUserId!: string | null;
+
+  @Column({ name: 'last_modified_at', type: 'timestamptz', nullable: true })
+  lastModifiedAt!: Date | null;
 }

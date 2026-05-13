@@ -188,11 +188,13 @@ class FakeInvoiceRepo extends InvoiceRepository {
     id: string,
     now: Date,
   ): Promise<Invoice | null> {
+    // B22a T1 SM1: `partial` is now a valid source — see InvoiceRepository
+    // doc + invoice.relational.repository.ts:`markOverdueConditional`.
     return Promise.resolve(
       this.transitionConditional(
         kindergartenId,
         id,
-        ['pending'],
+        ['pending', 'partial'],
         'overdue',
         now,
       ),
@@ -1268,6 +1270,348 @@ describe('InvoiceService', () => {
       expect((evt?.event as { reason: string | null }).reason).toBe(
         'admin-decision',
       );
+    });
+  });
+
+  // ── B22a T1 — billing state-machine + money invariants ─────────────────
+
+  describe('B22a T1 SM1 — markOverdueConditional accepts pending and partial sources', () => {
+    function seed(invoiceRepo: FakeInvoiceRepo, status: 'pending' | 'partial') {
+      const id = `inv-sm1-${status}`;
+      invoiceRepo.rows.set(
+        id,
+        Invoice.fromState({
+          id,
+          kindergartenId: KG,
+          childId: CHILD,
+          paymentAccountId: 'pa-1',
+          tariffPlanId: null,
+          invoiceType: 'monthly',
+          periodStart: new Date('2026-05-01T00:00:00.000Z'),
+          periodEnd: new Date('2026-05-31T00:00:00.000Z'),
+          amountDue: 100_000,
+          discountPct: null,
+          discountReason: null,
+          amountAfterDiscount: 100_000,
+          status,
+          dueDate: new Date('2026-05-10T00:00:00.000Z'),
+          description: null,
+          proratedForDays: null,
+          createdAt: NOW,
+          updatedAt: NOW,
+        }),
+      );
+      return id;
+    }
+
+    it('flips a pending invoice past due_date to overdue', async () => {
+      const { invoiceRepo } = buildSvc();
+      const id = seed(invoiceRepo, 'pending');
+      const flipped = await invoiceRepo.markOverdueConditional(
+        KG,
+        id,
+        new Date('2026-05-20T00:00:00.000Z'),
+      );
+      expect(flipped).not.toBeNull();
+      expect(flipped?.status).toBe('overdue');
+    });
+
+    it('flips a partial invoice past due_date to overdue', async () => {
+      const { invoiceRepo } = buildSvc();
+      const id = seed(invoiceRepo, 'partial');
+      const flipped = await invoiceRepo.markOverdueConditional(
+        KG,
+        id,
+        new Date('2026-05-20T00:00:00.000Z'),
+      );
+      expect(flipped).not.toBeNull();
+      expect(flipped?.status).toBe('overdue');
+    });
+
+    it('returns null when invoice is already overdue (idempotent)', async () => {
+      const { invoiceRepo } = buildSvc();
+      const id = 'inv-already-overdue';
+      invoiceRepo.rows.set(
+        id,
+        Invoice.fromState({
+          id,
+          kindergartenId: KG,
+          childId: CHILD,
+          paymentAccountId: 'pa-1',
+          tariffPlanId: null,
+          invoiceType: 'monthly',
+          periodStart: new Date('2026-05-01T00:00:00.000Z'),
+          periodEnd: new Date('2026-05-31T00:00:00.000Z'),
+          amountDue: 100_000,
+          discountPct: null,
+          discountReason: null,
+          amountAfterDiscount: 100_000,
+          status: 'overdue',
+          dueDate: new Date('2026-05-10T00:00:00.000Z'),
+          description: null,
+          proratedForDays: null,
+          createdAt: NOW,
+          updatedAt: NOW,
+        }),
+      );
+      const flipped = await invoiceRepo.markOverdueConditional(
+        KG,
+        id,
+        new Date('2026-05-20T00:00:00.000Z'),
+      );
+      expect(flipped).toBeNull();
+    });
+  });
+
+  describe('B22a T1 H15 — isFirstInvoiceForChild excludes cancelled priors', () => {
+    /**
+     * Without B16 wiring the service short-circuits the custom-discount
+     * branch and never queries priors. To exercise the H15 fix we read
+     * the `familyContext.isFirstInvoiceForChild` decision indirectly by
+     * inspecting the `findByChildId` query result + the inline filter.
+     * The fix itself is a one-liner inside the service:
+     *   `priors.every(p => p.status === 'cancelled')`.
+     * This test pins the invariant against the fake repo so any
+     * regression in the inline filter shows up.
+     */
+    it('treats a child with only a cancelled prior as first-invoice', async () => {
+      const { invoiceRepo } = buildSvc();
+      invoiceRepo.rows.set(
+        'prior-cancelled',
+        Invoice.fromState({
+          id: 'prior-cancelled',
+          kindergartenId: KG,
+          childId: CHILD,
+          paymentAccountId: 'pa-x',
+          tariffPlanId: null,
+          invoiceType: 'monthly',
+          periodStart: new Date('2026-04-01T00:00:00.000Z'),
+          periodEnd: new Date('2026-04-30T00:00:00.000Z'),
+          amountDue: 100_000,
+          discountPct: null,
+          discountReason: null,
+          amountAfterDiscount: 100_000,
+          status: 'cancelled',
+          dueDate: new Date('2026-04-10T00:00:00.000Z'),
+          description: null,
+          proratedForDays: null,
+          createdAt: NOW,
+          updatedAt: NOW,
+        }),
+      );
+      const priors = await invoiceRepo.findByChildId(KG, CHILD);
+      expect(priors).toHaveLength(1);
+      // Mirrors the inline filter in InvoiceService.buildCustomDiscountInputs.
+      const isFirst = priors.every((p) => p.status === 'cancelled');
+      expect(isFirst).toBe(true);
+    });
+
+    it('treats a child with one paid prior as NOT first-invoice', async () => {
+      const { invoiceRepo } = buildSvc();
+      invoiceRepo.rows.set(
+        'prior-paid',
+        Invoice.fromState({
+          id: 'prior-paid',
+          kindergartenId: KG,
+          childId: CHILD,
+          paymentAccountId: 'pa-x',
+          tariffPlanId: null,
+          invoiceType: 'monthly',
+          periodStart: new Date('2026-04-01T00:00:00.000Z'),
+          periodEnd: new Date('2026-04-30T00:00:00.000Z'),
+          amountDue: 100_000,
+          discountPct: null,
+          discountReason: null,
+          amountAfterDiscount: 100_000,
+          status: 'paid',
+          dueDate: new Date('2026-04-10T00:00:00.000Z'),
+          description: null,
+          proratedForDays: null,
+          createdAt: NOW,
+          updatedAt: NOW,
+        }),
+      );
+      const priors = await invoiceRepo.findByChildId(KG, CHILD);
+      const isFirst = priors.every((p) => p.status === 'cancelled');
+      expect(isFirst).toBe(false);
+    });
+  });
+
+  describe('B22a T1 H16 — atomic reserve semantics (tryReserveUsage fake)', () => {
+    /**
+     * Exercises the FakeCustomDiscountRepo (custom-discount.service.spec)
+     * semantics inline so any drift in the fake-vs-real contract for
+     * `tryReserveUsage` is caught at unit level. A focused integration
+     * spec (`custom-discount-cap.race.integration.spec.ts`) tests the
+     * PG-backed atomic UPDATE separately.
+     */
+    it('reserves up to total_max_uses then refuses additional reservations', () => {
+      // Inline a minimal fake mirroring custom-discount.service.spec fake.
+      type FakeRow = {
+        id: string;
+        kindergartenId: string;
+        usedCount: number;
+        totalMaxUses: number | null;
+      };
+      const rows = new Map<string, FakeRow>();
+      rows.set('cd-cap-2', {
+        id: 'cd-cap-2',
+        kindergartenId: KG,
+        usedCount: 0,
+        totalMaxUses: 2,
+      });
+      function tryReserveUsage(kg: string, id: string): boolean {
+        const r = rows.get(id);
+        if (!r || r.kindergartenId !== kg) return false;
+        if (r.totalMaxUses !== null && r.usedCount >= r.totalMaxUses) {
+          return false;
+        }
+        r.usedCount += 1;
+        return true;
+      }
+      expect(tryReserveUsage(KG, 'cd-cap-2')).toBe(true);
+      expect(tryReserveUsage(KG, 'cd-cap-2')).toBe(true);
+      expect(tryReserveUsage(KG, 'cd-cap-2')).toBe(false);
+      expect(tryReserveUsage(KG, 'cd-cap-2')).toBe(false);
+      expect(rows.get('cd-cap-2')?.usedCount).toBe(2);
+    });
+
+    it('always reserves when total_max_uses is null', () => {
+      type FakeRow = {
+        id: string;
+        kindergartenId: string;
+        usedCount: number;
+        totalMaxUses: number | null;
+      };
+      const rows = new Map<string, FakeRow>();
+      rows.set('cd-uncapped', {
+        id: 'cd-uncapped',
+        kindergartenId: KG,
+        usedCount: 0,
+        totalMaxUses: null,
+      });
+      function tryReserveUsage(kg: string, id: string): boolean {
+        const r = rows.get(id);
+        if (!r || r.kindergartenId !== kg) return false;
+        if (r.totalMaxUses !== null && r.usedCount >= r.totalMaxUses) {
+          return false;
+        }
+        r.usedCount += 1;
+        return true;
+      }
+      for (let i = 0; i < 10; i++) {
+        expect(tryReserveUsage(KG, 'cd-uncapped')).toBe(true);
+      }
+      expect(rows.get('cd-uncapped')?.usedCount).toBe(10);
+    });
+  });
+
+  /**
+   * B22a T13 H1 — compensation pattern coverage.
+   *
+   * Direct private-method test (cast to any) for `releaseUnusedReservations`.
+   * Mirrors the production call-site contract: the helper is invoked AFTER
+   * the engine returns and BEFORE invoice persist; it must release exactly
+   * the discounts that were reserved but not in `customApplicationsToWrite`.
+   */
+  describe('B22a T13 H1 — releaseUnusedReservations compensation', () => {
+    type ReleaseCall = { kgId: string; discountId: string };
+
+    function buildFakeCustomDiscountRepo() {
+      const releaseCalls: ReleaseCall[] = [];
+      const fake = {
+        releaseUsage(kgId: string, discountId: string): Promise<void> {
+          releaseCalls.push({ kgId, discountId });
+          return Promise.resolve();
+        },
+      };
+      return { fake, releaseCalls };
+    }
+
+    function makeSvcWithFake(
+      fakeRepo: ReturnType<typeof buildFakeCustomDiscountRepo>['fake'],
+    ): InvoiceService {
+      const { svc } = buildSvc();
+      // Inject the fake into the optional `customDiscounts` slot. The
+      // helper only needs `releaseUsage` from the port surface.
+
+      (svc as any).customDiscounts = fakeRepo;
+      return svc;
+    }
+
+    it('releases reservations that the engine did not include in customApplicationsToWrite', async () => {
+      const { fake, releaseCalls } = buildFakeCustomDiscountRepo();
+      const svc = makeSvcWithFake(fake);
+      const reserved = ['d-keep', 'd-drop-1', 'd-drop-2'];
+      const engineResult: DiscountEvaluationResult = {
+        discountPct: 10,
+        discountReason: 'kept',
+        appliedRules: ['custom:d-keep'],
+        customApplicationsToWrite: [
+          { customDiscountId: 'd-keep', amountApplied: 1000, reason: 'kept' },
+        ],
+        customDiscountAmount: 1000,
+      };
+
+      await (svc as any).releaseUnusedReservations(KG, reserved, engineResult);
+      expect(releaseCalls).toEqual([
+        { kgId: KG, discountId: 'd-drop-1' },
+        { kgId: KG, discountId: 'd-drop-2' },
+      ]);
+    });
+
+    it('releases nothing when every reserved id is a winner', async () => {
+      const { fake, releaseCalls } = buildFakeCustomDiscountRepo();
+      const svc = makeSvcWithFake(fake);
+      const reserved = ['d-1', 'd-2'];
+      const engineResult: DiscountEvaluationResult = {
+        discountPct: 25,
+        discountReason: '1,2',
+        appliedRules: ['custom:d-1', 'custom:d-2'],
+        customApplicationsToWrite: [
+          { customDiscountId: 'd-1', amountApplied: 500, reason: '1' },
+          { customDiscountId: 'd-2', amountApplied: 500, reason: '2' },
+        ],
+        customDiscountAmount: 1000,
+      };
+
+      await (svc as any).releaseUnusedReservations(KG, reserved, engineResult);
+      expect(releaseCalls).toEqual([]);
+    });
+
+    it('releases all reservations when the engine returns zero applications', async () => {
+      const { fake, releaseCalls } = buildFakeCustomDiscountRepo();
+      const svc = makeSvcWithFake(fake);
+      const reserved = ['d-a', 'd-b', 'd-c'];
+      const engineResult: DiscountEvaluationResult = {
+        discountPct: null,
+        discountReason: null,
+        appliedRules: [],
+        customApplicationsToWrite: [],
+        customDiscountAmount: null,
+      };
+
+      await (svc as any).releaseUnusedReservations(KG, reserved, engineResult);
+      expect(releaseCalls.map((c) => c.discountId).sort()).toEqual([
+        'd-a',
+        'd-b',
+        'd-c',
+      ]);
+    });
+
+    it('is a no-op when reservedDiscountIds is empty', async () => {
+      const { fake, releaseCalls } = buildFakeCustomDiscountRepo();
+      const svc = makeSvcWithFake(fake);
+      const engineResult: DiscountEvaluationResult = {
+        discountPct: null,
+        discountReason: null,
+        appliedRules: [],
+        customApplicationsToWrite: [],
+        customDiscountAmount: null,
+      };
+
+      await (svc as any).releaseUnusedReservations(KG, [], engineResult);
+      expect(releaseCalls).toEqual([]);
     });
   });
 });

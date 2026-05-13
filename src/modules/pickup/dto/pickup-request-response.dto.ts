@@ -28,7 +28,11 @@ export class PickupRequestResponseDto {
   @ApiProperty({ example: 'Айгуль Бекмаганбетова' })
   trusted_person_name!: string;
 
-  @ApiProperty({ example: '+77071234567' })
+  @ApiProperty({
+    example: '+77071234567',
+    description:
+      'Full E.164 KZ phone on single-get / create / validate / cancel endpoints. List endpoints (e.g. `GET /staff/pickup-requests`) return the masked form `+7***LAST4` for privacy (FINDINGS B11 H4); staff who need the full number must open the single-get endpoint.',
+  })
   trusted_person_phone!: string;
 
   @ApiProperty({

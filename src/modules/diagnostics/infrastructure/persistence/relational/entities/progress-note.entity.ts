@@ -41,4 +41,26 @@ export class ProgressNoteRelationalEntity {
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt!: Date;
+
+  /**
+   * Optimistic-lock token (B22a T4). Bumped by the conditional UPDATE
+   * in the relational repository's `update()` method. Internal only —
+   * not exposed via DTO. Note that this table is otherwise append-only
+   * (no `updated_at` column / trigger) — `row_version` is the sole
+   * mutable bookkeeping field.
+   */
+  @Column({ name: 'row_version', type: 'int', default: 1 })
+  rowVersion!: number;
+
+  /**
+   * Admin-bypass-on-PATCH audit columns (B22a T7 — closes B18 Concern 1).
+   * Stamped on every PATCH (including the controller's admin-override
+   * branch) by the service layer. Nullable: NULL on rows that have never
+   * been patched. Internal only — not exposed via DTO in B22a.
+   */
+  @Column({ name: 'last_modified_by_user_id', type: 'uuid', nullable: true })
+  lastModifiedByUserId!: string | null;
+
+  @Column({ name: 'last_modified_at', type: 'timestamptz', nullable: true })
+  lastModifiedAt!: Date | null;
 }

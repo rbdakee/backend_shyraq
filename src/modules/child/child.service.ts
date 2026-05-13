@@ -44,8 +44,13 @@ import {
   PageRequest,
   PageResult,
 } from './infrastructure/persistence/child.repository';
+import {
+  ChildStatusHistoryPage,
+  ChildStatusHistoryRepository,
+} from './infrastructure/persistence/child-status-history.repository';
 import { Child, Gender } from './domain/entities/child.entity';
 import { ChildGuardian } from './domain/entities/child-guardian.entity';
+import { ChildStatusHistory } from './domain/entities/child-status-history.entity';
 import { AlreadyLinkedToChildError } from './domain/errors/already-linked-to-child.error';
 import { AlreadyPendingForChildError } from './domain/errors/already-pending-for-child.error';
 import { ChildAccessDeniedError } from './domain/errors/child-access-denied.error';
@@ -158,6 +163,14 @@ export class ChildService {
     @Optional()
     @InjectQueue(LIFECYCLE_QUEUE)
     private readonly lifecycleQueue: Queue<ProRataRefundJobData> | undefined,
+    // B22a T9 — append-only audit table (`child_status_history`). Optional
+    // so the legacy service-unit setup (which wires its own Fake repo
+    // ladder) keeps working without forcing every test file to declare
+    // an additional fake. Production wiring (`ChildModule.providers`)
+    // always supplies the real adapter so the GET endpoint and the
+    // atomicity guarantee are never silently skipped.
+    @Optional()
+    private readonly statusHistory?: ChildStatusHistoryRepository,
   ) {}
 
   // ── Children: admin reads / writes ──────────────────────────────────────
@@ -361,6 +374,34 @@ export class ChildService {
   }
 
   /**
+   * B22a T9 — paginated `child_status_history` audit (admin only).
+   * Returns rows ordered by `changed_at DESC`. The repo enforces RLS via
+   * the ambient tenant TX; we still 404 up-front when the child does not
+   * exist in this kg so the response shape is unambiguous.
+   */
+  async listStatusHistory(
+    kindergartenId: string,
+    childId: string,
+    limit: number,
+    offset: number,
+  ): Promise<ChildStatusHistoryPage> {
+    const child = await this.children.findById(kindergartenId, childId);
+    if (!child) throw new ChildNotFoundError(childId);
+    if (!this.statusHistory) {
+      // Optional dependency unwired (legacy unit-test composition only —
+      // the production module always supplies it). Surface an empty
+      // page rather than throwing so existing callers do not blow up.
+      return { items: [], total: 0 };
+    }
+    return this.statusHistory.listForChild(
+      kindergartenId,
+      childId,
+      limit,
+      offset,
+    );
+  }
+
+  /**
    * Archive an active child. B21 T3 implementation:
    *
    *   1. Domain validation of `reason` via `Child.archive` (delegated through
@@ -423,6 +464,17 @@ export class ChildService {
     childId: string,
     reason: string,
     archivedByStaffId: string,
+    /**
+     * `users.id` of the actor (`req.user.sub`). Distinct from
+     * `archivedByStaffId` (`staff_members.id`) because the
+     * `child_status_history` audit row keys actor at the user level —
+     * staff churn (terminate + re-add in different role) keeps the audit
+     * link intact. T13 L1 (opus) — required (no default). Earlier the
+     * default value was `archivedByStaffId`, which silently wrote a
+     * `staff_members.id` value into the `users.id` FK column for legacy
+     * spec callers; production controllers always pass `req.user.sub`.
+     */
+    changedByUserId: string,
   ): Promise<Child> {
     // Reason validation is a domain invariant. Mirror `Child.archive`'s
     // rule (non-empty + <= 500 chars after trim) so we surface the same
@@ -447,6 +499,30 @@ export class ChildService {
     }
     if (result.kind === 'already-archived') {
       throw new ChildAlreadyArchivedError(childId);
+    }
+
+    // B22a T9 — append-only audit row. Inserted INSIDE the same ambient
+    // tenant TX as the conditional UPDATE above (the relational repo
+    // resolves `tenantStorage.getStore()?.entityManager`); a failure
+    // here rolls the children UPDATE back, preserving ACID. Domain
+    // entity validates the (active → archived) transition + the
+    // archive_reason invariant; the DB CHECK is defense-in-depth.
+    if (this.statusHistory) {
+      const historyRecord = ChildStatusHistory.record({
+        id: randomUUID(),
+        kindergartenId,
+        childId,
+        previousStatus: 'active',
+        newStatus: 'archived',
+        previousArchiveReason: null,
+        archiveReason: trimmedReason,
+        changedByUserId,
+        changedAt: now,
+      });
+      await this.statusHistory.recordStatusChange(
+        kindergartenId,
+        historyRecord.toState(),
+      );
     }
 
     // Close any still-active tariff_assignment so monthly billing stops.
@@ -548,14 +624,54 @@ export class ChildService {
     kindergartenId: string,
     childId: string,
     reactivatedByStaffId: string,
+    /**
+     * `users.id` of the actor (`req.user.sub`). See `archiveChild` doc on
+     * why we key the audit row at user level (B22a T9). T13 L1 (opus)
+     * — required (no default). Earlier the default was
+     * `reactivatedByStaffId`, which silently wrote a `staff_members.id`
+     * value into the `users.id` FK column for legacy spec callers.
+     */
+    changedByUserId: string,
   ): Promise<{ child: Child; requires_new_tariff_assignment: true }> {
     const now = this.clock.now();
+
+    // B22a T9 — capture the prior `archive_reason` BEFORE the conditional
+    // UPDATE clears it. Without this read the audit trail loses the
+    // reason the child was archived under (`Child.reactivate()` zeroes
+    // both `archived_at` and `archive_reason`). The lookup runs in the
+    // same ambient TX so it observes the pre-mutation snapshot. If the
+    // pre-read returns null we still continue — the conditional UPDATE
+    // owns the 404/409 discrimination so falling through here is safe.
+    let previousArchiveReason: string | null = null;
+    if (this.statusHistory) {
+      const before = await this.children.findById(kindergartenId, childId);
+      previousArchiveReason = before?.archiveReason ?? null;
+    }
+
     const result = await this.children.reactivate(kindergartenId, childId, now);
     if (result.kind === 'not-found') {
       throw new ChildNotFoundError(childId);
     }
     if (result.kind === 'not-archived') {
       throw new ChildNotArchivedError(childId);
+    }
+
+    if (this.statusHistory) {
+      const historyRecord = ChildStatusHistory.record({
+        id: randomUUID(),
+        kindergartenId,
+        childId,
+        previousStatus: 'archived',
+        newStatus: 'active',
+        previousArchiveReason,
+        archiveReason: null,
+        changedByUserId,
+        changedAt: now,
+      });
+      await this.statusHistory.recordStatusChange(
+        kindergartenId,
+        historyRecord.toState(),
+      );
     }
 
     this.logger.log(
@@ -575,17 +691,20 @@ export class ChildService {
   /**
    * Back-compat alias for the old `restoreChild` name. New callers (T4
    * controller) should use `reactivateChild`. Kept until the controller
-   * lands so `child.service.spec.ts` keeps compiling.
+   * lands so `child.service.spec.ts` keeps compiling. T13 L1 (opus) —
+   * `changedByUserId` is now required (no `staff_members.id` fallback).
    */
   async restoreChild(
     kindergartenId: string,
     childId: string,
-    reactivatedByStaffId = '',
+    reactivatedByStaffId: string,
+    changedByUserId: string,
   ): Promise<Child> {
     const { child } = await this.reactivateChild(
       kindergartenId,
       childId,
       reactivatedByStaffId,
+      changedByUserId,
     );
     return child;
   }

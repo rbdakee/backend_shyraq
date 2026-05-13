@@ -1209,6 +1209,66 @@ describe('B18 Diagnostics & Progress (e2e)', () => {
         ),
       ).toBe(true);
     });
+
+    it(
+      'returns 404 when a guardian of child A requests an entry of child B ' +
+        'via /parent/children/{A}/diagnostics/{entryOfB} (B22a T8 IDOR guard / FINDINGS M1)',
+      async () => {
+        const { kgId, adminToken } = await createKgWithAdmin(
+          'parent-i-idor',
+          '+77010100085',
+        );
+        const template = await createTemplate(adminToken, {
+          specialist_type: 'psychologist',
+        });
+
+        // Two children in the SAME kindergarten — same RLS scope so the
+        // entry row is reachable by id; only the cross-child binding
+        // is what stops the leak.
+        const childA = await createChild(adminToken, { full_name: 'Child A' });
+        const childB = await createChild(adminToken, { full_name: 'Child B' });
+
+        // Specialist authors an entry against child B.
+        const specUserId = await seedUser('+77010100086');
+        await seedStaffMember(kgId, specUserId, 'specialist', 'psychologist');
+        const specToken = await mintToken({
+          sub: specUserId,
+          role: 'specialist',
+          kindergartenId: kgId,
+        });
+        const childBEntryRes = await request(server)
+          .post('/api/v1/staff/diagnostic-entries')
+          .set('Authorization', `Bearer ${specToken}`)
+          .send({
+            child_id: childB,
+            template_id: template.id,
+            assessment_date: isoToday(),
+            data: validEntryData(),
+          })
+          .expect(201);
+        const entryOfB = childBEntryRes.body.id as string;
+
+        // Parent is approved guardian of child A only — NOT child B.
+        const parentAUserId = await seedUser('+77010100087');
+        await seedApprovedGuardian(kgId, childA, parentAUserId, 'primary');
+        const parentAToken = await mintToken({
+          sub: parentAUserId,
+          role: 'parent',
+          kindergartenId: kgId,
+        });
+
+        // Pre-fix: this returned 200 with child B's entry body — IDOR.
+        // Post-fix: 404 `diagnostic_entry_not_found` (same shape as a
+        // missing row, no info-leak about whether the entry exists).
+        const res = await request(server)
+          .get(`/api/v1/parent/children/${childA}/diagnostics/${entryOfB}`)
+          .set('Authorization', `Bearer ${parentAToken}`)
+          .expect(404);
+        expect(res.body.message ?? res.body.error).toMatch(
+          /diagnostic_entry_not_found|not_found/,
+        );
+      },
+    );
   });
 
   // ══════════════════════════════════════════════════════════════════════════════
@@ -1497,5 +1557,276 @@ describe('B18 Diagnostics & Progress (e2e)', () => {
         .set('Authorization', `Bearer ${mentorToken}`)
         .expect(403);
     });
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // Scenario O — Optimistic-lock race on template PATCH (B22a T4 — closes
+  // SM3 + B18 T6-M4)
+  // ══════════════════════════════════════════════════════════════════════════════
+
+  describe('Scenario O: Optimistic-lock 409 on stale template PATCH', () => {
+    it(
+      'launching N concurrent PATCHes against the same template — at least ' +
+        'one losing writer returns 409 optimistic_lock_conflict',
+      async () => {
+        const { adminToken } = await createKgWithAdmin('tpl-o', '+77010100231');
+        const created = await createTemplate(adminToken);
+
+        // Launch N concurrent admin PATCHes against the same template.
+        // The HTTP layer doesn't expose `row_version` on the wire, so
+        // we can't pin a stale snapshot from the client side. Instead
+        // we rely on connection-pool parallelism: with N=8 requests
+        // hitting the same row, two or more findById SELECTs will
+        // overlap with the first UPDATE's commit window, causing at
+        // least one conditional UPDATE to find 0 matching rows →
+        // service throws `OptimisticLockError` → DomainErrorFilter
+        // maps to 409 `optimistic_lock_conflict`.
+        //
+        // The test is correctness-asserting (NOT timing-asserting):
+        //   - at least 1 request must return 200 (someone wins),
+        //   - at least 1 request must return 409 (someone loses),
+        //   - every 409 response carries `error === 'optimistic_lock_conflict'`,
+        //   - no other status code is acceptable.
+        const N = 8;
+        const responses = await Promise.all(
+          Array.from({ length: N }, (_, i) =>
+            request(server)
+              .patch(`/api/v1/admin/diagnostic-templates/${created.id}`)
+              .set('Authorization', `Bearer ${adminToken}`)
+              .send({ name: `Writer ${i}` }),
+          ),
+        );
+
+        const statuses = responses.map((r) => r.status);
+        const wins = statuses.filter((s) => s === 200).length;
+        const conflicts = statuses.filter((s) => s === 409).length;
+        const others = statuses.filter((s) => s !== 200 && s !== 409);
+
+        expect(others).toEqual([]); // no surprise 5xx / 4xx
+        expect(wins).toBeGreaterThanOrEqual(1);
+        expect(conflicts).toBeGreaterThanOrEqual(1);
+        expect(wins + conflicts).toBe(N);
+
+        for (const r of responses) {
+          if (r.status === 409) {
+            expect(r.body.error).toBe('optimistic_lock_conflict');
+          }
+        }
+      },
+    );
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // Scenario P — H12 schema PATCH version-pinning (B22a T7)
+  // ══════════════════════════════════════════════════════════════════════════════
+
+  describe('Scenario P: schema PATCH on template with entries → 409', () => {
+    it(
+      'admin creates template + 1 entry; ' +
+        'PATCH name only → 200; ' +
+        'PATCH schema → 409 template_has_entries; ' +
+        'underlying schema/version unchanged in DB',
+      async () => {
+        const { kgId, adminToken } = await createKgWithAdmin(
+          'tpl-p',
+          '+77010100241',
+        );
+        const template = await createTemplate(adminToken, {
+          specialist_type: 'psychologist',
+        });
+        const childId = await createChild(adminToken);
+
+        // Seed a specialist + author one entry against the template.
+        const specUserId = await seedUser('+77010100242');
+        await seedStaffMember(kgId, specUserId, 'specialist', 'psychologist');
+        const specToken = await mintToken({
+          sub: specUserId,
+          role: 'specialist',
+          kindergartenId: kgId,
+        });
+        await request(server)
+          .post('/api/v1/staff/diagnostic-entries')
+          .set('Authorization', `Bearer ${specToken}`)
+          .send({
+            child_id: childId,
+            template_id: template.id,
+            assessment_date: isoToday(),
+            data: validEntryData(),
+          })
+          .expect(201);
+
+        // Sanity: PATCH name still allowed even with entries pinned.
+        await request(server)
+          .patch(`/api/v1/admin/diagnostic-templates/${template.id}`)
+          .set('Authorization', `Bearer ${adminToken}`)
+          .send({ name: 'Renamed (with entries)' })
+          .expect(200);
+
+        // PATCH schema (structurally different) → 409 template_has_entries.
+        const newSchema = validSchema({
+          sections: [
+            {
+              title: 'General v2',
+              fields: [
+                {
+                  key: 'mood',
+                  label: 'Mood',
+                  type: 'scale',
+                  required: true,
+                  min: 1,
+                  max: 10,
+                },
+              ],
+            },
+          ],
+        });
+        const conflictRes = await request(server)
+          .patch(`/api/v1/admin/diagnostic-templates/${template.id}`)
+          .set('Authorization', `Bearer ${adminToken}`)
+          .send({ schema: newSchema })
+          .expect(409);
+        expect(conflictRes.body.error).toBe('template_has_entries');
+
+        // Verify DB state: schema + version unchanged (guard fired BEFORE write).
+        const reloaded = await request(server)
+          .get(`/api/v1/admin/diagnostic-templates/${template.id}`)
+          .set('Authorization', `Bearer ${adminToken}`)
+          .expect(200);
+        expect(reloaded.body.version).toBe(1);
+      },
+    );
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // Scenario Q — admin override on PATCH writes audit columns (B22a T7)
+  // ══════════════════════════════════════════════════════════════════════════════
+
+  describe('Scenario Q: admin override stamps last_modified_by_user_id', () => {
+    it(
+      'specialist authors entry; admin PATCHes summary; ' +
+        'DB last_modified_by_user_id = admin.userId; last_modified_at populated',
+      async () => {
+        const {
+          kgId,
+          userId: adminUserId,
+          adminToken,
+        } = await createKgWithAdmin('aud-q-ent', '+77010100251');
+        const template = await createTemplate(adminToken, {
+          specialist_type: 'psychologist',
+        });
+        const childId = await createChild(adminToken);
+
+        const specUserId = await seedUser('+77010100252');
+        await seedStaffMember(kgId, specUserId, 'specialist', 'psychologist');
+        const specToken = await mintToken({
+          sub: specUserId,
+          role: 'specialist',
+          kindergartenId: kgId,
+        });
+
+        // Specialist creates the entry.
+        const createRes = await request(server)
+          .post('/api/v1/staff/diagnostic-entries')
+          .set('Authorization', `Bearer ${specToken}`)
+          .send({
+            child_id: childId,
+            template_id: template.id,
+            assessment_date: isoToday(),
+            data: validEntryData(),
+          })
+          .expect(201);
+        const entryId = createRes.body.id as string;
+
+        // Pre-state: never modified → both audit columns NULL.
+        const preRows = (await ctx.dataSource.transaction(async (m) => {
+          await m.query(`SET LOCAL app.bypass_rls = 'true'`);
+          return m.query(
+            `SELECT last_modified_by_user_id, last_modified_at
+               FROM diagnostic_entries WHERE id = $1`,
+            [entryId],
+          );
+        })) as Array<{
+          last_modified_by_user_id: string | null;
+          last_modified_at: Date | null;
+        }>;
+        expect(preRows[0].last_modified_by_user_id).toBeNull();
+        expect(preRows[0].last_modified_at).toBeNull();
+
+        // Admin PATCH override.
+        await request(server)
+          .patch(`/api/v1/staff/diagnostic-entries/${entryId}`)
+          .set('Authorization', `Bearer ${adminToken}`)
+          .send({ summary: 'Admin override for audit' })
+          .expect(200);
+
+        // Post-state: audit stamps populated with admin's users.id.
+        const postRows = (await ctx.dataSource.transaction(async (m) => {
+          await m.query(`SET LOCAL app.bypass_rls = 'true'`);
+          return m.query(
+            `SELECT last_modified_by_user_id, last_modified_at, summary
+               FROM diagnostic_entries WHERE id = $1`,
+            [entryId],
+          );
+        })) as Array<{
+          last_modified_by_user_id: string | null;
+          last_modified_at: Date | null;
+          summary: string | null;
+        }>;
+        expect(postRows[0].last_modified_by_user_id).toBe(adminUserId);
+        expect(postRows[0].last_modified_at).not.toBeNull();
+        expect(postRows[0].summary).toBe('Admin override for audit');
+      },
+    );
+
+    it(
+      'mentor authors note; admin PATCHes body; ' +
+        'progress_notes.last_modified_by_user_id = admin.userId',
+      async () => {
+        const {
+          kgId,
+          userId: adminUserId,
+          adminToken,
+        } = await createKgWithAdmin('aud-q-note', '+77010100261');
+        const childId = await createChild(adminToken);
+
+        const mentorUserId = await seedUser('+77010100262');
+        await seedStaffMember(kgId, mentorUserId, 'mentor');
+        const mentorToken = await mintToken({
+          sub: mentorUserId,
+          role: 'mentor',
+          kindergartenId: kgId,
+        });
+
+        const createRes = await request(server)
+          .post('/api/v1/staff/progress-notes')
+          .set('Authorization', `Bearer ${mentorToken}`)
+          .send({ child_id: childId, body: 'Initial body.' })
+          .expect(201);
+        const noteId = createRes.body.id as string;
+
+        // Admin overrides the body.
+        await request(server)
+          .patch(`/api/v1/staff/progress-notes/${noteId}`)
+          .set('Authorization', `Bearer ${adminToken}`)
+          .send({ body: 'Admin-overridden body.' })
+          .expect(200);
+
+        const rows = (await ctx.dataSource.transaction(async (m) => {
+          await m.query(`SET LOCAL app.bypass_rls = 'true'`);
+          return m.query(
+            `SELECT last_modified_by_user_id, last_modified_at, body
+               FROM progress_notes WHERE id = $1`,
+            [noteId],
+          );
+        })) as Array<{
+          last_modified_by_user_id: string | null;
+          last_modified_at: Date | null;
+          body: string;
+        }>;
+        expect(rows[0].last_modified_by_user_id).toBe(adminUserId);
+        expect(rows[0].last_modified_at).not.toBeNull();
+        expect(rows[0].body).toBe('Admin-overridden body.');
+      },
+    );
   });
 });

@@ -31,6 +31,7 @@ function makeState(
     attachments: [],
     createdAt: NOW,
     updatedAt: NOW,
+    rowVersion: 1,
     ...overrides,
   };
 }

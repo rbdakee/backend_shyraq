@@ -171,11 +171,17 @@ class FakeMealService {
  */
 class FakeDataSource {
   queries: string[] = [];
+  // Captures bind parameters for the parameterized `SELECT set_config(...)`
+  // tenant-id calls (B22a T3 / FINDINGS H3). The legacy
+  // `SET LOCAL app.bypass_rls = 'true'` call sites still use the literal
+  // form because they pass no untrusted input.
+  paramCalls: Array<{ q: string; params: unknown[] }> = [];
 
   transaction<T>(cb: (manager: unknown) => Promise<T>): Promise<T> {
     const manager = {
-      query: (q: string): Promise<unknown[]> => {
+      query: (q: string, params?: unknown[]): Promise<unknown[]> => {
         this.queries.push(q);
+        this.paramCalls.push({ q, params: params ?? [] });
         return Promise.resolve([]);
       },
     };
@@ -241,22 +247,28 @@ describe('WeeklyRolloutService.runWeeklyRollout', () => {
     });
   });
 
-  it('issues SET LOCAL app.kindergarten_id per kg + bypass_rls for the directory scan', async () => {
+  it('issues parameterized set_config(app.kindergarten_id, $1) per kg + bypass_rls for the directory scan', async () => {
     const { service, kgRepo, dataSource } = makeService();
     kgRepo.putActive(KG_A);
     kgRepo.putActive(KG_B);
 
     await service.runWeeklyRollout({ fromMonday, source: 'manual' });
 
-    // First query: bypass_rls for the directory scan.
+    // First query: bypass_rls for the directory scan (literal — no untrusted
+    // input).
     expect(dataSource.queries[0]).toMatch(/SET LOCAL app\.bypass_rls = 'true'/);
-    // Then one SET LOCAL per kg.
-    const setLocals = dataSource.queries.filter((q) =>
-      q.startsWith('SET LOCAL app.kindergarten_id'),
+
+    // Per-kg tenant id is now bound via `SELECT set_config($1, $2, true)`
+    // (FINDINGS H3 — was `SET LOCAL app.kindergarten_id = '<kgId>'` string
+    // interpolation). Assert the bind shape AND that both kgs landed in
+    // order.
+    const setConfigCalls = dataSource.paramCalls.filter(
+      ({ q, params }) =>
+        q.includes('set_config') && params[0] === 'app.kindergarten_id',
     );
-    expect(setLocals).toHaveLength(2);
-    expect(setLocals[0]).toContain(KG_A);
-    expect(setLocals[1]).toContain(KG_B);
+    expect(setConfigCalls).toHaveLength(2);
+    expect(setConfigCalls[0].params).toEqual(['app.kindergarten_id', KG_A]);
+    expect(setConfigCalls[1].params).toEqual(['app.kindergarten_id', KG_B]);
   });
 
   it('captures one-kg failure into the summary and continues with the rest', async () => {

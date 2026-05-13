@@ -121,12 +121,21 @@ export class OutboxNotificationAdapter extends NotificationPort {
   }
 
   notifyChildTransferred(event: ChildTransferredEvent): Promise<void> {
+    // M5 (B22a): `recipientUserIds` is intentionally NOT persisted in the
+    // outbox payload. The dispatcher resolves recipients via
+    // `resolveByChildGuardians` at delivery time (see
+    // notification-dispatcher.service.ts), so the upstream-resolved list is
+    // dead-code data here AND a PII leak — `notification_outbox` is
+    // admin-readable. The producer (ChildService) still computes the list
+    // for its own auditing flow but it does not need to round-trip via the
+    // outbox row. Contrast with `enrollment.first_invoice_skipped` which
+    // DOES require `recipientUserIds` in payload because its resolver is
+    // `resolveRecipientUserIdsFromPayload` (no module dependency on staff).
     return this.enqueue(event.kindergartenId, 'child.transferred', {
       childId: event.childId,
       fromGroupId: event.fromGroupId,
       toGroupId: event.toGroupId,
       transferredBy: event.transferredBy,
-      recipientUserIds: event.recipientUserIds,
     });
   }
 

@@ -157,7 +157,17 @@ export class ParentDiagnosticController {
   ): Promise<DiagnosticEntryResponseDto> {
     const kgId = requireTenant(t);
     await this.assertViewDiagnosticsPermission(kgId, user.sub, childId);
-    const entry = await this.entryService.getById(kgId, entryId);
+    // FINDINGS M1 (B22a T8) — `getByIdForChild` enforces
+    // `entry.childId === childId`. Without this binding the URL
+    // `:childId` was authoritative for the permission check while
+    // `entryId` was loaded in isolation, so a guardian of child A
+    // could request `/parent/children/{A}/diagnostics/{entryOfB}`
+    // and receive child B's entry. Mismatch → 404.
+    const entry = await this.entryService.getByIdForChild(
+      kgId,
+      childId,
+      entryId,
+    );
     const template = await this.templateService.getById(kgId, entry.templateId);
     const lookup = new Map<string, TemplateLookup>([
       [entry.templateId, { name: template.name, version: template.version }],

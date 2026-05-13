@@ -26,3 +26,14 @@ export {
   ChildGroupHistoryDto,
 } from './guardian-response.dto';
 export { LinkChildDto } from './link-child.dto';
+export {
+  ChildStatusHistoryDto,
+  ChildStatusHistoryListResponseDto,
+  ListChildStatusHistoryQueryDto,
+} from './child-status-history.dto';
+export {
+  LifecycleFailedJobDto,
+  ListLifecycleFailedJobsResponseDto,
+  ListFailedLifecycleJobsQueryDto,
+  RetryLifecycleFailedJobResponseDto,
+} from './lifecycle-failed-job.dto';

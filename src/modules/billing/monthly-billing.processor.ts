@@ -1,9 +1,12 @@
-import { Logger } from '@nestjs/common';
+import { Inject, Logger } from '@nestjs/common';
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
 import { DataSource } from 'typeorm';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
-import { KG_DEFAULT_TIMEZONE } from '@/shared-kernel/domain/value-objects/day-of-week.vo';
+import {
+  KG_DEFAULT_TIMEZONE,
+  firstOfMonthInTimezone,
+} from '@/shared-kernel/domain/value-objects/day-of-week.vo';
 import { tenantStorage } from '@/database/tenant-storage';
 import { InvoiceService } from './invoice.service';
 
@@ -96,7 +99,11 @@ export class MonthlyBillingProcessor extends WorkerHost {
   constructor(
     private readonly invoiceService: InvoiceService,
     private readonly dataSource: DataSource,
-    private readonly clock: ClockPort,
+    // SP1 (FINDINGS): explicit `@Inject(ClockPort)` so the worker process
+    // resolves the abstract port via reflect-metadata (BullMQ workers boot
+    // under a different DI graph and can otherwise see `undefined` for
+    // abstract-class tokens).
+    @Inject(ClockPort) private readonly clock: ClockPort,
   ) {
     super();
   }
@@ -244,28 +251,15 @@ export class MonthlyBillingProcessor extends WorkerHost {
 
 // ── pure date helpers ─────────────────────────────────────────────────────
 
+/**
+ * UTC-only first-of-month — used ONLY when the caller already pinned an
+ * explicit `periodStart` payload (manual back-fill jobs), where the input
+ * is interpreted at face value. For cron ticks we use
+ * `firstOfMonthInTimezone` from shared-kernel so the Almaty calendar
+ * decides the period boundary.
+ */
 function firstOfMonthUtc(d: Date): Date {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
-}
-
-/**
- * Returns the first-of-month at midnight UTC whose YYYY-MM matches the
- * `now` instant rendered in `timeZone`. Mirrors `startOfDayInTimezone`
- * from shared-kernel `day-of-week.vo.ts` but anchored to day=01.
- *
- * Example: at 2026-05-31T22:00:00Z (which is 2026-06-01T03:00 in
- * Asia/Almaty) we want the June period — UTC midnight of 2026-06-01.
- */
-function firstOfMonthInTimezone(now: Date, timeZone: string): Date {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(now);
-  // en-CA → 'YYYY-MM-DD'. Slice off the day, force '01'.
-  const ym = parts.slice(0, 7);
-  return new Date(`${ym}-01T00:00:00.000Z`);
 }
 
 function isoDate(d: Date): string {

@@ -318,7 +318,11 @@ class FakeInvoiceRepo extends InvoiceRepository {
     id: string,
     now: Date,
   ): Promise<Invoice | null> {
-    return Promise.resolve(this.flip(id, ['pending'], 'overdue', now));
+    // B22a T1 SM1: `partial` is now a valid source — see
+    // invoice.relational.repository.ts:`markOverdueConditional`.
+    return Promise.resolve(
+      this.flip(id, ['pending', 'partial'], 'overdue', now),
+    );
   }
   acquireMonthlyGenerationAdvisoryLock(): Promise<void> {
     return Promise.resolve();
@@ -1537,5 +1541,67 @@ describe('PaymentService.markFailed / getById / list', () => {
     const ok = await h.service.list(KG, { status: 'completed' });
     expect(ok).toHaveLength(1);
     expect(ok[0].id).toBe('p2');
+  });
+});
+
+// ── B22a T1 H14 — partial payment on an `overdue` invoice flips it to `partial` ──
+
+describe('PaymentService.initiate — H14 partial on overdue', () => {
+  it('flips an overdue invoice to partial when a sub-total payment lands', async () => {
+    const h = buildHarness();
+    // Seed the invoice in `overdue` (e.g. it was flipped by the nightly
+    // overdue cron after due_date passed). The parent then makes a
+    // partial payment that is LESS than the remaining amount.
+    h.invoiceRepo.rows.set(
+      INVOICE,
+      makeInvoice({ status: 'overdue', amountAfterDiscount: 50_000 }),
+    );
+    h.paymentAccountRepo.put(makeAccount());
+    h.provider.createPaymentImpl = () =>
+      Promise.resolve({
+        providerPaymentId: 'tx_partial_on_overdue',
+        status: 'completed',
+        redirectUrl: 'https://mock/pay',
+      });
+
+    const result = await h.service.initiate(KG, {
+      invoiceId: INVOICE,
+      amount: 20_000, // < amountAfterDiscount (50_000) → partial
+      paymentMode: 'partial',
+      provider: 'mock',
+      idempotencyKey: 'idem-h14-overdue',
+      returnUrl: 'https://app/return',
+    });
+
+    expect(result.payment.status).toBe('completed');
+    expect(result.payment.amount).toBe(20_000);
+    const invAfter = await h.invoiceRepo.findById(KG, INVOICE);
+    // Pre-H14: status stayed at 'overdue' because the conditional UPDATE
+    // accepted only 'pending' source rows. Post-H14: invoice flips to
+    // 'partial' so the dunning pipeline reflects "some money received,
+    // remainder still past due".
+    expect(invAfter?.status).toBe('partial');
+  });
+
+  it('leaves an overdue invoice as paid when the partial payment settles the full remainder', async () => {
+    const h = buildHarness();
+    h.invoiceRepo.rows.set(
+      INVOICE,
+      makeInvoice({ status: 'overdue', amountAfterDiscount: 50_000 }),
+    );
+    h.paymentAccountRepo.put(makeAccount());
+
+    const result = await h.service.initiate(KG, {
+      invoiceId: INVOICE,
+      amount: 50_000,
+      paymentMode: 'full',
+      provider: 'mock',
+      idempotencyKey: 'idem-h14-full-on-overdue',
+      returnUrl: 'https://app/return',
+    });
+
+    expect(result.payment.status).toBe('completed');
+    const invAfter = await h.invoiceRepo.findById(KG, INVOICE);
+    expect(invAfter?.status).toBe('paid');
   });
 });

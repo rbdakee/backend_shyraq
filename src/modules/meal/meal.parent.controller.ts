@@ -20,6 +20,10 @@ import { ChildAccessGuard } from '@/common/guards/child-access.guard';
 import { JwtAuthGuard } from '@/common/guards/jwt-auth.guard';
 import { PendingRoleSelectGuard } from '@/common/guards/pending-role-select.guard';
 import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-context';
+import {
+  formatDateInTimezone,
+  isoWeekdayOf,
+} from '@/shared-kernel/domain/value-objects/day-of-week.vo';
 import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
 import { ParentMenuQuery } from './dto/list-meal-plans.query';
 import { MealMenuWeekResponseDto } from './dto/meal-plan.response.dto';
@@ -66,11 +70,26 @@ export class MealParentController {
   }
 }
 
+/**
+ * SP3: Monday-of-the-current-week in `Asia/Almaty`. The previous
+ * implementation derived `day` from `Date.getDay()` (UTC wall-clock) which
+ * jumps to the previous week on Sunday-evening Almaty (UTC still says
+ * Sunday, but Almaty is already Monday, so iso=1 should anchor on TODAY,
+ * not 7 days back).
+ *
+ * Strategy: ask the shared helper for the iso-weekday in Asia/Almaty
+ * (1=Mon..7=Sun), subtract `iso-1` Almaty-days from today's Almaty
+ * calendar date. We do the arithmetic by parsing the YYYY-MM-DD string
+ * into a midnight-UTC Date — the offset is purely calendar arithmetic
+ * (24h * N), no DST in Asia/Almaty so this is safe.
+ */
 function getThisMonday(): string {
   const now = new Date();
-  const day = now.getDay(); // 0=Sun
-  const diff = day === 0 ? -6 : 1 - day;
-  const monday = new Date(now);
-  monday.setDate(monday.getDate() + diff);
-  return monday.toISOString().slice(0, 10);
+  const iso = isoWeekdayOf(now); // 1..7 in Asia/Almaty
+  const todayAlmatyIso = formatDateInTimezone(now);
+  const todayAnchor = new Date(`${todayAlmatyIso}T00:00:00.000Z`);
+  const monday = new Date(
+    todayAnchor.getTime() - (iso - 1) * 24 * 60 * 60 * 1000,
+  );
+  return formatDateInTimezone(monday);
 }

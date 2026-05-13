@@ -26,6 +26,19 @@ export interface DiagnosticEntryState {
   attachments: string[];
   createdAt: Date;
   updatedAt: Date;
+  /**
+   * Optimistic-lock token (B22a T4). Internal — not exposed via DTO.
+   * Bumped by the relational repo's conditional UPDATE; the service
+   * layer captures `loaded.rowVersion` and passes it back.
+   */
+  rowVersion: number;
+  /**
+   * Admin-bypass-on-PATCH audit fields (B22a T7 — closes B18 Concern 1).
+   * Stamped by the service layer on every PATCH (including admin
+   * override). NULL on never-patched rows. Internal — not exposed via DTO.
+   */
+  lastModifiedByUserId?: string | null;
+  lastModifiedAt?: Date | null;
 }
 
 export interface DiagnosticEntryUpdatePatch {
@@ -33,6 +46,15 @@ export interface DiagnosticEntryUpdatePatch {
   summary?: string | null;
   recommendations?: string | null;
   attachments?: string[];
+  /**
+   * Audit stamps (B22a T7) — NOT user-supplied. The service layer fills
+   * these from the current `req.user.sub` + `clock.now()` before calling
+   * `entity.update()`. Kept on the patch (rather than as a separate
+   * service-level argument) so the entity stays the single source of
+   * truth for the next-state shape.
+   */
+  lastModifiedByUserId?: string | null;
+  lastModifiedAt?: Date | null;
 }
 
 const ALMATY_TZ = 'Asia/Almaty';
@@ -139,6 +161,18 @@ export class DiagnosticEntry {
     return this.state.updatedAt;
   }
 
+  get rowVersion(): number {
+    return this.state.rowVersion;
+  }
+
+  get lastModifiedByUserId(): string | null {
+    return this.state.lastModifiedByUserId ?? null;
+  }
+
+  get lastModifiedAt(): Date | null {
+    return this.state.lastModifiedAt ?? null;
+  }
+
   // ── invariants ───────────────────────────────────────────────────────────
 
   private static assertInvariants(s: DiagnosticEntryState, now: Date): void {
@@ -189,6 +223,16 @@ export class DiagnosticEntry {
     }
     if (patch.attachments !== undefined) {
       next.attachments = [...patch.attachments];
+    }
+    // Audit stamps (B22a T7). Service layer always supplies them on PATCH
+    // — but we copy from the patch only when present so this method
+    // remains usable from internal flows (none today) that opt out of
+    // audit stamping.
+    if (patch.lastModifiedByUserId !== undefined) {
+      next.lastModifiedByUserId = patch.lastModifiedByUserId;
+    }
+    if (patch.lastModifiedAt !== undefined) {
+      next.lastModifiedAt = patch.lastModifiedAt;
     }
     return new DiagnosticEntry(next);
   }

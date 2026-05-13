@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { OptimisticLockError } from '@/shared-kernel/domain/errors';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { DiagnosticTemplateService } from './diagnostic-template.service';
 import {
@@ -8,6 +9,7 @@ import {
 } from './diagnostic-template.repository';
 import { DiagnosticTemplate } from './domain/entities/diagnostic-template.entity';
 import { DiagnosticTemplateNotFoundError } from './domain/errors/diagnostic-template-not-found.error';
+import { TemplateHasEntriesError } from './domain/errors/template-has-entries.error';
 import { TemplateSchema } from './domain/schema-validators';
 
 const KG = '11111111-1111-1111-1111-111111111111';
@@ -31,9 +33,15 @@ class FakeClock extends ClockPort {
 
 class FakeTemplateRepo extends DiagnosticTemplateRepository {
   rows = new Map<string, DiagnosticTemplate>();
+  /** B22a T7 — per-template entry-count surface used by H12 schema-PATCH guard. */
+  entriesCount = new Map<string, number>();
 
   put(t: DiagnosticTemplate): void {
     this.rows.set(t.id, t);
+  }
+
+  setEntriesCount(templateId: string, count: number): void {
+    this.entriesCount.set(templateId, count);
   }
 
   create(t: DiagnosticTemplate): Promise<DiagnosticTemplate> {
@@ -54,10 +62,39 @@ class FakeTemplateRepo extends DiagnosticTemplateRepository {
     return this.findById(kgId, id);
   }
 
+  countEntriesUsingTemplate(
+    _kgId: string,
+    templateId: string,
+  ): Promise<number> {
+    return Promise.resolve(this.entriesCount.get(templateId) ?? 0);
+  }
+
+  /**
+   * In-memory mirror of the relational repo's optimistic-lock contract:
+   * when `expectedRowVersion` is supplied, the snapshot's current
+   * row_version must match — otherwise throw `OptimisticLockError`.
+   * Mirrors the row_version bump deterministically so unit specs can
+   * pin behaviour without spinning up Postgres.
+   */
   update(
     t: DiagnosticTemplate,
-    _expectedVersion?: number,
+    expectedRowVersion?: number,
   ): Promise<DiagnosticTemplate> {
+    if (expectedRowVersion !== undefined) {
+      const current = this.rows.get(t.id);
+      if (!current || current.kindergartenId !== t.kindergartenId) {
+        throw new OptimisticLockError();
+      }
+      if (current.rowVersion !== expectedRowVersion) {
+        throw new OptimisticLockError();
+      }
+      const bumped = DiagnosticTemplate.fromState({
+        ...t.toState(),
+        rowVersion: current.rowVersion + 1,
+      });
+      this.rows.set(t.id, bumped);
+      return Promise.resolve(bumped);
+    }
     this.rows.set(t.id, t);
     return Promise.resolve(t);
   }
@@ -111,6 +148,7 @@ function buildTemplate(
     isActive: boolean;
     schema: TemplateSchema;
     version: number;
+    rowVersion: number;
   }> = {},
 ): DiagnosticTemplate {
   return DiagnosticTemplate.fromState({
@@ -120,6 +158,7 @@ function buildTemplate(
     name: 'Initial assessment',
     description: null,
     version: overrides.version ?? 1,
+    rowVersion: overrides.rowVersion ?? 1,
     isActive: overrides.isActive ?? true,
     schema: overrides.schema ?? validSchema,
     createdBy: STAFF,
@@ -233,6 +272,137 @@ describe('DiagnosticTemplateService', () => {
           schema: { sections: 'not-an-array' } as unknown as TemplateSchema,
         }),
       ).rejects.toMatchObject({ code: 'diagnostic_template_schema_invalid' });
+    });
+
+    it('throws OptimisticLockError when repo signals stale row_version', async () => {
+      // Race-protection regression (B22a T4 / SM3): the service must
+      // surface the repo's `OptimisticLockError` so DomainErrorFilter
+      // maps it to 409 `optimistic_lock_conflict`. We simulate the
+      // race by patching `findById` to return a stale snapshot
+      // (row_version=1) while the underlying store has already
+      // advanced (row_version=2) — exactly the SELECT-then-UPDATE
+      // window the optimistic lock guards.
+      const initial = buildTemplate({ rowVersion: 1 });
+      repo.put(initial);
+      // Concurrent writer landed first → store now at row_version=2.
+      const winner = buildTemplate({ id: initial.id, rowVersion: 2 });
+      repo.put(winner);
+      // The "loser" service call reads the snapshot it had BEFORE the
+      // winner committed (still row_version=1). Real Postgres exposes
+      // this gap via the read-then-conditional-update pattern.
+      jest.spyOn(repo, 'findById').mockResolvedValueOnce(initial);
+      await expect(
+        service.update(KG, initial.id, { name: 'Late writer' }),
+      ).rejects.toBeInstanceOf(OptimisticLockError);
+    });
+
+    it('passes expectedRowVersion to repo on subsequent update success', async () => {
+      // Sanity: after a successful PATCH the repo bumps row_version, so
+      // a follow-up service.update against the latest aggregate succeeds.
+      const initial = buildTemplate();
+      repo.put(initial);
+      const first = await service.update(KG, initial.id, { name: 'A' });
+      expect(first.rowVersion).toBe(2);
+      const second = await service.update(KG, initial.id, { name: 'B' });
+      expect(second.rowVersion).toBe(3);
+    });
+
+    it('rejects schema PATCH with 409 template_has_entries when entries exist', async () => {
+      // B22a T7 / H12 — schema is pinned the moment any entry references
+      // the template. Mutating the JSONB schema would silently invalidate
+      // every persisted entry's `data` payload (validated against the
+      // live template on read), so we throw `TemplateHasEntriesError`
+      // (HTTP 409 `template_has_entries`) before any write.
+      const initial = buildTemplate();
+      repo.put(initial);
+      repo.setEntriesCount(initial.id, 3);
+      const newSchema: TemplateSchema = {
+        sections: [
+          {
+            title: 'General',
+            fields: [
+              {
+                key: 'mood',
+                label: 'Mood',
+                type: 'scale',
+                required: true,
+                min: 1,
+                max: 10,
+              },
+            ],
+          },
+        ],
+      };
+      await expect(
+        service.update(KG, initial.id, { schema: newSchema }),
+      ).rejects.toBeInstanceOf(TemplateHasEntriesError);
+      // Sanity: persisted row is untouched (no row_version bump, no
+      // schema change) — the guard fires BEFORE the conditional UPDATE.
+      const reloaded = repo.rows.get(initial.id);
+      expect(reloaded?.schema).toEqual(initial.schema);
+      expect(reloaded?.rowVersion).toBe(1);
+    });
+
+    it('allows non-schema PATCH (name only) even when entries exist', async () => {
+      // H12 only blocks structural schema diffs — `name`, `description`,
+      // and `is_active` mutations remain editable in the entries-pinned
+      // state.
+      const initial = buildTemplate();
+      repo.put(initial);
+      repo.setEntriesCount(initial.id, 5);
+      const updated = await service.update(KG, initial.id, {
+        name: 'Renamed (with entries)',
+      });
+      expect(updated.name).toBe('Renamed (with entries)');
+      expect(updated.version).toBe(1);
+    });
+
+    it('allows schema PATCH that is structurally identical (no-op) when entries exist', async () => {
+      // Common UI pattern: edit `name`, re-send the whole template
+      // including the unchanged `schema` block. `deepEqualJson` returns
+      // true so the H12 guard short-circuits — no 409, no version bump.
+      const initial = buildTemplate();
+      repo.put(initial);
+      repo.setEntriesCount(initial.id, 2);
+      const sameSchema: TemplateSchema = JSON.parse(
+        JSON.stringify(initial.schema),
+      ) as TemplateSchema;
+      const updated = await service.update(KG, initial.id, {
+        name: 'Renamed',
+        schema: sameSchema,
+      });
+      expect(updated.name).toBe('Renamed');
+      expect(updated.version).toBe(1); // schema unchanged → no bump
+    });
+
+    it('allows schema PATCH when no entries exist', async () => {
+      // Sanity: H12 guard is gated on `entriesCount > 0`. With zero
+      // entries the schema mutation goes through and the version bumps
+      // per existing semantics.
+      const initial = buildTemplate();
+      repo.put(initial);
+      repo.setEntriesCount(initial.id, 0);
+      const newSchema: TemplateSchema = {
+        sections: [
+          {
+            title: 'General',
+            fields: [
+              {
+                key: 'mood',
+                label: 'Mood',
+                type: 'scale',
+                required: true,
+                min: 1,
+                max: 10,
+              },
+            ],
+          },
+        ],
+      };
+      const updated = await service.update(KG, initial.id, {
+        schema: newSchema,
+      });
+      expect(updated.version).toBe(2);
     });
   });
 

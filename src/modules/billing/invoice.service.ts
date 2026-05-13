@@ -22,6 +22,7 @@ import {
 import { Payment, PaymentState } from './domain/entities/payment.entity';
 import { TariffPlan } from './domain/entities/tariff-plan.entity';
 import { TariffAssignment } from './domain/entities/tariff-assignment.entity';
+import { ChildArchivedDuringRunError } from './domain/errors/child-archived-during-run.error';
 import { InvoiceAlreadyPaidError } from './domain/errors/invoice-already-paid.error';
 import { InvoiceNotFoundError } from './domain/errors/invoice-not-found.error';
 import { InvoiceStatusInvalidError } from './domain/errors/invoice-status-invalid.error';
@@ -48,6 +49,7 @@ import { TariffPlanRepository } from './infrastructure/persistence/tariff-plan.r
 import { HolidayService } from './holiday.service';
 import { PaymentAccountService } from './payment-account.service';
 import { roundKzt, subtractKzt } from '@/shared-kernel/domain/money';
+import { firstOfMonthInTimezone } from '@/shared-kernel/domain/value-objects/day-of-week.vo';
 
 const DEFAULT_DUE_DAY = 10; // monthly invoices fall due on the 10th of period
 const LATE_PICKUP_DUE_DAYS = 7;
@@ -443,6 +445,7 @@ export class InvoiceService {
     );
 
     let generated = 0;
+    let skipped = 0;
     for (const assignment of assignments) {
       // B21 T3 step5: defence-in-depth gate against billing archived
       // children. T3 step3 closes their tariff_assignment at the archive
@@ -463,6 +466,7 @@ export class InvoiceService {
           this.logger.log(
             `monthly: skipping child=${assignment.childId} — status=${child?.status.value ?? 'missing'}`,
           );
+          skipped++;
           continue;
         }
       }
@@ -477,24 +481,41 @@ export class InvoiceService {
         this.logger.warn(
           `monthly: skipping child=${assignment.childId} — tariff_plan ${assignment.tariffPlanId} not found`,
         );
+        skipped++;
         continue;
       }
-      await this.generateAndPersistInvoice({
-        kindergartenId,
-        assignment,
-        tariffPlan,
-        invoiceType: 'monthly',
-        periodStart,
-        periodEnd,
-        dueDate,
-        totalDays,
-        nonBillableHolidays,
-        prepaymentMonths: undefined,
-      });
-      generated++;
+      try {
+        await this.generateAndPersistInvoice({
+          kindergartenId,
+          assignment,
+          tariffPlan,
+          invoiceType: 'monthly',
+          periodStart,
+          periodEnd,
+          dueDate,
+          totalDays,
+          nonBillableHolidays,
+          prepaymentMonths: undefined,
+        });
+        generated++;
+      } catch (err) {
+        if (err instanceof ChildArchivedDuringRunError) {
+          // FINDINGS B21-T6-M3: archive landed between this loop's
+          // top-of-iteration status read and the per-child INSERT TX.
+          // The `existsActiveByIdForUpdate` guard inside
+          // `generateAndPersistInvoice` aborted the INSERT, so no
+          // invoice row exists for this child this period. Count it
+          // as skipped (NOT generated, NOT errored) — the cron summary
+          // surfaces the count, the inner warn-log captures the
+          // forensic detail.
+          skipped++;
+          continue;
+        }
+        throw err;
+      }
     }
 
-    return { generated, skipped: 0 };
+    return { generated, skipped };
   }
 
   /**
@@ -522,8 +543,11 @@ export class InvoiceService {
     if (!tariffPlan) {
       throw new TariffPlanNotFoundError(assignment.tariffPlanId);
     }
-    const periodStart = startOfMonth(input.enrollmentDate);
-    const periodEnd = endOfMonth(input.enrollmentDate);
+    // SP2: anchor on Asia/Almaty so an enrollment landing right after
+    // local midnight (UTC still previous day) is billed against the new
+    // local calendar month, matching `monthly-billing.processor.ts`.
+    const periodStart = firstOfMonthInTimezone(input.enrollmentDate);
+    const periodEnd = endOfMonth(periodStart);
     const totalDays = daysBetweenInclusive(periodStart, periodEnd);
     const billableDays = daysBetweenInclusive(input.enrollmentDate, periodEnd);
     const nonBillableHolidays = await this.holidays.countNonBillableInRange(
@@ -645,7 +669,12 @@ export class InvoiceService {
       throw new BadRequestException('months_ahead_out_of_range');
     }
     const today = this.clock.now();
-    const startMonth = startOfMonth(today);
+    // SP2: anchor on Asia/Almaty calendar month — `startOfMonth(today)` under
+    // UTC math rolls a month back when called near Almaty midnight (e.g.
+    // 2026-05-31T22:00Z = 2026-06-01T03:00 Almaty → June, not May). The
+    // `firstOfMonthInTimezone` helper mirrors the SQL `DATE_TRUNC('month',
+    // ts AT TIME ZONE 'Asia/Almaty')` boundary used by `monthly-billing`.
+    const startMonth = firstOfMonthInTimezone(today);
     const endMonth = endOfMonth(addMonthsUtc(startMonth, monthsAhead - 1));
 
     const invoices = await this.invoices.findByChildId(
@@ -763,7 +792,9 @@ export class InvoiceService {
     }
 
     // Period: first day of the next month → last day of (next + months-1).
-    const periodStart = addMonthsUtc(startOfMonth(now), 1);
+    // SP2: anchor on Asia/Almaty so `clock.now()` near local midnight does
+    // not shift the prepayment horizon a month back.
+    const periodStart = addMonthsUtc(firstOfMonthInTimezone(now), 1);
     const periodEnd = endOfMonth(addMonthsUtc(periodStart, months - 1));
 
     const monthlyAmount = assignment.effectiveAmount(tariffPlan);
@@ -798,6 +829,18 @@ export class InvoiceService {
         familyContext: customCtx.familyContext ?? undefined,
       },
     });
+
+    // B22a T13 H1 — release reservations for any pre-engine-reserved
+    // discount that the engine ultimately did NOT include in
+    // `customApplicationsToWrite` (e.g. dropped by a non-stackable gate or
+    // by `evaluateConditions` returning false). Without this compensation
+    // the slot stays consumed forever, prematurely exhausting capped
+    // discounts. Runs in the same ambient TX so the release is durable.
+    await this.releaseUnusedReservations(
+      kindergartenId,
+      customCtx.reservedDiscountIds,
+      discount,
+    );
 
     const amountAfter = Invoice.computeAmountAfterDiscount(
       baseAmount,
@@ -927,6 +970,13 @@ export class InvoiceService {
       },
     });
 
+    // B22a T13 H1 — see prepayInvoice for rationale.
+    await this.releaseUnusedReservations(
+      kindergartenId,
+      customCtx.reservedDiscountIds,
+      discount,
+    );
+
     let amountAfter = Invoice.computeAmountAfterDiscount(
       baseAmount,
       discount.discountPct,
@@ -978,6 +1028,35 @@ export class InvoiceService {
       createdAt: now,
     };
     const lineItem = InvoiceLineItem.fromState(lineState);
+
+    // B22a T3 (FINDINGS B21-T6-M3): archive-vs-invoice race protection.
+    // The top-of-loop status read in `generateMonthly` happens BEFORE
+    // discount evaluation + child entity hydrate; a parent / staff
+    // archive call landing between that read and this INSERT would
+    // silently invoice an archived child. We re-check ONLY for the
+    // monthly cron path (where the loop is long-running enough to make
+    // the race observable in production) and acquire a `FOR UPDATE`
+    // row-level lock so a concurrent archive UPDATE blocks until our
+    // INSERT TX commits or rolls back. `generateFirstInvoice`
+    // (`invoiceType='monthly'` for the first month) intentionally also
+    // benefits — its call site is enrollment-driven and the
+    // window is microseconds rather than minutes, so the cost (one
+    // extra round-trip) is negligible.
+    if (invoiceType === 'monthly' && this.children) {
+      const stillActive = await this.children.existsActiveByIdForUpdate(
+        kindergartenId,
+        assignment.childId,
+      );
+      if (!stillActive) {
+        this.logger.warn(
+          `monthly: child_archived_during_run kg=${kindergartenId} child=${assignment.childId} — skipping INSERT (archive raced with invoice)`,
+        );
+        // Throw a tagged error the cron loop catches; service-layer
+        // sentinel keeps the contract clean (the caller does not care
+        // about ChildRepository details).
+        throw new ChildArchivedDuringRunError(assignment.childId);
+      }
+    }
 
     const persisted = await this.invoices.create(invoice, [lineItem]);
     await this.persistCustomDiscountApplications(
@@ -1044,6 +1123,13 @@ export class InvoiceService {
     customDiscounts: CustomDiscountSnapshot[];
     childContext: DiscountEvaluationInput['context']['childContext'] | null;
     familyContext: DiscountEvaluationInput['context']['familyContext'] | null;
+    /**
+     * IDs of discounts that consumed a `total_max_uses` slot via
+     * `tryReserveUsage` BEFORE engine evaluation. Returned so the caller
+     * can compensate (T13 H1) any IDs that the engine ultimately drops
+     * — see `releaseUnusedReservations`.
+     */
+    reservedDiscountIds: string[];
   }> {
     if (
       !this.customDiscounts ||
@@ -1052,7 +1138,12 @@ export class InvoiceService {
       !this.children ||
       !this.childGuardians
     ) {
-      return { customDiscounts: [], childContext: null, familyContext: null };
+      return {
+        customDiscounts: [],
+        childContext: null,
+        familyContext: null,
+        reservedDiscountIds: [],
+      };
     }
 
     // Step 1 — kg-wide active set.
@@ -1080,11 +1171,18 @@ export class InvoiceService {
     // ambient TX (HTTP-edge interceptor / cron `dataSource.transaction`)
     // and released at COMMIT/ROLLBACK. Acquired ONLY for discounts with a
     // per-child cap (cap=null = no contention to serialise).
+    //
+    // B22a T1 H16: total_max_uses guard is now an ATOMIC RESERVE — we
+    // call `tryReserveUsage` BEFORE the engine sees the discount. If the
+    // cap raced (another concurrent flow took the last slot), the
+    // discount is dropped here and never reaches the engine. The
+    // reservation lives inside the ambient TX — if the invoice INSERT
+    // later throws, TX rollback naturally releases it (PG atomicity).
+    // This eliminates the line-item/ledger drift (B16 T6-H2) that used
+    // to be caused by post-INSERT `incrementUsedCount` failures.
     const eligible: CustomDiscountSnapshot[] = [];
+    const reservedDiscountIds: string[] = [];
     for (const snap of targeted) {
-      if (snap.totalMaxUses !== null && snap.usedCount >= snap.totalMaxUses) {
-        continue;
-      }
       if (snap.maxUsesPerChild !== null) {
         await this.customDiscounts.acquireDiscountApplyAdvisoryLock(
           kindergartenId,
@@ -1098,6 +1196,21 @@ export class InvoiceService {
             snap.id,
           );
         if (used >= snap.maxUsesPerChild) continue;
+      }
+      // total_max_uses atomic reserve. `tryReserveUsage` returns true
+      // immediately for cap-disabled discounts (total_max_uses IS NULL).
+      if (snap.totalMaxUses !== null) {
+        const reserved = await this.customDiscounts.tryReserveUsage(
+          kindergartenId,
+          snap.id,
+        );
+        if (!reserved) {
+          this.logger.log(
+            `discount.cap_raced: kg=${kindergartenId} discount=${snap.id} child=${childId} — skipped before engine.`,
+          );
+          continue;
+        }
+        reservedDiscountIds.push(snap.id);
       }
       eligible.push(snap);
     }
@@ -1122,8 +1235,16 @@ export class InvoiceService {
       // No-cost approximation for `firstInvoice`: list any prior invoices
       // for the child (any type) — empty list = first invoice. The
       // existing `findByChildId` query is indexed on (kg, child_id).
+      //
+      // B22a T1 H15: `cancelled` invoices MUST NOT count as a prior. The
+      // discount engine uses `isFirstInvoiceForChild` to gate "first
+      // month" promotional rules; a child whose previous month was
+      // cancelled (e.g. admin reversed an enrollment) is still semantically
+      // a "first invoice" for the next billable month. Without this
+      // filter the engine silently dropped the first-invoice perk for any
+      // child that had a cancelled invoice in the same kg.
       const priors = await this.invoices.findByChildId(kindergartenId, childId);
-      isFirstInvoiceForChild = priors.length === 0;
+      isFirstInvoiceForChild = priors.every((p) => p.status === 'cancelled');
       siblingsInKgCount = await this.childGuardians.countSiblingsInKgForChild(
         kindergartenId,
         childId,
@@ -1141,20 +1262,72 @@ export class InvoiceService {
     void _invoiceType;
     void periodStart;
 
-    return { customDiscounts: eligible, childContext, familyContext };
+    return {
+      customDiscounts: eligible,
+      childContext,
+      familyContext,
+      reservedDiscountIds,
+    };
+  }
+
+  /**
+   * B22a T13 H1 — compensation for `tryReserveUsage` slots that the
+   * discount engine did NOT include in `customApplicationsToWrite`.
+   *
+   * Why this is needed: `buildCustomDiscountInputs` reserves a
+   * `total_max_uses` slot for every targeting-passing discount BEFORE
+   * the engine evaluates conditions / applies stacking. The engine then
+   * may drop a reserved snapshot when:
+   *   1. `evaluateConditions(snap.conditions, ctx)` returns false (e.g.
+   *      "child age < 24 months" excludes the discount for older kids).
+   *   2. `evaluateConditions` throws (logged + skipped).
+   *   3. Stacking gates the discount (top non-stackable wins outright; a
+   *      mid-list non-stackable terminates the stackable prefix).
+   *   4. `remaining <= 0` after higher-priority winners filled the cap.
+   *   5. `amountApplied <= 0` after rounding.
+   *
+   * For every dropped snapshot the `used_count` increment from step 1
+   * must be released, otherwise the cap leaks and a legitimate later
+   * invoice loses the discount. We call `releaseUsage` (single
+   * `UPDATE … SET used_count = GREATEST(used_count - 1, 0)`) inside the
+   * ambient TX so a downstream INSERT failure rolls both the original
+   * reserve AND the release back together.
+   *
+   * Logged at debug; the loud `discount.cap_raced` log fires upstream in
+   * `buildCustomDiscountInputs` for the cap-race case.
+   */
+  private async releaseUnusedReservations(
+    kindergartenId: string,
+    reservedDiscountIds: string[],
+    discount: DiscountEvaluationResult,
+  ): Promise<void> {
+    if (!this.customDiscounts || reservedDiscountIds.length === 0) return;
+    const winners = new Set(
+      discount.customApplicationsToWrite.map((a) => a.customDiscountId),
+    );
+    for (const reservedId of reservedDiscountIds) {
+      if (winners.has(reservedId)) continue;
+      await this.customDiscounts.releaseUsage(kindergartenId, reservedId);
+      this.logger.debug(
+        `discount.reserve_released: kg=${kindergartenId} discount=${reservedId} — engine dropped post-reserve.`,
+      );
+    }
   }
 
   /**
    * Inserts one `custom_discount_applications` ledger row per matched
-   * custom discount AND atomically increments the parent's `used_count`.
+   * custom discount. The parent's `used_count` was already incremented
+   * up-front by `buildCustomDiscountInputs.tryReserveUsage` BEFORE the
+   * engine evaluation — so reaching this method means a usage slot is
+   * already reserved for this invoice (or the cap was disabled). The
+   * audit-row INSERT runs in the same ambient TX, so if the invoice
+   * INSERT had failed before this method ran, the reservation would
+   * have been rolled back along with it.
    *
-   * Race handling (T3 §F): when `incrementUsedCount` returns `false`
-   * (total_max_uses reached between engine eval + write — should be
-   * exceedingly rare given the pre-engine capacity guard), we log+skip
-   * the application row and leave the invoice's discount line in place.
-   * Documented trade-off — the alternative is to retro-modify the
-   * already-inserted invoice, which is more dangerous than letting one
-   * over-the-cap discount slip through.
+   * B22a T1 H16 / B16 T6-H2: this method no longer has a "skip on cap
+   * race" branch — the cap race is impossible at this stage because the
+   * reserve preceded the engine evaluation. line-items and audit ledger
+   * always agree.
    *
    * Short-circuits when the B16 deps are missing — keeps older spec
    * wiring (B13 race spec) green.
@@ -1173,17 +1346,6 @@ export class InvoiceService {
       return;
     }
     for (const app of result.customApplicationsToWrite) {
-      const incremented = await this.customDiscounts.incrementUsedCount(
-        kindergartenId,
-        app.customDiscountId,
-        1,
-      );
-      if (!incremented) {
-        this.logger.warn(
-          `discount.max_uses_total_raced: kg=${kindergartenId} discount=${app.customDiscountId} invoice=${invoice.id} — application row skipped.`,
-        );
-        continue;
-      }
       await this.customDiscountApplications.create({
         kindergartenId,
         customDiscountId: app.customDiscountId,
@@ -1237,9 +1399,11 @@ function monthsBetween(from: Date, to: Date): number {
 
 // ── pure date helpers ────────────────────────────────────────────────────
 
-function startOfMonth(d: Date): Date {
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
-}
+// `startOfMonth` (UTC) deliberately removed in B22a T2: every caller now
+// anchors on Asia/Almaty via `firstOfMonthInTimezone` from shared-kernel —
+// see SP2 in docs/FINDINGS.md. `endOfMonth` stays UTC because once the
+// canonical first-of-month (a midnight-UTC anchor) is established, the
+// last-of-month derivation is unambiguous arithmetic.
 
 function endOfMonth(d: Date): Date {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0));
