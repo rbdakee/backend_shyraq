@@ -5,7 +5,6 @@ import {
   Get,
   HttpCode,
   HttpStatus,
-  NotFoundException,
   Param,
   ParseUUIDPipe,
   Post,
@@ -31,11 +30,6 @@ import { JwtAuthGuard } from '@/common/guards/jwt-auth.guard';
 import { PendingRoleSelectGuard } from '@/common/guards/pending-role-select.guard';
 import { RolesGuard } from '@/common/guards/roles.guard';
 import type { JwtPayload } from '@/common/types/jwt-payload';
-import {
-  StaffMember,
-  StaffRole,
-} from '@/modules/staff/domain/entities/staff-member.entity';
-import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
 import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-context';
 import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
 import { AddMessageDto } from './dto/add-message.dto';
@@ -51,13 +45,9 @@ import {
 } from './dto/parent-request.response.dto';
 import { ReviewRequestDto } from './dto/review-request.dto';
 import { ParentRequestPresenter } from './parent-request.presenter';
-import {
-  CallerStaffContext,
-  ParentRequestService,
-} from './parent-request.service';
+import { ParentRequestService } from './parent-request.service';
 
 const TENANT_REQUIRED = 'tenant_required';
-const STAFF_NOT_FOUND = 'staff_member_not_found';
 
 function requireTenant(t: TenantContext): string {
   if (!t.kgId) throw new BadRequestException(TENANT_REQUIRED);
@@ -76,6 +66,9 @@ function requireTenant(t: TenantContext): string {
  *
  * Authorisation per row is service-side: admin sees everything in the kg;
  * mentor / specialist see only requests routed to their staff_member_id.
+ * The caller's staff_member row is resolved by
+ * `ParentRequestService.resolveCallerByUserIdOrThrow` so the controller no
+ * longer imports `StaffMemberRepository`.
  */
 @ApiTags('Staff / Parent Requests')
 @ApiBearerAuth()
@@ -83,10 +76,7 @@ function requireTenant(t: TenantContext): string {
 @UseGuards(JwtAuthGuard, PendingRoleSelectGuard, RolesGuard)
 @Roles('mentor', 'specialist', 'admin')
 export class StaffParentRequestController {
-  constructor(
-    private readonly service: ParentRequestService,
-    private readonly staffRepo: StaffMemberRepository,
-  ) {}
+  constructor(private readonly service: ParentRequestService) {}
 
   // ── List + get ────────────────────────────────────────────────────────
 
@@ -104,7 +94,10 @@ export class StaffParentRequestController {
     @Query() q: ListParentRequestsQueryDto,
   ): Promise<ParentRequestListResponseDto> {
     const kgId = requireTenant(t);
-    const caller = await this.resolveCaller(kgId, user);
+    const caller = await this.service.resolveCallerByUserIdOrThrow(
+      kgId,
+      user.sub,
+    );
     const result = await this.service.listForStaffInbox(kgId, caller, {
       status: q.status,
       type: q.type,
@@ -128,7 +121,10 @@ export class StaffParentRequestController {
     @Param('id', new ParseUUIDPipe()) id: string,
   ): Promise<ParentRequestResponseDto> {
     const kgId = requireTenant(t);
-    const caller = await this.resolveCaller(kgId, user);
+    const caller = await this.service.resolveCallerByUserIdOrThrow(
+      kgId,
+      user.sub,
+    );
     const pr = await this.service.getByIdForStaff(kgId, caller, id);
     return ParentRequestPresenter.request(pr);
   }
@@ -158,7 +154,10 @@ export class StaffParentRequestController {
     @Body() dto: ReviewRequestDto,
   ): Promise<ParentRequestResponseDto> {
     const kgId = requireTenant(t);
-    const caller = await this.resolveCaller(kgId, user);
+    const caller = await this.service.resolveCallerByUserIdOrThrow(
+      kgId,
+      user.sub,
+    );
     const pr = await this.service.acceptRequest(
       kgId,
       caller,
@@ -187,7 +186,10 @@ export class StaffParentRequestController {
     @Body() dto: ReviewRequestDto,
   ): Promise<ParentRequestResponseDto> {
     const kgId = requireTenant(t);
-    const caller = await this.resolveCaller(kgId, user);
+    const caller = await this.service.resolveCallerByUserIdOrThrow(
+      kgId,
+      user.sub,
+    );
     const pr = await this.service.rejectRequest(
       kgId,
       caller,
@@ -214,7 +216,10 @@ export class StaffParentRequestController {
     @Body() dto: AddMessageDto,
   ): Promise<ParentRequestMessageResponseDto> {
     const kgId = requireTenant(t);
-    const caller = await this.resolveCaller(kgId, user);
+    const caller = await this.service.resolveCallerByUserIdOrThrow(
+      kgId,
+      user.sub,
+    );
     const m = await this.service.addStaffMessage(kgId, caller, id, {
       body: dto.body,
       attachments: dto.attachments ?? null,
@@ -237,7 +242,10 @@ export class StaffParentRequestController {
     @Query() q: ListMessagesQueryDto,
   ): Promise<ParentRequestMessageListResponseDto> {
     const kgId = requireTenant(t);
-    const caller = await this.resolveCaller(kgId, user);
+    const caller = await this.service.resolveCallerByUserIdOrThrow(
+      kgId,
+      user.sub,
+    );
     const result = await this.service.listMessagesForStaff(
       kgId,
       caller,
@@ -246,29 +254,5 @@ export class StaffParentRequestController {
       q.cursor ?? null,
     );
     return ParentRequestPresenter.messageList(result.items, result.nextCursor);
-  }
-
-  // ── helpers ───────────────────────────────────────────────────────────
-
-  /**
-   * Resolves the caller's `staff_member` row in this kg and packages a
-   * `CallerStaffContext` for the service. Returns 404 when the caller has
-   * no staff record (shouldn't happen if RolesGuard let them in — defensive
-   * symmetry with B11 staff endpoints).
-   */
-  private async resolveCaller(
-    kgId: string,
-    user: JwtPayload,
-  ): Promise<CallerStaffContext> {
-    const staff: StaffMember | null =
-      await this.staffRepo.findActiveByUserAndKindergarten(user.sub, kgId);
-    if (!staff) {
-      throw new NotFoundException(STAFF_NOT_FOUND);
-    }
-    return {
-      staffMemberId: staff.id,
-      userId: staff.userId,
-      role: staff.role as StaffRole,
-    };
   }
 }

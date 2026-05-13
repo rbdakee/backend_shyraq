@@ -1,3 +1,4 @@
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import { TariffPlan, TariffPlanState } from './tariff-plan.entity';
 
 const NOW = new Date('2026-05-07T10:00:00Z');
@@ -8,9 +9,9 @@ function makePlan(overrides: Partial<TariffPlanState> = {}): TariffPlanState {
     id: 'tp-uuid-0001',
     kindergartenId: 'kg-uuid-0001',
     name: 'Full Day',
-    description: { ru: 'Полный день', kz: 'Толық күн' },
+    description: { ru: 'Полный день', kk: 'Толық күн' },
     tariffType: 'monthly',
-    amount: 100_000,
+    amount: MoneyKzt.fromKzt(100_000),
     currency: 'KZT',
     appliesTo: 'all_children',
     groupId: null,

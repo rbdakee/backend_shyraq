@@ -1,4 +1,5 @@
-import { DataSource } from 'typeorm';
+import type { EntityManager } from '@/shared-kernel/application/ports/transaction-runner.port';
+import { TransactionRunnerPort } from '@/shared-kernel/application/ports/transaction-runner.port';
 import {
   AttendanceCheckInEvent,
   AttendanceCheckOutEvent,
@@ -107,9 +108,11 @@ class FakeStoryRepo extends GroupStoryRepository {
   listActiveByGroupIds(): Promise<GroupStory[]> {
     return Promise.resolve(Array.from(this.stories.values()));
   }
+  /** Set to true to simulate a race-window delete (UPDATE → 0 rows). */
+  incrementViewsReturns = true;
   incrementViews(_kg: string, _id: string): Promise<boolean> {
     this.incrementCalls += 1;
-    return Promise.resolve(true);
+    return Promise.resolve(this.incrementViewsReturns);
   }
   listExpired(): Promise<GroupStory[]> {
     return Promise.resolve([]);
@@ -386,10 +389,15 @@ class FakeNotificationPort extends NotificationPort {
   }
 }
 
-const fakeDataSource = {
-  transaction: async <T>(cb: (em: unknown) => Promise<T>): Promise<T> =>
-    cb({ query: () => Promise.resolve(undefined) }),
-} as unknown as DataSource;
+class FakeTransactionRunner extends TransactionRunnerPort {
+  run<T>(cb: (em: EntityManager) => Promise<T>): Promise<T> {
+    return cb({
+      query: () => Promise.resolve(undefined),
+    } as unknown as EntityManager);
+  }
+}
+
+const fakeTxRunner: TransactionRunnerPort = new FakeTransactionRunner();
 
 function buildService() {
   const storyRepo = new FakeStoryRepo();
@@ -405,7 +413,7 @@ function buildService() {
     groupRepo,
     fileStorage,
     notification,
-    fakeDataSource,
+    fakeTxRunner,
     clock,
     childRepo,
     guardianRepo,
@@ -584,6 +592,23 @@ describe('StoryService.incrementViews', () => {
     });
     await service.incrementViews(KG, created.id);
     expect(storyRepo.incrementCalls).toBe(1);
+  });
+
+  it('throws GroupStoryNotFoundError when repo returns false (race-window delete)', async () => {
+    // B22b T9 — boolean return value fix: if the atomic UPDATE hits 0 rows
+    // (story was deleted between the findById check and the UPDATE), the
+    // service must throw GroupStoryNotFoundError rather than silently succeed.
+    const { service, storyRepo } = buildService();
+    const created = await service.create(KG, GROUP, AUTHOR, {
+      buffer: Buffer.from('img'),
+      mimetype: 'image/jpeg',
+      originalname: 'photo.jpg',
+    });
+    // Simulate the race: the story exists in findById but the UPDATE matches 0 rows.
+    storyRepo.incrementViewsReturns = false;
+    await expect(service.incrementViews(KG, created.id)).rejects.toBeInstanceOf(
+      GroupStoryNotFoundError,
+    );
   });
 });
 

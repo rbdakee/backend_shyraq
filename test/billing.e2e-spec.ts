@@ -1462,16 +1462,142 @@ describe('B13 Billing & Invoices (e2e)', () => {
     });
   });
 
-  // ── S. Refund reject — no endpoint wired in T7a ────────────────────────────
+  // ── S. Refund reject — endpoint wired in B22b T6 ──────────────────────────
 
   describe('Scenario S: Refund reject endpoint', () => {
-    it.skip('rejects a refund (Scenario S — no reject endpoint wired in T7a)', () => {
-      // DEFERRED: AdminRefundController (T7a) intentionally does not expose
-      // a /reject endpoint. The controller comment states: "Reject is
-      // intentionally not exposed yet — admins can simply leave a refund in
-      // `pending` and create a new one." A reject endpoint will be added in
-      // a future batch when the parent UI grows a "decline refund" affordance.
-      // RefundService.reject() exists in T5b; wire-up is a future story.
+    it('rejects a pending refund and leaves the underlying payment completed', async () => {
+      const a = await createKgWithAdmin('bi-s', '+77020100185');
+      const parentId = await seedUser('+77020100186');
+      const childId = await createChild(a.adminToken, {
+        full_name: 'Child S',
+        date_of_birth: '2021-11-02',
+      });
+      await seedApprovedGuardian(a.kgId, childId, parentId);
+
+      const parentToken = await mintToken({
+        sub: parentId,
+        role: 'parent',
+        kindergartenId: a.kgId,
+      });
+
+      const { id: invoiceId } = await createOneOffInvoice(
+        a.adminToken,
+        childId,
+        20000,
+      );
+
+      // Pay it (mock sync → completed)
+      const payRes = await request(server)
+        .post(`/api/v1/parent/invoices/${invoiceId}/pay`)
+        .set('Authorization', `Bearer ${parentToken}`)
+        .send({
+          payment_mode: 'full',
+          provider: 'mock',
+          idempotency_key: randomUUID(),
+          return_url: 'https://app.shyraq.kz/payment/return',
+        })
+        .expect(201);
+      const paymentId = payRes.body.payment_id as string;
+
+      // Create refund (pending)
+      const createRes = await request(server)
+        .post('/api/v1/admin/refunds')
+        .set('Authorization', `Bearer ${a.adminToken}`)
+        .send({
+          payment_id: paymentId,
+          amount: 20000,
+          reason: 'Initial duplicate request',
+        })
+        .expect(201);
+      const refundId = createRes.body.id as string;
+      expect(createRes.body.status).toBe('pending');
+
+      // Reject
+      const rejectRes = await request(server)
+        .post(`/api/v1/admin/refunds/${refundId}/reject`)
+        .set('Authorization', `Bearer ${a.adminToken}`)
+        .send({ reason: 'Возврат отклонён — недостаточно оснований' })
+        .expect(200);
+      expect(rejectRes.body.status).toBe('rejected');
+      expect(rejectRes.body.reason).toBe(
+        'Возврат отклонён — недостаточно оснований',
+      );
+
+      // Second reject must 409 (not pending anymore)
+      await request(server)
+        .post(`/api/v1/admin/refunds/${refundId}/reject`)
+        .set('Authorization', `Bearer ${a.adminToken}`)
+        .send({ reason: 'attempt 2' })
+        .expect(409);
+
+      // Underlying payment is untouched (still completed)
+      const payRows = (await ctx.dataSource.transaction(async (m) => {
+        await m.query(`SET LOCAL app.bypass_rls = 'true'`);
+        return m.query(`SELECT status FROM payments WHERE id = $1`, [
+          paymentId,
+        ]);
+      })) as Array<{ status: string }>;
+      expect(payRows[0]?.status).toBe('completed');
+
+      // Invoice stays paid (refund did not flip it)
+      const invRes = await request(server)
+        .get(`/api/v1/admin/invoices/${invoiceId}`)
+        .set('Authorization', `Bearer ${a.adminToken}`)
+        .expect(200);
+      expect(invRes.body.status).toBe('paid');
+    });
+  });
+
+  // ── S2. TariffPlan overlap → 409 ──────────────────────────────────────────
+
+  describe('Scenario S2: TariffPlan overlap returns 409', () => {
+    it('returns 409 tariff_plan_overlap when a second active plan with overlapping window is created for the same (kg, applies_to, tariff_type)', async () => {
+      const a = await createKgWithAdmin('bi-s2', '+77020100195');
+
+      // First plan — valid_from today, open-ended
+      await request(server)
+        .post('/api/v1/admin/tariff-plans')
+        .set('Authorization', `Bearer ${a.adminToken}`)
+        .send({
+          name: 'Existing monthly plan',
+          tariff_type: 'monthly',
+          amount: 45000,
+          applies_to: 'all_children',
+          valid_from: isoToday(),
+          discount_rules: {},
+        })
+        .expect(201);
+
+      // Second plan with overlapping window → 409
+      const conflictRes = await request(server)
+        .post('/api/v1/admin/tariff-plans')
+        .set('Authorization', `Bearer ${a.adminToken}`)
+        .send({
+          name: 'Conflicting monthly plan',
+          tariff_type: 'monthly',
+          amount: 60000,
+          applies_to: 'all_children',
+          valid_from: isoFuture(15),
+          valid_until: isoFuture(60),
+          discount_rules: {},
+        })
+        .expect(409);
+      expect(conflictRes.body.error).toBe('tariff_plan_overlap');
+
+      // Same window but different tariff_type — no collision
+      await request(server)
+        .post('/api/v1/admin/tariff-plans')
+        .set('Authorization', `Bearer ${a.adminToken}`)
+        .send({
+          name: 'Late pickup',
+          tariff_type: 'late_pickup_fee',
+          amount: 2000,
+          applies_to: 'all_children',
+          valid_from: isoFuture(15),
+          valid_until: isoFuture(60),
+          discount_rules: {},
+        })
+        .expect(201);
     });
   });
 

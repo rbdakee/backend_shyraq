@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { NotificationPort } from '@/common/notifications/notification.port';
 import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
 import { ChildNotFoundError } from '@/modules/child/domain/errors/child-not-found.error';
+import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
+import { StaffMember } from '@/modules/staff/domain/entities/staff-member.entity';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import {
   ListProgressNotesFilter,
@@ -31,7 +33,33 @@ export class ProgressNoteService {
     private readonly children: ChildRepository,
     private readonly notification: NotificationPort,
     private readonly clock: ClockPort,
+    // Optional so older spec wiring keeps compiling. Used by
+    // `findStaffMemberByUserIdOrThrow` — fails closed when missing.
+    private readonly staffMembers?: StaffMemberRepository,
   ) {}
+
+  /**
+   * Resolve a user → their active staff_members row in this kindergarten.
+   * Pulled out of the staff progress-note controller (CLAUDE.md §4 —
+   * controllers stay thin HTTP-edge). Throws
+   * `NotFoundException('staff_member_not_found')` on missing.
+   */
+  async findStaffMemberByUserIdOrThrow(
+    kgId: string,
+    userId: string,
+  ): Promise<StaffMember> {
+    if (!this.staffMembers) {
+      throw new NotFoundException('staff_member_not_found');
+    }
+    const staffMember = await this.staffMembers.findActiveByUserAndKindergarten(
+      userId,
+      kgId,
+    );
+    if (!staffMember) {
+      throw new NotFoundException('staff_member_not_found');
+    }
+    return staffMember;
+  }
 
   /**
    * Create a new progress note. The entity invariant rejects empty body

@@ -1,4 +1,4 @@
-import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
+import { ChildService } from '@/modules/child/child.service';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { MyTodosService, sixMonthsAgoAlmaty } from './my-todos.service';
 import {
@@ -27,7 +27,13 @@ class FakeClock extends ClockPort {
   }
 }
 
-class FakeChildRepo {
+/**
+ * Stand-in for `ChildService` that exposes only the surface
+ * `MyTodosService` consumes. Migrated from `FakeChildRepo` in B22b T4 to
+ * close the diagnostics → child module-boundary leak (cross-module reads
+ * now flow through ChildService, not ChildRepository).
+ */
+class FakeChildService {
   active: Array<{ id: string; fullName: string }> = [];
 
   listActiveLightByKg(
@@ -63,15 +69,15 @@ class FakeEntryRepo extends DiagnosticEntryRepository {
 }
 
 describe('MyTodosService', () => {
-  let children: FakeChildRepo;
+  let children: FakeChildService;
   let entries: FakeEntryRepo;
   let service: MyTodosService;
 
   beforeEach(() => {
-    children = new FakeChildRepo();
+    children = new FakeChildService();
     entries = new FakeEntryRepo();
     service = new MyTodosService(
-      children as unknown as ChildRepository,
+      children as unknown as ChildService,
       entries,
       new FakeClock(NOW),
     );
@@ -222,6 +228,14 @@ describe('MyTodosService', () => {
       true,
     );
     expect(result.childrenNeedingDiagnostic).toHaveLength(1);
+  });
+
+  it('B22b T4 — calls ChildService.listActiveLightByKg (not ChildRepository directly)', async () => {
+    const spy = jest.spyOn(children, 'listActiveLightByKg');
+    children.active = [{ id: CHILD_NEW, fullName: 'Some Child' }];
+    await service.getMyTodos(KG, 'psychologist', undefined, false);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledWith(KG);
   });
 });
 

@@ -4,7 +4,8 @@
  * the moment a port signature changes.
  */
 import { ConfigService } from '@nestjs/config';
-import { DataSource, EntityManager } from 'typeorm';
+import type { EntityManager } from '@/shared-kernel/application/ports/transaction-runner.port';
+import { TransactionRunnerPort } from '@/shared-kernel/application/ports/transaction-runner.port';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { User } from '@/modules/users/domain/entities/user.entity';
 import {
@@ -553,19 +554,23 @@ class FakeNotificationPort extends NotificationPort {
 }
 
 /**
- * Minimal stub of TypeORM DataSource. AuthService.autoApprovePendingPrimaries
- * uses `dataSource.transaction(cb)` to scope each pending-primary update
- * inside its own tenant TX. The in-memory test only needs the lambda to run
- * with a fake manager whose `query()` is a no-op.
+ * Minimal fake of `TransactionRunnerPort`. `AuthService.autoApprovePendingPrimaries`
+ * + `selectRole` invoke `tx.run(cb)` to scope each pending-primary update
+ * (and refresh-token create) inside its own tenant TX. The in-memory test
+ * only needs the lambda to run with a fake manager whose `query()` is a
+ * no-op.
  */
 const fakeManager = {
   query: (_sql: string): Promise<unknown> => Promise.resolve(undefined),
 } as unknown as EntityManager;
 
-const fakeDataSource = {
-  transaction: <T>(cb: (m: EntityManager) => Promise<T>): Promise<T> =>
-    cb(fakeManager),
-} as unknown as DataSource;
+class FakeTransactionRunner extends TransactionRunnerPort {
+  run<T>(cb: (m: EntityManager) => Promise<T>): Promise<T> {
+    return cb(fakeManager);
+  }
+}
+
+const fakeTxRunner: TransactionRunnerPort = new FakeTransactionRunner();
 
 interface AuthDeps {
   service: AuthService;
@@ -626,7 +631,7 @@ function build(): AuthDeps {
     config as unknown as ConfigService,
     staffRepo,
     guardianRepo,
-    fakeDataSource,
+    fakeTxRunner,
     notifications,
   );
   service.onModuleInit();
@@ -724,7 +729,7 @@ describe('AuthService', () => {
         config as unknown as ConfigService,
         staffRepo,
         guardianRepo,
-        fakeDataSource,
+        fakeTxRunner,
         notifications,
       );
       const saved = process.env.NODE_ENV;

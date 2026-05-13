@@ -1,7 +1,12 @@
 import { promises as fs } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { Injectable } from '@nestjs/common';
-import { FileUploadError } from '@/modules/content/domain/errors/file-upload.error';
+import {
+  FileUploadError,
+  FileStorageMalformedKeyError,
+  FileStorageNotFoundError,
+  FileStorageTransientError,
+} from '@/modules/content/domain/errors/file-upload.error';
 import {
   FileStoragePort,
   FileStorageUploadInput,
@@ -73,11 +78,21 @@ export class LocalFileStorageAdapter extends FileStoragePort {
       await fs.mkdir(dirname(fullPath), { recursive: true });
       await fs.writeFile(fullPath, input.buffer);
     } catch (err) {
-      const code =
+      const errnoCode =
         err instanceof Error && (err as NodeJS.ErrnoException).code
           ? (err as NodeJS.ErrnoException).code
           : 'unknown';
-      throw new FileUploadError('upload_failed', `local_${code}`);
+      // ENOSPC / EIO / EROFS — transient or capacity errors; caller may retry.
+      // Everything else falls through to the legacy FileUploadError for
+      // backwards-compat with callers that catch FileUploadError directly.
+      if (
+        errnoCode === 'ENOSPC' ||
+        errnoCode === 'EIO' ||
+        errnoCode === 'EROFS'
+      ) {
+        throw new FileStorageTransientError(`local_${errnoCode}`);
+      }
+      throw new FileUploadError('upload_failed', `local_${errnoCode}`);
     }
     return {
       url: `${this.urlPrefix}/${input.key}`,
@@ -89,7 +104,20 @@ export class LocalFileStorageAdapter extends FileStoragePort {
   async download(key: string): Promise<Buffer> {
     this.assertSafeKey(key);
     const fullPath = join(this.uploadsDir, key);
-    return fs.readFile(fullPath);
+    try {
+      return await fs.readFile(fullPath);
+    } catch (err) {
+      const errnoCode = (err as NodeJS.ErrnoException).code;
+      if (errnoCode === 'ENOENT') throw new FileStorageNotFoundError(key);
+      if (
+        errnoCode === 'ENOSPC' ||
+        errnoCode === 'EIO' ||
+        errnoCode === 'EROFS'
+      ) {
+        throw new FileStorageTransientError(`local_${errnoCode}`);
+      }
+      throw err;
+    }
   }
 
   async delete(key: string): Promise<void> {
@@ -131,13 +159,16 @@ export class LocalFileStorageAdapter extends FileStoragePort {
    */
   private assertSafeKey(key: string): void {
     if (key.length === 0) {
+      // Legacy: keep throwing FileUploadError('media_url_required') so
+      // callers that catch FileUploadError for empty-key validation still work.
       throw new FileUploadError('media_url_required');
     }
     let decoded: string;
     try {
       decoded = decodeURIComponent(key);
     } catch {
-      throw new FileUploadError('upload_failed', 'malformed_key');
+      // Malformed percent-escape — structurally invalid key; never retry.
+      throw new FileStorageMalformedKeyError('malformed_percent_encoding');
     }
     // Reject absolute paths AND any `..` segments — evaluated against the
     // decoded key so percent-encoded traversal sequences (e.g. `%2E%2E`,
@@ -152,7 +183,7 @@ export class LocalFileStorageAdapter extends FileStoragePort {
       decoded.includes('\\') ||
       decoded.includes('\0')
     ) {
-      throw new FileUploadError('upload_failed', 'invalid_key');
+      throw new FileStorageMalformedKeyError('path_traversal_attempt');
     }
   }
 }

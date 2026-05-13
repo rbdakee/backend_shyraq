@@ -40,6 +40,7 @@ import { DataSource, EntityManager } from 'typeorm';
 import { InMemoryNotificationAdapter } from '@/common/notifications/in-memory-notification.adapter';
 import { tenantStorage } from '@/database/tenant-storage';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { TypeOrmTransactionRunnerAdapter } from '@/shared-kernel/infrastructure/adapters/typeorm-transaction-runner.adapter';
 import { MockFiscalReceiptAdapter } from './infrastructure/fiscal-receipt/mock-fiscal-receipt.adapter';
 import { InvoiceRelationalRepository } from './infrastructure/persistence/relational/repositories/invoice.relational.repository';
 import { InvoiceLineItemRelationalRepository } from './infrastructure/persistence/relational/repositories/invoice-line-item.relational.repository';
@@ -188,7 +189,7 @@ describeIntegration('PaymentService — race-integration', () => {
       fiscal,
       notifier,
       clock,
-      dataSource,
+      new TypeOrmTransactionRunnerAdapter(dataSource),
     );
     return { paymentService, invoiceService, paymentAccountService };
   }

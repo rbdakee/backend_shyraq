@@ -656,28 +656,30 @@ const TEMPLATES: Record<string, EventTemplate> = {
   // i18n title/body in the catalogue, the template uses those verbatim;
   // otherwise it falls back to a generic copy keyed by discountName.
   //
-  // T8 L3: align with the B16 DTO + DBML SoT — admins write Kazakh under
-  // the `kz` key (not `kk`). Read both with `kz` preferred so admins
-  // who hand-fixed legacy `kk` rows aren't broken. Other event templates
-  // still use `kk` and will be swept in B22 polish.
+  // B22b T1 — i18n key sweep: Kazakh is now keyed under BCP-47 `kk` (was
+  // the country-code `kz` until B22a). Legacy DB rows that still hold a
+  // `kz` key are migrated forward by `B22I18nKzToKk`; for one release the
+  // read-side fallbacks below still tolerate `kz` last so any unmigrated
+  // row from an external integration stays readable. Drop the `kz`
+  // fallback branches in B23.
   'discount.activated': ({ payload }) => {
     const tInline = payload.notificationTitle as Record<string, string> | null;
     const bInline = payload.notificationBody as Record<string, string> | null;
     const nameMap = (payload.discountName ?? {}) as Record<string, string>;
     const fallbackName =
       asNonEmptyString(nameMap.ru) ??
-      asNonEmptyString(nameMap.kz) ??
       asNonEmptyString(nameMap.kk) ??
+      asNonEmptyString(nameMap.kz) ?? // kz: legacy, drop in B23
       asNonEmptyString(nameMap.en) ??
       'скидка';
     const titleI18n = tInline ?? {
       ru: 'Новая скидка доступна',
-      kz: 'Жаңа жеңілдік қолжетімді',
+      kk: 'Жаңа жеңілдік қолжетімді',
       en: 'New discount available',
     };
     const bodyI18n = bInline ?? {
       ru: `Скидка «${fallbackName}» теперь доступна для вашего ребёнка.`,
-      kz: `«${fallbackName}» жеңілдігі сіздің балаңызға қолжетімді.`,
+      kk: `«${fallbackName}» жеңілдігі сіздің балаңызға қолжетімді.`,
       en: `Discount "${fallbackName}" is now available for your child.`,
     };
     return {
@@ -750,13 +752,11 @@ const TEMPLATES: Record<string, EventTemplate> = {
     return {
       titleI18n: {
         ru: 'С днём рождения!',
-        kz: 'Туған күніңмен!',
         kk: 'Туған күніңмен!',
         en: 'Happy birthday!',
       },
       bodyI18n: {
         ru: `Поздравляем ${childName} с ${age}-летием!`,
-        kz: `${childName} ${age} жасыңмен құттықтаймыз!`,
         kk: `${childName} ${age} жасыңмен құттықтаймыз!`,
         en: `Wishing ${childName} a happy ${age}th birthday!`,
       },
@@ -772,23 +772,21 @@ const TEMPLATES: Record<string, EventTemplate> = {
     const titleMap = (payload.titleI18n ?? {}) as Record<string, string>;
     const titleFallback =
       asNonEmptyString(titleMap.ru) ??
-      asNonEmptyString(titleMap.kz) ??
       asNonEmptyString(titleMap.kk) ??
+      asNonEmptyString(titleMap.kz) ?? // kz: legacy, drop in B23
       asNonEmptyString(titleMap.en) ??
       'Новая публикация';
     return {
       titleI18n: {
         ru: asNonEmptyString(titleMap.ru) ?? 'Новая публикация',
-        kz: asNonEmptyString(titleMap.kz) ?? titleFallback,
         kk:
           asNonEmptyString(titleMap.kk) ??
-          asNonEmptyString(titleMap.kz) ??
+          asNonEmptyString(titleMap.kz) ?? // kz: legacy, drop in B23
           titleFallback,
         en: asNonEmptyString(titleMap.en) ?? 'New post',
       },
       bodyI18n: {
         ru: 'Открыть, чтобы прочитать новость.',
-        kz: 'Жаңалықты оқу үшін ашыңыз.',
         kk: 'Жаңалықты оқу үшін ашыңыз.',
         en: 'Open to read the news.',
       },
@@ -805,23 +803,21 @@ const TEMPLATES: Record<string, EventTemplate> = {
     const titleMap = (payload.titleI18n ?? {}) as Record<string, string>;
     const titleFallback =
       asNonEmptyString(titleMap.ru) ??
-      asNonEmptyString(titleMap.kz) ??
       asNonEmptyString(titleMap.kk) ??
+      asNonEmptyString(titleMap.kz) ?? // kz: legacy, drop in B23
       asNonEmptyString(titleMap.en) ??
       'Новый Qundylyq';
     return {
       titleI18n: {
         ru: asNonEmptyString(titleMap.ru) ?? 'Новый Qundylyq',
-        kz: asNonEmptyString(titleMap.kz) ?? titleFallback,
         kk:
           asNonEmptyString(titleMap.kk) ??
-          asNonEmptyString(titleMap.kz) ??
+          asNonEmptyString(titleMap.kz) ?? // kz: legacy, drop in B23
           titleFallback,
         en: asNonEmptyString(titleMap.en) ?? 'New Qundylyq',
       },
       bodyI18n: {
         ru: 'Месячная ценность от сада.',
-        kz: 'Айлық құндылық — балабақшадан.',
         kk: 'Айлық құндылық — балабақшадан.',
         en: 'Monthly value from the kindergarten.',
       },
@@ -834,13 +830,11 @@ const TEMPLATES: Record<string, EventTemplate> = {
   'content.story_new': ({ payload }) => ({
     titleI18n: {
       ru: 'Новая история',
-      kz: 'Жаңа сториз',
       kk: 'Жаңа сториз',
       en: 'New story',
     },
     bodyI18n: {
       ru: 'В группе появилась новая история — посмотрите!',
-      kz: 'Топта жаңа сториз пайда болды — қараңыз!',
       kk: 'Топта жаңа сториз пайда болды — қараңыз!',
       en: 'A new story is available in the group.',
     },
@@ -1371,11 +1365,14 @@ function formatAmount(v: unknown): string {
  *      `classifyPushError` — permanent-token errors delete the token,
  *      transient errors abort the event so the worker re-tries).
  *
- * On `failed`, `dispatch()` THROWS `SavepointRollback` rather than
- * returning. The worker's per-event savepoint then rolls back, undoing the
- * history-row inserts — the next retry will not duplicate them. This keeps
- * the at-least-once outbox contract while staying exactly-once for history
- * rows.
+ * On `failed`, `dispatch()` RETURNS `{ status: 'failed', reason }` — it does
+ * NOT throw. The worker (`outbox-poller.processor`) catches that return and
+ * itself throws `SavepointRollback(result.reason)` so the per-event savepoint
+ * rolls back, undoing the history-row inserts — the next retry will not
+ * duplicate them. This keeps the at-least-once outbox contract while staying
+ * exactly-once for history rows. Keeping the throw in the worker (not here)
+ * lets future consumers call `dispatch()` synchronously without inheriting the
+ * savepoint-rollback control-flow concern.
  *
  * Recipient-resolution rules see `RECIPIENT_RESOLVERS` above; nanny policy
  * see `NANNY_ALLOWED_EVENT_KEYS` and `applyNannyPolicy`.
@@ -1481,7 +1478,12 @@ export class NotificationDispatcher {
         }
       }
 
-      // 6) Push fan-out — per-token classification.
+      // 6) Push fan-out — per-token classification with per-user locale.
+      //    Resolve each push-user's preferred locale so the push title/body
+      //    is delivered in the user's own language (kk/ru/en). Best-effort:
+      //    a locale lookup failure falls back to 'ru'. This is the read-side
+      //    of B22b T13 per-user locale; the write-side (PATCH /users/me/locale
+      //    endpoint) is a separate feature not changed here.
       const transientFailures = await this.fanoutPush(
         event.eventKey,
         pushUsers.map((u) => u.userId),
@@ -1495,8 +1497,13 @@ export class NotificationDispatcher {
     } catch (err) {
       // Unhandled exception (DB write, lookup, programmer bug). Surface as
       // `failed` so the worker's savepoint rolls back and the row retries.
+      // No code path inside `dispatch()` currently throws `SavepointRollback`
+      // — only the worker re-wraps a `failed` return into one (see class
+      // JSDoc above). If a future change inside `dispatch()` ever throws
+      // `SavepointRollback` directly, treat it as a deliberate rollback and
+      // promote back to the original signal rather than swallowing as a
+      // generic failure.
       if (err instanceof SavepointRollback) {
-        // Already a deliberate rollback — re-throw to the worker.
         throw err;
       }
       const reason = err instanceof Error ? err.message : String(err);
@@ -1511,6 +1518,14 @@ export class NotificationDispatcher {
    * Per-token push fan-out. Returns the number of transient (retriable)
    * failures; permanent-token errors delete the token and are treated as
    * success for the dispatch's purposes.
+   *
+   * Per-user locale (B22b T13): title and body are localised to the
+   * recipient's preferred locale (`users.locale`). Supported locales: `kk`,
+   * `ru`, `en`. Falls back to `ru` when the user's locale is not present in
+   * the rendered template or the user record cannot be found. The locale is
+   * resolved lazily per-user via `userRepo.findById` — results are cached
+   * for the lifetime of this fan-out call to avoid N lookups for users with
+   * multiple push tokens.
    */
   private async fanoutPush(
     eventKey: string,
@@ -1532,15 +1547,36 @@ export class NotificationDispatcher {
       tokensByUser.set(t.userId, arr);
     }
 
-    const pushTitle =
-      rendered.titleI18n.ru ?? Object.values(rendered.titleI18n)[0] ?? '';
-    const pushBody =
-      rendered.bodyI18n.ru ?? Object.values(rendered.bodyI18n)[0] ?? '';
+    // Locale cache: userId → locale string. Populated lazily per user.
+    const localeCache = new Map<string, string>();
+    const resolveLocale = async (userId: string): Promise<string> => {
+      if (localeCache.has(userId)) return localeCache.get(userId)!;
+      try {
+        const user = await this.userRepo.findById(userId);
+        const locale = user?.locale ?? 'ru';
+        localeCache.set(userId, locale);
+        return locale;
+      } catch {
+        localeCache.set(userId, 'ru');
+        return 'ru';
+      }
+    };
+
+    const pickText = (
+      i18nMap: Record<string, string>,
+      locale: string,
+    ): string =>
+      i18nMap[locale] ?? i18nMap.ru ?? Object.values(i18nMap)[0] ?? '';
 
     let transientFailures = 0;
     for (const userId of userIds) {
       const userTokens = tokensByUser.get(userId);
       if (!userTokens || userTokens.length === 0) continue;
+
+      const locale = await resolveLocale(userId);
+      const pushTitle = pickText(rendered.titleI18n, locale);
+      const pushBody = pickText(rendered.bodyI18n, locale);
+
       for (const t of userTokens) {
         try {
           await this.pushPort.send(

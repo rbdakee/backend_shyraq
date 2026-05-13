@@ -1,4 +1,4 @@
-import { roundKzt } from '@/shared-kernel/domain/money';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 
 export interface InvoiceLineItemState {
   id: string;
@@ -7,8 +7,8 @@ export interface InvoiceLineItemState {
   description: string;
   tariffPlanId: string | null;
   quantity: number;
-  unitPrice: number;
-  lineTotal: number;
+  unitPrice: MoneyKzt;
+  lineTotal: MoneyKzt;
   createdAt: Date;
 }
 
@@ -23,17 +23,19 @@ export class InvoiceLineItem {
     if (!(state.quantity > 0)) {
       throw new Error('InvoiceLineItem: quantity must be > 0');
     }
-    if (state.unitPrice < 0) {
+    if (state.unitPrice.isNegative()) {
       throw new Error('InvoiceLineItem: unitPrice must be >= 0');
     }
-    if (state.lineTotal < 0) {
+    if (state.lineTotal.isNegative()) {
       throw new Error('InvoiceLineItem: lineTotal must be >= 0');
     }
-    const expected = state.quantity * state.unitPrice;
+    const expected = state.unitPrice.mul(state.quantity);
     // numeric(12,2) round-trip noise — tolerate sub-cent drift
-    if (Math.abs(state.lineTotal - expected) > 0.01) {
+    const drift = state.lineTotal.sub(expected);
+    const driftAbs = drift.isNegative() ? MoneyKzt.zero().sub(drift) : drift;
+    if (driftAbs.gt(MoneyKzt.fromKzt(0.01))) {
       throw new Error(
-        `InvoiceLineItem: lineTotal (${state.lineTotal}) does not match quantity*unitPrice (${expected})`,
+        `InvoiceLineItem: lineTotal (${state.lineTotal.toString()}) does not match quantity*unitPrice (${expected.toString()})`,
       );
     }
   }
@@ -72,11 +74,11 @@ export class InvoiceLineItem {
     return this.state.quantity;
   }
 
-  get unitPrice(): number {
+  get unitPrice(): MoneyKzt {
     return this.state.unitPrice;
   }
 
-  get lineTotal(): number {
+  get lineTotal(): MoneyKzt {
     return this.state.lineTotal;
   }
 
@@ -86,7 +88,7 @@ export class InvoiceLineItem {
 
   // ── pure helper ────────────────────────────────────────────────────────
 
-  static compute(quantity: number, unitPrice: number): number {
-    return roundKzt(quantity * unitPrice);
+  static compute(quantity: number, unitPrice: MoneyKzt): MoneyKzt {
+    return unitPrice.mul(quantity);
   }
 }

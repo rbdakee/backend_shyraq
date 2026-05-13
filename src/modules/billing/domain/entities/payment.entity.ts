@@ -1,3 +1,4 @@
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import { PaymentStatusInvalidError } from '../errors/payment-status-invalid.error';
 
 export type PaymentProvider =
@@ -21,7 +22,7 @@ export interface PaymentState {
   invoiceId: string;
   childId: string;
   payerUserId: string | null;
-  amount: number;
+  amount: MoneyKzt;
   provider: PaymentProvider;
   providerTxnId: string | null;
   idempotencyKey: string;
@@ -89,7 +90,7 @@ export class Payment {
     return this.state.payerUserId;
   }
 
-  get amount(): number {
+  get amount(): MoneyKzt {
     return this.state.amount;
   }
 

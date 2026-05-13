@@ -4,6 +4,8 @@ import {
   Entity,
   PrimaryGeneratedColumn,
 } from 'typeorm';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
+import { moneyKztTransformer } from '@/shared-kernel/infrastructure/typeorm/money-kzt.transformer';
 import { numericTransformer } from '../numeric.transformer';
 
 @Entity({ name: 'invoice_line_items' })
@@ -23,6 +25,7 @@ export class InvoiceLineItemTypeOrmEntity {
   @Column({ name: 'tariff_plan_id', type: 'uuid', nullable: true })
   tariffPlanId!: string | null;
 
+  // `quantity` is a count (not money) — keep numeric transformer.
   @Column({
     name: 'quantity',
     type: 'numeric',
@@ -38,18 +41,18 @@ export class InvoiceLineItemTypeOrmEntity {
     type: 'numeric',
     precision: 12,
     scale: 2,
-    transformer: numericTransformer,
+    transformer: moneyKztTransformer,
   })
-  unitPrice!: number;
+  unitPrice!: MoneyKzt;
 
   @Column({
     name: 'line_total',
     type: 'numeric',
     precision: 12,
     scale: 2,
-    transformer: numericTransformer,
+    transformer: moneyKztTransformer,
   })
-  lineTotal!: number;
+  lineTotal!: MoneyKzt;
 
   @CreateDateColumn({
     name: 'created_at',

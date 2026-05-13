@@ -5,6 +5,8 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
+import { moneyKztTransformer } from '@/shared-kernel/infrastructure/typeorm/money-kzt.transformer';
 import { numericTransformer } from '../numeric.transformer';
 
 export const PAYMENT_TYPE_VALUES = [
@@ -67,9 +69,9 @@ export class InvoiceTypeOrmEntity {
     type: 'numeric',
     precision: 12,
     scale: 2,
-    transformer: numericTransformer,
+    transformer: moneyKztTransformer,
   })
-  amountDue!: number;
+  amountDue!: MoneyKzt;
 
   @Column({
     name: 'discount_pct',
@@ -89,9 +91,9 @@ export class InvoiceTypeOrmEntity {
     type: 'numeric',
     precision: 12,
     scale: 2,
-    transformer: numericTransformer,
+    transformer: moneyKztTransformer,
   })
-  amountAfterDiscount!: number;
+  amountAfterDiscount!: MoneyKzt;
 
   @Column({
     name: 'status',

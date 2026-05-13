@@ -1,4 +1,5 @@
-import { DataSource } from 'typeorm';
+import type { EntityManager } from '@/shared-kernel/application/ports/transaction-runner.port';
+import { TransactionRunnerPort } from '@/shared-kernel/application/ports/transaction-runner.port';
 import {
   AttendanceCheckInEvent,
   AttendanceCheckOutEvent,
@@ -118,6 +119,11 @@ class FakeContentRepo extends ContentRepository {
   ): Promise<void> {
     this.lockCalls.push({ kg, childId, date });
     return Promise.resolve();
+  }
+  listNewsForChild(): Promise<
+    import('./domain/entities/content-post.entity').ContentPost[]
+  > {
+    return Promise.resolve([]);
   }
 }
 
@@ -268,29 +274,32 @@ class FakeNotificationPort extends NotificationPort {
 }
 
 /**
- * B22a T5 — fake DataSource whose `transaction` callback receives an EM
- * with a NESTED `transaction(...)` so the per-child SAVEPOINT pattern
- * (B17 MEDIUM#6) is exercisable. The nested `transaction` simulates
- * SAVEPOINT semantics: it runs the inner callback inline; if the inner
- * callback throws, the throw propagates (mirroring `ROLLBACK TO
- * SAVEPOINT`) but the outer manager remains usable so the kg-batch loop
- * can move to the next child.
+ * B22a T5 / B22b T4 — fake `TransactionRunnerPort` whose `run` callback
+ * receives an EM with a NESTED `transaction(...)` so the per-child
+ * SAVEPOINT pattern (B17 MEDIUM#6) is exercisable. The nested
+ * `transaction` simulates SAVEPOINT semantics: it runs the inner
+ * callback inline; if the inner callback throws, the throw propagates
+ * (mirroring `ROLLBACK TO SAVEPOINT`) but the outer manager remains
+ * usable so the kg-batch loop can move to the next child.
  */
-function buildFakeManager(): unknown {
+function buildFakeManager(): EntityManager {
   const m: { query: () => Promise<unknown>; transaction: unknown } = {
     query: () => Promise.resolve(undefined),
     transaction: undefined,
   };
   m.transaction = async <T>(
-    cb: (savepoint: unknown) => Promise<T>,
+    cb: (savepoint: EntityManager) => Promise<T>,
   ): Promise<T> => cb(buildFakeManager());
-  return m;
+  return m as unknown as EntityManager;
 }
 
-const fakeDataSource = {
-  transaction: async <T>(cb: (em: unknown) => Promise<T>): Promise<T> =>
-    cb(buildFakeManager()),
-} as unknown as DataSource;
+class FakeTransactionRunner extends TransactionRunnerPort {
+  run<T>(cb: (em: EntityManager) => Promise<T>): Promise<T> {
+    return cb(buildFakeManager());
+  }
+}
+
+const fakeTxRunner: TransactionRunnerPort = new FakeTransactionRunner();
 
 function buildService() {
   const contentRepo = new FakeContentRepo();
@@ -300,7 +309,7 @@ function buildService() {
     contentRepo,
     childRepo,
     notification,
-    fakeDataSource,
+    fakeTxRunner,
     new FakeClock(),
   );
   return { service, contentRepo, childRepo, notification };

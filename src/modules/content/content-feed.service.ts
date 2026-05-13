@@ -48,6 +48,34 @@ export class ContentFeedService {
     @Inject(ClockPort) private readonly clock: ClockPort,
   ) {}
 
+  /**
+   * Parent-side per-child stories list. Looks up the child to discover its
+   * `current_group_id`, then returns the active stories for that group. If
+   * the child is unfound (`ChildAccessGuard` should already have caught
+   * this in the HTTP path) or has no group assignment, returns `[]`.
+   *
+   * Pulled out of `ParentContentController` so the controller layer no
+   * longer touches `ChildRepository` / `GroupStoryRepository` directly
+   * (CLAUDE.md §4 — controllers stay thin HTTP-edge).
+   */
+  async listActiveStoriesForChild(
+    kindergartenId: string,
+    childId: string,
+  ): Promise<GroupStory[]> {
+    const child = await this.childRepo.findById(kindergartenId, childId);
+    if (!child) {
+      // ChildAccessGuard should have caught this already, but guard defensively.
+      return [];
+    }
+    const childState = child.toState();
+    const groupId = childState.currentGroupId;
+    if (!groupId) {
+      return [];
+    }
+    const now = this.clock.now();
+    return this.storyRepo.listActiveByGroup(kindergartenId, groupId, now);
+  }
+
   async getParentChildFeed(
     kindergartenId: string,
     childId: string,
@@ -60,50 +88,34 @@ export class ContentFeedService {
     const now = this.clock.now();
     const limit = options.limit ?? DEFAULT_FEED_LIMIT;
 
-    // News: target_type='all' OR target_group_id=group OR target_child_id=child.
-    // The repo's filter shape doesn't model OR-of-targets, so we fan out
-    // three queries in parallel and merge/dedupe by id.
-    const [newsAll, newsGroup, newsChild, qundylyq, birthdays, stories] =
-      await Promise.all([
-        this.contentRepo.list(kindergartenId, {
-          contentType: 'news',
-          status: 'published',
-          targetType: 'all',
-          limit,
-        }),
-        groupId
-          ? this.contentRepo.list(kindergartenId, {
-              contentType: 'news',
-              status: 'published',
-              targetType: 'group',
-              targetGroupId: groupId,
-              limit,
-            })
-          : Promise.resolve<ContentPost[]>([]),
-        this.contentRepo.list(kindergartenId, {
-          contentType: 'news',
-          status: 'published',
-          targetType: 'child',
-          targetChildId: childId,
-          limit,
-        }),
-        this.contentRepo.list(kindergartenId, {
-          contentType: 'qundylyq',
-          status: 'published',
-          limit,
-        }),
-        this.contentRepo.list(kindergartenId, {
-          contentType: 'birthday',
-          status: 'published',
-          targetChildId: childId,
-          limit,
-        }),
-        groupId
-          ? this.storyRepo.listActiveByGroup(kindergartenId, groupId, now)
-          : Promise.resolve<GroupStory[]>([]),
-      ]);
-
-    const news = mergeUniqueSorted([newsAll, newsGroup, newsChild], limit);
+    // B22b T9 UNION ALL optimisation: news targeting uses a single
+    // SQL query with an OR predicate that covers all three buckets
+    // (target_type='all' | 'group' | 'child') in one round-trip.
+    // Previously this required 3 parallel list() calls + in-memory
+    // merge/dedupe; now one listNewsForChild() call returns a sorted,
+    // deduplicated slice directly from Postgres.
+    const [news, qundylyq, birthdays, stories] = await Promise.all([
+      this.contentRepo.listNewsForChild(
+        kindergartenId,
+        childId,
+        groupId,
+        limit,
+      ),
+      this.contentRepo.list(kindergartenId, {
+        contentType: 'qundylyq',
+        status: 'published',
+        limit,
+      }),
+      this.contentRepo.list(kindergartenId, {
+        contentType: 'birthday',
+        status: 'published',
+        targetChildId: childId,
+        limit,
+      }),
+      groupId
+        ? this.storyRepo.listActiveByGroup(kindergartenId, groupId, now)
+        : Promise.resolve<GroupStory[]>([]),
+    ]);
 
     // TODO(B22): wire menuToday / scheduleToday to meal-plans +
     // daily_schedule modules once those land.
@@ -116,30 +128,4 @@ export class ContentFeedService {
       scheduleToday: null,
     };
   }
-}
-
-/**
- * Merge multiple `ContentPost[]` lists, dedupe by `id`, sort by
- * `publishedAt DESC` then `createdAt DESC`, and slice to `limit`.
- */
-function mergeUniqueSorted(
-  buckets: ContentPost[][],
-  limit: number,
-): ContentPost[] {
-  const seen = new Set<string>();
-  const out: ContentPost[] = [];
-  for (const b of buckets) {
-    for (const p of b) {
-      if (seen.has(p.id)) continue;
-      seen.add(p.id);
-      out.push(p);
-    }
-  }
-  out.sort((a, b) => {
-    const aP = a.publishedAt?.getTime() ?? a.createdAt.getTime();
-    const bP = b.publishedAt?.getTime() ?? b.createdAt.getTime();
-    if (aP !== bP) return bP - aP;
-    return b.createdAt.getTime() - a.createdAt.getTime();
-  });
-  return out.slice(0, limit);
 }

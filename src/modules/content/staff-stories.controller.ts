@@ -29,18 +29,15 @@ import {
   ApiTags,
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
-import { ForbiddenActionError } from '@/shared-kernel/domain/errors';
 import { FileUploadError } from './domain/errors/file-upload.error';
 import { MediaTypeInvalidError } from './domain/errors/media-type-invalid.error';
 import { Roles } from '@/common/decorators/roles.decorator';
 import { RolesGuard } from '@/common/guards/roles.guard';
 import { CurrentUser } from '@/common/decorators/current-user.decorator';
 import type { JwtPayload } from '@/common/types/jwt-payload';
-import { GroupRepository } from '@/modules/group/infrastructure/persistence/group.repository';
 import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-context';
 import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
 import { ContentPresenter } from './content.presenter';
-import { GroupStoryRepository } from './group-story.repository';
 import { StoryService } from './story.service';
 import { CreateStoryDto } from './dto/staff/create-story.dto';
 import { ListStoriesQueryDto } from './dto/staff/list-stories-query.dto';
@@ -96,11 +93,7 @@ function assertStoryFileWithinPerMimeCap(file: Express.Multer.File): void {
 @UseGuards(RolesGuard)
 @Roles('mentor', 'admin')
 export class StaffStoriesController {
-  constructor(
-    private readonly storyService: StoryService,
-    private readonly storyRepo: GroupStoryRepository,
-    private readonly groupRepo: GroupRepository,
-  ) {}
+  constructor(private readonly storyService: StoryService) {}
 
   // ── CREATE ──────────────────────────────────────────────────────────────
 
@@ -168,58 +161,10 @@ export class StaffStoriesController {
     @Query() query: ListStoriesQueryDto,
   ): Promise<StoryListResponseDto> {
     const kgId = requireTenant(t);
-    const role = user.role as string;
-
-    // Single-group filter shortcut. Admin bypass; mentor must be actively
-    // assigned to the requested group (B17 T8 HIGH#4).
-    if (query.group_id) {
-      if (role === 'mentor') {
-        const isAssigned = await this.groupRepo.isUserActiveMentorForGroup(
-          kgId,
-          user.sub,
-          query.group_id,
-        );
-        if (!isAssigned) {
-          throw new ForbiddenActionError(
-            'mentor_not_assigned_to_group',
-            'Mentor is not assigned to this group',
-          );
-        }
-      }
-      const stories = await this.storyService.listActiveByGroup(
-        kgId,
-        query.group_id,
-      );
-      return ContentPresenter.storyList(stories);
-    }
-
-    if (role === 'admin') {
-      // Admin: list all groups, then fetch active stories
-      const groups = await this.groupRepo.list(kgId);
-      const groupIds = groups.map((g) => g.id);
-      if (groupIds.length === 0) return ContentPresenter.storyList([]);
-      // Use cross-tenant helper to find active assignments is not needed here —
-      // we already have the kg scope. Fetch all active stories across groups.
-      const stories = await this.storyRepo.listActiveByGroupIds(
-        kgId,
-        groupIds,
-        new Date(),
-      );
-      return ContentPresenter.storyList(stories);
-    }
-
-    // Mentor: find groups assigned to this user in this kg
-    const assignments =
-      await this.groupRepo.findActiveMentorAssignmentsByUserIdCrossTenant(
-        user.sub,
-        kgId,
-      );
-    if (assignments.length === 0) return ContentPresenter.storyList([]);
-    const groupIds = assignments.map((a) => a.groupId);
-    const stories = await this.storyRepo.listActiveByGroupIds(
+    const stories = await this.storyService.listActiveForStaff(
       kgId,
-      groupIds,
-      new Date(),
+      { userId: user.sub, role: user.role as string },
+      query.group_id,
     );
     return ContentPresenter.storyList(stories);
   }
@@ -284,12 +229,10 @@ export class StaffStoriesController {
     @Param('id', new ParseUUIDPipe()) id: string,
   ): Promise<{ views: number }> {
     const kgId = requireTenant(t);
-    await this.storyService.incrementViews(kgId, id, {
+    const views = await this.storyService.incrementViewsAndGetCount(kgId, id, {
       userId: user.sub,
       role: user.role as string,
     });
-    // Re-fetch to return the updated views count.
-    const story = await this.storyRepo.findById(kgId, id);
-    return { views: story?.views ?? 0 };
+    return { views };
   }
 }

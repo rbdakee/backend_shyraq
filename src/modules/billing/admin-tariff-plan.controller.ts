@@ -15,6 +15,7 @@ import {
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
+  ApiConflictResponse,
   ApiCreatedResponse,
   ApiForbiddenResponse,
   ApiNotFoundResponse,
@@ -85,6 +86,10 @@ export class AdminTariffPlanController {
   @ApiBadRequestResponse({ description: 'Validation error.' })
   @ApiUnauthorizedResponse({ description: 'Bearer missing/invalid/revoked.' })
   @ApiForbiddenResponse({ description: 'Caller is not admin.' })
+  @ApiConflictResponse({
+    description:
+      'tariff_plan_overlap — an active plan with overlapping valid_from..valid_until exists for the same (kg, applies_to, group_id, tariff_type) tuple.',
+  })
   async create(
     @Tenant() t: TenantContext,
     @Body() dto: CreateTariffPlanDto,
@@ -129,6 +134,10 @@ export class AdminTariffPlanController {
   @ApiUnauthorizedResponse({ description: 'Bearer missing/invalid/revoked.' })
   @ApiForbiddenResponse({ description: 'Caller is not admin.' })
   @ApiNotFoundResponse({ description: 'Tariff plan not found.' })
+  @ApiConflictResponse({
+    description:
+      'tariff_plan_overlap — patching valid_from / valid_until would overlap with another active plan in the same scope.',
+  })
   async update(
     @Tenant() t: TenantContext,
     @Param('id', new ParseUUIDPipe()) id: string,

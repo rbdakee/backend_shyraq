@@ -4,6 +4,7 @@ import {
   Get,
   HttpCode,
   HttpStatus,
+  Inject,
   Param,
   ParseUUIDPipe,
   Post,
@@ -24,6 +25,7 @@ import { JwtAuthGuard } from '@/common/guards/jwt-auth.guard';
 import { KindergartenScopeGuard } from '@/common/guards/kindergarten-scope.guard';
 import { PendingRoleSelectGuard } from '@/common/guards/pending-role-select.guard';
 import type { JwtPayload } from '@/common/types/jwt-payload';
+import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-context';
 import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
 import { NotificationService } from './notification.service';
@@ -66,7 +68,10 @@ function toDto(row: NotificationRow): NotificationResponseDto {
 @Controller({ path: 'notifications', version: '1' })
 @UseGuards(JwtAuthGuard, PendingRoleSelectGuard, KindergartenScopeGuard)
 export class NotificationController {
-  constructor(private readonly service: NotificationService) {}
+  constructor(
+    private readonly service: NotificationService,
+    @Inject(ClockPort) private readonly clock: ClockPort,
+  ) {}
 
   @Get()
   @HttpCode(HttpStatus.OK)
@@ -138,7 +143,7 @@ export class NotificationController {
     const row = await this.service.markRead(kgId, id, user.sub);
     return {
       id: row.id,
-      read_at: (row.readAt ?? new Date()).toISOString(),
+      read_at: (row.readAt ?? this.clock.now()).toISOString(),
     };
   }
 }

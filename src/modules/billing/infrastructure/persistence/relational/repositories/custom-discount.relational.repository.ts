@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Repository } from 'typeorm';
 import { tenantStorage } from '@/database/tenant-storage';
 import { randomUUID } from 'node:crypto';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import {
   CreateCustomDiscountInput,
   CustomDiscountPageRequest,
@@ -135,7 +136,9 @@ export class CustomDiscountRelationalRepository extends CustomDiscountRepository
       setPayload.description = patch.description;
     if (patch.discountType !== undefined)
       setPayload.discountType = patch.discountType;
-    if (patch.amount !== undefined) setPayload.amount = patch.amount;
+    if (patch.amount !== undefined) {
+      setPayload.amount = MoneyKzt.fromKzt(patch.amount);
+    }
     if (patch.conditions !== undefined)
       setPayload.conditions = patch.conditions as unknown as Record<
         string,

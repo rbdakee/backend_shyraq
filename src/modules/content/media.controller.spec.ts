@@ -1,6 +1,7 @@
 import { ForbiddenException, NotFoundException } from '@nestjs/common';
 import type { Response } from 'express';
 import { FileStoragePort } from '@/shared-kernel/storage/file-storage.port';
+import { FileStorageNotFoundError } from './domain/errors/file-upload.error';
 import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-context';
 import { MediaController } from './media.controller';
 
@@ -153,6 +154,23 @@ describe('MediaController (FINDINGS.md SP5)', () => {
 
   it('maps storage ENOENT to 404', async () => {
     const { ctrl } = setup();
+    await expect(
+      ctrl.stream(
+        tenantOf(KG_A),
+        KG_A,
+        VALID_YYYY_MM,
+        VALID_FILENAME,
+        makeRes(),
+      ),
+    ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('maps FileStorageNotFoundError (B22b T9 discriminated error) to 404', async () => {
+    const storage = new FakeStorage();
+    // Override download to throw the new discriminated error.
+    storage.download = (_key: string) =>
+      Promise.reject(new FileStorageNotFoundError(_key));
+    const ctrl = new MediaController(storage);
     await expect(
       ctrl.stream(
         tenantOf(KG_A),

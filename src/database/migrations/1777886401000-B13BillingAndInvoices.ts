@@ -42,70 +42,90 @@ export class B13BillingAndInvoices1777886401000 implements MigrationInterface {
 
   public async up(queryRunner: QueryRunner): Promise<void> {
     // ── 1. ENUMs ──────────────────────────────────────────────────────────────
+    // Wrapped in DO blocks for idempotency — PG does not support
+    // CREATE TYPE IF NOT EXISTS, so we silently swallow duplicate_object.
 
     await queryRunner.query(`
-      CREATE TYPE "tariff_type" AS ENUM (
-        'monthly',
-        'additional_service',
-        'late_pickup_fee',
-        'prepayment_3m',
-        'prepayment_6m',
-        'prepayment_12m',
-        'prepayment_24m',
-        'other'
-      )
+      DO $$ BEGIN
+        CREATE TYPE "tariff_type" AS ENUM (
+          'monthly',
+          'additional_service',
+          'late_pickup_fee',
+          'prepayment_3m',
+          'prepayment_6m',
+          'prepayment_12m',
+          'prepayment_24m',
+          'other'
+        );
+      EXCEPTION WHEN duplicate_object THEN NULL;
+      END $$
     `);
 
     await queryRunner.query(`
-      CREATE TYPE "tariff_applies_to" AS ENUM (
-        'all_children',
-        'group',
-        'age_range',
-        'individual'
-      )
+      DO $$ BEGIN
+        CREATE TYPE "tariff_applies_to" AS ENUM (
+          'all_children',
+          'group',
+          'age_range',
+          'individual'
+        );
+      EXCEPTION WHEN duplicate_object THEN NULL;
+      END $$
     `);
 
     await queryRunner.query(`
-      CREATE TYPE "payment_type" AS ENUM (
-        'monthly',
-        'prepayment_3m',
-        'prepayment_6m',
-        'prepayment_12m',
-        'prepayment_24m',
-        'additional_service',
-        'late_pickup_fee',
-        'other'
-      )
+      DO $$ BEGIN
+        CREATE TYPE "payment_type" AS ENUM (
+          'monthly',
+          'prepayment_3m',
+          'prepayment_6m',
+          'prepayment_12m',
+          'prepayment_24m',
+          'additional_service',
+          'late_pickup_fee',
+          'other'
+        );
+      EXCEPTION WHEN duplicate_object THEN NULL;
+      END $$
     `);
 
     await queryRunner.query(`
-      CREATE TYPE "payment_status" AS ENUM (
-        'pending',
-        'partial',
-        'paid',
-        'overdue',
-        'refunded',
-        'cancelled'
-      )
+      DO $$ BEGIN
+        CREATE TYPE "payment_status" AS ENUM (
+          'pending',
+          'partial',
+          'paid',
+          'overdue',
+          'refunded',
+          'cancelled'
+        );
+      EXCEPTION WHEN duplicate_object THEN NULL;
+      END $$
     `);
 
     await queryRunner.query(`
-      CREATE TYPE "payment_status_v2" AS ENUM (
-        'initiated',
-        'processing',
-        'completed',
-        'failed',
-        'refunded'
-      )
+      DO $$ BEGIN
+        CREATE TYPE "payment_status_v2" AS ENUM (
+          'initiated',
+          'processing',
+          'completed',
+          'failed',
+          'refunded'
+        );
+      EXCEPTION WHEN duplicate_object THEN NULL;
+      END $$
     `);
 
     await queryRunner.query(`
-      CREATE TYPE "refund_status" AS ENUM (
-        'pending',
-        'approved',
-        'processed',
-        'rejected'
-      )
+      DO $$ BEGIN
+        CREATE TYPE "refund_status" AS ENUM (
+          'pending',
+          'approved',
+          'processed',
+          'rejected'
+        );
+      EXCEPTION WHEN duplicate_object THEN NULL;
+      END $$
     `);
 
     // ── 2. tariff_plans ───────────────────────────────────────────────────────

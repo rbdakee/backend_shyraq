@@ -1,11 +1,10 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { InjectDataSource } from '@nestjs/typeorm';
-import { DataSource } from 'typeorm';
 import { tenantStorage } from '@/database/tenant-storage';
 import { KindergartenRepository } from '@/modules/kindergarten/infrastructure/persistence/kindergarten.repository';
 import { MealService } from '@/modules/meal/meal.service';
 import { ScheduleService } from '@/modules/schedule/schedule.service';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { TransactionRunnerPort } from '@/shared-kernel/application/ports/transaction-runner.port';
 
 /**
  * Per-kindergarten line item in the rollout summary. Carries both the
@@ -100,8 +99,8 @@ export class WeeklyRolloutService {
     private readonly mealService: MealService,
     private readonly kindergartens: KindergartenRepository,
     @Inject(ClockPort) private readonly clock: ClockPort,
-    @InjectDataSource()
-    private readonly dataSource: DataSource,
+    @Inject(TransactionRunnerPort)
+    private readonly tx: TransactionRunnerPort,
   ) {}
 
   async runWeeklyRollout(
@@ -112,7 +111,7 @@ export class WeeklyRolloutService {
 
     // Step 1: directory scan under bypass_rls so the cron sees every active
     // kg even though the runtime app role is NOBYPASSRLS.
-    const active = await this.dataSource.transaction(async (manager) => {
+    const active = await this.tx.run(async (manager) => {
       await manager.query(`SET LOCAL app.bypass_rls = 'true'`);
       return tenantStorage.run(
         { kgId: null, bypass: true, entityManager: manager },
@@ -162,7 +161,7 @@ export class WeeklyRolloutService {
       };
 
       try {
-        await this.dataSource.transaction(async (manager) => {
+        await this.tx.run(async (manager) => {
           // H3 (FINDINGS): parameterized `set_config(...)` instead of
           // `SET LOCAL app.kindergarten_id = '<kgId>'` — kgId is a UUID that
           // we already validate upstream, so the previous interpolation is

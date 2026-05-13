@@ -1,10 +1,11 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { ForbiddenException, Inject, Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { DataSource } from 'typeorm';
 import { NotificationPort } from '@/common/notifications/notification.port';
 import { tenantStorage } from '@/database/tenant-storage';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
-import { roundKzt } from '@/shared-kernel/domain/money';
+import { TransactionRunnerPort } from '@/shared-kernel/application/ports/transaction-runner.port';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
+import { ChildGuardianRepository } from '@/modules/child/infrastructure/persistence/child-guardian.repository';
 import {
   Payment,
   PaymentProvider,
@@ -111,8 +112,58 @@ export class PaymentService {
     private readonly fiscalReceiptPort: FiscalReceiptPort,
     private readonly notificationPort: NotificationPort,
     @Inject(ClockPort) private readonly clock: ClockPort,
-    private readonly dataSource: DataSource,
+    @Inject(TransactionRunnerPort)
+    private readonly tx: TransactionRunnerPort,
+    // Optional so legacy spec wiring (which builds PaymentService without
+    // the parent-side dependency) keeps working. `assertCanPay` fails
+    // closed when missing.
+    private readonly childGuardians?: ChildGuardianRepository,
   ) {}
+
+  /**
+   * Parent-side guardian re-check used by `ParentPaymentController` before
+   * initiating a payment / prepayment. The path prefix is
+   * `/parent/invoices/:id/...` so `ChildAccessGuard` (which keys on
+   * `:childId`) can't run, hence the explicit re-check at the service
+   * boundary.
+   *
+   * Throws:
+   *   - `ForbiddenException('not_a_guardian')` — no approved-active link
+   *     to the child (covers cross-tenant attack: kg_A guardian trying to
+   *     pay kg_B invoice).
+   *   - `ForbiddenException('nanny_cannot_pay')` — link is a nanny;
+   *     BP §4.13 forbids nanny payments end-to-end.
+   *   - `ForbiddenException('secondary_pay_not_allowed')` — primary has
+   *     revoked `pay_invoices` on this secondary's row.
+   */
+  async assertCanPay(
+    kindergartenId: string,
+    userId: string,
+    childId: string,
+  ): Promise<void> {
+    if (!this.childGuardians) {
+      throw new ForbiddenException('not_a_guardian');
+    }
+    const guardian = await this.childGuardians.findApprovedActiveByUserAndChild(
+      kindergartenId,
+      childId,
+      userId,
+    );
+    if (!guardian) {
+      throw new ForbiddenException('not_a_guardian');
+    }
+    if (guardian.role.value === 'nanny') {
+      throw new ForbiddenException('nanny_cannot_pay');
+    }
+    // Defaults table (BP §4.13 / GuardianPermissions VO): primary + secondary
+    // both default to `pay_invoices=true`, nanny → false. The VO's
+    // `effective(role)` overlays per-row overrides on the role defaults so
+    // primary may revoke a secondary by flipping `pay_invoices=false`.
+    const effective = guardian.permissions.effective(guardian.role);
+    if (effective.pay_invoices !== true) {
+      throw new ForbiddenException('secondary_pay_not_allowed');
+    }
+  }
 
   // ── public API ─────────────────────────────────────────────────────────
 
@@ -153,21 +204,21 @@ export class PaymentService {
       throw new InvoiceStatusInvalidError(invoice.status, 'initiate_payment');
     }
 
-    const paidSum = await this.invoiceRepo.getPaidSumForInvoice(
-      kindergartenId,
-      invoice.id,
+    const paidSum = MoneyKzt.fromKzt(
+      await this.invoiceRepo.getPaidSumForInvoice(kindergartenId, invoice.id),
     );
-    const remaining = roundKzt(invoice.amountAfterDiscount - paidSum);
+    const remaining = invoice.amountAfterDiscount.sub(paidSum);
+    const inputAmount = MoneyKzt.fromKzt(input.amount);
 
     if (input.paymentMode === 'full') {
-      if (roundKzt(input.amount) !== remaining) {
+      if (!inputAmount.equals(remaining)) {
         throw new InvoiceStatusInvalidError(
           invoice.status,
           'amount_mismatch_full',
         );
       }
     } else {
-      if (input.amount <= 0 || roundKzt(input.amount) > remaining) {
+      if (!inputAmount.isPositive() || inputAmount.gt(remaining)) {
         throw new InvoiceStatusInvalidError(
           invoice.status,
           'amount_mismatch_partial',
@@ -187,7 +238,7 @@ export class PaymentService {
       invoiceId: invoice.id,
       childId: invoice.childId,
       payerUserId: input.payerUserId ?? null,
-      amount: roundKzt(input.amount),
+      amount: inputAmount,
       provider: input.provider,
       providerTxnId: null,
       idempotencyKey: input.idempotencyKey,
@@ -228,7 +279,7 @@ export class PaymentService {
     try {
       providerResult = await this.paymentProvider.createPayment({
         invoiceId: invoice.id,
-        amountKzt: payment.amount,
+        amountKzt: payment.amount.toNumber(),
         currency: 'KZT',
         returnUrl: input.returnUrl,
         payerUserId: input.payerUserId ?? undefined,
@@ -331,7 +382,7 @@ export class PaymentService {
     //    webhook controller does not (and cannot) carry kg context, so
     //    we set it up here using the kg id we just resolved.
     const kgId = found.kindergartenId;
-    await this.dataSource.transaction(async (em) => {
+    await this.tx.run(async (em) => {
       await em.query(`SELECT set_config('app.kindergarten_id', $1, true)`, [
         kgId,
       ]);
@@ -456,11 +507,13 @@ export class PaymentService {
       kindergartenId,
       current.invoiceId,
     );
-    const paidSum = await this.invoiceRepo.getPaidSumForInvoice(
-      kindergartenId,
-      current.invoiceId,
+    const paidSum = MoneyKzt.fromKzt(
+      await this.invoiceRepo.getPaidSumForInvoice(
+        kindergartenId,
+        current.invoiceId,
+      ),
     );
-    if (paidSum >= invoice.amountAfterDiscount) {
+    if (paidSum.gte(invoice.amountAfterDiscount)) {
       const flipped = await this.invoiceRepo.markPaidConditional(
         kindergartenId,
         current.invoiceId,
@@ -472,7 +525,7 @@ export class PaymentService {
         );
       }
     } else if (
-      paidSum > 0 &&
+      paidSum.isPositive() &&
       (invoice.status === 'pending' || invoice.status === 'overdue')
     ) {
       // B22a T1 H14: also flip an `overdue` invoice → `partial` when a
@@ -512,7 +565,7 @@ export class PaymentService {
         paymentId: updated.id,
         invoiceId: invoice.id,
         kindergartenId,
-        amountKzt: updated.amount,
+        amountKzt: updated.amount.toNumber(),
         paidAt,
         // Mock adapter ignores payer fields; B15 will wire real lookups.
         payerName: undefined,
@@ -538,18 +591,18 @@ export class PaymentService {
       paymentId: updated.id,
       childId: invoice.childId,
       invoiceId: invoice.id,
-      amount: updated.amount,
+      amount: updated.amount.toNumber(),
       provider: updated.provider,
       paidAt: updated.paidAt ?? now,
     });
-    if (paidSum >= invoice.amountAfterDiscount) {
+    if (paidSum.gte(invoice.amountAfterDiscount)) {
       // Invoice transitioned to `paid` (full settlement). Partial payments
       // skip the invoice.paid event — the invoice is in `partial`, not paid.
       await this.notificationPort.notifyInvoicePaid({
         kindergartenId,
         invoiceId: invoice.id,
         childId: invoice.childId,
-        amountAfterDiscount: invoice.amountAfterDiscount,
+        amountAfterDiscount: invoice.amountAfterDiscount.toNumber(),
         paidAt: updated.paidAt ?? now,
       });
     }
@@ -611,7 +664,7 @@ export class PaymentService {
       paymentId: updated.id,
       childId: updated.childId,
       invoiceId: updated.invoiceId,
-      amount: updated.amount,
+      amount: updated.amount.toNumber(),
       provider: updated.provider,
       failureReason: verified.failureReason ?? 'webhook_failed',
     });

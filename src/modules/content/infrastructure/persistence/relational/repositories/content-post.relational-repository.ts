@@ -239,6 +239,81 @@ export class ContentPostRelationalRepository extends ContentRepository {
     return rows.map((r) => ContentPostMapper.toDomain(r));
   }
 
+  async listNewsForChild(
+    kindergartenId: string,
+    childId: string,
+    groupId: string | null,
+    limit: number,
+  ): Promise<ContentPost[]> {
+    const m = this.manager();
+    const cap = limit > 0 ? limit : 10;
+
+    // Build a single query with an OR predicate that covers all three
+    // targeting buckets (all / group / child) in one round-trip, replacing
+    // the three separate `list()` calls previously issued in parallel.
+    //
+    // When the child has no current group (groupId = null) we skip the
+    // group-targeting branch.
+    const params: unknown[] = [kindergartenId, childId, cap];
+    let groupBranch = 'false'; // no group → group-targeting branch never matches
+    if (groupId !== null) {
+      params.push(groupId); // $4
+      groupBranch = "(p.target_type = 'group' AND p.target_group_id = $4)";
+    }
+
+    const sql = `
+      SELECT *
+        FROM content_posts p
+       WHERE p.kindergarten_id = $1
+         AND p.content_type = 'news'
+         AND p.status = 'published'
+         AND (
+               p.target_type = 'all'
+            OR ${groupBranch}
+            OR (p.target_type = 'child' AND p.target_child_id = $2)
+             )
+       ORDER BY COALESCE(p.published_at, p.created_at) DESC,
+                p.created_at DESC,
+                p.id DESC
+       LIMIT $3
+    `;
+
+    const rows = (await m.query(sql, params)) as Array<Record<string, unknown>>;
+    return rows.map((raw) => {
+      const e = new ContentPostRelationalEntity();
+      e.id = raw.id as string;
+      e.kindergarten_id = raw.kindergarten_id as string;
+      e.content_type =
+        raw.content_type as ContentPostRelationalEntity['content_type'];
+      e.target_type =
+        raw.target_type as ContentPostRelationalEntity['target_type'];
+      e.target_group_id = (raw.target_group_id as string | null) ?? null;
+      e.target_child_id = (raw.target_child_id as string | null) ?? null;
+      e.title = (raw.title as string | null) ?? null;
+      e.body = (raw.body as string | null) ?? null;
+      e.title_i18n =
+        (raw.title_i18n as ContentPostRelationalEntity['title_i18n']) ?? null;
+      e.body_i18n =
+        (raw.body_i18n as ContentPostRelationalEntity['body_i18n']) ?? null;
+      e.media_urls = (raw.media_urls as string[] | null) ?? null;
+      e.metadata = (raw.metadata as Record<string, unknown> | null) ?? null;
+      e.scheduled_for = raw.scheduled_for
+        ? new Date(raw.scheduled_for as string | Date)
+        : null;
+      e.published_at = raw.published_at
+        ? new Date(raw.published_at as string | Date)
+        : null;
+      e.expires_at = raw.expires_at
+        ? new Date(raw.expires_at as string | Date)
+        : null;
+      e.status = raw.status as ContentPostRelationalEntity['status'];
+      e.created_by = (raw.created_by as string | null) ?? null;
+      e.created_at = new Date(raw.created_at as string | Date);
+      e.updated_at = new Date(raw.updated_at as string | Date);
+      return ContentPostMapper.toDomain(e);
+    });
+  }
+
   async acquireBirthdayAdvisoryLock(
     kindergartenId: string,
     childId: string,

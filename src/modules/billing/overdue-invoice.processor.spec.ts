@@ -19,6 +19,7 @@
 import { DataSource, EntityManager } from 'typeorm';
 import { InMemoryNotificationAdapter } from '@/common/notifications/in-memory-notification.adapter';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import { Invoice } from './domain/entities/invoice.entity';
 import {
   InvoiceRepository,
@@ -121,7 +122,7 @@ class FakeInvoiceRepo extends InvoiceRepository {
       flipped.push({
         id: updated.id,
         childId: updated.childId,
-        amountAfterDiscount: updated.amountAfterDiscount,
+        amountAfterDiscount: updated.amountAfterDiscount.toNumber(),
         dueDate: due,
       });
     }
@@ -149,10 +150,12 @@ function makeInvoice(overrides: {
     invoiceType: 'monthly',
     periodStart: new Date('2026-05-01T00:00:00.000Z'),
     periodEnd: new Date('2026-05-31T00:00:00.000Z'),
-    amountDue: overrides.amountAfterDiscount ?? 100_000,
+    amountDue: MoneyKzt.fromKzt(overrides.amountAfterDiscount ?? 100_000),
     discountPct: null,
     discountReason: null,
-    amountAfterDiscount: overrides.amountAfterDiscount ?? 100_000,
+    amountAfterDiscount: MoneyKzt.fromKzt(
+      overrides.amountAfterDiscount ?? 100_000,
+    ),
     status: overrides.status,
     dueDate: overrides.dueDate,
     description: null,
@@ -299,10 +302,10 @@ describe('OverdueInvoiceProcessor', () => {
           invoiceType: 'monthly',
           periodStart: new Date('2026-05-01T00:00:00.000Z'),
           periodEnd: new Date('2026-05-31T00:00:00.000Z'),
-          amountDue: 100_000,
+          amountDue: MoneyKzt.fromKzt(100_000),
           discountPct: null,
           discountReason: null,
-          amountAfterDiscount: 100_000,
+          amountAfterDiscount: MoneyKzt.fromKzt(100_000),
           status,
           dueDate: new Date('2026-05-10T00:00:00.000Z'),
           description: null,

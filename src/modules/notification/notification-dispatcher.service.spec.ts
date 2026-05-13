@@ -1445,6 +1445,13 @@ describe('NotificationDispatcher', () => {
       // ── B21 Child lifecycle ────────────────────────────────────────────
       'child.archived',
       'child.reactivated',
+      // ── B17 Content (parent-facing news / stories / qundylyq / birthday) ─
+      'content.birthday',
+      'content.news_published',
+      'content.qundylyq_new',
+      'content.story_new',
+      // ── Enrollment (first-invoice skipped notice) ──────────────────────
+      'enrollment.first_invoice_skipped',
     ];
 
     it.each(COVERED_KEYS)(
@@ -1456,8 +1463,9 @@ describe('NotificationDispatcher', () => {
     );
   });
 
-  // ── B16 T8 L3 — `discount.activated` reads `kz` (not legacy `kk`) ──────
-  describe('discount.activated template (T8 L3)', () => {
+  // ── B22b T1 — `discount.activated` reads `kk` first, with `kz` as a
+  // legacy fallback for one release post i18n sweep ─────────────────────
+  describe('discount.activated template (B22b T1)', () => {
     function render(payload: Record<string, unknown>) {
       const template = EVENT_TEMPLATES['discount.activated'];
       // Cast through unknown to satisfy the TemplateContext shape — the
@@ -1467,27 +1475,116 @@ describe('NotificationDispatcher', () => {
       } as never);
     }
 
-    it('falls back to nameMap.kz before legacy nameMap.kk for the Kazakh greeting', () => {
+    it('prefers nameMap.kk over legacy nameMap.kz for the Kazakh greeting', () => {
       const out = render({
         discountId: 'd-1',
         notificationTitle: null,
         notificationBody: null,
-        discountName: { kz: 'Жаңа жеңілдік', kk: 'OLD KK' },
+        discountName: { kk: 'Жаңа жеңілдік', kz: 'OLD KZ' },
       });
-      // The fallback Kazakh body should reference the kz value, not kk.
-      expect(out.bodyI18n.kz).toContain('Жаңа жеңілдік');
-      expect(out.bodyI18n.kz).not.toContain('OLD KK');
+      // The fallback Kazakh body should reference the kk value, not legacy kz.
+      expect(out.bodyI18n.kk).toContain('Жаңа жеңілдік');
+      expect(out.bodyI18n.kk).not.toContain('OLD KZ');
     });
 
-    it('emits the fallback Kazakh title under `kz` (not `kk`)', () => {
+    it('falls back to legacy nameMap.kz when nameMap.kk is missing', () => {
+      const out = render({
+        discountId: 'd-1',
+        notificationTitle: null,
+        notificationBody: null,
+        discountName: { kz: 'Ескі жеңілдік' },
+      });
+      expect(out.bodyI18n.kk).toContain('Ескі жеңілдік');
+    });
+
+    it('emits the fallback Kazakh title under `kk` (not legacy `kz`)', () => {
       const out = render({
         discountId: 'd-1',
         notificationTitle: null,
         notificationBody: null,
         discountName: { ru: 'Скидка' },
       });
-      expect(out.titleI18n.kz).toBe('Жаңа жеңілдік қолжетімді');
-      expect(out.titleI18n.kk).toBeUndefined();
+      expect(out.titleI18n.kk).toBe('Жаңа жеңілдік қолжетімді');
+      expect(out.titleI18n.kz).toBeUndefined();
+    });
+  });
+
+  // ── B22b T13 — per-user locale push localisation ─────────────────────────
+
+  describe('per-user locale', () => {
+    it('sends push title in kk when recipient locale is kk', async () => {
+      const w = wire();
+      w.guardianRepo.setGuardiansForChild(CHILD, [
+        approvedGuardian(USER_A, 'primary'),
+      ]);
+      // USER_A has locale=kk.
+      w.userRepo.set(makeUser(USER_A, 'Айгүл'));
+      // Override the user locale via the fake — create a kk-locale user.
+      const kkUser = User.hydrate({
+        id: USER_A,
+        phone: '+77770000000',
+        fullName: 'Айгүл',
+        avatarUrl: null,
+        iin: null,
+        dateOfBirth: null,
+        locale: 'kk',
+      });
+      w.userRepo.set(kkUser);
+      w.tokenRepo.set(USER_A, [
+        { id: 't1', userId: USER_A, platform: 'ios', token: 'tok-a' },
+      ]);
+
+      const result = await w.dispatcher.dispatch(makeAttendanceEvent());
+
+      expect(result).toEqual({ status: 'dispatched' });
+      expect(w.pushPort.calls).toHaveLength(1);
+      // Should use kk title: 'Бала балабақшаға келді'
+      expect(w.pushPort.calls[0].payload.title).toBe('Бала балабақшаға келді');
+    });
+
+    it('falls back to ru when user locale is not found in template', async () => {
+      const w = wire();
+      w.guardianRepo.setGuardiansForChild(CHILD, [
+        approvedGuardian(USER_A, 'primary'),
+      ]);
+      // USER_A has locale=en which exists in attendance template.
+      const enUser = User.hydrate({
+        id: USER_A,
+        phone: '+77770000000',
+        fullName: 'John',
+        avatarUrl: null,
+        iin: null,
+        dateOfBirth: null,
+        locale: 'en',
+      });
+      w.userRepo.set(enUser);
+      w.tokenRepo.set(USER_A, [
+        { id: 't1', userId: USER_A, platform: 'ios', token: 'tok-a' },
+      ]);
+
+      const result = await w.dispatcher.dispatch(makeAttendanceEvent());
+
+      expect(result).toEqual({ status: 'dispatched' });
+      expect(w.pushPort.calls).toHaveLength(1);
+      // en title is 'Child checked in'
+      expect(w.pushPort.calls[0].payload.title).toBe('Child checked in');
+    });
+
+    it('falls back to ru when userRepo returns null for the userId', async () => {
+      const w = wire();
+      w.guardianRepo.setGuardiansForChild(CHILD, [
+        approvedGuardian(USER_A, 'primary'),
+      ]);
+      // No user set → userRepo.findById returns null → locale falls back to ru.
+      w.tokenRepo.set(USER_A, [
+        { id: 't1', userId: USER_A, platform: 'ios', token: 'tok-a' },
+      ]);
+
+      const result = await w.dispatcher.dispatch(makeAttendanceEvent());
+
+      expect(result).toEqual({ status: 'dispatched' });
+      expect(w.pushPort.calls).toHaveLength(1);
+      expect(w.pushPort.calls[0].payload.title).toBe('Ребёнок прибыл в сад');
     });
   });
 

@@ -3,6 +3,7 @@ import {
   Controller,
   HttpCode,
   HttpStatus,
+  Inject,
   Post,
   UseGuards,
 } from '@nestjs/common';
@@ -18,6 +19,7 @@ import {
 import { Roles } from '@/common/decorators/roles.decorator';
 import { SuperAdminScope } from '@/common/decorators/super-admin-scope.decorator';
 import { RolesGuard } from '@/common/guards/roles.guard';
+import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { BirthdayGenerationProcessor } from './processors/birthday-generation.processor';
 import { ContentPublishProcessor } from './processors/content-publish.processor';
 import { StoryCleanupProcessor } from './processors/story-cleanup.processor';
@@ -50,6 +52,7 @@ export class SaasContentController {
     private readonly birthdayProcessor: BirthdayGenerationProcessor,
     private readonly publishProcessor: ContentPublishProcessor,
     private readonly cleanupProcessor: StoryCleanupProcessor,
+    @Inject(ClockPort) private readonly clock: ClockPort,
   ) {}
 
   @Post('birthday-run')
@@ -69,7 +72,7 @@ export class SaasContentController {
   async birthdayRun(
     @Body() dto: RunTriggerDto,
   ): Promise<RunTriggerResponseDto> {
-    const now = dto.now ? new Date(dto.now) : new Date();
+    const now = dto.now ? new Date(dto.now) : this.clock.now();
     const result = await this.birthdayProcessor.runOnce(now);
     const response = new RunTriggerResponseDto();
     response.triggered_at = result.now;
@@ -95,7 +98,7 @@ export class SaasContentController {
   async storyCleanupRun(
     @Body() dto: RunTriggerDto,
   ): Promise<RunTriggerResponseDto> {
-    const now = dto.now ? new Date(dto.now) : new Date();
+    const now = dto.now ? new Date(dto.now) : this.clock.now();
     const result = await this.cleanupProcessor.runOnce(now);
     const response = new RunTriggerResponseDto();
     response.triggered_at = result.now;
@@ -121,7 +124,7 @@ export class SaasContentController {
   async publishScheduledRun(
     @Body() dto: RunTriggerDto,
   ): Promise<RunTriggerResponseDto> {
-    const now = dto.now ? new Date(dto.now) : new Date();
+    const now = dto.now ? new Date(dto.now) : this.clock.now();
     const result = await this.publishProcessor.runOnce(now);
     const response = new RunTriggerResponseDto();
     response.triggered_at = result.now;

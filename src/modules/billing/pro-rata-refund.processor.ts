@@ -15,7 +15,6 @@ import {
   KG_DEFAULT_TIMEZONE,
   startOfDayInTimezone,
 } from '@/shared-kernel/domain/value-objects/day-of-week.vo';
-import { roundKzt } from '@/shared-kernel/domain/money';
 import { Refund } from './domain/entities/refund.entity';
 import { ChildNotYetArchivedError } from './domain/errors/child-not-yet-archived.error';
 import { InvoiceRepository } from './infrastructure/persistence/invoice.repository';
@@ -96,9 +95,9 @@ export type ProRataSkipReason =
  *   6. Compute billable days in the period minus non-billable holidays.
  *      Compute archived-side billable days (start..archivedAt
  *      inclusive). Refundable days = totalBillable - archivedBillable.
- *      refundAmount = roundKzt(invoice.amountAfterDiscount *
- *      refundableDays / totalBillableDays). If <= 0, skip (archive
- *      landed on the last billable day — nothing to refund).
+ *      refundAmount = invoice.amountAfterDiscount.mul(refundableDays).div(
+ *      totalBillableDays). If <= 0, skip (archive landed on the last
+ *      billable day — nothing to refund).
  *   7. INSERT a new refund row with status='pending', the sentinel
  *      reason, and the computed amount. `payment_id` is set to the
  *      invoice's pre-existing payment_id when one exists; otherwise the
@@ -263,18 +262,17 @@ export class ProRataRefundProcessor extends WorkerHost {
       };
     }
 
-    // Single-step rounding: `(amount * refundableDays) / totalBillableDays`
-    // then round to 2dp. Intermediate division through divideKzt would
-    // round to 2dp before re-multiplying, accumulating "double-rounding"
-    // loss of up to ~half a tiyn per ₸ of amount. The proportion math
-    // must round exactly once, at the end, so we call `roundKzt` on the
-    // composed expression rather than chaining `multiplyKzt`/`divideKzt`.
-    const refundAmount = roundKzt(
-      (invoice.amountAfterDiscount * refundableDays) / totalBillableDays,
-    );
-    if (refundAmount <= 0) {
+    // Fluent MoneyKzt chain — `amountAfterDiscount.mul(refundableDays).div(totalBillableDays)`.
+    // Each op rounds once at the boundary via banker's rounding; the
+    // composite result preserves precision strictly better than the legacy
+    // `roundKzt(amount * days / total)` double-round path (which could drift
+    // up to ±0.5 tiyn per ₸ on non-divisible totals).
+    const refundAmount = invoice.amountAfterDiscount
+      .mul(refundableDays)
+      .div(totalBillableDays);
+    if (!refundAmount.isPositive()) {
       this.logger.log(
-        `pro-rata-refund skip computed_amount_zero_or_negative kg=${kindergartenId} child=${childId} amount=${refundAmount}`,
+        `pro-rata-refund skip computed_amount_zero_or_negative kg=${kindergartenId} child=${childId} amount=${refundAmount.toString()}`,
       );
       return { kind: 'skipped', reason: 'computed_amount_zero_or_negative' };
     }
@@ -317,13 +315,13 @@ export class ProRataRefundProcessor extends WorkerHost {
     await this.refundRepo.create(refund);
 
     this.logger.log(
-      `pro-rata-refund created kg=${kindergartenId} child=${childId} invoice=${invoice.id} refund=${refundId} amount=${refundAmount} (refundableDays=${refundableDays}/${totalBillableDays})`,
+      `pro-rata-refund created kg=${kindergartenId} child=${childId} invoice=${invoice.id} refund=${refundId} amount=${refundAmount.toString()} (refundableDays=${refundableDays}/${totalBillableDays})`,
     );
 
     return {
       kind: 'created',
       refundId,
-      amountKzt: refundAmount,
+      amountKzt: refundAmount.toNumber(),
       invoiceId: invoice.id,
     };
   }

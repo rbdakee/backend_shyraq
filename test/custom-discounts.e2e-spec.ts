@@ -84,7 +84,7 @@ function baseDiscountBody(
   overrides: Record<string, unknown> = {},
 ): Record<string, unknown> {
   return {
-    name: { ru: 'Тест скидка', kz: 'Тест жеңілдік' },
+    name: { ru: 'Тест скидка', kk: 'Тест жеңілдік' },
     discount_type: 'percentage',
     amount: 10,
     conditions: {},
@@ -384,7 +384,7 @@ describe('B16 Custom Discounts (e2e)', () => {
         .patch(`/api/v1/admin/custom-discounts/${id}`)
         .set('Authorization', `Bearer ${a.adminToken}`)
         .send({
-          name: { ru: 'Обновлённая скидка', kz: 'Жаңартылған жеңілдік' },
+          name: { ru: 'Обновлённая скидка', kk: 'Жаңартылған жеңілдік' },
         })
         .expect(200);
       expect(patchRes.body.name.ru).toBe('Обновлённая скидка');
@@ -415,11 +415,11 @@ describe('B16 Custom Discounts (e2e)', () => {
             notify_on_activation: true,
             notification_title: {
               ru: 'Скидка активна!',
-              kz: 'Жеңілдік белсенді!',
+              kk: 'Жеңілдік белсенді!',
             },
             notification_body: {
               ru: '10% скидка для всех',
-              kz: 'Барлығына 10% жеңілдік',
+              kk: 'Барлығына 10% жеңілдік',
             },
           }),
         )
@@ -914,13 +914,13 @@ describe('B16 Custom Discounts (e2e)', () => {
       const k1 = await createKgWithAdmin('disc-k1', '+77030100101');
 
       await createAndActivateDiscount(k1.adminToken, {
-        name: { ru: 'D1', kz: 'D1' },
+        name: { ru: 'D1', kk: 'D1' },
         amount: 10,
         stackable: true,
         priority: 100,
       });
       await createAndActivateDiscount(k1.adminToken, {
-        name: { ru: 'D2', kz: 'D2' },
+        name: { ru: 'D2', kk: 'D2' },
         amount: 5,
         stackable: true,
         priority: 50,
@@ -952,20 +952,20 @@ describe('B16 Custom Discounts (e2e)', () => {
       const k2 = await createKgWithAdmin('disc-k2', '+77030100102');
 
       await createAndActivateDiscount(k2.adminToken, {
-        name: { ru: 'D1-k2', kz: 'D1-k2' },
+        name: { ru: 'D1-k2', kk: 'D1-k2' },
         amount: 10,
         stackable: true,
         priority: 100,
       });
       await createAndActivateDiscount(k2.adminToken, {
-        name: { ru: 'D2-k2', kz: 'D2-k2' },
+        name: { ru: 'D2-k2', kk: 'D2-k2' },
         amount: 5,
         stackable: true,
         priority: 50,
       });
       // D3: non-stackable, highest priority
       await createAndActivateDiscount(k2.adminToken, {
-        name: { ru: 'D3 NonStack', kz: 'D3 NonStack' },
+        name: { ru: 'D3 NonStack', kk: 'D3 NonStack' },
         amount: 20,
         stackable: false,
         priority: 200,
@@ -1232,7 +1232,7 @@ describe('B16 Custom Discounts (e2e)', () => {
           baseDiscountBody({
             notify_on_activation: true,
             // notification_title omitted on purpose
-            notification_body: { ru: 'Body', kz: 'Дене' },
+            notification_body: { ru: 'Body', kk: 'Дене' },
           }),
         );
       // Global ValidationPipe maps DTO errors → 422 (UnprocessableEntity).
@@ -1248,7 +1248,7 @@ describe('B16 Custom Discounts (e2e)', () => {
         .send(
           baseDiscountBody({
             notify_on_activation: true,
-            notification_title: { ru: 'Title', kz: 'Тақырып' },
+            notification_title: { ru: 'Title', kk: 'Тақырып' },
             // notification_body omitted on purpose
           }),
         );
@@ -1278,14 +1278,14 @@ describe('B16 Custom Discounts (e2e)', () => {
 
       // Create one active and one draft discount
       const activatedId = await createAndActivateDiscount(a.adminToken, {
-        name: { ru: 'Active Disc', kz: 'Active Disc' },
+        name: { ru: 'Active Disc', kk: 'Active Disc' },
       });
 
       const createDraftRes = await request(server)
         .post('/api/v1/admin/custom-discounts')
         .set('Authorization', `Bearer ${a.adminToken}`)
         .send(
-          baseDiscountBody({ name: { ru: 'Draft Disc', kz: 'Draft Disc' } }),
+          baseDiscountBody({ name: { ru: 'Draft Disc', kk: 'Draft Disc' } }),
         )
         .expect(201);
       const draftId = createDraftRes.body.id as string;

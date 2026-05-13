@@ -1,5 +1,7 @@
-import { Injectable } from '@nestjs/common';
-import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { ChildService } from '@/modules/child/child.service';
+import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
+import { StaffMember } from '@/modules/staff/domain/entities/staff-member.entity';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { DiagnosticEntryRepository } from './diagnostic-entry.repository';
 import { StaffMemberMustHaveSpecialistTypeError } from './domain/errors/staff-member-must-have-specialist-type.error';
@@ -64,10 +66,40 @@ function diffDaysAlmaty(later: Date, earlier: Date): number {
 @Injectable()
 export class MyTodosService {
   constructor(
-    private readonly children: ChildRepository,
+    // B22b T4: consume `ChildService.listActiveLightByKg` instead of reaching
+    // into `ChildRepository` directly. Cross-module dependencies must flow
+    // through the OWNING module's service surface (CLAUDE.md §4) so the
+    // child catalogue keeps a single read entry point.
+    private readonly children: ChildService,
     private readonly entries: DiagnosticEntryRepository,
     private readonly clock: ClockPort,
+    // Optional so older spec wiring keeps compiling. Used by
+    // `findStaffMemberByUserIdOrThrow` — fails closed when missing.
+    private readonly staffMembers?: StaffMemberRepository,
   ) {}
+
+  /**
+   * Resolve a user → their active staff_members row in this kindergarten.
+   * Pulled out of the staff my-todos controller (CLAUDE.md §4 — controllers
+   * stay thin HTTP-edge). Throws `NotFoundException('staff_member_not_found')`
+   * on missing.
+   */
+  async findStaffMemberByUserIdOrThrow(
+    kgId: string,
+    userId: string,
+  ): Promise<StaffMember> {
+    if (!this.staffMembers) {
+      throw new NotFoundException('staff_member_not_found');
+    }
+    const staffMember = await this.staffMembers.findActiveByUserAndKindergarten(
+      userId,
+      kgId,
+    );
+    if (!staffMember) {
+      throw new NotFoundException('staff_member_not_found');
+    }
+    return staffMember;
+  }
 
   /**
    * Build the staff-app digest of children whose latest diagnostic for the

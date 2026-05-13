@@ -1,5 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
+import { normalizeLegacyKzLocale } from '../../../shared-kernel/utils/i18n-locale-normalizer';
 import {
   IsBoolean,
   IsDateString,
@@ -48,11 +49,12 @@ export class CreateTariffPlanDto {
   name!: string;
 
   @ApiProperty({
-    example: { ru: 'Стандартный тариф', kz: 'Стандартты тариф' },
+    example: { ru: 'Стандартный тариф', kk: 'Стандартты тариф' },
     description: 'Locale map for description. At least one key expected.',
     required: false,
   })
   @IsOptional()
+  @Transform(({ value }) => normalizeLegacyKzLocale(value))
   @IsObject()
   description?: Record<string, string>;
 
@@ -166,10 +168,11 @@ export class UpdateTariffPlanDto {
   name?: string;
 
   @ApiProperty({
-    example: { ru: 'Обновлённый тариф', kz: 'Жаңартылған тариф' },
+    example: { ru: 'Обновлённый тариф', kk: 'Жаңартылған тариф' },
     required: false,
   })
   @IsOptional()
+  @Transform(({ value }) => normalizeLegacyKzLocale(value))
   @IsObject()
   description?: Record<string, string>;
 
@@ -217,7 +220,7 @@ export class TariffPlanResponseDto {
   name!: string;
 
   @ApiProperty({
-    example: { ru: 'Стандартный тариф', kz: 'Стандартты тариф' },
+    example: { ru: 'Стандартный тариф', kk: 'Стандартты тариф' },
     description: 'Locale map for description.',
   })
   description!: Record<string, string>;

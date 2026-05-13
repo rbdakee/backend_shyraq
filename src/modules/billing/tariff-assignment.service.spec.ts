@@ -1,4 +1,5 @@
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import {
   TariffAssignment,
   TariffAssignmentState,
@@ -49,7 +50,10 @@ class FakeTariffAssignmentRepo extends TariffAssignmentRepository {
       kindergartenId: input.kindergartenId,
       childId: input.childId,
       tariffPlanId: input.tariffPlanId,
-      customAmount: input.customAmount,
+      customAmount:
+        input.customAmount === null
+          ? null
+          : MoneyKzt.fromKzt(input.customAmount),
       customReason: input.customReason,
       validFrom: input.validFrom,
       validUntil: input.validUntil,
@@ -77,7 +81,11 @@ class FakeTariffAssignmentRepo extends TariffAssignmentRepository {
       ...s,
       tariffPlanId: patch.tariffPlanId ?? s.tariffPlanId,
       customAmount:
-        patch.customAmount !== undefined ? patch.customAmount : s.customAmount,
+        patch.customAmount !== undefined
+          ? patch.customAmount === null
+            ? null
+            : MoneyKzt.fromKzt(patch.customAmount)
+          : s.customAmount,
       customReason:
         patch.customReason !== undefined ? patch.customReason : s.customReason,
       validFrom: patch.validFrom ?? s.validFrom,
@@ -217,7 +225,7 @@ function planState(overrides: Partial<TariffPlanState> = {}): TariffPlanState {
     name: 'Standard',
     description: { ru: 'Стандарт' },
     tariffType: 'monthly',
-    amount: 50000,
+    amount: MoneyKzt.fromKzt(50000),
     currency: 'KZT',
     appliesTo: 'all_children',
     groupId: null,
@@ -328,7 +336,7 @@ describe('TariffAssignmentService', () => {
         customAmount: 70000,
         customReason: 'discount sponsor',
       });
-      expect(updated.customAmount).toBe(70000);
+      expect(updated.customAmount?.toNumber()).toBe(70000);
       expect(updated.customReason).toBe('discount sponsor');
     });
 

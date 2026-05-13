@@ -1,3 +1,4 @@
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import {
   CustomDiscountSnapshot,
   DiscountEvaluationInput,
@@ -24,7 +25,7 @@ function input(
       invoiceType: overrides.invoiceType ?? 'monthly',
       childId: CHILD,
       kindergartenId: KG,
-      amountDue: 100000,
+      amountDue: MoneyKzt.fromKzt(100000),
       periodStart: PERIOD_START,
       periodEnd: PERIOD_END,
     },
@@ -165,7 +166,7 @@ describe('MockDiscountEngine', () => {
         id,
         name: { ru: id },
         discountType: type,
-        amount,
+        amount: MoneyKzt.fromKzt(amount),
         conditions: {} as never,
         targetType: 'all',
         targetIds: null,
@@ -306,7 +307,7 @@ describe('MockDiscountEngine', () => {
         id: 'fx-1',
         name: { ru: 'Fx' },
         discountType: 'fixed_amount',
-        amount,
+        amount: MoneyKzt.fromKzt(amount),
         conditions: {} as never,
         targetType: 'all',
         targetIds: null,

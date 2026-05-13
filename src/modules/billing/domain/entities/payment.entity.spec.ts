@@ -1,3 +1,4 @@
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import { Payment, PaymentState } from './payment.entity';
 import { PaymentStatusInvalidError } from '../errors/payment-status-invalid.error';
 
@@ -13,7 +14,7 @@ function makeInitiated(overrides: Partial<PaymentState> = {}): Payment {
     invoiceId: 'inv-uuid-0001',
     childId: 'child-uuid-0001',
     payerUserId: 'user-uuid-0001',
-    amount: 100_000,
+    amount: MoneyKzt.fromKzt(100_000),
     provider: 'mock',
     providerTxnId: null,
     idempotencyKey: 'idem-key-0001',

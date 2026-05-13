@@ -28,7 +28,8 @@ export class CustomDiscountMapper {
       name: row.name as Record<string, string>,
       description: row.description as Record<string, string> | null,
       discountType: row.discountType,
-      amount: Number(row.amount),
+      // Transformer hands `MoneyKzt` directly — pass through.
+      amount: row.amount,
       conditions,
       targetType: row.targetType as CustomDiscountTargetType,
       targetIds: row.targetIds,

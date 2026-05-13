@@ -7,6 +7,7 @@
  * service-integration spec sibling against a real database.
  */
 import { InMemoryNotificationAdapter } from '@/common/notifications/in-memory-notification.adapter';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import { InvoiceService } from '@/modules/billing/invoice.service';
 import {
   Invoice,
@@ -373,10 +374,10 @@ class StubInvoiceService {
       invoiceType: 'monthly',
       periodStart: input.enrollmentDate,
       periodEnd: input.enrollmentDate,
-      amountDue: 100000,
+      amountDue: MoneyKzt.fromKzt(100000),
       discountPct: null,
       discountReason: null,
-      amountAfterDiscount: 100000,
+      amountAfterDiscount: MoneyKzt.fromKzt(100000),
       status: 'pending',
       dueDate: input.enrollmentDate,
       description: null,

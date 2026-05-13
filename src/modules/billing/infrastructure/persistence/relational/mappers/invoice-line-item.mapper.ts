@@ -13,8 +13,9 @@ export class InvoiceLineItemMapper {
       description: row.description,
       tariffPlanId: row.tariffPlanId,
       quantity: Number(row.quantity),
-      unitPrice: Number(row.unitPrice),
-      lineTotal: Number(row.lineTotal),
+      // Transformer hands `MoneyKzt` directly — pass through.
+      unitPrice: row.unitPrice,
+      lineTotal: row.lineTotal,
       createdAt: row.createdAt,
     };
     return InvoiceLineItem.fromState(state);

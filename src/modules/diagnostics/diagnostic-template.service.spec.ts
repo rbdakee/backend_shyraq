@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { Logger } from '@nestjs/common';
 import { OptimisticLockError } from '@/shared-kernel/domain/errors';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { DiagnosticTemplateService } from './diagnostic-template.service';
@@ -53,6 +54,20 @@ class FakeTemplateRepo extends DiagnosticTemplateRepository {
     const t = this.rows.get(id);
     if (!t || t.kindergartenId !== kgId) return Promise.resolve(null);
     return Promise.resolve(t);
+  }
+
+  listByIds(
+    kgId: string,
+    ids: string[],
+  ): Promise<Map<string, DiagnosticTemplate>> {
+    const map = new Map<string, DiagnosticTemplate>();
+    for (const id of ids) {
+      const t = this.rows.get(id);
+      if (t && t.kindergartenId === kgId) {
+        map.set(id, t);
+      }
+    }
+    return Promise.resolve(map);
   }
 
   findByIdForUpdate(
@@ -454,6 +469,132 @@ describe('DiagnosticTemplateService', () => {
       const result = await service.list(KG, { isActive: true, limit: 20 });
       expect(result.items).toHaveLength(1);
       expect(result.items[0].id).toBe(t1.id);
+    });
+  });
+
+  describe('listByIds (B22b T5 — N+1 closure)', () => {
+    // B18 M6 — `staff-diagnostic-entry.controller.buildTemplateLookup` and
+    // the parent equivalent used to do `Promise.all(ids.map(getById))` →
+    // N parallel SELECT-by-id round-trips per page load. The batch
+    // contract returns a `Map<id, template>` from ONE query so we can
+    // assert "exactly one repo call per page" further below.
+
+    it('returns a Map keyed by id for all matching templates', async () => {
+      const t1 = buildTemplate();
+      const t2 = buildTemplate();
+      repo.put(t1);
+      repo.put(t2);
+      const map = await service.listByIds(KG, [t1.id, t2.id]);
+      expect(map.size).toBe(2);
+      expect(map.get(t1.id)?.id).toBe(t1.id);
+      expect(map.get(t2.id)?.id).toBe(t2.id);
+    });
+
+    it('omits missing ids from the Map (no error)', async () => {
+      const t1 = buildTemplate();
+      repo.put(t1);
+      const missing = randomUUID();
+      // Suppress the orphan logger so test output stays clean — the
+      // dedicated "logs orphaned_diagnostic_entry" case below asserts
+      // the logging contract.
+      const errorSpy = jest
+        .spyOn(Logger.prototype, 'error')
+        .mockImplementation(() => undefined);
+      try {
+        const map = await service.listByIds(KG, [t1.id, missing]);
+        expect(map.size).toBe(1);
+        expect(map.has(t1.id)).toBe(true);
+        expect(map.has(missing)).toBe(false);
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
+
+    it('logs orphaned_diagnostic_entry for every missing id (B22b T5 L2)', async () => {
+      // B18 L2 — operator audit channel for dangling template refs.
+      // Single missing id → exactly one Logger.error call with the
+      // `orphaned_diagnostic_entry` marker + the missing id payload.
+      const t1 = buildTemplate();
+      repo.put(t1);
+      const missing1 = randomUUID();
+      const missing2 = randomUUID();
+      const errorSpy = jest
+        .spyOn(Logger.prototype, 'error')
+        .mockImplementation(() => undefined);
+      try {
+        await service.listByIds(KG, [t1.id, missing1, missing2]);
+        expect(errorSpy).toHaveBeenCalledTimes(2);
+        expect(errorSpy.mock.calls[0][0]).toContain(
+          'orphaned_diagnostic_entry',
+        );
+        expect(errorSpy.mock.calls[0][0]).toContain(missing1);
+        expect(errorSpy.mock.calls[1][0]).toContain(missing2);
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
+
+    it('does not log when every id resolves (happy path)', async () => {
+      const t1 = buildTemplate();
+      const t2 = buildTemplate();
+      repo.put(t1);
+      repo.put(t2);
+      const errorSpy = jest
+        .spyOn(Logger.prototype, 'error')
+        .mockImplementation(() => undefined);
+      try {
+        await service.listByIds(KG, [t1.id, t2.id]);
+        expect(errorSpy).not.toHaveBeenCalled();
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
+
+    it('omits cross-tenant ids from the Map', async () => {
+      const t1 = buildTemplate();
+      repo.put(t1);
+      // Same id, different kg — caller is asking for foreignKg, template
+      // lives in KG. Repo must NOT leak it. Orphan logger fires (the
+      // foreignKg sees a dangling reference) — suppressed here.
+      const foreignKg = '99999999-9999-9999-9999-999999999999';
+      const errorSpy = jest
+        .spyOn(Logger.prototype, 'error')
+        .mockImplementation(() => undefined);
+      try {
+        const map = await service.listByIds(foreignKg, [t1.id]);
+        expect(map.size).toBe(0);
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
+
+    it('returns an empty Map for empty input without calling the repo', async () => {
+      const spy = jest.spyOn(repo, 'listByIds');
+      const map = await service.listByIds(KG, []);
+      expect(map.size).toBe(0);
+      // The service forwards through the repo, so even the empty case
+      // hits `listByIds` once — the relational impl short-circuits
+      // internally. We assert call-count = 1 (single batch, no fan-out)
+      // to pin the "no N+1" contract.
+      expect(spy).toHaveBeenCalledTimes(1);
+    });
+
+    it('issues a single repo call for N entries (no N+1)', async () => {
+      // Simulates the controller's `buildTemplateLookup` over a page of
+      // 5 entries referencing 3 distinct templates. The page-presenter
+      // contract requires resolving all 3 templates with ONE batch call,
+      // not 3 (or 5) round-trips.
+      const t1 = buildTemplate();
+      const t2 = buildTemplate();
+      const t3 = buildTemplate();
+      repo.put(t1);
+      repo.put(t2);
+      repo.put(t3);
+      const spy = jest.spyOn(repo, 'listByIds');
+      const uniqueIds = [...new Set([t1.id, t2.id, t1.id, t3.id, t2.id])];
+      const map = await service.listByIds(KG, uniqueIds);
+      expect(map.size).toBe(3);
+      expect(spy).toHaveBeenCalledTimes(1);
     });
   });
 });

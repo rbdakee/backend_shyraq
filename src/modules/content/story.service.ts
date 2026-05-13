@@ -1,13 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { extname } from 'node:path';
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { DataSource } from 'typeorm';
 import { NotificationPort } from '@/common/notifications/notification.port';
 import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
 import { ChildGuardianRepository } from '@/modules/child/infrastructure/persistence/child-guardian.repository';
 import { GroupRepository } from '@/modules/group/infrastructure/persistence/group.repository';
 import { GroupNotFoundError } from '@/modules/group/domain/errors/group-not-found.error';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { TransactionRunnerPort } from '@/shared-kernel/application/ports/transaction-runner.port';
 import { ForbiddenActionError } from '@/shared-kernel/domain/errors';
 import { tenantStorage } from '@/database/tenant-storage';
 import { FileStoragePort } from '@/shared-kernel/storage/file-storage.port';
@@ -59,7 +59,8 @@ export class StoryService {
     private readonly groupRepo: GroupRepository,
     private readonly fileStorage: FileStoragePort,
     private readonly notificationPort: NotificationPort,
-    private readonly dataSource: DataSource,
+    @Inject(TransactionRunnerPort)
+    private readonly tx: TransactionRunnerPort,
     @Inject(ClockPort) private readonly clock: ClockPort,
     private readonly childRepo: ChildRepository,
     private readonly childGuardianRepo: ChildGuardianRepository,
@@ -181,6 +182,86 @@ export class StoryService {
     return this.storyRepo.listActiveByGroup(kindergartenId, groupId, now);
   }
 
+  /**
+   * Staff-side active-stories list (BP §9.6 / endpoints.md §3.12).
+   *
+   * Routing matrix:
+   *   - `groupIdFilter` set → admin bypass; mentor must be actively
+   *     assigned to that group else `ForbiddenActionError`.
+   *   - `groupIdFilter` unset + admin → all kg groups, returns active
+   *     stories across them all.
+   *   - `groupIdFilter` unset + mentor → only the groups this user is an
+   *     active mentor of (cross-tenant scoped to the kg) — empty list if
+   *     none.
+   *
+   * Pulled out of `StaffStoriesController` so the controller no longer
+   * imports `GroupRepository` / `GroupStoryRepository` directly. The
+   * routing was the only reason the controller touched those repos — folding
+   * it into the service keeps the role gate and the repo calls together.
+   */
+  async listActiveForStaff(
+    kindergartenId: string,
+    actor: { userId: string; role: string },
+    groupIdFilter?: string,
+  ): Promise<GroupStory[]> {
+    const now = this.clock.now();
+    if (groupIdFilter) {
+      if (actor.role === 'mentor') {
+        const isAssigned = await this.groupRepo.isUserActiveMentorForGroup(
+          kindergartenId,
+          actor.userId,
+          groupIdFilter,
+        );
+        if (!isAssigned) {
+          throw new ForbiddenActionError(
+            'mentor_not_assigned_to_group',
+            'Mentor is not assigned to this group',
+          );
+        }
+      }
+      return this.storyRepo.listActiveByGroup(
+        kindergartenId,
+        groupIdFilter,
+        now,
+      );
+    }
+
+    if (actor.role === 'admin') {
+      const groups = await this.groupRepo.list(kindergartenId);
+      const groupIds = groups.map((g) => g.id);
+      if (groupIds.length === 0) return [];
+      return this.storyRepo.listActiveByGroupIds(kindergartenId, groupIds, now);
+    }
+
+    // Mentor: find groups assigned to this user in this kg. The
+    // cross-tenant helper already filters by `kindergartenId` when
+    // provided so this stays kg-scoped.
+    const assignments =
+      await this.groupRepo.findActiveMentorAssignmentsByUserIdCrossTenant(
+        actor.userId,
+        kindergartenId,
+      );
+    if (assignments.length === 0) return [];
+    const groupIds = assignments.map((a) => a.groupId);
+    return this.storyRepo.listActiveByGroupIds(kindergartenId, groupIds, now);
+  }
+
+  /**
+   * Increment the story's `views` counter and return the new total in a
+   * single service call. Used by the `POST /staff/stories/:id/view`
+   * endpoint so the controller no longer needs to call `storyRepo.findById`
+   * directly to read back the count.
+   */
+  async incrementViewsAndGetCount(
+    kindergartenId: string,
+    storyId: string,
+    actor: { userId: string; role: string },
+  ): Promise<number> {
+    await this.incrementViews(kindergartenId, storyId, actor);
+    const story = await this.storyRepo.findById(kindergartenId, storyId);
+    return story?.views ?? 0;
+  }
+
   async incrementViews(
     kindergartenId: string,
     storyId: string,
@@ -217,7 +298,16 @@ export class StoryService {
       }
     }
 
-    await this.storyRepo.incrementViews(kindergartenId, storyId);
+    // B22b T9 — handle the boolean return value.
+    // `false` means the UPDATE matched 0 rows — the story was deleted between
+    // our `findById` check above and the atomic UPDATE (race window).
+    // Throw `GroupStoryNotFoundError` so the caller sees 404 rather than
+    // silently returning success with an unchanged view count.
+    const updated = await this.storyRepo.incrementViews(
+      kindergartenId,
+      storyId,
+    );
+    if (!updated) throw new GroupStoryNotFoundError(storyId);
   }
 
   private async runInTenantTx<T>(
@@ -228,7 +318,7 @@ export class StoryService {
     if (ambient?.entityManager) {
       return fn();
     }
-    return this.dataSource.transaction(async (em) => {
+    return this.tx.run(async (em) => {
       await em.query(`SELECT set_config('app.kindergarten_id', $1, true)`, [
         kindergartenId,
       ]);

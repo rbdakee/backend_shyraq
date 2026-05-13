@@ -35,7 +35,7 @@
  *   J. Story increment views; expired story → 410
  *   K. Story cleanup cron deletes expired (file removed from disk)
  *   L. Birthday auto-gen (idempotent on rerun)
- *   M. Parent feed aggregates news + qundylyq + birthday + stories; nanny 403
+ *   M. Parent feed aggregates news + qundylyq + birthday + stories; unapproved user → 403
  *   N. Cross-tenant phantom (kg_B cannot see kg_A's content/stories)
  */
 import type { Server } from 'node:http';
@@ -55,11 +55,15 @@ import { formatDateInTimezone } from '@/shared-kernel/domain/value-objects/day-o
 const SUPER_ADMIN_EMAIL = 'super-content@shyraq.test';
 const SUPER_ADMIN_PASSWORD = 'admin12345';
 
-// ── minimal 1×1 PNG buffer (89 bytes) ────────────────────────────────────────
+// ── minimal 1×1 RGBA PNG buffer (68 bytes) ───────────────────────────────────
+// Single contiguous hex string — spaces inside the hex would cause
+// `Buffer.from(..., 'hex')` to silently truncate at the first non-hex pair.
+// Verified valid via the standard PNG signature (`89504e47…`), IHDR (1×1
+// width/height, RGBA color-type=6), zlib-deflated IDAT (one filter byte + 4
+// zero RGBA bytes), and IEND chunk.
 const TINY_PNG = Buffer.from(
-  '89504e470d0a1a0a0000000d494844520000000100000001' +
-    '0806000000 1f15c489 00000011 49444154 789c6260 6060f8cf' +
-    '00004001ff002711f7 00000000 49454e44 ae426082',
+  '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489' +
+    '0000000b49444154789c6360000200000500017a5eab3f0000000049454e44ae426082',
   'hex',
 );
 
@@ -343,11 +347,11 @@ describe('B17 Content & Stories (e2e)', () => {
             target_type: 'all',
             title_i18n: {
               ru: 'Тестовая новость',
-              kz: 'Сынақ жаңалық',
+              kk: 'Сынақ жаңалық',
             },
             body_i18n: {
               ru: 'Текст новости',
-              kz: 'Жаңалық мәтіні',
+              kk: 'Жаңалық мәтіні',
             },
           })
           .expect(201);
@@ -449,7 +453,7 @@ describe('B17 Content & Stories (e2e)', () => {
           .send({
             content_type: 'news',
             target_type: 'all',
-            title_i18n: { ru: 'Оригинал', kz: 'Түпнұсқа' },
+            title_i18n: { ru: 'Оригинал', kk: 'Түпнұсқа' },
           })
           .expect(201);
         const id = createRes.body.id as string;
@@ -465,11 +469,11 @@ describe('B17 Content & Stories (e2e)', () => {
           .send({
             title_i18n: {
               ru: 'Обновлённый заголовок',
-              kz: 'Жаңартылған тақырып',
+              kk: 'Жаңартылған тақырып',
             },
             body_i18n: {
               ru: 'Обновлённый текст',
-              kz: 'Жаңартылған мәтін',
+              kk: 'Жаңартылған мәтін',
             },
           })
           .expect(200);
@@ -512,7 +516,7 @@ describe('B17 Content & Stories (e2e)', () => {
             target_type: 'all',
             title_i18n: {
               ru: 'Публикуем',
-              kz: 'Жариялаймыз',
+              kk: 'Жариялаймыз',
             },
           })
           .expect(201);
@@ -568,7 +572,7 @@ describe('B17 Content & Stories (e2e)', () => {
             target_type: 'all',
             title_i18n: {
               ru: 'Запланированная новость',
-              kz: 'Жоспарланған жаңалық',
+              kk: 'Жоспарланған жаңалық',
             },
           })
           .expect(201);
@@ -649,7 +653,7 @@ describe('B17 Content & Stories (e2e)', () => {
             target_type: 'all',
             title_i18n: {
               ru: 'Отложенная публикация',
-              kz: 'Кейінге қалдырылған',
+              kk: 'Кейінге қалдырылған',
             },
           })
           .expect(201);
@@ -1150,11 +1154,18 @@ describe('B17 Content & Stories (e2e)', () => {
   // ══════════════════════════════════════════════════════════════════════════════
   // Scenario M — Parent feed aggregates news + qundylyq + birthday + stories
   // ══════════════════════════════════════════════════════════════════════════════
-
-  describe('Scenario M: Parent feed aggregates news + qundylyq + birthday + stories; nanny 403', () => {
+  //
+  // B22b T9 nanny-label fix: the original label "nanny 403" was misleading.
+  // The test verifies that a user with a JWT but WITHOUT an approved-guardian
+  // relation for the child is blocked by ChildAccessGuard (403). This applies
+  // to ANY role that lacks the guardian link, not specifically a nanny role.
+  // The user is minted with role='parent' to exercise the parent-scope guard
+  // path; a real nanny with an approved guardian record would get 200.
+  //
+  describe('Scenario M: Parent feed aggregates news + qundylyq + birthday + stories', () => {
     it(
       'GET /parent/children/:childId/content returns news, qundylyq, birthdays, stories arrays; ' +
-        'nanny with same child gets 403',
+        'user without approved-guardian relation for the child gets 403',
       async () => {
         const { kgId, adminToken } = await createKgWithAdmin(
           'cnt-m',
@@ -1178,7 +1189,7 @@ describe('B17 Content & Stories (e2e)', () => {
             target_type: 'all',
             title_i18n: {
               ru: 'Новость для родителей',
-              kz: 'Ата-аналарға жаңалық',
+              kk: 'Ата-аналарға жаңалық',
             },
           })
           .expect(201);
@@ -1196,7 +1207,7 @@ describe('B17 Content & Stories (e2e)', () => {
             target_type: 'all',
             title_i18n: {
               ru: 'Ценность месяца',
-              kz: 'Ай құндылығы',
+              kk: 'Ай құндылығы',
             },
             metadata: { month: '2026-05', theme: 'Kindness' },
           })
@@ -1279,24 +1290,22 @@ describe('B17 Content & Stories (e2e)', () => {
         expect(feedRes.body.birthdays.length).toBeGreaterThanOrEqual(1);
         expect(Array.isArray(feedRes.body.stories)).toBe(true);
 
-        // Nanny with same child → 403 (nanny role doesn't have child_access
-        // unless properly seeded — ChildAccessGuard verifies guardian relation).
-        // Note: nanny CAN access content (unlike diagnostics). The prompt says
-        // "nanny gets 403 if attempting same endpoint (per BP §10 nanny doesn't
-        // get content)". Checking if ChildAccessGuard blocks nanny role at all.
-        // Per ChildAccessGuard logic, nanny (role=nanny, status=approved) is
-        // still an approved guardian so they DO get access per B12 logic.
-        // The 403 scenario is only if the nanny is NOT an approved guardian at all.
-        const nannyUserId = await seedUser('+77050100123');
-        // Seed nanny WITHOUT guardian relation → ChildAccessGuard rejects
-        const nannyToken = await mintToken({
-          sub: nannyUserId,
+        // A user WITHOUT an approved-guardian relation for this child is
+        // blocked by ChildAccessGuard regardless of role label.
+        // The user is minted with role='parent' (the content endpoint is
+        // restricted to role='parent'). A real nanny with an approved
+        // guardian record for the child would receive 200 — this test
+        // exercises the missing-guardian-relation path only.
+        const unauthorizedUserId = await seedUser('+77050100123');
+        // No guardian record seeded → ChildAccessGuard rejects with 403.
+        const unauthorizedToken = await mintToken({
+          sub: unauthorizedUserId,
           role: 'parent',
           kindergartenId: kgId,
         });
         await request(server)
           .get(`/api/v1/parent/children/${childId}/content`)
-          .set('Authorization', `Bearer ${nannyToken}`)
+          .set('Authorization', `Bearer ${unauthorizedToken}`)
           .expect(403);
       },
     );

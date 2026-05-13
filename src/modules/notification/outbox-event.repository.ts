@@ -84,4 +84,34 @@ export abstract class OutboxEventRepository {
    * lookups stay tenant-scoped.
    */
   abstract findById(id: string): Promise<OutboxEvent | null>;
+
+  /**
+   * B22b T12 — weekly prune of terminal outbox rows.
+   *
+   * `notification_outbox` accumulates `dispatched` and `failed` rows
+   * indefinitely; once a row is in either terminal state the dispatcher
+   * never reads it again, so the table only ever grows. The pruner is a
+   * weekly cron (Sunday 04:00 Asia/Almaty) that deletes rows past their
+   * retention horizon:
+   *
+   *   - `dispatched` rows older than `dispatchedCutoff` (default
+   *     `now - 7d`) — short audit window, just enough to investigate a
+   *     "did this event fire?" report from the previous week.
+   *   - `failed` rows older than `failedCutoff` (default `now - 30d`) —
+   *     kept longer so post-incident review can read failure reasons
+   *     before they roll off.
+   *
+   * Runs under `app.bypass_rls = 'true'` (cross-tenant admin job —
+   * caller is the worker process, not an end user). The implementation
+   * deletes in two unconditional `WHERE status = ... AND created_at <
+   * ...` statements; `created_at` has a btree index from the B9
+   * migration so the scan is bounded by row count, not full-table.
+   *
+   * Returns the count of deleted rows per status for ops telemetry.
+   */
+  abstract prunePrunables(
+    manager: EntityManager,
+    dispatchedCutoff: Date,
+    failedCutoff: Date,
+  ): Promise<{ deletedDispatched: number; deletedFailed: number }>;
 }

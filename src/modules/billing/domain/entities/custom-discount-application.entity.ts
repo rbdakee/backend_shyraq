@@ -1,3 +1,4 @@
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import { CustomDiscountAmountInvalidError } from '../errors/custom-discount-amount-invalid.error';
 
 export interface CustomDiscountApplicationState {
@@ -7,7 +8,7 @@ export interface CustomDiscountApplicationState {
   invoiceId: string;
   invoiceLineItemId: string | null;
   childId: string;
-  amountApplied: number;
+  amountApplied: MoneyKzt;
   appliedAt: Date;
 }
 
@@ -27,8 +28,10 @@ export interface CustomDiscountApplicationState {
  */
 export class CustomDiscountApplication {
   private constructor(private state: CustomDiscountApplicationState) {
-    if (!(state.amountApplied > 0)) {
-      throw new CustomDiscountAmountInvalidError(state.amountApplied);
+    if (!state.amountApplied.isPositive()) {
+      throw new CustomDiscountAmountInvalidError(
+        state.amountApplied.toNumber(),
+      );
     }
   }
 
@@ -62,7 +65,7 @@ export class CustomDiscountApplication {
   get childId(): string {
     return this.state.childId;
   }
-  get amountApplied(): number {
+  get amountApplied(): MoneyKzt {
     return this.state.amountApplied;
   }
   get appliedAt(): Date {

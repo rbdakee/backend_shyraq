@@ -41,7 +41,7 @@ export class ContentPostResponseDto {
   body!: string | null;
 
   @ApiProperty({
-    example: { ru: 'Важное объявление', kz: 'Маңызды хабарландыру' },
+    example: { ru: 'Важное объявление', kk: 'Маңызды хабарландыру' },
     nullable: true,
   })
   title_i18n!: Record<string, string> | null;
@@ -49,7 +49,7 @@ export class ContentPostResponseDto {
   @ApiProperty({
     example: {
       ru: 'Просим всех родителей ознакомиться с новыми правилами.',
-      kz: 'Барлық ата-аналарды жаңа ережелермен таныса беруін сұраймыз.',
+      kk: 'Барлық ата-аналарды жаңа ережелермен таныса беруін сұраймыз.',
     },
     nullable: true,
   })

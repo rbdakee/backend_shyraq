@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { DataSource } from 'typeorm';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { TransactionRunnerPort } from '@/shared-kernel/application/ports/transaction-runner.port';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import { NotificationPort } from '@/common/notifications/notification.port';
 import { tenantStorage } from '@/database/tenant-storage';
 import {
@@ -80,7 +81,7 @@ export interface CustomDiscountWithStats {
  *   active  ──expireOverdue──► expired   (silent, no notification)
  *
  * Activation flow (conflict-safe under concurrent admin clicks):
- *   1. Open ambient TX via `dataSource.transaction`.
+ *   1. Open ambient TX via `TransactionRunnerPort.run`.
  *   2. Acquire `pg_advisory_xact_lock` keyed on
  *      `discount:activation:{kg}:{id}` so concurrent activate() calls
  *      serialise.
@@ -107,7 +108,8 @@ export class CustomDiscountService {
     private readonly customDiscounts: CustomDiscountRepository,
     private readonly customDiscountApplications: CustomDiscountApplicationRepository,
     private readonly notificationPort: NotificationPort,
-    private readonly dataSource: DataSource,
+    @Inject(TransactionRunnerPort)
+    private readonly tx: TransactionRunnerPort,
     private readonly targetResolver: DiscountTargetResolver,
     @Inject(ClockPort) private readonly clock: ClockPort,
   ) {}
@@ -162,7 +164,7 @@ export class CustomDiscountService {
       name: repoInput.name,
       description: repoInput.description,
       discountType: repoInput.discountType,
-      amount: repoInput.amount,
+      amount: MoneyKzt.fromKzt(repoInput.amount),
       conditions: repoInput.conditions,
       targetType: repoInput.targetType,
       targetIds: repoInput.targetIds,
@@ -223,7 +225,10 @@ export class CustomDiscountService {
             ? patch.description
             : merged.description,
         discountType: patch.discountType ?? merged.discountType,
-        amount: patch.amount ?? merged.amount,
+        amount:
+          patch.amount !== undefined
+            ? MoneyKzt.fromKzt(patch.amount)
+            : merged.amount,
         conditions: patch.conditions ?? merged.conditions,
         targetType: patch.targetType ?? merged.targetType,
         targetIds:
@@ -257,7 +262,7 @@ export class CustomDiscountService {
    */
   async activate(kindergartenId: string, id: string): Promise<CustomDiscount> {
     const now = this.clock.now();
-    return this.dataSource.transaction(async (em) => {
+    return this.tx.run(async (em) => {
       // Set the kg-scoped GUC so RLS-correct queries flow through repos
       // that resolve their EM via tenantStorage. Also publish to
       // tenantStorage so repos see the same EM as the explicit `manager`

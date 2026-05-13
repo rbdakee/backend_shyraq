@@ -1,6 +1,7 @@
 import { InMemoryNotificationAdapter } from '@/common/notifications/in-memory-notification.adapter';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { InvariantViolationError } from '@/shared-kernel/domain/errors';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import {
   Invoice,
   InvoiceState,
@@ -45,6 +46,8 @@ import {
 import { InvoiceService } from './invoice.service';
 import { PaymentAccountService } from './payment-account.service';
 import { RefundService } from './refund.service';
+
+const m = (n: number): MoneyKzt => MoneyKzt.fromKzt(n);
 
 const KG = '11111111-1111-1111-1111-111111111111';
 const CHILD = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
@@ -114,7 +117,7 @@ class FakeRefundRepo extends RefundRepository {
         r.invoiceId === invoiceId &&
         r.status === 'processed'
       ) {
-        sum += r.amount;
+        sum += r.amount.toNumber();
       }
     }
     return Promise.resolve(sum);
@@ -386,10 +389,10 @@ function makeInvoice(overrides: Partial<InvoiceState> = {}): Invoice {
     invoiceType: 'monthly',
     periodStart: new Date('2026-06-01T00:00:00.000Z'),
     periodEnd: new Date('2026-06-30T00:00:00.000Z'),
-    amountDue: 50000,
+    amountDue: m(50000),
     discountPct: null,
     discountReason: null,
-    amountAfterDiscount: 50000,
+    amountAfterDiscount: m(50000),
     status: 'paid',
     dueDate: new Date('2026-06-10T00:00:00.000Z'),
     description: null,
@@ -408,7 +411,7 @@ function makePayment(overrides: Partial<PaymentState> = {}): Payment {
     invoiceId: INVOICE,
     childId: CHILD,
     payerUserId: PAYER,
-    amount: 50000,
+    amount: m(50000),
     provider: 'mock' as PaymentProvider,
     providerTxnId: 'tx_done',
     idempotencyKey: 'idem-pay-1',
@@ -428,7 +431,7 @@ function makeAccount(balance = 50000): PaymentAccount {
     id: ACCOUNT,
     kindergartenId: KG,
     childId: CHILD,
-    balance,
+    balance: m(balance),
     createdAt: NOW,
     updatedAt: NOW,
   });
@@ -443,7 +446,7 @@ function seedRefund(
     kindergartenId: KG,
     paymentId: PAYMENT,
     invoiceId: INVOICE,
-    amount: 50000,
+    amount: m(50000),
     reason: 'parent requested',
     status: 'pending',
     processedBy: null,
@@ -527,7 +530,7 @@ describe('RefundService.create', () => {
     });
 
     expect(refund.status).toBe('pending');
-    expect(refund.amount).toBe(50000);
+    expect(refund.amount.toNumber()).toBe(50000);
     expect(refund.paymentId).toBe(PAYMENT);
     expect(refund.invoiceId).toBe(INVOICE);
     expect(refund.processedBy).toBeNull();
@@ -560,7 +563,7 @@ describe('RefundService.create', () => {
 
   it('throws InvariantViolationError when amount > payment.amount', async () => {
     const h = buildHarness();
-    h.paymentRepo.rows.set(PAYMENT, makePayment({ amount: 50000 }));
+    h.paymentRepo.rows.set(PAYMENT, makePayment({ amount: m(50000) }));
     await expect(
       h.service.create(KG, {
         paymentId: PAYMENT,
@@ -649,12 +652,32 @@ describe('RefundService.reject', () => {
     ).rejects.toBeInstanceOf(RefundNotFoundError);
   });
 
+  it('returns RefundNotFoundError for cross-tenant refund id (RLS scope honoured)', async () => {
+    const h = buildHarness();
+    // Seed a refund under a different kg — its id is invisible to KG.
+    const otherKg = '22222222-2222-2222-2222-222222222222';
+    const seeded = seedRefund(h.refundRepo, { kindergartenId: otherKg });
+    await expect(
+      h.service.reject(KG, seeded.id, { reason: 'x' }),
+    ).rejects.toBeInstanceOf(RefundNotFoundError);
+  });
+
   it('throws RefundAlreadyProcessedError when not pending', async () => {
     const h = buildHarness();
     const seeded = seedRefund(h.refundRepo, { status: 'approved' });
     await expect(
       h.service.reject(KG, seeded.id, { reason: 'x' }),
     ).rejects.toBeInstanceOf(RefundAlreadyProcessedError);
+  });
+
+  it('does not touch the underlying payment when rejecting', async () => {
+    const h = buildHarness();
+    h.paymentRepo.rows.set(PAYMENT, makePayment());
+    const beforeStatus = h.paymentRepo.rows.get(PAYMENT)!.status;
+    const seeded = seedRefund(h.refundRepo);
+    await h.service.reject(KG, seeded.id, { reason: 'not approved' });
+    const afterStatus = h.paymentRepo.rows.get(PAYMENT)!.status;
+    expect(afterStatus).toBe(beforeStatus);
   });
 });
 
@@ -682,7 +705,7 @@ describe('RefundService.process', () => {
     expect(invoiceAfter?.status).toBe('refunded');
 
     const accountAfter = await h.paymentAccountRepo.findById(KG, ACCOUNT);
-    expect(accountAfter?.balance).toBe(0); // 50000 credit - 50000 refund
+    expect(accountAfter?.balance.toNumber()).toBe(0); // 50000 credit - 50000 refund
 
     // T11 H1: advisory lock acquired before provider call.
     expect(h.refundRepo.advisoryLockCalls).toHaveLength(1);
@@ -698,13 +721,13 @@ describe('RefundService.process', () => {
 
   it('partial refund against fully-paid invoice — invoice downgrades paid → partial (T11 C2)', async () => {
     const h = buildHarness();
-    h.paymentRepo.rows.set(PAYMENT, makePayment({ amount: 50000 }));
+    h.paymentRepo.rows.set(PAYMENT, makePayment({ amount: m(50000) }));
     h.invoiceRepo.rows.set(INVOICE, makeInvoice({ status: 'paid' }));
     h.invoiceRepo.paidSums.set(INVOICE, 50000);
     h.paymentAccountRepo.put(makeAccount(50000));
     const seeded = seedRefund(h.refundRepo, {
       status: 'approved',
-      amount: 20000, // partial refund
+      amount: m(20000), // partial refund
     });
 
     const out = await h.service.process(KG, seeded.id);
@@ -717,12 +740,12 @@ describe('RefundService.process', () => {
 
     // Payment account debited by refund amount.
     const accountAfter = await h.paymentAccountRepo.findById(KG, ACCOUNT);
-    expect(accountAfter?.balance).toBe(30000);
+    expect(accountAfter?.balance.toNumber()).toBe(30000);
   });
 
   it('full refund against fully-paid invoice via partial steps — invoice flips to refunded only on full coverage (T11 C2)', async () => {
     const h = buildHarness();
-    h.paymentRepo.rows.set(PAYMENT, makePayment({ amount: 50000 }));
+    h.paymentRepo.rows.set(PAYMENT, makePayment({ amount: m(50000) }));
     h.invoiceRepo.rows.set(INVOICE, makeInvoice({ status: 'paid' }));
     h.invoiceRepo.paidSums.set(INVOICE, 50000);
     h.paymentAccountRepo.put(makeAccount(50000));
@@ -730,13 +753,13 @@ describe('RefundService.process', () => {
     seedRefund(h.refundRepo, {
       id: 'rrrrrrrr-rrrr-rrrr-rrrr-rrrrrrrrrrr1',
       status: 'processed',
-      amount: 25000,
+      amount: m(25000),
       providerRef: 'mock_old',
     });
     const newRefund = seedRefund(h.refundRepo, {
       id: 'rrrrrrrr-rrrr-rrrr-rrrr-rrrrrrrrrrr2',
       status: 'approved',
-      amount: 25000, // brings cumulative refund to full coverage
+      amount: m(25000), // brings cumulative refund to full coverage
     });
 
     await h.service.process(KG, newRefund.id);
@@ -768,7 +791,7 @@ describe('RefundService.process', () => {
     const invoiceAfter = await h.invoiceRepo.findById(KG, INVOICE);
     expect(invoiceAfter?.status).toBe('paid');
     const accountAfter = await h.paymentAccountRepo.findById(KG, ACCOUNT);
-    expect(accountAfter?.balance).toBe(50000);
+    expect(accountAfter?.balance.toNumber()).toBe(50000);
   });
 
   it('throws RefundNotFoundError when refund missing', async () => {

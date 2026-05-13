@@ -26,7 +26,7 @@ export const CustomDiscountPresenter = {
       name: s.name,
       description: s.description,
       discount_type: s.discountType,
-      amount: s.amount,
+      amount: s.amount.toNumber(),
       conditions: s.conditions,
       target_type: s.targetType,
       target_ids: s.targetIds,
@@ -81,7 +81,7 @@ export const CustomDiscountPresenter = {
       invoice_id: s.invoiceId,
       invoice_line_item_id: s.invoiceLineItemId,
       child_id: s.childId,
-      amount_applied: s.amountApplied,
+      amount_applied: s.amountApplied.toNumber(),
       applied_at: s.appliedAt.toISOString(),
     };
   },

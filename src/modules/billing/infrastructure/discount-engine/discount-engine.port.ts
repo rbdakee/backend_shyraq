@@ -1,3 +1,4 @@
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import {
   DiscountRules,
   TariffPlan,
@@ -43,7 +44,7 @@ export interface DiscountEvaluationInput {
     invoiceType: InvoiceType;
     childId: string;
     kindergartenId: string;
-    amountDue: number;
+    amountDue: MoneyKzt;
     periodStart: Date;
     periodEnd: Date;
     /** Snapshot of `due_date` — used by `early_payment` evaluator. */
@@ -85,7 +86,7 @@ export interface CustomDiscountSnapshot {
   id: string;
   name: LocalisedText;
   discountType: CustomDiscountType;
-  amount: number;
+  amount: MoneyKzt;
   conditions: ConditionsRoot;
   targetType: CustomDiscountTargetType;
   targetIds: string[] | null;

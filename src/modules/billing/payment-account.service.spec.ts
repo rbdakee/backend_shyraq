@@ -1,4 +1,5 @@
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import { PaymentAccount } from './domain/entities/payment-account.entity';
 import { PaymentAccountNotFoundError } from './domain/errors/payment-account-not-found.error';
 import { PaymentAccountRepository } from './infrastructure/persistence/payment-account.repository';
@@ -39,7 +40,7 @@ class FakePaymentAccountRepo extends PaymentAccountRepository {
       id,
       kindergartenId,
       childId,
-      balance: 0,
+      balance: MoneyKzt.zero(),
       createdAt: NOW,
       updatedAt: NOW,
     });
@@ -85,7 +86,7 @@ describe('PaymentAccountService', () => {
       const a = await svc.ensureForChild(KG, CHILD);
       expect(a.kindergartenId).toBe(KG);
       expect(a.childId).toBe(CHILD);
-      expect(a.balance).toBe(0);
+      expect(a.balance.toNumber()).toBe(0);
     });
 
     it('returns the same account on second call', async () => {
@@ -98,28 +99,36 @@ describe('PaymentAccountService', () => {
   describe('creditFromPayment / debitForRefund', () => {
     it('credits the balance', async () => {
       const a = await svc.ensureForChild(KG, CHILD);
-      const updated = await svc.creditFromPayment(KG, a.id, 5000);
-      expect(updated.balance).toBe(5000);
+      const updated = await svc.creditFromPayment(
+        KG,
+        a.id,
+        MoneyKzt.fromKzt(5000),
+      );
+      expect(updated.balance.toNumber()).toBe(5000);
     });
 
     it('debits the balance', async () => {
       const a = await svc.ensureForChild(KG, CHILD);
-      await svc.creditFromPayment(KG, a.id, 5000);
-      const updated = await svc.debitForRefund(KG, a.id, 1500);
-      expect(updated.balance).toBe(3500);
+      await svc.creditFromPayment(KG, a.id, MoneyKzt.fromKzt(5000));
+      const updated = await svc.debitForRefund(
+        KG,
+        a.id,
+        MoneyKzt.fromKzt(1500),
+      );
+      expect(updated.balance.toNumber()).toBe(3500);
     });
 
     it('rejects credit of zero / negative amount via domain invariant', async () => {
       const a = await svc.ensureForChild(KG, CHILD);
-      await expect(svc.creditFromPayment(KG, a.id, 0)).rejects.toThrow(
-        /amount must be > 0/,
-      );
+      await expect(
+        svc.creditFromPayment(KG, a.id, MoneyKzt.zero()),
+      ).rejects.toThrow(/amount must be > 0/);
     });
 
     it('throws PaymentAccountNotFoundError for unknown account', async () => {
-      await expect(svc.creditFromPayment(KG, 'missing', 100)).rejects.toThrow(
-        PaymentAccountNotFoundError,
-      );
+      await expect(
+        svc.creditFromPayment(KG, 'missing', MoneyKzt.fromKzt(100)),
+      ).rejects.toThrow(PaymentAccountNotFoundError);
     });
 
     it('throws PaymentAccountNotFoundError on cross-tenant id', async () => {
@@ -128,7 +137,7 @@ describe('PaymentAccountService', () => {
         svc.creditFromPayment(
           '22222222-2222-2222-2222-222222222222',
           a.id,
-          100,
+          MoneyKzt.fromKzt(100),
         ),
       ).rejects.toThrow(PaymentAccountNotFoundError);
     });

@@ -11,10 +11,8 @@ import {
   Patch,
   Post,
   Query,
-  Res,
   UseGuards,
 } from '@nestjs/common';
-import type { Response } from 'express';
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
@@ -22,7 +20,6 @@ import {
   ApiConflictResponse,
   ApiCreatedResponse,
   ApiForbiddenResponse,
-  ApiGoneResponse,
   ApiNotFoundResponse,
   ApiOkResponse,
   ApiOperation,
@@ -42,7 +39,6 @@ import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-co
 import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
 import { ChildPresenter } from './child.presenter';
 import { ChildService } from './child.service';
-import { RouteDeprecatedError } from './domain/errors/route-deprecated.error';
 import {
   ArchiveChildDto,
   AssignGroupDto,
@@ -494,45 +490,11 @@ export class ChildController {
     };
   }
 
-  /**
-   * B22a T11: removed — endpoint returns 410 Gone with `Location` header.
-   * The route definition stays so legacy clients receive a documented
-   * "endpoint_gone" code rather than the indistinguishable router-level 404
-   * they'd hit if we deleted the @Post() too. Full route-level removal is
-   * scheduled for B22b once client telemetry confirms zero hits.
-   *
-   * @deprecated Use POST /api/v1/children/:id/reactivate.
-   */
-  @Post(':id/restore')
-  @ApiOperation({
-    summary: 'DEPRECATED — returns 410 Gone (use /reactivate).',
-    deprecated: true,
-    description:
-      'Removed in B22a T11. All callers must migrate to ' +
-      'POST /api/v1/children/:id/reactivate. Response carries a Location ' +
-      'header pointing at the successor and an `endpoint_gone` error code.',
-  })
-  @ApiGoneResponse({
-    description: 'Endpoint replaced by /reactivate.',
-    schema: {
-      example: {
-        statusCode: 410,
-        error: 'endpoint_gone',
-        message: 'endpoint replaced by /api/v1/children/:id/reactivate',
-        details: {
-          successor: '/api/v1/children/:id/reactivate',
-        },
-      },
-    },
-  })
-  restore(
-    @Param('id', new ParseUUIDPipe()) id: string,
-    @Res({ passthrough: true }) res: Response,
-  ): never {
-    const successor = `/api/v1/children/${id}/reactivate`;
-    res.setHeader('Location', successor);
-    throw new RouteDeprecatedError(successor);
-  }
+  // B22b T12: `POST /admin/children/:id/restore` removed entirely. The B22a
+  // T11 410-Gone shim has been live for one release; clients must now use
+  // `POST /admin/children/:id/reactivate`. Hitting the legacy path falls
+  // through to the router-level 404. The `RouteDeprecatedError` class +
+  // child-domain error file were deleted in the same commit.
 
   // ── Guardians (admin) ──────────────────────────────────────────────────
 

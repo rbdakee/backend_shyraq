@@ -1,7 +1,6 @@
 import {
   BadRequestException,
   Controller,
-  ForbiddenException,
   Get,
   Param,
   ParseIntPipe,
@@ -25,7 +24,6 @@ import { JwtAuthGuard } from '@/common/guards/jwt-auth.guard';
 import { PendingRoleSelectGuard } from '@/common/guards/pending-role-select.guard';
 import { RolesGuard } from '@/common/guards/roles.guard';
 import type { JwtPayload } from '@/common/types/jwt-payload';
-import { ChildGuardianRepository } from '@/modules/child/infrastructure/persistence/child-guardian.repository';
 import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-context';
 import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
 import {
@@ -51,7 +49,7 @@ function requireTenant(t: TenantContext): string {
  *     pins `req.tenant` to the guardian's kg, then checks approved-active).
  *   - Per-route under `:id` (invoice id) → tenant comes from `KindergartenScopeGuard`
  *     (parent JWT after role-select); we then revalidate guardian-of-child via
- *     `ChildGuardianRepository.findApprovedActiveByUserAndChild` so an approved
+ *     `InvoiceService.assertNonNannyGuardianForRead` so an approved
  *     guardian on kg_A can never read invoice from kg_B even with a hand-crafted
  *     URL.
  *
@@ -68,10 +66,7 @@ function requireTenant(t: TenantContext): string {
 @UseGuards(JwtAuthGuard, PendingRoleSelectGuard, ChildAccessGuard, RolesGuard)
 @Roles('parent')
 export class ParentInvoiceController {
-  constructor(
-    private readonly service: InvoiceService,
-    private readonly guardians: ChildGuardianRepository,
-  ) {}
+  constructor(private readonly service: InvoiceService) {}
 
   @Get('children/:childId/invoices')
   @ApiOperation({
@@ -91,7 +86,7 @@ export class ParentInvoiceController {
     @Query() query: ListInvoicesQueryDto,
   ): Promise<InvoiceResponseDto[]> {
     const kgId = requireTenant(t);
-    await this.assertNonNannyGuardian(kgId, user.sub, childId);
+    await this.service.assertNonNannyGuardianForRead(kgId, user.sub, childId);
     const invoices = await this.service.list(kgId, {
       childId,
       status: query.status,
@@ -122,7 +117,11 @@ export class ParentInvoiceController {
   ): Promise<InvoiceResponseDto> {
     const kgId = requireTenant(t);
     const invoice = await this.service.get(kgId, id);
-    await this.assertNonNannyGuardian(kgId, user.sub, invoice.childId);
+    await this.service.assertNonNannyGuardianForRead(
+      kgId,
+      user.sub,
+      invoice.childId,
+    );
     const lineItems = await this.service.listLineItems(kgId, id);
     return InvoicePresenter.one(invoice, lineItems);
   }
@@ -145,7 +144,7 @@ export class ParentInvoiceController {
     monthsAhead?: number,
   ): Promise<PaymentCalendarResponseDto> {
     const kgId = requireTenant(t);
-    await this.assertNonNannyGuardian(kgId, user.sub, childId);
+    await this.service.assertNonNannyGuardianForRead(kgId, user.sub, childId);
     const horizon = monthsAhead ?? 12;
     const entries = await this.service.buildPaymentCalendar(
       kgId,
@@ -157,30 +156,5 @@ export class ParentInvoiceController {
       months_ahead: horizon,
       invoices: entries,
     };
-  }
-
-  /**
-   * Re-check guardian-of-child link in the resolved tenant. `ChildAccessGuard`
-   * already verifies cross-tenant approved status for `:childId` routes, but
-   * (a) `:id` invoice routes need an explicit re-check anyway, and (b) the
-   * guardian role itself isn't surfaced by the guard — we need it here to
-   * gate nanny.
-   */
-  private async assertNonNannyGuardian(
-    kgId: string,
-    userId: string,
-    childId: string,
-  ): Promise<void> {
-    const guardian = await this.guardians.findApprovedActiveByUserAndChild(
-      kgId,
-      childId,
-      userId,
-    );
-    if (!guardian) {
-      throw new ForbiddenException('not_a_guardian');
-    }
-    if (guardian.role.value === 'nanny') {
-      throw new ForbiddenException('nanny_cannot_view_invoice');
-    }
   }
 }

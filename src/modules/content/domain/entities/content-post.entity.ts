@@ -56,7 +56,7 @@ const KNOWN_TARGET_TYPES: ReadonlySet<ContentTargetType> = new Set([
 export type ContentStatus = 'draft' | 'scheduled' | 'published';
 
 /**
- * Localised text blob — caller-controlled key set (typically `{ ru, kz }`).
+ * Localised text blob — caller-controlled key set (typically `{ ru, kk }`).
  * Stored verbatim as JSONB; the entity does not enforce a particular shape.
  */
 export type LocalisedText = Record<string, string>;
@@ -313,11 +313,11 @@ export class ContentPost {
   static createBirthday(input: ContentPostCreateBirthdayInput): ContentPost {
     const titleI18n: LocalisedText = {
       ru: `С днём рождения, ${input.childFullName}!`,
-      kz: `Туған күніңмен, ${input.childFullName}!`,
+      kk: `Туған күніңмен, ${input.childFullName}!`,
     };
     const bodyI18n: LocalisedText = {
       ru: `Поздравляем с ${input.childAge}-летием!`,
-      kz: `${input.childAge} жасыңмен құттықтаймыз!`,
+      kk: `${input.childAge} жасыңмен құттықтаймыз!`,
     };
 
     return new ContentPost({

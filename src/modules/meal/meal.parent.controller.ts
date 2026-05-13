@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Controller,
   Get,
+  Inject,
   Param,
   ParseUUIDPipe,
   Query,
@@ -19,6 +20,7 @@ import {
 import { ChildAccessGuard } from '@/common/guards/child-access.guard';
 import { JwtAuthGuard } from '@/common/guards/jwt-auth.guard';
 import { PendingRoleSelectGuard } from '@/common/guards/pending-role-select.guard';
+import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-context';
 import {
   formatDateInTimezone,
@@ -44,7 +46,10 @@ function requireTenant(t: TenantContext): string {
 @Controller({ path: 'parent/children', version: '1' })
 @UseGuards(JwtAuthGuard, PendingRoleSelectGuard, ChildAccessGuard)
 export class MealParentController {
-  constructor(private readonly service: MealService) {}
+  constructor(
+    private readonly service: MealService,
+    @Inject(ClockPort) private readonly clock: ClockPort,
+  ) {}
 
   @Get(':childId/menu')
   @ApiOperation({
@@ -64,7 +69,7 @@ export class MealParentController {
     const kgId = requireTenant(t);
 
     // Default week_start = Monday of current week
-    const weekStart = query.week_start ?? getThisMonday();
+    const weekStart = query.week_start ?? getThisMonday(this.clock.now());
 
     return this.service.getMenuForChild(kgId, childId, weekStart);
   }
@@ -83,8 +88,7 @@ export class MealParentController {
  * into a midnight-UTC Date — the offset is purely calendar arithmetic
  * (24h * N), no DST in Asia/Almaty so this is safe.
  */
-function getThisMonday(): string {
-  const now = new Date();
+function getThisMonday(now: Date): string {
   const iso = isoWeekdayOf(now); // 1..7 in Asia/Almaty
   const todayAlmatyIso = formatDateInTimezone(now);
   const todayAnchor = new Date(`${todayAlmatyIso}T00:00:00.000Z`);

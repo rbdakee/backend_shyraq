@@ -1,11 +1,10 @@
 import { Inject, Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { InjectDataSource } from '@nestjs/typeorm';
 import { randomInt } from 'node:crypto';
-import { DataSource } from 'typeorm';
 import { AllConfigType } from '@/config/config.type';
 import { tenantStorage } from '@/database/tenant-storage';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { TransactionRunnerPort } from '@/shared-kernel/application/ports/transaction-runner.port';
 import { User } from '@/modules/users/domain/entities/user.entity';
 import { UserRepository } from '@/modules/users/infrastructure/persistence/user.repository';
 import {
@@ -139,7 +138,8 @@ export class AuthService implements OnModuleInit {
     private readonly configService: ConfigService<AllConfigType>,
     private readonly staff: StaffMemberRepository,
     private readonly guardians: ChildGuardianRepository,
-    @InjectDataSource() private readonly dataSource: DataSource,
+    @Inject(TransactionRunnerPort)
+    private readonly tx: TransactionRunnerPort,
     @Inject(NotificationPort)
     private readonly notifications: NotificationPort,
   ) {}
@@ -356,7 +356,7 @@ export class AuthService implements OnModuleInit {
     // RefreshTokenRelationalRepository.create would pick up that ambient
     // manager and fail the RLS WITH CHECK. Open a fresh TX with bypass_rls
     // and override tenantStorage so create() uses it.
-    await this.dataSource.transaction(async (manager) => {
+    await this.tx.run(async (manager) => {
       await manager.query(`SET LOCAL app.bypass_rls = 'true'`);
       await tenantStorage.run(
         { kgId: selectedKindergartenId, bypass: true, entityManager: manager },
@@ -742,7 +742,7 @@ export class AuthService implements OnModuleInit {
         );
         continue;
       }
-      await this.dataSource.transaction(async (manager) => {
+      await this.tx.run(async (manager) => {
         await manager.query(`SET LOCAL app.kindergarten_id = '${kgId}'`);
         await tenantStorage.run(
           { kgId, bypass: false, entityManager: manager },

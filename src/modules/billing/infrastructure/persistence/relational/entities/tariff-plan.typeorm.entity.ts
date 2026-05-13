@@ -5,7 +5,8 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
-import { numericTransformer } from '../numeric.transformer';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
+import { moneyKztTransformer } from '@/shared-kernel/infrastructure/typeorm/money-kzt.transformer';
 import { DiscountRules } from '../../../../domain/entities/tariff-plan.entity';
 
 export const TARIFF_TYPE_VALUES = [
@@ -57,9 +58,9 @@ export class TariffPlanTypeOrmEntity {
     type: 'numeric',
     precision: 12,
     scale: 2,
-    transformer: numericTransformer,
+    transformer: moneyKztTransformer,
   })
-  amount!: number;
+  amount!: MoneyKzt;
 
   @Column({ name: 'currency', type: 'char', length: 3, default: 'KZT' })
   currency!: string;

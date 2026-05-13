@@ -135,7 +135,7 @@ describeIntegration(
         await m.query(
           `INSERT INTO custom_discounts
              (id, kindergarten_id, name, discount_type, amount, valid_from, status)
-           VALUES ($1, $2, '{"ru":"Скидка А","kz":"Жеңілдік А"}', 'percentage', 10, '2025-01-01', 'active')`,
+           VALUES ($1, $2, '{"ru":"Скидка А","kk":"Жеңілдік А"}', 'percentage', 10, '2025-01-01', 'active')`,
           [discountA, kgA],
         );
 

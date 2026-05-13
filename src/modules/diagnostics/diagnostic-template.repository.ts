@@ -35,6 +35,27 @@ export abstract class DiagnosticTemplateRepository {
   ): Promise<DiagnosticTemplate | null>;
 
   /**
+   * Batch lookup by id. Returns a `Map<id, template>` so callers can
+   * `O(1)`-resolve a presenter join without writing N round-trips.
+   *
+   * Closes B18 M6 (B22b T5) — the staff/parent diagnostic-entry list
+   * presenters previously did `Promise.all(ids.map(getById))` which
+   * fired N parallel SELECT-by-id round-trips per page load. The
+   * relational impl issues a single `WHERE id = ANY($2) AND kg = $1`.
+   *
+   * Cross-tenant: templates not in `kgId` are silently absent from the
+   * returned map (no error). Deleted templates also absent — callers
+   * already render an empty `template_name` fallback.
+   *
+   * Passing an empty `ids` array returns an empty map without
+   * issuing any query.
+   */
+  abstract listByIds(
+    kgId: string,
+    ids: string[],
+  ): Promise<Map<string, DiagnosticTemplate>>;
+
+  /**
    * SELECT ... FOR UPDATE inside an ambient transaction (provided by the
    * tenantStorage interceptor). Used by service-layer flows that need to
    * read-then-write under a row lock, e.g. concurrent PATCH.

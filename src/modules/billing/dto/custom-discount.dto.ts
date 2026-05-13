@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   IsArray,
   IsBoolean,
@@ -24,6 +24,7 @@ import type {
 } from '../domain/entities/custom-discount.entity';
 import type { ConditionsRoot } from '../domain/discount-conditions/conditions-evaluator';
 import { IsValidConditions } from './validators/is-valid-conditions.decorator';
+import { normalizeLegacyKzLocale } from '../../../shared-kernel/utils/i18n-locale-normalizer';
 
 // ── enums ─────────────────────────────────────────────────────────────────
 
@@ -48,11 +49,16 @@ const TARGET_TYPES: CustomDiscountTargetType[] = [
 // ── shared nested DTO ──────────────────────────────────────────────────────
 
 /**
- * Localised text field with required `ru` and `kz` keys.
+ * Localised text field with required `ru` and `kk` keys.
  * Used for `name`, `description`, `notification_title`, `notification_body`.
  *
  * The index signature `[key: string]: string` makes this compatible with
  * the domain `LocalisedText = Record<string, string>` type without casting.
+ *
+ * B22b T1: Kazakh is now keyed under BCP-47 `kk` (was the country-code
+ * `kz` until B22a). Legacy `kz` rows in the DB are migrated forward by
+ * `B22I18nKzToKk` and read-side fallbacks still tolerate `kz` for one
+ * release, but new writes go to `kk` only.
  */
 export class I18nFieldDto {
   // Index signature required for compatibility with LocalisedText = Record<string, string>.
@@ -68,21 +74,22 @@ export class I18nFieldDto {
 
   @ApiProperty({
     example: '8 наурыз жеңілдігі',
-    description: 'Kazakh localisation.',
+    description: 'Kazakh localisation (BCP 47 `kk`).',
   })
   @IsString()
   @IsNotEmpty()
-  kz!: string;
+  kk!: string;
 }
 
 // ── request DTOs ───────────────────────────────────────────────────────────
 
 export class CreateCustomDiscountDto {
   @ApiProperty({
-    example: { ru: 'Скидка на 8 марта', kz: '8 наурыз жеңілдігі' },
+    example: { ru: 'Скидка на 8 марта', kk: '8 наурыз жеңілдігі' },
     description:
-      'Localised discount name. Both `ru` and `kz` keys are required.',
+      'Localised discount name. Both `ru` and `kk` keys are required.',
   })
+  @Transform(({ value }) => normalizeLegacyKzLocale(value))
   @ValidateNested()
   @Type(() => I18nFieldDto)
   name!: I18nFieldDto;
@@ -90,13 +97,14 @@ export class CreateCustomDiscountDto {
   @ApiProperty({
     example: {
       ru: 'Скидка действует с 1 по 10 марта',
-      kz: 'Жеңілдік 1-10 наурызда қолданылады',
+      kk: 'Жеңілдік 1-10 наурызда қолданылады',
     },
     description: 'Localised description. Optional.',
     required: false,
     nullable: true,
   })
   @IsOptional()
+  @Transform(({ value }) => normalizeLegacyKzLocale(value))
   @ValidateNested()
   @Type(() => I18nFieldDto)
   description?: I18nFieldDto | null;
@@ -227,7 +235,7 @@ export class CreateCustomDiscountDto {
   notify_on_activation?: boolean;
 
   @ApiProperty({
-    example: { ru: 'Для вашего ребёнка скидка!', kz: 'Балаңызға жеңілдік!' },
+    example: { ru: 'Для вашего ребёнка скидка!', kk: 'Балаңызға жеңілдік!' },
     description:
       'Localised push title. **REQUIRED when `notify_on_activation=true` (defaults to true)**. Missing → 422 UnprocessableEntity with `errors.notification_title`. T8 M3 closes the silent no-op where the activation flow used to log+skip when title/body were absent.',
     required: false,
@@ -246,6 +254,7 @@ export class CreateCustomDiscountDto {
   )
   @IsDefined()
   @IsNotEmpty()
+  @Transform(({ value }) => normalizeLegacyKzLocale(value))
   @ValidateNested()
   @Type(() => I18nFieldDto)
   notification_title?: I18nFieldDto | null;
@@ -253,7 +262,7 @@ export class CreateCustomDiscountDto {
   @ApiProperty({
     example: {
       ru: 'Скидка 15% действует с 1 по 10 марта',
-      kz: '15% жеңілдік 1-10 наурыз аралығында',
+      kk: '15% жеңілдік 1-10 наурыз аралығында',
     },
     description:
       'Localised push body. **REQUIRED when `notify_on_activation=true`** (paired with `notification_title`).',
@@ -266,6 +275,7 @@ export class CreateCustomDiscountDto {
   )
   @IsDefined()
   @IsNotEmpty()
+  @Transform(({ value }) => normalizeLegacyKzLocale(value))
   @ValidateNested()
   @Type(() => I18nFieldDto)
   notification_body?: I18nFieldDto | null;
@@ -273,21 +283,23 @@ export class CreateCustomDiscountDto {
 
 export class UpdateCustomDiscountDto {
   @ApiProperty({
-    example: { ru: 'Скидка на Наурыз', kz: 'Наурыз жеңілдігі' },
+    example: { ru: 'Скидка на Наурыз', kk: 'Наурыз жеңілдігі' },
     description: 'Updated localised name.',
     required: false,
   })
   @IsOptional()
+  @Transform(({ value }) => normalizeLegacyKzLocale(value))
   @ValidateNested()
   @Type(() => I18nFieldDto)
   name?: I18nFieldDto;
 
   @ApiProperty({
-    example: { ru: 'Акция обновлена', kz: 'Акция жаңартылды' },
+    example: { ru: 'Акция обновлена', kk: 'Акция жаңартылды' },
     required: false,
     nullable: true,
   })
   @IsOptional()
+  @Transform(({ value }) => normalizeLegacyKzLocale(value))
   @ValidateNested()
   @Type(() => I18nFieldDto)
   description?: I18nFieldDto | null;
@@ -386,11 +398,26 @@ export class UpdateCustomDiscountDto {
   notify_on_activation?: boolean;
 
   @ApiProperty({
-    example: { ru: 'Новое название скидки', kz: 'Жаңа жеңілдік атауы' },
+    example: { ru: 'Новое название скидки', kk: 'Жаңа жеңілдік атауы' },
     required: false,
     nullable: true,
+    description:
+      'Updated localised push title. **REQUIRED when the same PATCH sets `notify_on_activation=true`** (M9 cross-field invariant). Otherwise optional. PATCHing `notify_on_activation=false` clears the requirement; absent `notify_on_activation` keeps the existing persisted title as-is.',
   })
-  @IsOptional()
+  // B22b T7 M9: cross-field invariant on the PATCH. The Create-DTO already
+  // requires title+body whenever `notify_on_activation` is on (default true).
+  // For PATCH we only fire the requirement when this very patch explicitly
+  // flips `notify_on_activation=true`: at that point the persisted title/body
+  // may still be null (e.g. discount created with notify off), so requiring
+  // the pair in the same patch keeps the entity invariant intact without
+  // touching unrelated rows. Returns 400 with `notification_title` in the
+  // validation-error list. When `notify_on_activation` is undefined or
+  // explicitly `false`, the chained validators below are skipped → title
+  // remains optional (e.g. cosmetic copy update with notify off).
+  @ValidateIf((o: UpdateCustomDiscountDto) => o.notify_on_activation === true)
+  @IsDefined()
+  @IsNotEmpty()
+  @Transform(({ value }) => normalizeLegacyKzLocale(value))
   @ValidateNested()
   @Type(() => I18nFieldDto)
   notification_title?: I18nFieldDto | null;
@@ -398,12 +425,17 @@ export class UpdateCustomDiscountDto {
   @ApiProperty({
     example: {
       ru: 'Обновлённое описание акции',
-      kz: 'Жаңартылған акция сипаттамасы',
+      kk: 'Жаңартылған акция сипаттамасы',
     },
     required: false,
     nullable: true,
+    description:
+      'Updated localised push body. **REQUIRED when the same PATCH sets `notify_on_activation=true`** (paired with `notification_title`, M9).',
   })
-  @IsOptional()
+  @ValidateIf((o: UpdateCustomDiscountDto) => o.notify_on_activation === true)
+  @IsDefined()
+  @IsNotEmpty()
+  @Transform(({ value }) => normalizeLegacyKzLocale(value))
   @ValidateNested()
   @Type(() => I18nFieldDto)
   notification_body?: I18nFieldDto | null;
@@ -517,7 +549,7 @@ export class CustomDiscountResponseDto {
   kindergarten_id!: string;
 
   @ApiProperty({
-    example: { ru: 'Скидка на 8 марта', kz: '8 наурыз жеңілдігі' },
+    example: { ru: 'Скидка на 8 марта', kk: '8 наурыз жеңілдігі' },
     description: 'Localised name.',
   })
   name!: Record<string, string>;
@@ -525,7 +557,7 @@ export class CustomDiscountResponseDto {
   @ApiProperty({
     example: {
       ru: 'Скидка действует с 1 по 10 марта',
-      kz: 'Жеңілдік 1-10 наурызда қолданылады',
+      kk: 'Жеңілдік 1-10 наурызда қолданылады',
     },
     nullable: true,
     description: 'Localised description.',
@@ -588,7 +620,7 @@ export class CustomDiscountResponseDto {
   notify_on_activation!: boolean;
 
   @ApiProperty({
-    example: { ru: 'Для вашего ребёнка скидка!', kz: 'Балаңызға жеңілдік!' },
+    example: { ru: 'Для вашего ребёнка скидка!', kk: 'Балаңызға жеңілдік!' },
     nullable: true,
   })
   notification_title!: Record<string, string> | null;
@@ -596,7 +628,7 @@ export class CustomDiscountResponseDto {
   @ApiProperty({
     example: {
       ru: 'Скидка 15% действует с 1 по 10 марта',
-      kz: '15% жеңілдік 1-10 наурыз аралығында',
+      kk: '15% жеңілдік 1-10 наурыз аралығында',
     },
     nullable: true,
   })

@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { EntityManager } from 'typeorm';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import { PaymentAccount } from './domain/entities/payment-account.entity';
 import { PaymentAccountNotFoundError } from './domain/errors/payment-account-not-found.error';
 import { PaymentAccountRepository } from './infrastructure/persistence/payment-account.repository';
@@ -18,8 +18,9 @@ import { PaymentAccountRepository } from './infrastructure/persistence/payment-a
  *
  * No public controller in T7a — exposed only via the BillingModule's
  * provider list. Methods take `kindergartenId` first per service-layer
- * convention; `manager` is optional for callers running outside the HTTP
- * pipeline (cron, outbox).
+ * convention. The underlying repository falls back to
+ * `tenantStorage.getStore()?.entityManager` so cron / outbox / HTTP paths
+ * all participate in their ambient TX without needing an explicit handle.
  */
 @Injectable()
 export class PaymentAccountService {
@@ -31,15 +32,14 @@ export class PaymentAccountService {
   async ensureForChild(
     kindergartenId: string,
     childId: string,
-    manager?: EntityManager,
   ): Promise<PaymentAccount> {
-    return this.accounts.findOrCreateForChild(kindergartenId, childId, manager);
+    return this.accounts.findOrCreateForChild(kindergartenId, childId);
   }
 
   async creditFromPayment(
     kindergartenId: string,
     accountId: string,
-    amount: number,
+    amount: MoneyKzt,
   ): Promise<PaymentAccount> {
     const account = await this.accounts.findById(kindergartenId, accountId);
     if (!account) {
@@ -52,7 +52,7 @@ export class PaymentAccountService {
   async debitForRefund(
     kindergartenId: string,
     accountId: string,
-    amount: number,
+    amount: MoneyKzt,
   ): Promise<PaymentAccount> {
     const account = await this.accounts.findById(kindergartenId, accountId);
     if (!account) {

@@ -19,8 +19,6 @@ import {
 import { Roles } from '@/common/decorators/roles.decorator';
 import { ChildAccessGuard } from '@/common/guards/child-access.guard';
 import { RolesGuard } from '@/common/guards/roles.guard';
-import { GroupStoryRepository } from '@/modules/content/group-story.repository';
-import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
 import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-context';
 import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
 import { ContentPresenter } from './content.presenter';
@@ -56,11 +54,7 @@ function requireTenant(t: TenantContext): string {
 @UseGuards(ChildAccessGuard, RolesGuard)
 @Roles('parent')
 export class ParentContentController {
-  constructor(
-    private readonly feedService: ContentFeedService,
-    private readonly childRepo: ChildRepository,
-    private readonly storyRepo: GroupStoryRepository,
-  ) {}
+  constructor(private readonly feedService: ContentFeedService) {}
 
   @Get(':childId/content')
   @ApiOperation({
@@ -101,18 +95,10 @@ export class ParentContentController {
     @Param('childId', new ParseUUIDPipe()) childId: string,
   ): Promise<StoryListResponseDto> {
     const kgId = requireTenant(t);
-    const child = await this.childRepo.findById(kgId, childId);
-    if (!child) {
-      // ChildAccessGuard should have caught this already, but guard defensively.
-      return ContentPresenter.storyList([]);
-    }
-    const childState = child.toState();
-    const groupId = childState.currentGroupId;
-    if (!groupId) {
-      return ContentPresenter.storyList([]);
-    }
-    const now = new Date();
-    const stories = await this.storyRepo.listActiveByGroup(kgId, groupId, now);
+    const stories = await this.feedService.listActiveStoriesForChild(
+      kgId,
+      childId,
+    );
     return ContentPresenter.storyList(stories);
   }
 }

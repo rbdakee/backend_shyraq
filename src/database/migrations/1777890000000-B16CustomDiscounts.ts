@@ -242,5 +242,23 @@ export class B16CustomDiscounts1777890000000 implements MigrationInterface {
     // ENUMs (after all referencing tables are dropped)
     await queryRunner.query(`DROP TYPE IF EXISTS "custom_discount_type"`);
     await queryRunner.query(`DROP TYPE IF EXISTS "custom_discount_status"`);
+
+    // NOTE (B22b T15): A prior revision restored TRUNCATE privilege on
+    // `custom_discounts` and `custom_discount_applications` to `shyraq_app`
+    // here for symmetry with up(). That GRANT ran AFTER the tables were
+    // dropped above, and PostgreSQL rejects `GRANT … ON <missing relation>`
+    // with `relation does not exist`, which would fail the entire down().
+    // Dropped relations also do not retain privileges, so the GRANT had no
+    // effect on a re-up either (up() re-creates the tables and re-applies
+    // its own privilege grants). The GRANT has therefore been removed.
+
+    // Drop the shared trigger-helper function. It was created (or replaced)
+    // by this migration's up(). No other migration currently calls it, so
+    // it is safe to drop on rollback. CASCADE removes any remaining triggers
+    // that depend on it (should be zero by the time we reach this line, but
+    // CASCADE is defensive against future up() additions).
+    await queryRunner.query(
+      `DROP FUNCTION IF EXISTS update_updated_at_column() CASCADE`,
+    );
   }
 }

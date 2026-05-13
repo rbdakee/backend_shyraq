@@ -19,6 +19,7 @@ import { ForbiddenActionError } from '@/shared-kernel/domain/errors';
 import { AttendanceService } from '@/modules/attendance/attendance.service';
 import { AttendanceMethod } from '@/modules/attendance/domain/value-objects/attendance-method.vo';
 import { PickupRequest } from './domain/entities/pickup-request.entity';
+import { TrustedPerson } from './domain/entities/trusted-person.entity';
 import { PickupOtpExpiredError } from './domain/errors/pickup-otp-expired.error';
 import { PickupRequestAlreadyValidatedError } from './domain/errors/pickup-request-already-validated.error';
 import { PickupRequestExpiredError } from './domain/errors/pickup-request-expired.error';
@@ -346,12 +347,20 @@ export class PickupRequestService {
     // because revoke / one-time-consume can happen during the OTP TTL.
     // We surface the same TrustedPersonRevokedError (410 Gone) the
     // create path uses so client behaviour is consistent.
+    //
+    // B22b T7 M18: single fetch under the advisory lock. The pre-flight
+    // eligibility check and the downstream `markUsed` step previously
+    // issued two `findById` round-trips on the same row inside the same
+    // ambient TX (the second one didn't even use the looked-up state —
+    // it called `markUsed(tp.id, …, tp.isOneTime)` from a re-fetch). We
+    // keep the hydrated entity here and reuse it after the DB writes.
+    let trustedPerson: TrustedPerson | null = null;
     if (pr.trustedPersonId !== null) {
-      const tpCheck = await this.trustedPeople.findById(pr.trustedPersonId);
-      if (tpCheck === null) {
+      trustedPerson = await this.trustedPeople.findById(pr.trustedPersonId);
+      if (trustedPerson === null) {
         throw new TrustedPersonNotFoundError(pr.trustedPersonId);
       }
-      if (!tpCheck.isAvailableForPickup()) {
+      if (!trustedPerson.isAvailableForPickup()) {
         throw new TrustedPersonRevokedError();
       }
     }
@@ -431,17 +440,20 @@ export class PickupRequestService {
     // The earlier HIGH#1 isAvailableForPickup re-check filters parent-
     // initiated revocations; HIGH#2 closes the residual same-row /
     // different-request race that re-check alone cannot prevent.
-    if (pr.trustedPersonId) {
-      const tp = await this.trustedPeople.findById(pr.trustedPersonId);
-      if (tp) {
-        const claimed = await this.trustedPeople.markUsed(
-          tp.id,
-          now,
-          tp.isOneTime,
-        );
-        if (!claimed && tp.isOneTime) {
-          throw new TrustedPersonRevokedError();
-        }
+    //
+    // B22b T7 M18: reuse `trustedPerson` captured at the top of the
+    // method instead of issuing a second `findById`. `isOneTime` is
+    // immutable on the row (frozen at create time), so the value read
+    // pre-lock is still authoritative; the *availability* changes are
+    // already gated by the conditional UPDATE inside `markUsed`.
+    if (trustedPerson) {
+      const claimed = await this.trustedPeople.markUsed(
+        trustedPerson.id,
+        now,
+        trustedPerson.isOneTime,
+      );
+      if (!claimed && trustedPerson.isOneTime) {
+        throw new TrustedPersonRevokedError();
       }
     }
 

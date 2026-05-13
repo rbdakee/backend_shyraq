@@ -1,3 +1,5 @@
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
+
 export type TariffType =
   | 'monthly'
   | 'additional_service'
@@ -35,7 +37,7 @@ export interface TariffPlanState {
   name: string;
   description: Record<string, string>;
   tariffType: TariffType;
-  amount: number;
+  amount: MoneyKzt;
   currency: string;
   appliesTo: TariffAppliesTo;
   groupId: string | null;
@@ -112,7 +114,7 @@ export class TariffPlan {
     return this.state.tariffType;
   }
 
-  get amount(): number {
+  get amount(): MoneyKzt {
     return this.state.amount;
   }
 

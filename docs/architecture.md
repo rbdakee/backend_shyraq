@@ -349,6 +349,7 @@ Naming convention — `it('returns ...')` / `it('throws ...')` / `it('rejects ..
 | Queue / Job | Процесс | Интервал / Trigger | Назначение |
 |---|---|---|---|
 | `notification-outbox-poll` | worker (repeatable) | каждые 2с | Забирает `pending` строки из `notification_outbox`, fan-out'ит через `NotificationDispatcher`, помечает `dispatched`/`failed` |
+| `notifications-outbox-prune` | worker (repeatable) | `0 4 * * 0` Asia/Almaty (вс 04:00) | B22b T12: weekly prune `notification_outbox` — DELETE rows `status='dispatched' AND created_at < now - 7d`, плюс `status='failed' AND created_at < now - 30d`. Cross-tenant, бежит под `app.bypass_rls='true'`. Retention hardcoded (NOT env-driven — GDPR/compliance trigger перепишет процессор когда придёт время). Idempotent: повторный tick на тот же `now` удаляет 0 строк. Partial индексы `idx_outbox_dispatched_created_at` + `idx_outbox_failed_created_at` обеспечивают index-only DELETE. Gated `OUTBOX_PRUNE_CRON !== 'disabled'`. |
 | `weekly-rollout` | worker (repeatable) | раз в неделю (Пн 00:00 kg-TZ) | Авто-копирование расписания/меню на следующую неделю |
 | (future) `billing-cron` | worker | ежесуточно | Биллинг, OFD-fiscalization — B14+ |
 | `birthday-generation` | worker (repeatable) | `0 7 * * *` Asia/Almaty | B17: создаёт `content_posts` (type='birthday') для именинников, идемпотентно |

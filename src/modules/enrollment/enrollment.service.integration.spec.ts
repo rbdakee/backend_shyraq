@@ -20,6 +20,7 @@ import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
 import { DataSource } from 'typeorm';
 import { InMemoryNotificationAdapter } from '@/common/notifications/in-memory-notification.adapter';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import { tenantStorage } from '@/database/tenant-storage';
 import { OtpStorePort, StoredOtp } from '@/modules/auth/otp-store.port';
 import { CameraEntity } from '@/modules/camera/infrastructure/persistence/relational/entities/camera.entity';
@@ -45,6 +46,7 @@ import { StaffMemberRelationalRepository } from '@/modules/staff/infrastructure/
 import { UserEntity } from '@/modules/users/infrastructure/persistence/relational/entities/user.entity';
 import { UserRelationalRepository } from '@/modules/users/infrastructure/persistence/relational/repositories/user.repository';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { TypeOrmTransactionRunnerAdapter } from '@/shared-kernel/infrastructure/adapters/typeorm-transaction-runner.adapter';
 import { EnrollmentEntity } from './infrastructure/persistence/relational/entities/enrollment.entity';
 import { EnrollmentStatusLogEntity } from './infrastructure/persistence/relational/entities/enrollment-status-log.entity';
 import { EnrollmentRelationalRepository } from './infrastructure/persistence/relational/repositories/enrollment-relational.repository';
@@ -256,7 +258,7 @@ describeIntegration('EnrollmentService — service-integration', () => {
       userRepo,
       notification,
       clock,
-      dataSource,
+      new TypeOrmTransactionRunnerAdapter(dataSource),
       otpStore,
       configService,
       new NoopBillingLifecycleAdapter(),
@@ -297,10 +299,10 @@ describeIntegration('EnrollmentService — service-integration', () => {
           invoiceType: 'monthly',
           periodStart: input.enrollmentDate,
           periodEnd: input.enrollmentDate,
-          amountDue: 0,
+          amountDue: MoneyKzt.zero(),
           discountPct: null,
           discountReason: null,
-          amountAfterDiscount: 0,
+          amountAfterDiscount: MoneyKzt.zero(),
           status: 'pending',
           dueDate: input.enrollmentDate,
           description: null,
@@ -403,7 +405,7 @@ describeIntegration('EnrollmentService — service-integration', () => {
       const logRows = await m.query(
         `SELECT from_status, to_status FROM enrollment_status_log
           WHERE enrollment_id = $1
-          ORDER BY created_at ASC`,
+          ORDER BY created_at ASC, id ASC`,
         [enrollmentId],
       );
       expect(logRows).toHaveLength(2);

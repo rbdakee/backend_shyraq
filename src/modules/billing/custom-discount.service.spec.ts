@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { DataSource, EntityManager } from 'typeorm';
+import type { EntityManager } from '@/shared-kernel/application/ports/transaction-runner.port';
+import { TransactionRunnerPort } from '@/shared-kernel/application/ports/transaction-runner.port';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import { InMemoryNotificationAdapter } from '@/common/notifications/in-memory-notification.adapter';
 import {
   CreateCustomDiscountApplicationInput,
@@ -41,11 +43,11 @@ class FakeClock extends ClockPort {
   }
 }
 
-class FakeDataSource {
-  // Just enough surface to call transaction(em => …) — we pass a stub EM
-  // whose `query` is a no-op (the GUC SET LOCAL is a runtime-only concern;
-  // the in-memory fake repo doesn't read GUC).
-  transaction<T>(cb: (em: EntityManager) => Promise<T>): Promise<T> {
+class FakeTransactionRunner extends TransactionRunnerPort {
+  // Just enough surface to call run(em => …) — we pass a stub EM whose
+  // `query` is a no-op (the GUC SET LOCAL is a runtime-only concern; the
+  // in-memory fake repo doesn't read GUC).
+  run<T>(cb: (em: EntityManager) => Promise<T>): Promise<T> {
     const stub = {
       query: () => Promise.resolve([]),
     } as unknown as EntityManager;
@@ -70,7 +72,7 @@ class FakeCustomDiscountRepo extends CustomDiscountRepository {
       name: input.name,
       description: input.description,
       discountType: input.discountType,
-      amount: input.amount,
+      amount: MoneyKzt.fromKzt(input.amount),
       conditions: input.conditions,
       targetType: input.targetType,
       targetIds: input.targetIds,
@@ -120,9 +122,14 @@ class FakeCustomDiscountRepo extends CustomDiscountRepository {
     if (expectedStatus !== undefined && existing.status !== expectedStatus) {
       return Promise.resolve(null);
     }
+    const existingState = existing.toState();
     const merged: CustomDiscountState = {
-      ...existing.toState(),
+      ...existingState,
       ...patch,
+      amount:
+        patch.amount !== undefined
+          ? MoneyKzt.fromKzt(patch.amount)
+          : existingState.amount,
       updatedAt: NOW,
     };
     const next = CustomDiscount.fromState(merged);
@@ -300,7 +307,7 @@ class FakeAppRepo extends CustomDiscountApplicationRepository {
       invoiceId: input.invoiceId,
       invoiceLineItemId: input.invoiceLineItemId,
       childId: input.childId,
-      amountApplied: input.amountApplied,
+      amountApplied: MoneyKzt.fromKzt(input.amountApplied),
       appliedAt: NOW,
     });
     this.rows.push(a);
@@ -358,7 +365,10 @@ class FakeAppRepo extends CustomDiscountApplicationRepository {
     );
     return Promise.resolve({
       count: matched.length,
-      totalAmountApplied: matched.reduce((s, r) => s + r.amountApplied, 0),
+      totalAmountApplied: matched.reduce(
+        (s, r) => s + r.amountApplied.toNumber(),
+        0,
+      ),
     });
   }
 }
@@ -399,7 +409,7 @@ function buildSvc(): {
     repo,
     appRepo,
     notif,
-    new FakeDataSource() as unknown as DataSource,
+    new FakeTransactionRunner(),
     resolver as unknown as DiscountTargetResolver,
     new FakeClock(NOW),
   );
@@ -432,7 +442,7 @@ describe('CustomDiscountService', () => {
       const d = await svc.create(KG, VALID_INPUT, 'staff-1');
       expect(d.status).toBe('draft');
       expect(d.kindergartenId).toBe(KG);
-      expect(d.amount).toBe(10);
+      expect(d.amount.toNumber()).toBe(10);
       expect(d.discountType).toBe('percentage');
       expect(d.usedCount).toBe(0);
     });
@@ -459,7 +469,7 @@ describe('CustomDiscountService', () => {
       const { svc } = buildSvc();
       const created = await svc.create(KG, VALID_INPUT, 'staff-1');
       const updated = await svc.update(KG, created.id, { amount: 20 });
-      expect(updated.amount).toBe(20);
+      expect(updated.amount.toNumber()).toBe(20);
     });
 
     it('throws CustomDiscountStatusInvalidError when status != draft', async () => {

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { Logger } from '@nestjs/common';
 import { InMemoryNotificationAdapter } from '@/common/notifications/in-memory-notification.adapter';
 import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
 import { ChildNotFoundError } from '@/modules/child/domain/errors/child-not-found.error';
@@ -58,6 +59,19 @@ class FakeTemplateRepo extends DiagnosticTemplateRepository {
     const t = this.rows.get(id);
     if (!t || t.kindergartenId !== kgId) return Promise.resolve(null);
     return Promise.resolve(t);
+  }
+  listByIds(
+    kgId: string,
+    ids: string[],
+  ): Promise<Map<string, DiagnosticTemplate>> {
+    const map = new Map<string, DiagnosticTemplate>();
+    for (const id of ids) {
+      const t = this.rows.get(id);
+      if (t && t.kindergartenId === kgId) {
+        map.set(id, t);
+      }
+    }
+    return Promise.resolve(map);
   }
   findByIdForUpdate(
     kgId: string,
@@ -457,6 +471,38 @@ describe('DiagnosticEntryService', () => {
       await expect(
         service.update(KG, entry.id, STAFF_B, USER_B, { summary: 'x' }),
       ).rejects.toBeInstanceOf(DiagnosticEntryNotAuthoredByYouError);
+    });
+
+    it('logs orphaned_diagnostic_entry when entry.template_id resolves to nothing (B22b T5 L2)', async () => {
+      // B18 L2 — operator audit channel. The data-validation branch
+      // re-loads the template by id; if it has been deleted (FK + RLS
+      // should prevent this, but the branch exists), surface a
+      // grep-able `orphaned_diagnostic_entry` line BEFORE rethrowing
+      // the generic 404. Asserts log payload contains both the entry
+      // id and the dangling template id so the operator can trace
+      // the breach.
+      const tmpl = buildTemplate();
+      // Entry exists referencing tmpl, but tmpl is NOT in the repo —
+      // simulating a dangling foreign key.
+      const entry = buildEntry(tmpl);
+      entries.put(entry);
+      const errorSpy = jest
+        .spyOn(Logger.prototype, 'error')
+        .mockImplementation(() => undefined);
+      try {
+        await expect(
+          service.update(KG, entry.id, STAFF_A, USER_A, {
+            data: { mood: 4 },
+          }),
+        ).rejects.toBeInstanceOf(DiagnosticTemplateNotFoundError);
+        expect(errorSpy).toHaveBeenCalledTimes(1);
+        const msg = errorSpy.mock.calls[0][0] as string;
+        expect(msg).toContain('orphaned_diagnostic_entry');
+        expect(msg).toContain(entry.id);
+        expect(msg).toContain(tmpl.id);
+      } finally {
+        errorSpy.mockRestore();
+      }
     });
 
     it('throws OptimisticLockError when repo signals stale row_version', async () => {

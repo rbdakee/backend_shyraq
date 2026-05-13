@@ -20,7 +20,7 @@ export const PaymentPresenter = {
       invoice_id: s.invoiceId,
       child_id: s.childId,
       payer_user_id: s.payerUserId,
-      amount: s.amount,
+      amount: s.amount.toNumber(),
       provider: s.provider,
       provider_txn_id: s.providerTxnId,
       idempotency_key: s.idempotencyKey,

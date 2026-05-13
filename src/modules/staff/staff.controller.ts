@@ -23,7 +23,6 @@ import { PendingRoleSelectGuard } from '@/common/guards/pending-role-select.guar
 import { RolesGuard } from '@/common/guards/roles.guard';
 import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
 import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-context';
-import { KindergartenRepository } from '@/modules/kindergarten/infrastructure/persistence/kindergarten.repository';
 import { CreateStaffDto } from './dto/create-staff.dto';
 import { ListStaffQueryDto } from './dto/list-staff-query.dto';
 import { StaffMemberDto } from './dto/staff-response.dto';
@@ -52,10 +51,7 @@ import { StaffNotFoundError } from './domain/errors/staff-not-found.error';
 @UseGuards(JwtAuthGuard, PendingRoleSelectGuard, RolesGuard)
 @Roles('admin')
 export class StaffController {
-  constructor(
-    private readonly service: StaffService,
-    private readonly kindergartens: KindergartenRepository,
-  ) {}
+  constructor(private readonly service: StaffService) {}
 
   @Get()
   @ApiOperation({ summary: 'List staff in the caller’s kindergarten.' })
@@ -96,18 +92,13 @@ export class StaffController {
     @Body() dto: CreateStaffDto,
   ): Promise<StaffMemberDto> {
     if (!tenant.kgId) throw new StaffNotFoundError('<no-tenant>');
-    const kg = await this.kindergartens.findById(tenant.kgId);
-    const row = await this.service.create(
-      tenant.kgId,
-      {
-        fullName: dto.full_name,
-        phone: dto.phone,
-        role: dto.role,
-        specialistType: dto.specialist_type ?? null,
-        hiredAt: dto.hired_at ? new Date(dto.hired_at) : null,
-      },
-      { kindergartenName: kg?.name ?? '' },
-    );
+    const row = await this.service.create(tenant.kgId, {
+      fullName: dto.full_name,
+      phone: dto.phone,
+      role: dto.role,
+      specialistType: dto.specialist_type ?? null,
+      hiredAt: dto.hired_at ? new Date(dto.hired_at) : null,
+    });
     return StaffPresenter.staff(row);
   }
 

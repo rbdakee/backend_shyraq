@@ -1,4 +1,5 @@
-import { DataSource } from 'typeorm';
+import type { EntityManager } from '@/shared-kernel/application/ports/transaction-runner.port';
+import { TransactionRunnerPort } from '@/shared-kernel/application/ports/transaction-runner.port';
 import {
   AttendanceCheckInEvent,
   AttendanceCheckOutEvent,
@@ -148,6 +149,9 @@ class FakeContentRepo extends ContentRepository {
   }
   existsBirthdayForChildOnDate(): Promise<boolean> {
     return Promise.resolve(false);
+  }
+  listNewsForChild(): Promise<ContentPost[]> {
+    return Promise.resolve([]);
   }
   // helpers
   setStatus(id: string, status: ContentStatus): void {
@@ -382,10 +386,15 @@ class FakeNotificationPort extends NotificationPort {
   }
 }
 
-const fakeDataSource = {
-  transaction: async <T>(cb: (em: unknown) => Promise<T>): Promise<T> =>
-    cb({ query: () => Promise.resolve(undefined) }),
-} as unknown as DataSource;
+class FakeTransactionRunner extends TransactionRunnerPort {
+  run<T>(cb: (em: EntityManager) => Promise<T>): Promise<T> {
+    return cb({
+      query: () => Promise.resolve(undefined),
+    } as unknown as EntityManager);
+  }
+}
+
+const fakeTxRunner: TransactionRunnerPort = new FakeTransactionRunner();
 
 function buildService() {
   const contentRepo = new FakeContentRepo();
@@ -402,7 +411,7 @@ function buildService() {
     childRepo,
     fileStorage,
     notification,
-    fakeDataSource,
+    fakeTxRunner,
     clock,
   );
   return {

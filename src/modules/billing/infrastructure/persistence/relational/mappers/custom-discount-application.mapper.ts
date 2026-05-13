@@ -15,7 +15,8 @@ export class CustomDiscountApplicationMapper {
       invoiceId: row.invoiceId,
       invoiceLineItemId: row.invoiceLineItemId,
       childId: row.childId,
-      amountApplied: Number(row.amountApplied),
+      // Transformer hands `MoneyKzt` directly — pass through.
+      amountApplied: row.amountApplied,
       appliedAt: row.appliedAt,
     };
     return CustomDiscountApplication.fromState(state);

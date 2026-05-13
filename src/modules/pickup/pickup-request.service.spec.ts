@@ -205,6 +205,10 @@ class FakePickupRequestRepo extends PickupRequestRepository {
 class FakeTrustedPersonRepo extends TrustedPersonRepository {
   rows = new Map<string, TrustedPerson>();
   markUsedCalls: { id: string; deactivate: boolean }[] = [];
+  /** B22b T7 M18: counts `findById` invocations so the service-spec can
+   * assert that validateOtp issues at most one fetch per trusted_person
+   * row (single-fetch collapse). */
+  findByIdCalls: string[] = [];
 
   put(tp: TrustedPerson): void {
     this.rows.set(tp.id, tp);
@@ -229,6 +233,7 @@ class FakeTrustedPersonRepo extends TrustedPersonRepository {
   }
 
   findById(id: string): Promise<TrustedPerson | null> {
+    this.findByIdCalls.push(id);
     return Promise.resolve(this.rows.get(id) ?? null);
   }
 
@@ -1170,6 +1175,30 @@ describe('PickupRequestService — service-unit', () => {
       expect(w.trustedPeople.markUsedCalls[0]).toEqual({
         id: TP_ID,
         deactivate: false,
+      });
+    });
+
+    it('fetches the trusted_person row at most once under the advisory lock (M18 double-fetch collapse)', async () => {
+      const w = wire();
+      w.trustedPeople.put(makeTrustedPerson({ isOneTime: true }));
+      const pr = await w.service.createByStaff(KG, STAFF_USER, {
+        childId: CHILD,
+        trustedPersonId: TP_ID,
+      });
+      // The createByStaff path itself looks up the trusted_person for the
+      // child-match check. Snapshot the counter at the start of validateOtp.
+      w.trustedPeople.findByIdCalls.length = 0;
+      await w.service.sendOtp(KG, pr.id);
+      // sendOtp does not touch trusted_people.
+      expect(w.trustedPeople.findByIdCalls).toHaveLength(0);
+      const code = w.otpStore.storeCalls[0].code;
+      await w.service.validateOtp(KG, pr.id, code, STAFF_USER);
+      // Pre-T7: 2 fetches (pre-flight + pre-markUsed). Post-T7: exactly 1.
+      expect(w.trustedPeople.findByIdCalls).toEqual([TP_ID]);
+      // markUsed still fires with the correct (immutable) isOneTime flag.
+      expect(w.trustedPeople.markUsedCalls[0]).toEqual({
+        id: TP_ID,
+        deactivate: true,
       });
     });
 

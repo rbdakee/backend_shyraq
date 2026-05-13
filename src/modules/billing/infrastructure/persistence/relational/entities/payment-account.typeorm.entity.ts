@@ -5,7 +5,8 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
-import { numericTransformer } from '../numeric.transformer';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
+import { moneyKztTransformer } from '@/shared-kernel/infrastructure/typeorm/money-kzt.transformer';
 
 @Entity({ name: 'payment_accounts' })
 export class PaymentAccountTypeOrmEntity {
@@ -24,9 +25,9 @@ export class PaymentAccountTypeOrmEntity {
     precision: 12,
     scale: 2,
     default: 0,
-    transformer: numericTransformer,
+    transformer: moneyKztTransformer,
   })
-  balance!: number;
+  balance!: MoneyKzt;
 
   @CreateDateColumn({
     name: 'created_at',

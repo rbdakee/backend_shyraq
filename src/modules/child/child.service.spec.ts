@@ -1,6 +1,7 @@
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
-import { DataSource, EntityManager } from 'typeorm';
+import type { EntityManager } from '@/shared-kernel/application/ports/transaction-runner.port';
+import { TransactionRunnerPort } from '@/shared-kernel/application/ports/transaction-runner.port';
 import { NotificationPort } from '@/common/notifications/notification.port';
 import { OtpStorePort, StoredOtp } from '@/modules/auth/otp-store.port';
 import { Group } from '@/modules/group/domain/entities/group.entity';
@@ -581,9 +582,9 @@ class FakeUserRepo extends UserRepository {
 }
 
 /**
- * Minimal stub of TypeORM DataSource. ChildService.linkChildByIin uses
- * `dataSource.transaction(cb)` to scope its write into a tenant-bound TX —
- * the in-memory test only needs the lambda to run with a fake manager whose
+ * Minimal fake of `TransactionRunnerPort`. `ChildService.linkChildByIin`
+ * calls `tx.run(cb)` to scope its write into a tenant-bound TX — the
+ * in-memory test only needs the lambda to run with a fake manager whose
  * `query()` is a no-op (the `SET LOCAL app.kindergarten_id` statement is
  * irrelevant to the fakes).
  */
@@ -591,10 +592,13 @@ const fakeManager = {
   query: (_sql: string): Promise<unknown> => Promise.resolve(undefined),
 } as unknown as EntityManager;
 
-const fakeDataSource = {
-  transaction: <T>(cb: (m: EntityManager) => Promise<T>): Promise<T> =>
-    cb(fakeManager),
-} as unknown as DataSource;
+class FakeTransactionRunner extends TransactionRunnerPort {
+  run<T>(cb: (m: EntityManager) => Promise<T>): Promise<T> {
+    return cb(fakeManager);
+  }
+}
+
+const fakeTxRunner: TransactionRunnerPort = new FakeTransactionRunner();
 
 /**
  * Minimal in-memory `OtpStorePort` for ChildService tests. Only
@@ -922,7 +926,7 @@ function setup(
     users,
     notification,
     clock,
-    fakeDataSource,
+    fakeTxRunner,
     otpStore,
     configService,
     billingLifecycle as BillingLifecyclePort,
@@ -1022,7 +1026,7 @@ describe('ChildService — admin: createChild + updates', () => {
     const got = await service.getChild(KG, c.id);
     expect(got.child.status.value).toBe('archived');
     expect(got.child.archiveReason).toBe('parent withdrew');
-    await service.restoreChild(KG, c.id, 'staff-1', LEGACY_ACTOR_USER_ID);
+    await service.reactivateChild(KG, c.id, 'staff-1', LEGACY_ACTOR_USER_ID);
     const after = await service.getChild(KG, c.id);
     expect(after.child.status.value).toBe('active');
     expect(after.child.archivedAt).toBeUndefined();

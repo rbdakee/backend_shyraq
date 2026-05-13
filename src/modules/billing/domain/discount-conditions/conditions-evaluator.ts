@@ -11,7 +11,10 @@ import { CustomDiscountConditionsInvalidError } from '../errors/custom-discount-
  * Empty `{}` is the catalogue default ("apply always within targeting +
  * status + valid_from/until") — it always evaluates to `true`. Composite
  * nodes (`all_of`, `any_of`) may nest up to depth 3 (root counts as 0;
- * deeper input throws `conditions_depth_limit_exceeded`).
+ * deeper input throws `conditions_depth_limit_exceeded`). B22b T7 M10:
+ * `all_of`/`any_of` branches are also capped at `MAX_WIDTH=20` per node
+ * to prevent unbounded validation/evaluation cost; over-cap throws
+ * `conditions_width_limit_exceeded`.
  */
 
 // ── Shared sub-types ──────────────────────────────────────────────────────
@@ -104,7 +107,15 @@ export interface EvalContext {
 
 // ── Constants ─────────────────────────────────────────────────────────────
 
-const MAX_DEPTH = 3;
+export const MAX_DEPTH = 3;
+
+/**
+ * B22b T7 M10: cap on the number of direct children of a single
+ * `all_of`/`any_of` node. The catalogue UI surfaces a tree builder with
+ * 3-5 branches in realistic configurations; 20 is well above any sensible
+ * user-authored shape and well below the JSONB / evaluation-cost cliff.
+ */
+export const MAX_WIDTH = 20;
 
 const KNOWN_LEAF_TYPES: ReadonlySet<string> = new Set([
   'prepayment_months',
@@ -200,6 +211,15 @@ function validateNode(
     if (!Array.isArray(children)) {
       throw new CustomDiscountConditionsInvalidError(
         'invalid_condition_field',
+        `${path}.${childKey}`,
+      );
+    }
+    // B22b T7 M10: width cap per composite. Validation rejects payloads
+    // with >20 direct branches so a single discount rule cannot DoS the
+    // catalogue admin UI / evaluator.
+    if (children.length > MAX_WIDTH) {
+      throw new CustomDiscountConditionsInvalidError(
+        'conditions_width_limit_exceeded',
         `${path}.${childKey}`,
       );
     }

@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomInt } from 'node:crypto';
 import { AllConfigType } from '@/config/config.type';
@@ -38,6 +38,7 @@ import {
 } from './domain/errors';
 import {
   ListParentRequestsFilter,
+  ParentRequestCursor,
   ParentRequestRepository,
 } from './parent-request.repository';
 import { ParentRequestMessageRepository } from './parent-request-message.repository';
@@ -180,6 +181,34 @@ export class ParentRequestService {
     private readonly configService: ConfigService<AllConfigType>,
     private readonly invoiceService: InvoiceService,
   ) {}
+
+  /**
+   * Resolve a user → active staff_members row in this kg, and package it as a
+   * `CallerStaffContext` for downstream service methods (acceptRequest /
+   * rejectRequest / listForStaffInbox / addStaffMessage / etc.).
+   *
+   * Pulled out of `StaffParentRequestController` so the controller no longer
+   * imports `StaffMemberRepository` directly (CLAUDE.md §4 — controllers stay
+   * thin HTTP-edge). Throws `NotFoundException('staff_member_not_found')` on
+   * missing row.
+   */
+  async resolveCallerByUserIdOrThrow(
+    kindergartenId: string,
+    userId: string,
+  ): Promise<CallerStaffContext> {
+    const staff = await this.staffRepo.findActiveByUserAndKindergarten(
+      userId,
+      kindergartenId,
+    );
+    if (!staff) {
+      throw new NotFoundException('staff_member_not_found');
+    }
+    return {
+      staffMemberId: staff.id,
+      userId: staff.userId,
+      role: staff.role as StaffRole,
+    };
+  }
 
   // ── OTP for trusted-person flow ───────────────────────────────────────
 
@@ -786,6 +815,7 @@ export class ParentRequestService {
     },
   ): Promise<ListParentRequestsResult> {
     const limit = clampLimit(filter.limit, 50, 100);
+    const decodedCursor = decodeParentRequestCursor(filter.cursor);
     const items = await this.parentRequests.list({
       kindergartenId,
       requesterUserId,
@@ -793,7 +823,7 @@ export class ParentRequestService {
       requestType: filter.type,
       childId: filter.childId,
       limit: limit + 1,
-      cursor: filter.cursor ?? undefined,
+      cursor: decodedCursor,
     });
     return shapePage(items, limit);
   }
@@ -811,6 +841,7 @@ export class ParentRequestService {
     },
   ): Promise<ListParentRequestsResult> {
     const limit = clampLimit(filter.limit, 50, 100);
+    const decodedCursor = decodeParentRequestCursor(filter.cursor);
     // Admin sees everything in the kg; mentor sees their direct queue;
     // specialist sees their direct queue. Mentor + specialist DO NOT see
     // `admin`-recipient requests by default — those land in the admin inbox.
@@ -821,7 +852,7 @@ export class ParentRequestService {
       childId: filter.childId,
       groupId: filter.groupId,
       limit: limit + 1,
-      cursor: filter.cursor ?? undefined,
+      cursor: decodedCursor,
     };
 
     if (caller.role === 'admin') {
@@ -854,6 +885,7 @@ export class ParentRequestService {
     },
   ): Promise<ListParentRequestsResult> {
     const limit = clampLimit(filter.limit, 50, 100);
+    const decodedCursor = decodeParentRequestCursor(filter.cursor);
     const items = await this.parentRequests.list({
       kindergartenId,
       status: filter.status,
@@ -862,7 +894,7 @@ export class ParentRequestService {
       groupId: filter.groupId,
       recipientType: filter.recipientType,
       limit: limit + 1,
-      cursor: filter.cursor ?? undefined,
+      cursor: decodedCursor,
     });
     return shapePage(items, limit);
   }
@@ -1278,22 +1310,85 @@ function clampLimit(
   return Math.floor(raw);
 }
 
-function shapePage<T>(
-  items: T[],
+/**
+ * B22b T7 M16 — emit a real composite `(created_at, id)` base64 cursor
+ * when the underlying repo returned `limit + 1` rows. The repo applies
+ * the cursor as a strict-less-than predicate over `(created_at DESC, id
+ * DESC)`, so the boundary row to encode is the *last* item kept (i.e.
+ * the next page must start strictly before that). When fewer than
+ * `limit + 1` rows came back, this is the final page and we return
+ * `null` so clients can short-circuit further fetches.
+ *
+ * Pre-T7: this returned `nextCursor: null` unconditionally, so paginated
+ * clients silently lost every page after the first. The repo signature
+ * carried a `cursor` field but no consumer wired it through to
+ * QueryBuilder.
+ */
+function shapePage(
+  items: ParentRequest[],
   limit: number,
-): {
-  items: T[];
-  nextCursor: string | null;
-} {
+): ListParentRequestsResult {
   if (items.length > limit) {
     const page = items.slice(0, limit);
-    // Cursor placeholder — the relational repo's list() does NOT yet honour
-    // a cursor (B12 T2 left it as a passthrough). Emitting null keeps the
-    // contract honest: clients that hit `next_cursor=null` know there is no
-    // more. T4/B22 may add a real cursor when the dataset gets large.
-    return { items: page, nextCursor: null };
+    const last = page[page.length - 1];
+    return {
+      items: page,
+      nextCursor: encodeParentRequestCursor({
+        createdAt: last.createdAt,
+        id: last.id,
+      }),
+    };
   }
   return { items, nextCursor: null };
+}
+
+/**
+ * Wire format for the parent_request cursor: base64-encoded JSON
+ * `{createdAt:string,id:string}`. Opaque to clients — they round-trip it
+ * unchanged through `next_cursor` / `?cursor=` query string.
+ */
+function encodeParentRequestCursor(cursor: ParentRequestCursor): string {
+  const json = JSON.stringify({
+    createdAt: cursor.createdAt.toISOString(),
+    id: cursor.id,
+  });
+  return Buffer.from(json, 'utf-8').toString('base64');
+}
+
+/**
+ * Decode a base64 wire cursor into a typed anchor, or undefined when the
+ * caller passed null/empty. Malformed payloads throw an
+ * `InvariantViolationError` so the global filter surfaces 400 with the
+ * canonical `invariant_violation` code (callers should never craft their
+ * own cursor; an invalid one means tampering or a stale client cache).
+ */
+function decodeParentRequestCursor(
+  raw: string | null | undefined,
+): ParentRequestCursor | undefined {
+  if (raw === null || raw === undefined || raw.length === 0) {
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    const json = Buffer.from(raw, 'base64').toString('utf-8');
+    parsed = JSON.parse(json);
+  } catch {
+    throw new InvariantViolationError('parent_request_cursor_invalid');
+  }
+  if (
+    typeof parsed !== 'object' ||
+    parsed === null ||
+    typeof (parsed as Record<string, unknown>)['createdAt'] !== 'string' ||
+    typeof (parsed as Record<string, unknown>)['id'] !== 'string'
+  ) {
+    throw new InvariantViolationError('parent_request_cursor_invalid');
+  }
+  const obj = parsed as { createdAt: string; id: string };
+  const createdAt = new Date(obj.createdAt);
+  if (Number.isNaN(createdAt.getTime())) {
+    throw new InvariantViolationError('parent_request_cursor_invalid');
+  }
+  return { createdAt, id: obj.id };
 }
 
 function stringDetail(

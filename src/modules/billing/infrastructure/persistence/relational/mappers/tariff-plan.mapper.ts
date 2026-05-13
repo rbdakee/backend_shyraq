@@ -13,7 +13,8 @@ export class TariffPlanMapper {
       name: row.name,
       description: row.description ?? {},
       tariffType: row.tariffType,
-      amount: Number(row.amount),
+      // Transformer hands `MoneyKzt` directly — pass through.
+      amount: row.amount,
       currency: row.currency,
       appliesTo: row.appliesTo,
       groupId: row.groupId,

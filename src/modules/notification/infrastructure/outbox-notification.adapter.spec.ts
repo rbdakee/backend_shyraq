@@ -47,6 +47,12 @@ class FakeOutboxRepo extends OutboxEventRepository {
   findById(): Promise<OutboxEvent | null> {
     return Promise.resolve(null);
   }
+  prunePrunables(): Promise<{
+    deletedDispatched: number;
+    deletedFailed: number;
+  }> {
+    return Promise.resolve({ deletedDispatched: 0, deletedFailed: 0 });
+  }
 }
 
 describe('OutboxNotificationAdapter', () => {

@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Inject,
   Injectable,
   Logger,
@@ -48,7 +49,7 @@ import { TariffAssignmentRepository } from './infrastructure/persistence/tariff-
 import { TariffPlanRepository } from './infrastructure/persistence/tariff-plan.repository';
 import { HolidayService } from './holiday.service';
 import { PaymentAccountService } from './payment-account.service';
-import { roundKzt, subtractKzt } from '@/shared-kernel/domain/money';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import { firstOfMonthInTimezone } from '@/shared-kernel/domain/value-objects/day-of-week.vo';
 
 const DEFAULT_DUE_DAY = 10; // monthly invoices fall due on the 10th of period
@@ -194,6 +195,48 @@ export class InvoiceService {
     return this.invoiceLineItems.listByInvoice(kindergartenId, invoiceId);
   }
 
+  /**
+   * Parent-side guardian re-check for invoice/calendar read endpoints.
+   *
+   * Used by `ParentInvoiceController` for every route — `ChildAccessGuard`
+   * already handles `:childId` paths (cross-tenant + approved-active), but
+   * `:id` invoice routes need an explicit re-check anyway, AND the
+   * guardian role itself isn't surfaced by the guard. We need the role
+   * here to gate nanny per BP §4.13 (nanny → 403 on every billing read).
+   *
+   * Throws `ForbiddenException('not_a_guardian')` when the caller has no
+   * approved-active link to the child (catches the `:id` route where the
+   * caller may be a guardian of a different child in the same kg) and
+   * `ForbiddenException('nanny_cannot_view_invoice')` when the link is a
+   * nanny.
+   */
+  async assertNonNannyGuardianForRead(
+    kindergartenId: string,
+    userId: string,
+    childId: string,
+  ): Promise<void> {
+    if (!this.childGuardians) {
+      // Wiring sanity check — older test specs that build InvoiceService
+      // without ChildGuardianRepository can call business methods just
+      // fine, but the parent-side read assert is wired only when the
+      // module pulls in ChildModule. If we somehow get here without the
+      // dep, fail closed (treat as "not a guardian") rather than leaking
+      // data through a missing check.
+      throw new ForbiddenException('not_a_guardian');
+    }
+    const guardian = await this.childGuardians.findApprovedActiveByUserAndChild(
+      kindergartenId,
+      childId,
+      userId,
+    );
+    if (!guardian) {
+      throw new ForbiddenException('not_a_guardian');
+    }
+    if (guardian.role.value === 'nanny') {
+      throw new ForbiddenException('nanny_cannot_view_invoice');
+    }
+  }
+
   // ── Admin one-off ──────────────────────────────────────────────────────
 
   async createOneOff(
@@ -205,7 +248,7 @@ export class InvoiceService {
       kindergartenId,
       input.childId,
     );
-    const amountDue = input.amountDue;
+    const amountDue = MoneyKzt.fromKzt(input.amountDue);
     const discountPct = input.discountPct ?? null;
     const amountAfter = Invoice.computeAmountAfterDiscount(
       amountDue,
@@ -234,19 +277,20 @@ export class InvoiceService {
     };
     const invoice = Invoice.fromState(state);
 
-    const lineItems: InvoiceLineItem[] = (input.lineItems ?? []).map((li) =>
-      InvoiceLineItem.fromState({
+    const lineItems: InvoiceLineItem[] = (input.lineItems ?? []).map((li) => {
+      const unitPriceMk = MoneyKzt.fromKzt(li.unitPrice);
+      return InvoiceLineItem.fromState({
         id: randomUUID(),
         invoiceId,
         kindergartenId,
         description: li.description,
         tariffPlanId: li.tariffPlanId ?? null,
         quantity: li.quantity,
-        unitPrice: li.unitPrice,
-        lineTotal: InvoiceLineItem.compute(li.quantity, li.unitPrice),
+        unitPrice: unitPriceMk,
+        lineTotal: InvoiceLineItem.compute(li.quantity, unitPriceMk),
         createdAt: now,
-      }),
-    );
+      });
+    });
 
     const persisted = await this.invoices.create(invoice, lineItems);
     await this.emitInvoiceCreated(persisted);
@@ -283,13 +327,10 @@ export class InvoiceService {
     if (!existingForResidual) {
       throw new InvoiceNotFoundError(invoiceId);
     }
-    const priorPaidSum = await this.invoices.getPaidSumForInvoice(
-      kindergartenId,
-      invoiceId,
+    const priorPaidSum = MoneyKzt.fromKzt(
+      await this.invoices.getPaidSumForInvoice(kindergartenId, invoiceId),
     );
-    const residual = roundKzt(
-      subtractKzt(existingForResidual.amountAfterDiscount, priorPaidSum),
-    );
+    const residual = existingForResidual.amountAfterDiscount.sub(priorPaidSum);
 
     const updated = await this.invoices.markPaidConditional(
       kindergartenId,
@@ -316,7 +357,9 @@ export class InvoiceService {
     // expected to call manualMarkPaid only when full payment was received
     // off-platform), but using the residual rather than amount_after_discount
     // keeps the ledger correct if a partial gateway payment landed earlier.
-    const paymentAmount = residual > 0 ? residual : updated.amountAfterDiscount;
+    const paymentAmount = residual.isPositive()
+      ? residual
+      : updated.amountAfterDiscount;
     const paidAt = input.paidAt ?? now;
     const cashPayment = Payment.fromState({
       id: randomUUID(),
@@ -340,7 +383,7 @@ export class InvoiceService {
     } as PaymentState);
     await this.payments.create(cashPayment);
 
-    if (residual > 0) {
+    if (residual.isPositive()) {
       await this.paymentAccounts.creditFromPayment(
         kindergartenId,
         updated.paymentAccountId,
@@ -352,7 +395,7 @@ export class InvoiceService {
       paymentId: cashPayment.id,
       childId: updated.childId,
       invoiceId: updated.id,
-      amount: cashPayment.amount,
+      amount: cashPayment.amount.toNumber(),
       provider: 'cash',
       paidAt,
     });
@@ -360,7 +403,7 @@ export class InvoiceService {
       kindergartenId,
       invoiceId: updated.id,
       childId: updated.childId,
-      amountAfterDiscount: updated.amountAfterDiscount,
+      amountAfterDiscount: updated.amountAfterDiscount.toNumber(),
       paidAt,
     });
     return updated;
@@ -593,13 +636,13 @@ export class InvoiceService {
       'late_pickup_fee',
       input.date,
     );
-    let amount: number;
+    let amount: MoneyKzt;
     let tariffPlanId: string | null;
     if (tariffPlan) {
       amount = tariffPlan.amount;
       tariffPlanId = tariffPlan.id;
     } else if (input.lateFeeAmountKzt !== undefined) {
-      amount = input.lateFeeAmountKzt;
+      amount = MoneyKzt.fromKzt(input.lateFeeAmountKzt);
       tariffPlanId = null;
     } else {
       throw new TariffPlanNotFoundError('late_pickup_fee');
@@ -709,8 +752,10 @@ export class InvoiceService {
     const tariffPlan = assignment
       ? await this.tariffPlans.findById(kindergartenId, assignment.tariffPlanId)
       : null;
-    const projectedAmount =
+    const projectedAmountMk =
       assignment && tariffPlan ? assignment.effectiveAmount(tariffPlan) : null;
+    const projectedAmount =
+      projectedAmountMk === null ? null : projectedAmountMk.toNumber();
 
     const result: PaymentCalendarMonthEntry[] = [];
     for (let i = 0; i < monthsAhead; i++) {
@@ -728,7 +773,7 @@ export class InvoiceService {
           period_end: toIsoDate(mEnd),
           invoice_id: matching.id,
           projected_status: matching.status,
-          amount_after_discount: matching.amountAfterDiscount,
+          amount_after_discount: matching.amountAfterDiscount.toNumber(),
           due_date: toIsoDate(matching.dueDate),
           is_projection: false,
           holidays_affected: holidaysAffected,
@@ -798,7 +843,7 @@ export class InvoiceService {
     const periodEnd = endOfMonth(addMonthsUtc(periodStart, months - 1));
 
     const monthlyAmount = assignment.effectiveAmount(tariffPlan);
-    const baseAmount = roundKzt(monthlyAmount * months);
+    const baseAmount = monthlyAmount.mul(months);
 
     const customCtx = await this.buildCustomDiscountInputs(
       kindergartenId,
@@ -845,7 +890,9 @@ export class InvoiceService {
     const amountAfter = Invoice.computeAmountAfterDiscount(
       baseAmount,
       discount.discountPct,
-      discount.customDiscountAmount,
+      discount.customDiscountAmount === null
+        ? null
+        : MoneyKzt.fromKzt(discount.customDiscountAmount),
     );
 
     const account = await this.paymentAccounts.ensureForChild(
@@ -980,7 +1027,9 @@ export class InvoiceService {
     let amountAfter = Invoice.computeAmountAfterDiscount(
       baseAmount,
       discount.discountPct,
-      discount.customDiscountAmount,
+      discount.customDiscountAmount === null
+        ? null
+        : MoneyKzt.fromKzt(discount.customDiscountAmount),
     );
 
     let proratedForDays: number | null = null;
@@ -990,7 +1039,11 @@ export class InvoiceService {
       billableDays - nonBillableHolidays,
     );
     if (effectiveBillableDays !== totalDays && totalDays > 0) {
-      amountAfter = roundKzt((amountAfter * effectiveBillableDays) / totalDays);
+      // Single-rounding chain (B22b T2): `mul(days).div(totalDays)` — each
+      // op rounds once at the boundary, vs the legacy double-round
+      // `roundKzt(amountAfter * days / totalDays)` which could drift by
+      // up to ±0.5 tiyn per ₸ on non-divisible totals.
+      amountAfter = amountAfter.mul(effectiveBillableDays).div(totalDays);
       proratedForDays = effectiveBillableDays;
     }
 
@@ -1086,7 +1139,7 @@ export class InvoiceService {
       invoiceId: invoice.id,
       childId: invoice.childId,
       invoiceType: invoice.invoiceType,
-      amountAfterDiscount: invoice.amountAfterDiscount,
+      amountAfterDiscount: invoice.amountAfterDiscount.toNumber(),
       dueDate: invoice.dueDate.toISOString().slice(0, 10),
       periodStart: invoice.periodStart,
       periodEnd: invoice.periodEnd,
@@ -1434,5 +1487,7 @@ function toIsoDate(d: Date): string {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
 }
 
-// Note: legacy `round2(...)` was removed in T11 H7 — `roundKzt(...)` from
-// `@/shared-kernel/domain/money` is the canonical helper now.
+// Note: legacy `round2(...)`/`roundKzt(...)` helpers retired in B22b T2 —
+// `MoneyKzt` from `@/shared-kernel/domain/money-kzt` is the canonical type
+// for KZT arithmetic. The service performs `MoneyKzt.fromKzt(dto.amount)`
+// at the DTO boundary and `.toNumber()` at the wire/notification boundary.

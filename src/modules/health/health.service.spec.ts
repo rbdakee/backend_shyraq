@@ -2,8 +2,8 @@ import { FixedClockAdapter } from '@/shared-kernel/infrastructure/adapters/fixed
 import { HealthService } from './health.service';
 
 describe('HealthService', () => {
-  const dataSource = {
-    query: jest.fn().mockResolvedValue([{ '?column?': 1 }]),
+  const dbPing = {
+    ping: jest.fn().mockResolvedValue(undefined),
   };
   const redis = {
     ping: jest.fn().mockResolvedValue('PONG'),
@@ -16,11 +16,7 @@ describe('HealthService', () => {
   it('returns ok status with version, uptime and clock-derived timestamp', () => {
     const fixedDate = new Date('2026-04-28T11:48:00.000Z');
     const clock = new FixedClockAdapter(fixedDate);
-    const service = new HealthService(
-      clock,
-      dataSource as never,
-      redis as never,
-    );
+    const service = new HealthService(clock, dbPing as never, redis as never);
 
     const result = service.getStatus();
 
@@ -32,15 +28,24 @@ describe('HealthService', () => {
 
   it('returns readiness checks for db and redis', async () => {
     const clock = new FixedClockAdapter(new Date('2026-04-28T11:48:00.000Z'));
-    const service = new HealthService(
-      clock,
-      dataSource as never,
-      redis as never,
-    );
+    const service = new HealthService(clock, dbPing as never, redis as never);
 
     await expect(service.getReadiness()).resolves.toEqual({
       status: 'ok',
       checks: { db: 'up', redis: 'up' },
+    });
+  });
+
+  it('reports db down when ping throws and redis up when ping returns PONG', async () => {
+    const clock = new FixedClockAdapter(new Date('2026-04-28T11:48:00.000Z'));
+    const badPing = {
+      ping: jest.fn().mockRejectedValue(new Error('connection_refused')),
+    };
+    const service = new HealthService(clock, badPing as never, redis as never);
+
+    await expect(service.getReadiness()).resolves.toEqual({
+      status: 'degraded',
+      checks: { db: 'down', redis: 'up' },
     });
   });
 });

@@ -100,6 +100,20 @@ export class ParentRequestRelationalRepository extends ParentRequestRepository {
       qb.andWhere('pr.recipientType = :rt', { rt: filter.recipientType });
     }
 
+    // B22b T7 M16: composite (created_at, id) cursor — required because
+    // two parent_requests can share a `created_at` millisecond when
+    // generated inside the same TX. A single-key (created_at) cursor
+    // would either skip the tie-broken row or echo it on the next page.
+    if (filter.cursor) {
+      qb.andWhere(
+        '(pr.createdAt < :cursorAt OR (pr.createdAt = :cursorAt AND pr.id < :cursorId))',
+        {
+          cursorAt: filter.cursor.createdAt,
+          cursorId: filter.cursor.id,
+        },
+      );
+    }
+
     qb.orderBy('pr.createdAt', 'DESC').addOrderBy('pr.id', 'DESC');
 
     if (filter.limit) {

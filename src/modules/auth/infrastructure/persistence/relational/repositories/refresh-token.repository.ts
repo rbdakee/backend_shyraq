@@ -19,6 +19,24 @@ export class RefreshTokenRelationalRepository extends RefreshTokenRepository {
     super();
   }
 
+  /**
+   * Inserts a new refresh token row. Refresh tokens are GLOBAL by design —
+   * the same token is valid regardless of which kindergarten context the user
+   * later selects, because the tenant switch happens AFTER token issuance
+   * (at role-select / OTP-verify time, not at issue time). This means the
+   * insert may run before `KindergartenScopeGuard` has set
+   * `app.kindergarten_id`, so no ambient tenant GUC is available.
+   *
+   * When called inside an existing ambient transaction (typical HTTP request
+   * path that runs before the scope guard, e.g. OTP-verify) we fall through
+   * to the ambient manager which already has the connection. Otherwise we
+   * open a fresh transaction off `repo.manager` and `SET LOCAL
+   * app.bypass_rls = 'true'` (TX-scoped) so the INSERT sees the table even
+   * though `app.kindergarten_id` is not set — `refresh_tokens` has
+   * `FORCE ROW LEVEL SECURITY` and the app role is `NOBYPASSRLS`.
+   *
+   * RLS bypass is intentional here: refresh tokens are cross-tenant by design.
+   */
   async create(input: CreateRefreshInput): Promise<void> {
     const ctx = tenantStorage.getStore();
     if (ctx?.entityManager) {
@@ -45,6 +63,17 @@ export class RefreshTokenRelationalRepository extends RefreshTokenRepository {
     }
   }
 
+  /**
+   * Atomically rotates a refresh token: revokes the old hash and inserts a
+   * new one for the same user + kindergarten.
+   *
+   * RLS bypass is intentional: refresh tokens are global (cross-tenant) by
+   * design. A user who holds a token issued for kg-A must still be able to
+   * rotate it when connecting with a kg-B context. Without the bypass, the
+   * SELECT + UPDATE under `app.kindergarten_id = kg-B` would fail to find
+   * the kg-A row and return `null` (session expired), forcing the user to
+   * re-authenticate unnecessarily. See `create` JSDoc for the full rationale.
+   */
   async rotate(opts: RotateOpts): Promise<RotateResult | null> {
     const outerManager = this.manager();
     return outerManager.transaction(async (tx) => {

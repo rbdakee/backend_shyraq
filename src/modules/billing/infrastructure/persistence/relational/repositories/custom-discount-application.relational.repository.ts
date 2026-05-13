@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, Repository } from 'typeorm';
 import { randomUUID } from 'node:crypto';
 import { tenantStorage } from '@/database/tenant-storage';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import {
   CreateCustomDiscountApplicationInput,
   CustomDiscountApplicationRepository,
@@ -44,7 +45,7 @@ export class CustomDiscountApplicationRelationalRepository extends CustomDiscoun
       invoiceId: input.invoiceId,
       invoiceLineItemId: input.invoiceLineItemId,
       childId: input.childId,
-      amountApplied: input.amountApplied,
+      amountApplied: MoneyKzt.fromKzt(input.amountApplied),
       appliedAt,
     });
     const row = await m.findOne({

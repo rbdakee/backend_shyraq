@@ -345,7 +345,6 @@ Email + password (не OTP). Access-токен — тот же JWT HS256 (`JWT_A
 | POST | `/admin/children/:id/transfer-group` | Перевод в другую группу. Создаёт запись в `child_group_history`. Emits `child.transferred` через outbox (менторы старой+новой группы + guardians). |
 | POST | `/admin/children/:id/archive` | Архивировать ребёнка. Закрывает `tariff_assignments`, enqueue BullMQ `lifecycle:pro-rata-refund`. |
 | POST | `/admin/children/:id/reactivate` | Реактивировать ребёнка. Возврат в `status='active'`. |
-| POST | `/admin/children/:id/restore` | **DEPRECATED (B22a) — возвращает 410 `endpoint_gone` c заголовком `Location: /api/v1/admin/children/:id/reactivate`.** Удалён контроллером B22a; alias-shim удалён полностью в B22b. Клиенты должны мигрировать на `/reactivate`. |
 | GET | `/admin/children/:id/status-history` | История изменений `children.status` (audit). Paginated `?limit=&offset=`. Response: `[{id, previous_status, new_status, previous_archive_reason, archive_reason, changed_by_user_id, changed_at}]` отсортирован `changed_at DESC`. См. §2.7.4. |
 | GET | `/admin/children/:id/guardians` | Все guardians ребёнка (+ статус одобрения, `has_approval_rights`). |
 | POST | `/admin/children/:id/guardians` | Добавить guardian вручную (админ может создать primary с самого начала). |
@@ -497,28 +496,7 @@ Email + password (не OTP). Access-токен — тот же JWT HS256 (`JWT_A
 
 ---
 
-#### 2.7.5 POST `/admin/children/:id/restore` (B22a — DEPRECATED)
-
-**Status:** ⚠️ **410 GONE** — endpoint удалён в B22a.
-
-**Response 410:**
-```json
-{
-  "error": {
-    "code": "endpoint_gone",
-    "message": "POST /admin/children/:id/restore is deprecated. Use POST /admin/children/:id/reactivate instead.",
-    "successor": "/api/v1/admin/children/:id/reactivate"
-  }
-}
-```
-
-**Headers:** `Location: /api/v1/admin/children/:id/reactivate`.
-
-Полное удаление shim'а — в B22b. Клиенты обязаны мигрировать на `/reactivate` до B22b merge.
-
----
-
-**Error codes (§2.7):** `child_not_found`(404), `child_already_archived`(409), `child_not_archived`(409), `archive_reason_required`(422), `child_already_in_group`(409), `group_not_found`(404), `endpoint_gone`(410).
+**Error codes (§2.7):** `child_not_found`(404), `child_already_archived`(409), `child_not_archived`(409), `archive_reason_required`(422), `child_already_in_group`(409), `group_not_found`(404).
 
 ### 2.8 Schedule (Templates + Activity Events)
 
@@ -737,6 +715,7 @@ Qundylyq реализуется как `content_posts` с `content_type='qundyly
 | GET | `/admin/refunds/:id` | Детали возврата. |
 | POST | `/admin/refunds` | Создать возврат (`status='pending'`). Body: `{payment_id, amount: 60000, reason: 'переплата за июнь'}`. Checks: `payment.status = 'completed'`, `amount <= payment.amount`. Response 201: refund object. Errors: 404 `payment_not_found`, 409 `refund_already_processed` (если уже существует completed refund для этого payment). |
 | POST | `/admin/refunds/:id/approve` | Перевести в `approved` (первичная авторизация). Conditional UPDATE WHERE status='pending'. Response 200: `{id, status: 'approved', processed_by}`. Errors: 404 `refund_not_found`, 409 `refund_already_processed`. |
+| POST | `/admin/refunds/:id/reject` | Терминально отклонить `pending` возврат. Body: `{reason: 'Возврат отклонён — недостаточно оснований'}` (1–500 символов). Платёж не затрагивается; `reason` колонка перезаписывается на rejection note. Response 200: refund object со `status='rejected'`. Errors: 404 `refund_not_found`, 409 `refund_already_processed` (не в `pending`). |
 | POST | `/admin/refunds/:id/process` | Исполнить возврат через провайдера (`PaymentProviderPort.refund`). Атомарная TX: `refund.status='processed'` + `payment.status='refunded'` + `invoice.applyRefund` + `payment_account.balance` update. Response 200: `{id, status: 'processed', provider_ref?}`. Errors: 404 `refund_not_found`, 409 `refund_already_processed` (status уже `processed`). |
 
 **Error map (§2.15):**
@@ -781,7 +760,7 @@ Qundylyq реализуется как `content_posts` с `content_type='qundyly
 
 | Метод | Путь | Назначение |
 |---|---|---|
-| GET | `/admin/parent-requests` | Все заявки kg (фильтр: `status`, `request_type`, `child_id`). Без ограничения по recipient. |
+| GET | `/admin/parent-requests` | Все заявки kg (фильтр: `status`, `request_type`, `child_id`, `group_id`, `recipient_type`). Без ограничения по recipient. **B22b T7 M16:** cursor-paged по `(created_at DESC, id DESC)`; `next_cursor` — base64 JSON `{createdAt,id}`, передаётся `?cursor=` для следующей страницы; невалидный cursor → 400 `parent_request_cursor_invalid`. |
 | GET | `/admin/parent-requests/:id` | Детали + `parent_request_messages`. |
 | POST | `/admin/parent-requests/:id/accept` | Принять: body `{review_note?}`. Conditional UPDATE WHERE status='pending'; 409 при race. |
 | POST | `/admin/parent-requests/:id/reject` | Отклонить: body `{review_note?}`. Conditional UPDATE WHERE status='pending'. |
@@ -1002,7 +981,7 @@ Qundylyq реализуется как `content_posts` с `content_type='qundyly
 
 | Метод | Путь | Назначение |
 |---|---|---|
-| GET | `/staff/parent-requests` | Заявки по моей роли (фильтр: `status`, `type`, `group_id`). |
+| GET | `/staff/parent-requests` | Заявки по моей роли (фильтр: `status`, `type`, `group_id`). **B22b T7 M16:** cursor-paged по `(created_at DESC, id DESC)`; `next_cursor` = base64-JSON `{createdAt,id}` или `null`. |
 | GET | `/staff/parent-requests/:id` | Детали + messages. |
 | POST | `/staff/parent-requests/:id/accept` | Принять: body `{review_note?}`. Conditional UPDATE WHERE status='pending'; 409 `parent_request_already_processed` при race. |
 | POST | `/staff/parent-requests/:id/reject` | Отклонить: body `{review_note?}`. Conditional UPDATE WHERE status='pending'. |
@@ -1040,6 +1019,16 @@ Templates create/update/deactivate — `/admin/diagnostic-templates` (admin role
 
 **Audit trail (B22a T7):** PATCH на `/staff/diagnostic-entries/:id` пишет `last_modified_by_user_id` (= caller `users.id`) + `last_modified_at` (= server clock) в DB. Колонки нужны для админ-override flow: admin прокидывает `entry.specialist_id` чтобы пройти author check, но `last_modified_by_user_id` фиксирует реальную идентичность редактора. Колонки внутренние, не возвращаются в HTTP-ответе в B22a (см. `docs/schema.dbml` §`diagnostic_entries`).
 
+**422-vs-400 contract (B22b T5 — B18 Concern 2):**
+
+Из-за того что `@IsNotEmpty()` / `@IsUUID()` / `@IsDateString()` на PATCH-DTO срабатывают в `ValidationPipe` ДО доменной логики, "пустое тело" и "не-UUID" PATCH-запросы возвращают **422** (`validation_error` от `class-validator`), а не 400 от доменного инварианта. Это намеренное поведение:
+
+- **400 `<code>`** — структурно валидный body, но семантически отвергнут доменом: `diagnostic_entry_data_invalid` (schema mismatch с `details`), `assessment_date_in_future` (entity invariant). Эти ошибки имеют смысловой `error` code.
+- **422 (class-validator)** — структурно невалидный body: не-UUID в `template_id`, не-ISO дата в `assessment_date`, пустые обязательные поля. Возвращается стандартный nest validation envelope: `{ statusCode: 422, message: [...details], error: 'Unprocessable Entity' }`. У этих ошибок НЕТ стабильного доменного `error` code — клиент должен парсить `message[]`.
+- **409 `<code>`** — конфликт состояния: `diagnostic_template_inactive`, `optimistic_lock_conflict`.
+
+Доменные инварианты типа `empty_body` существуют в коде но **недостижимы** через HTTP-pipeline для PATCH-эндпоинтов с DTO-валидацией: class-validator стрельнёт раньше. Это harmless asymmetry (всё равно 4xx + читаемое сообщение), но клиент-side обработчики должны учитывать оба формата ошибки. При появлении новых PATCH-эндпоинтов выбор простой: либо ослабить DTO-валидацию (чтобы доменный инвариант увидел запрос), либо принять 422-семантику class-validator'а как контракт (мы выбрали второе — меньше disruption).
+
 ### 3.11 Progress Notes (Mentor)
 
 **Auth:** `KindergartenScopeGuard` + `@Roles('mentor','specialist','admin')`.
@@ -1061,6 +1050,8 @@ Templates create/update/deactivate — `/admin/diagnostic-templates` (admin role
 | 409 | `optimistic_lock_conflict` | PATCH — конкурентный writer изменил заметку (B22a T4 row_version guard). |
 
 **Audit trail (B22a T7):** PATCH на `/staff/progress-notes/:id` пишет `last_modified_by_user_id` + `last_modified_at` в DB (admin-override audit). Не возвращается в HTTP-ответе в B22a.
+
+**422-vs-400 contract (B22b T5 — B18 Concern 2):** см. §3.10. То же правило применяется к PATCH `/staff/progress-notes/:id`: пустое тело / не-UUID `mentor_id` дают 422 (class-validator), а 400 `<code>` — для семантических доменных ошибок типа `body` non-empty trimmed invariant.
 
 ### 3.12 Group Stories (Mentor) — B17
 
@@ -1263,7 +1254,7 @@ Reception может работать с заявками — см. Admin API `/
 
 | Метод | Путь | Назначение |
 |---|---|---|
-| GET | `/parent/requests` | Мои заявки (фильтр: `status`, `type`, `child_id`). |
+| GET | `/parent/requests` | Мои заявки (фильтр: `status`, `type`, `child_id`). **B22b T7 M16:** cursor-paged по `(created_at DESC, id DESC)`; `next_cursor` = base64-JSON `{createdAt,id}` или `null`. |
 | GET | `/parent/requests/:id` | Детали + messages. |
 | POST | `/parent/requests/otp-request` | Запрос OTP для trusted_person заявки. Body: `{child_id}`. Rate-limit `rate:otp:{phone}` (5/hour, shared с auth). Redis `otp:request:trusted-person:{userId}` TTL 300с. SMS на `users.phone`. |
 | POST | `/parent/requests/trusted-person` | Заявка на доверенное лицо — **одностадийно** (код + заявка в одной TX). Body (snake_case): `{code, child_id, full_name, phone, iin?, relation, photo_url?, is_one_time?, create_pickup_request?}`. Валидирует OTP в ambient TX; создаёт заявку `trusted_person`. Если `create_pickup_request=true` — также создаёт `pickup_requests` row атомарно с `parent_request_id` FK. Доступен только `primary`. |
@@ -1330,6 +1321,8 @@ Reception может работать с заявками — см. Admin API `/
 | GET | `/parent/children/:id/diagnostics` | Диагностики ребёнка (все специалисты). Query: `cursor?`, `limit?` (default 20, max 100), `from?: date`, `to?: date`. Пагинация по `assessment_date DESC`. |
 | GET | `/parent/children/:id/diagnostics/:entryId` | Детали: `data`, `summary`, `recommendations`, `attachments`, `template_name`, `template_version`. Errors: 404 `diagnostic_entry_not_found`. |
 | GET | `/parent/children/:id/progress-notes` | Заметки прогресса от mentor. Query: `cursor?`, `limit?` (default 20, max 100), `from?: date`, `to?: date`. Пагинация по `noted_at DESC`. |
+
+**Parent DTO contract (B22b T5 — B18 L3):** parent-side эндпоинты используют **dedicated query DTO** (`ParentListDiagnosticEntriesQueryDto`, `ParentListProgressNotesQueryDto`) которые принимают только `from?`, `to?`, `cursor?`, `limit?`. Staff-only фильтры (`child_id` — уже в URL, `specialist_id`, `template_id`, `mentor_id`) НЕ exposed в parent-Swagger — `whitelist: true` глобального `ValidationPipe` отбрасывает посторонние ключи. Это страхует от тривиального enumeration over staff ids и подгоняет OpenAPI-контракт под реальное поведение handler'а.
 
 **Error map (§4.10):**
 

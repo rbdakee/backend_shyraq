@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
+import { StaffMember } from '@/modules/staff/domain/entities/staff-member.entity';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import {
   DiagnosticTemplateListResult,
@@ -24,10 +26,53 @@ export interface CreateDiagnosticTemplateInput {
 
 @Injectable()
 export class DiagnosticTemplateService {
+  /**
+   * B22b T5 / B18 L2 — orphaned-template audit channel. The presenter
+   * batch path falls back to empty `template_name` on missing ids so a
+   * page load never fails; the log marker `orphaned_diagnostic_entry`
+   * is the only operator-visible signal that a dangling reference
+   * slipped through.
+   */
+  private readonly logger = new Logger(DiagnosticTemplateService.name);
+
   constructor(
     private readonly templates: DiagnosticTemplateRepository,
     private readonly clock: ClockPort,
+    // Optional so legacy spec wiring (which builds the service with two
+    // args) keeps working. Required at HTTP-pipeline time because
+    // `findStaffMemberByUserIdOrThrow` is called by every staff/admin
+    // controller — failing closed (NotFoundException) when missing.
+    private readonly staffMembers?: StaffMemberRepository,
   ) {}
+
+  /**
+   * Resolve a user → their active staff_members row in this kindergarten.
+   * Centralised here so controllers no longer touch `StaffMemberRepository`
+   * directly (CLAUDE.md §4: controllers stay thin HTTP-edge).
+   *
+   * Used by the admin / staff diagnostic-template controllers — `createdBy`
+   * stamping (admin create), `specialist_type` filter (staff list).
+   * Throws `NotFoundException('staff_member_not_found')` when:
+   *   - the staff_members port is unwired (defensive guard for spec
+   *     paths that build the service standalone), or
+   *   - the user has no active staff_members row in this kg.
+   */
+  async findStaffMemberByUserIdOrThrow(
+    kgId: string,
+    userId: string,
+  ): Promise<StaffMember> {
+    if (!this.staffMembers) {
+      throw new NotFoundException('staff_member_not_found');
+    }
+    const staffMember = await this.staffMembers.findActiveByUserAndKindergarten(
+      userId,
+      kgId,
+    );
+    if (!staffMember) {
+      throw new NotFoundException('staff_member_not_found');
+    }
+    return staffMember;
+  }
 
   /**
    * INSERT a new diagnostic template. The constructor (`fromState`) runs
@@ -140,5 +185,37 @@ export class DiagnosticTemplateService {
       throw new DiagnosticTemplateNotFoundError(id);
     }
     return existing;
+  }
+
+  /**
+   * Batch lookup used by presenters that need to join template `name` /
+   * `version` onto a list of entries (B22b T5 / B18 M6). Returns a
+   * `Map<id, template>` over the supplied ids, scoped to `kgId`. Missing
+   * templates (deleted, cross-tenant, or simply absent) are NOT in the
+   * map — the presenter falls back to empty `template_name` to keep the
+   * list response intact instead of failing the whole page.
+   *
+   * Pure forwarder over `DiagnosticTemplateRepository.listByIds`; lives on
+   * the service so controllers stay thin HTTP-edge (CLAUDE.md §4).
+   */
+  async listByIds(
+    kgId: string,
+    ids: string[],
+  ): Promise<Map<string, DiagnosticTemplate>> {
+    const map = await this.templates.listByIds(kgId, ids);
+    // B22b T5 / B18 L2 — audit-log every dangling reference. The batch
+    // path quietly drops missing ids so the presenter can render an
+    // empty `template_name` instead of failing a whole page; without
+    // this log line operators would never know the dangling reference
+    // existed.
+    if (map.size < ids.length) {
+      const missing = ids.filter((id) => !map.has(id));
+      for (const id of missing) {
+        this.logger.error(
+          `orphaned_diagnostic_entry kg=${kgId} template=${id}`,
+        );
+      }
+    }
+    return map;
   }
 }

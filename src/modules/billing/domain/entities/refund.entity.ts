@@ -1,3 +1,4 @@
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import { RefundAlreadyProcessedError } from '../errors/refund-already-processed.error';
 
 export type RefundStatus = 'pending' | 'approved' | 'processed' | 'rejected';
@@ -7,7 +8,7 @@ export interface RefundState {
   kindergartenId: string;
   paymentId: string;
   invoiceId: string | null;
-  amount: number;
+  amount: MoneyKzt;
   reason: string;
   status: RefundStatus;
   processedBy: string | null;
@@ -56,7 +57,7 @@ export class Refund {
     return this.state.invoiceId;
   }
 
-  get amount(): number {
+  get amount(): MoneyKzt {
     return this.state.amount;
   }
 
