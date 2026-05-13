@@ -1040,6 +1040,16 @@ Templates create/update/deactivate — `/admin/diagnostic-templates` (admin role
 
 **Audit trail (B22a T7):** PATCH на `/staff/diagnostic-entries/:id` пишет `last_modified_by_user_id` (= caller `users.id`) + `last_modified_at` (= server clock) в DB. Колонки нужны для админ-override flow: admin прокидывает `entry.specialist_id` чтобы пройти author check, но `last_modified_by_user_id` фиксирует реальную идентичность редактора. Колонки внутренние, не возвращаются в HTTP-ответе в B22a (см. `docs/schema.dbml` §`diagnostic_entries`).
 
+**422-vs-400 contract (B22b T5 — B18 Concern 2):**
+
+Из-за того что `@IsNotEmpty()` / `@IsUUID()` / `@IsDateString()` на PATCH-DTO срабатывают в `ValidationPipe` ДО доменной логики, "пустое тело" и "не-UUID" PATCH-запросы возвращают **422** (`validation_error` от `class-validator`), а не 400 от доменного инварианта. Это намеренное поведение:
+
+- **400 `<code>`** — структурно валидный body, но семантически отвергнут доменом: `diagnostic_entry_data_invalid` (schema mismatch с `details`), `assessment_date_in_future` (entity invariant). Эти ошибки имеют смысловой `error` code.
+- **422 (class-validator)** — структурно невалидный body: не-UUID в `template_id`, не-ISO дата в `assessment_date`, пустые обязательные поля. Возвращается стандартный nest validation envelope: `{ statusCode: 422, message: [...details], error: 'Unprocessable Entity' }`. У этих ошибок НЕТ стабильного доменного `error` code — клиент должен парсить `message[]`.
+- **409 `<code>`** — конфликт состояния: `diagnostic_template_inactive`, `optimistic_lock_conflict`.
+
+Доменные инварианты типа `empty_body` существуют в коде но **недостижимы** через HTTP-pipeline для PATCH-эндпоинтов с DTO-валидацией: class-validator стрельнёт раньше. Это harmless asymmetry (всё равно 4xx + читаемое сообщение), но клиент-side обработчики должны учитывать оба формата ошибки. При появлении новых PATCH-эндпоинтов выбор простой: либо ослабить DTO-валидацию (чтобы доменный инвариант увидел запрос), либо принять 422-семантику class-validator'а как контракт (мы выбрали второе — меньше disruption).
+
 ### 3.11 Progress Notes (Mentor)
 
 **Auth:** `KindergartenScopeGuard` + `@Roles('mentor','specialist','admin')`.
@@ -1061,6 +1071,8 @@ Templates create/update/deactivate — `/admin/diagnostic-templates` (admin role
 | 409 | `optimistic_lock_conflict` | PATCH — конкурентный writer изменил заметку (B22a T4 row_version guard). |
 
 **Audit trail (B22a T7):** PATCH на `/staff/progress-notes/:id` пишет `last_modified_by_user_id` + `last_modified_at` в DB (admin-override audit). Не возвращается в HTTP-ответе в B22a.
+
+**422-vs-400 contract (B22b T5 — B18 Concern 2):** см. §3.10. То же правило применяется к PATCH `/staff/progress-notes/:id`: пустое тело / не-UUID `mentor_id` дают 422 (class-validator), а 400 `<code>` — для семантических доменных ошибок типа `body` non-empty trimmed invariant.
 
 ### 3.12 Group Stories (Mentor) — B17
 
@@ -1330,6 +1342,8 @@ Reception может работать с заявками — см. Admin API `/
 | GET | `/parent/children/:id/diagnostics` | Диагностики ребёнка (все специалисты). Query: `cursor?`, `limit?` (default 20, max 100), `from?: date`, `to?: date`. Пагинация по `assessment_date DESC`. |
 | GET | `/parent/children/:id/diagnostics/:entryId` | Детали: `data`, `summary`, `recommendations`, `attachments`, `template_name`, `template_version`. Errors: 404 `diagnostic_entry_not_found`. |
 | GET | `/parent/children/:id/progress-notes` | Заметки прогресса от mentor. Query: `cursor?`, `limit?` (default 20, max 100), `from?: date`, `to?: date`. Пагинация по `noted_at DESC`. |
+
+**Parent DTO contract (B22b T5 — B18 L3):** parent-side эндпоинты используют **dedicated query DTO** (`ParentListDiagnosticEntriesQueryDto`, `ParentListProgressNotesQueryDto`) которые принимают только `from?`, `to?`, `cursor?`, `limit?`. Staff-only фильтры (`child_id` — уже в URL, `specialist_id`, `template_id`, `mentor_id`) НЕ exposed в parent-Swagger — `whitelist: true` глобального `ValidationPipe` отбрасывает посторонние ключи. Это страхует от тривиального enumeration over staff ids и подгоняет OpenAPI-контракт под реальное поведение handler'а.
 
 **Error map (§4.10):**
 

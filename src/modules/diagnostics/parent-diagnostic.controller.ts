@@ -23,8 +23,8 @@ import { RolesGuard } from '@/common/guards/roles.guard';
 import type { JwtPayload } from '@/common/types/jwt-payload';
 import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-context';
 import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
-import { ListDiagnosticEntriesQueryDto } from './dto/list-diagnostic-entries-query.dto';
-import { ListProgressNotesQueryDto } from './dto/list-progress-notes-query.dto';
+import { ParentListDiagnosticEntriesQueryDto } from './dto/parent-list-diagnostic-entries-query.dto';
+import { ParentListProgressNotesQueryDto } from './dto/parent-list-progress-notes-query.dto';
 import {
   DiagnosticEntryListResponseDto,
   DiagnosticEntryResponseDto,
@@ -47,7 +47,12 @@ function requireTenant(t: TenantContext): string {
   return t.kgId;
 }
 
-/** Build a template lookup map for a batch of entries. */
+/**
+ * Build a template lookup map for a batch of entries with ONE batch
+ * SELECT (B22b T5 / B18 M6 closure). Identical contract to the staff
+ * controller helper — kept inline rather than shared because the two
+ * controllers live in the same module and the function is 10 lines.
+ */
 async function buildTemplateLookup(
   kgId: string,
   entries: DiagnosticEntry[],
@@ -55,16 +60,17 @@ async function buildTemplateLookup(
 ): Promise<Map<string, TemplateLookup>> {
   const uniqueTemplateIds = [...new Set(entries.map((e) => e.templateId))];
   const lookup = new Map<string, TemplateLookup>();
-  await Promise.all(
-    uniqueTemplateIds.map(async (tid) => {
-      try {
-        const tpl = await templateService.getById(kgId, tid);
-        lookup.set(tid, { name: tpl.name, version: tpl.version });
-      } catch {
-        lookup.set(tid, { name: '', version: 0 });
-      }
-    }),
-  );
+  if (uniqueTemplateIds.length === 0) {
+    return lookup;
+  }
+  const templates = await templateService.listByIds(kgId, uniqueTemplateIds);
+  for (const tid of uniqueTemplateIds) {
+    const tpl = templates.get(tid);
+    lookup.set(
+      tid,
+      tpl ? { name: tpl.name, version: tpl.version } : { name: '', version: 0 },
+    );
+  }
   return lookup;
 }
 
@@ -112,7 +118,7 @@ export class ParentDiagnosticController {
     @Tenant() t: TenantContext,
     @CurrentUser() user: JwtPayload,
     @Param('childId', new ParseUUIDPipe()) childId: string,
-    @Query() query: ListDiagnosticEntriesQueryDto,
+    @Query() query: ParentListDiagnosticEntriesQueryDto,
   ): Promise<DiagnosticEntryListResponseDto> {
     const kgId = requireTenant(t);
     await this.entryService.assertParentCanViewDiagnostics(
@@ -195,7 +201,7 @@ export class ParentDiagnosticController {
     @Tenant() t: TenantContext,
     @CurrentUser() user: JwtPayload,
     @Param('childId', new ParseUUIDPipe()) childId: string,
-    @Query() query: ListProgressNotesQueryDto,
+    @Query() query: ParentListProgressNotesQueryDto,
   ): Promise<ProgressNoteListResponseDto> {
     const kgId = requireTenant(t);
     await this.entryService.assertParentCanViewDiagnostics(

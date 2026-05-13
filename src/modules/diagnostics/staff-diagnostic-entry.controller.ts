@@ -52,7 +52,18 @@ function requireTenant(t: TenantContext): string {
   return t.kgId;
 }
 
-/** Build a template name+version map for the supplied entries in one extra query. */
+/**
+ * Build a template name+version map for the supplied entries with ONE
+ * batch SELECT (B22b T5 / B18 M6 closure). Previously this fanned out
+ * N parallel `findById` round-trips, which scaled linearly with page
+ * size — at limit=100 that's a 100x amplification for a page load.
+ *
+ * `DiagnosticTemplateService.listByIds` issues a single
+ * `WHERE id = ANY($2)` keyed by the de-duplicated template ids; missing
+ * templates (deleted/cross-tenant) surface as `{ name: '', version: 0 }`
+ * fallback entries so the list response stays intact instead of failing
+ * mid-render.
+ */
 async function buildTemplateLookup(
   kgId: string,
   entries: DiagnosticEntry[],
@@ -60,18 +71,17 @@ async function buildTemplateLookup(
 ): Promise<Map<string, TemplateLookup>> {
   const uniqueTemplateIds = [...new Set(entries.map((e) => e.templateId))];
   const lookup = new Map<string, TemplateLookup>();
-  await Promise.all(
-    uniqueTemplateIds.map(async (tid) => {
-      try {
-        const tpl = await templateService.getById(kgId, tid);
-        lookup.set(tid, { name: tpl.name, version: tpl.version });
-      } catch {
-        // Template deleted / cross-tenant: surface empty strings rather than
-        // breaking the entire list response.
-        lookup.set(tid, { name: '', version: 0 });
-      }
-    }),
-  );
+  if (uniqueTemplateIds.length === 0) {
+    return lookup;
+  }
+  const templates = await templateService.listByIds(kgId, uniqueTemplateIds);
+  for (const tid of uniqueTemplateIds) {
+    const tpl = templates.get(tid);
+    lookup.set(
+      tid,
+      tpl ? { name: tpl.name, version: tpl.version } : { name: '', version: 0 },
+    );
+  }
   return lookup;
 }
 

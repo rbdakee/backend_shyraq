@@ -1210,6 +1210,69 @@ describe('B18 Diagnostics & Progress (e2e)', () => {
       ).toBe(true);
     });
 
+    it('parent DTO whitelists query params — staff filters (specialist_id, template_id) silently dropped (B22b T5 L3)', async () => {
+      // B18 L3 closure — parent-side endpoints now use a dedicated
+      // `ParentListDiagnosticEntriesQueryDto` that omits `specialist_id`,
+      // `template_id`, and `child_id`. With `whitelist: true` on the
+      // global ValidationPipe, extra query keys are silently stripped
+      // (no 422). We assert that:
+      //   1. The request still succeeds (200) — extras don't error.
+      //   2. The returned list is NOT filtered by the spurious
+      //      `template_id` value (we send a random uuid and still
+      //      see the seeded entry — confirming the param was dropped
+      //      before reaching the repo).
+      const { kgId, adminToken } = await createKgWithAdmin(
+        'parent-i-dto',
+        '+77010100088',
+      );
+      const template = await createTemplate(adminToken, {
+        specialist_type: 'psychologist',
+      });
+      const childId = await createChild(adminToken);
+      const specUserId = await seedUser('+77010100089');
+      await seedStaffMember(kgId, specUserId, 'specialist', 'psychologist');
+      const specToken = await mintToken({
+        sub: specUserId,
+        role: 'specialist',
+        kindergartenId: kgId,
+      });
+      const entryRes = await request(server)
+        .post('/api/v1/staff/diagnostic-entries')
+        .set('Authorization', `Bearer ${specToken}`)
+        .send({
+          child_id: childId,
+          template_id: template.id,
+          assessment_date: isoToday(),
+          data: validEntryData(),
+        })
+        .expect(201);
+      const entryId = entryRes.body.id as string;
+
+      const parentUserId = await seedUser('+77010100090');
+      await seedApprovedGuardian(kgId, childId, parentUserId, 'primary');
+      const parentToken = await mintToken({
+        sub: parentUserId,
+        role: 'parent',
+        kindergartenId: kgId,
+      });
+
+      // Random uuid in `template_id` — if the staff DTO leaked into
+      // the parent surface this would filter the list to empty.
+      // With the parent DTO it's silently dropped → entry still
+      // visible.
+      const stranger = '00000000-0000-4000-8000-000000000abc';
+      const listRes = await request(server)
+        .get(`/api/v1/parent/children/${childId}/diagnostics`)
+        .query({ template_id: stranger, specialist_id: stranger })
+        .set('Authorization', `Bearer ${parentToken}`)
+        .expect(200);
+      expect(
+        (listRes.body.items as Array<{ id: string }>).some(
+          (e) => e.id === entryId,
+        ),
+      ).toBe(true);
+    });
+
     it(
       'returns 404 when a guardian of child A requests an entry of child B ' +
         'via /parent/children/{A}/diagnostics/{entryOfB} (B22a T8 IDOR guard / FINDINGS M1)',

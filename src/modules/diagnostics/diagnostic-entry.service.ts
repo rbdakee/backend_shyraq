@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import {
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { NotificationPort } from '@/common/notifications/notification.port';
@@ -42,6 +43,15 @@ export interface CreateDiagnosticEntryInput {
 
 @Injectable()
 export class DiagnosticEntryService {
+  /**
+   * B22b T5 / B18 L2 — orphaned-entry audit channel. Surfaces every
+   * encountered orphan (entry whose `template_id` resolves to nothing
+   * in the same tenant) at `error` level so an operator scanning logs
+   * can correlate the entry id with whatever flow exposed it (PATCH,
+   * single-GET, list). Marker `orphaned_diagnostic_entry` is grep-able.
+   */
+  private readonly logger = new Logger(DiagnosticEntryService.name);
+
   constructor(
     private readonly templates: DiagnosticTemplateRepository,
     private readonly entries: DiagnosticEntryRepository,
@@ -237,6 +247,15 @@ export class DiagnosticEntryService {
       if (template === null) {
         // Should be unreachable — FK + RLS guarantee the template exists.
         // Surface as 404 if it ever hits.
+        //
+        // B22b T5 / B18 L2 — log the orphan BEFORE rethrowing so the
+        // operator gets a grep-able trail (`orphaned_diagnostic_entry`)
+        // tied to both the entry id and the dangling template id. The
+        // generic 404 the caller sees doesn't carry that diagnostic
+        // payload — the log line is the audit trail.
+        this.logger.error(
+          `orphaned_diagnostic_entry kg=${kgId} entry=${id} template=${existing.templateId}`,
+        );
         throw new DiagnosticTemplateNotFoundError(existing.templateId);
       }
       validateEntryData(template.schema, patch.data);

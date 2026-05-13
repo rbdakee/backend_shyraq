@@ -112,6 +112,36 @@ export class DiagnosticTemplateRelationalRepository extends DiagnosticTemplateRe
     return row ? DiagnosticTemplateMapper.toDomain(row) : null;
   }
 
+  /**
+   * Batch lookup (B22b T5 / B18 M6 — N+1 closure). Issues a single
+   * `WHERE id = ANY($2)` keyed by the supplied UUID list, scoped to
+   * `kindergarten_id = $1`. PG handles the empty-array case correctly
+   * (`ANY('{}')` matches zero rows), but we short-circuit anyway to
+   * avoid a wasted round-trip when callers pass `[]`.
+   *
+   * De-duplicating the input list is the caller's responsibility — the
+   * presenters already `[...new Set(...)]` so we don't double the work.
+   */
+  async listByIds(
+    kgId: string,
+    ids: string[],
+  ): Promise<Map<string, DiagnosticTemplate>> {
+    const map = new Map<string, DiagnosticTemplate>();
+    if (ids.length === 0) {
+      return map;
+    }
+    const rows = await this.manager()
+      .getRepository(DiagnosticTemplateRelationalEntity)
+      .createQueryBuilder('dt')
+      .where('dt.kindergarten_id = :kg', { kg: kgId })
+      .andWhere('dt.id = ANY(:ids)', { ids })
+      .getMany();
+    for (const row of rows) {
+      map.set(row.id, DiagnosticTemplateMapper.toDomain(row));
+    }
+    return map;
+  }
+
   async findByIdForUpdate(
     kgId: string,
     id: string,
