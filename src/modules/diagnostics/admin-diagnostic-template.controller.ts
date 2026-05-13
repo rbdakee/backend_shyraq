@@ -5,7 +5,6 @@ import {
   Get,
   HttpCode,
   HttpStatus,
-  NotFoundException,
   Param,
   ParseUUIDPipe,
   Patch,
@@ -29,7 +28,6 @@ import { Roles } from '@/common/decorators/roles.decorator';
 import { RolesGuard } from '@/common/guards/roles.guard';
 import { CurrentUser } from '@/common/decorators/current-user.decorator';
 import type { JwtPayload } from '@/common/types/jwt-payload';
-import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
 import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-context';
 import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
 import { CreateDiagnosticTemplateDto } from './dto/create-diagnostic-template.dto';
@@ -63,10 +61,7 @@ function requireTenant(t: TenantContext): string {
 @UseGuards(RolesGuard)
 @Roles('admin')
 export class AdminDiagnosticTemplateController {
-  constructor(
-    private readonly service: DiagnosticTemplateService,
-    private readonly staffMembers: StaffMemberRepository,
-  ) {}
+  constructor(private readonly service: DiagnosticTemplateService) {}
 
   @Get()
   @ApiOperation({
@@ -106,13 +101,10 @@ export class AdminDiagnosticTemplateController {
     @Body() dto: CreateDiagnosticTemplateDto,
   ): Promise<DiagnosticTemplateResponseDto> {
     const kgId = requireTenant(t);
-    const staffMember = await this.staffMembers.findActiveByUserAndKindergarten(
-      user.sub,
+    const staffMember = await this.service.findStaffMemberByUserIdOrThrow(
       kgId,
+      user.sub,
     );
-    if (!staffMember) {
-      throw new NotFoundException('staff_member_not_found');
-    }
     const template = await this.service.create(
       kgId,
       {

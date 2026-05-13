@@ -1,7 +1,6 @@
 import {
   BadRequestException,
   Controller,
-  ForbiddenException,
   Get,
   Param,
   ParseUUIDPipe,
@@ -22,10 +21,8 @@ import { Roles } from '@/common/decorators/roles.decorator';
 import { ChildAccessGuard } from '@/common/guards/child-access.guard';
 import { RolesGuard } from '@/common/guards/roles.guard';
 import type { JwtPayload } from '@/common/types/jwt-payload';
-import { ChildGuardianRepository } from '@/modules/child/infrastructure/persistence/child-guardian.repository';
 import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-context';
 import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
-import { NannyNoDiagnosticsAccessError } from './domain/errors/nanny-no-diagnostics-access.error';
 import { ListDiagnosticEntriesQueryDto } from './dto/list-diagnostic-entries-query.dto';
 import { ListProgressNotesQueryDto } from './dto/list-progress-notes-query.dto';
 import {
@@ -83,8 +80,8 @@ async function buildTemplateLookup(
  *
  * `ChildAccessGuard` (mounted globally at the route level via the controller
  * class guard chain) already validates that the caller is an APPROVED,
- * non-revoked guardian of `:childId`. We then additionally evaluate
- * `permissions.view_diagnostics` here.
+ * non-revoked guardian of `:childId`. The service additionally evaluates
+ * `permissions.view_diagnostics` via `assertParentCanViewDiagnostics`.
  */
 @ApiTags('Parent / Diagnostics')
 @ApiBearerAuth()
@@ -96,7 +93,6 @@ export class ParentDiagnosticController {
     private readonly entryService: DiagnosticEntryService,
     private readonly templateService: DiagnosticTemplateService,
     private readonly progressNoteService: ProgressNoteService,
-    private readonly guardians: ChildGuardianRepository,
   ) {}
 
   // ── Diagnostic entries ────────────────────────────────────────────────────
@@ -119,7 +115,11 @@ export class ParentDiagnosticController {
     @Query() query: ListDiagnosticEntriesQueryDto,
   ): Promise<DiagnosticEntryListResponseDto> {
     const kgId = requireTenant(t);
-    await this.assertViewDiagnosticsPermission(kgId, user.sub, childId);
+    await this.entryService.assertParentCanViewDiagnostics(
+      kgId,
+      user.sub,
+      childId,
+    );
     const result = await this.entryService.listByChild(kgId, childId, {
       from: query.from ? new Date(query.from) : undefined,
       to: query.to ? new Date(query.to) : undefined,
@@ -156,7 +156,11 @@ export class ParentDiagnosticController {
     @Param('entryId', new ParseUUIDPipe()) entryId: string,
   ): Promise<DiagnosticEntryResponseDto> {
     const kgId = requireTenant(t);
-    await this.assertViewDiagnosticsPermission(kgId, user.sub, childId);
+    await this.entryService.assertParentCanViewDiagnostics(
+      kgId,
+      user.sub,
+      childId,
+    );
     // FINDINGS M1 (B22a T8) — `getByIdForChild` enforces
     // `entry.childId === childId`. Without this binding the URL
     // `:childId` was authoritative for the permission check while
@@ -194,7 +198,11 @@ export class ParentDiagnosticController {
     @Query() query: ListProgressNotesQueryDto,
   ): Promise<ProgressNoteListResponseDto> {
     const kgId = requireTenant(t);
-    await this.assertViewDiagnosticsPermission(kgId, user.sub, childId);
+    await this.entryService.assertParentCanViewDiagnostics(
+      kgId,
+      user.sub,
+      childId,
+    );
     const result = await this.progressNoteService.listByChild(kgId, childId, {
       from: query.from ? new Date(query.from) : undefined,
       to: query.to ? new Date(query.to) : undefined,
@@ -202,33 +210,5 @@ export class ParentDiagnosticController {
       limit: query.limit ?? 20,
     });
     return ProgressNotePresenter.list(result.items, result.nextCursor);
-  }
-
-  // ── Permission helper ──────────────────────────────────────────────────────
-
-  /**
-   * Checks that the requesting user is an approved, non-revoked guardian of
-   * `childId` with `view_diagnostics = true`. Throws 403 when either the
-   * guardian row is missing (ChildAccessGuard should have caught this already
-   * but we re-validate for the permission flag) or the effective permission is
-   * false (nanny case).
-   */
-  private async assertViewDiagnosticsPermission(
-    kgId: string,
-    userId: string,
-    childId: string,
-  ): Promise<void> {
-    const guardian = await this.guardians.findApprovedActiveByUserAndChild(
-      kgId,
-      childId,
-      userId,
-    );
-    if (!guardian) {
-      throw new ForbiddenException('not_a_guardian');
-    }
-    const effective = guardian.permissions.effective(guardian.role);
-    if (!effective.view_diagnostics) {
-      throw new NannyNoDiagnosticsAccessError();
-    }
   }
 }

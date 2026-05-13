@@ -2,7 +2,6 @@ import {
   BadRequestException,
   Controller,
   Get,
-  NotFoundException,
   Query,
   UseGuards,
 } from '@nestjs/common';
@@ -19,7 +18,6 @@ import { Roles } from '@/common/decorators/roles.decorator';
 import { RolesGuard } from '@/common/guards/roles.guard';
 import { CurrentUser } from '@/common/decorators/current-user.decorator';
 import type { JwtPayload } from '@/common/types/jwt-payload';
-import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
 import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-context';
 import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
 import { MyTodosQueryDto } from './dto/my-todos-query.dto';
@@ -44,10 +42,7 @@ function requireTenant(t: TenantContext): string {
 @UseGuards(RolesGuard)
 @Roles('admin', 'specialist')
 export class StaffMyTodosController {
-  constructor(
-    private readonly service: MyTodosService,
-    private readonly staffMembers: StaffMemberRepository,
-  ) {}
+  constructor(private readonly service: MyTodosService) {}
 
   @Get()
   @ApiOperation({
@@ -69,13 +64,10 @@ export class StaffMyTodosController {
     const kgId = requireTenant(t);
     const isAdmin = user.role === 'admin';
 
-    const staffMember = await this.staffMembers.findActiveByUserAndKindergarten(
-      user.sub,
+    const staffMember = await this.service.findStaffMemberByUserIdOrThrow(
       kgId,
+      user.sub,
     );
-    if (!staffMember) {
-      throw new NotFoundException('staff_member_not_found');
-    }
 
     const callerSpecialistType = staffMember.specialistType ?? null;
     const result = await this.service.getMyTodos(

@@ -6,7 +6,6 @@ import {
   Get,
   HttpCode,
   HttpStatus,
-  NotFoundException,
   Param,
   ParseUUIDPipe,
   Patch,
@@ -30,7 +29,6 @@ import { Roles } from '@/common/decorators/roles.decorator';
 import { RolesGuard } from '@/common/guards/roles.guard';
 import { CurrentUser } from '@/common/decorators/current-user.decorator';
 import type { JwtPayload } from '@/common/types/jwt-payload';
-import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
 import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-context';
 import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
 import { CreateProgressNoteDto } from './dto/create-progress-note.dto';
@@ -64,10 +62,7 @@ function requireTenant(t: TenantContext): string {
 @UseGuards(RolesGuard)
 @Roles('admin', 'mentor')
 export class StaffProgressNoteController {
-  constructor(
-    private readonly service: ProgressNoteService,
-    private readonly staffMembers: StaffMemberRepository,
-  ) {}
+  constructor(private readonly service: ProgressNoteService) {}
 
   @Get()
   @ApiOperation({
@@ -89,11 +84,10 @@ export class StaffProgressNoteController {
     const isAdmin = user.role === 'admin';
     let effectiveMentorId: string | undefined = query.mentor_id;
     if (!isAdmin) {
-      const staffMember =
-        await this.staffMembers.findActiveByUserAndKindergarten(user.sub, kgId);
-      if (!staffMember) {
-        throw new NotFoundException('staff_member_not_found');
-      }
+      const staffMember = await this.service.findStaffMemberByUserIdOrThrow(
+        kgId,
+        user.sub,
+      );
       effectiveMentorId = staffMember.id;
     }
     const result = await this.service.listByKgFiltered(kgId, {
@@ -123,13 +117,10 @@ export class StaffProgressNoteController {
     @Body() dto: CreateProgressNoteDto,
   ): Promise<ProgressNoteResponseDto> {
     const kgId = requireTenant(t);
-    const staffMember = await this.staffMembers.findActiveByUserAndKindergarten(
-      user.sub,
+    const staffMember = await this.service.findStaffMemberByUserIdOrThrow(
       kgId,
+      user.sub,
     );
-    if (!staffMember) {
-      throw new NotFoundException('staff_member_not_found');
-    }
     const note = await this.service.create(kgId, {
       childId: dto.child_id,
       mentorId: staffMember.id,
@@ -162,13 +153,10 @@ export class StaffProgressNoteController {
     @Body() dto: UpdateProgressNoteDto,
   ): Promise<ProgressNoteResponseDto> {
     const kgId = requireTenant(t);
-    const staffMember = await this.staffMembers.findActiveByUserAndKindergarten(
-      user.sub,
+    const staffMember = await this.service.findStaffMemberByUserIdOrThrow(
       kgId,
+      user.sub,
     );
-    if (!staffMember) {
-      throw new NotFoundException('staff_member_not_found');
-    }
     // Admin callers bypass author check by passing the note's actual mentor_id.
     const isAdmin = user.role === 'admin';
     let callerMentorId = staffMember.id;
@@ -208,13 +196,10 @@ export class StaffProgressNoteController {
     @Param('id', new ParseUUIDPipe()) id: string,
   ): Promise<void> {
     const kgId = requireTenant(t);
-    const staffMember = await this.staffMembers.findActiveByUserAndKindergarten(
-      user.sub,
+    const staffMember = await this.service.findStaffMemberByUserIdOrThrow(
       kgId,
+      user.sub,
     );
-    if (!staffMember) {
-      throw new NotFoundException('staff_member_not_found');
-    }
     const isAdmin = user.role === 'admin';
     await this.service.delete(kgId, id, staffMember.id, isAdmin);
   }

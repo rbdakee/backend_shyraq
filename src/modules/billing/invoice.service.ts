@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Inject,
   Injectable,
   Logger,
@@ -192,6 +193,48 @@ export class InvoiceService {
     invoiceId: string,
   ): Promise<InvoiceLineItem[]> {
     return this.invoiceLineItems.listByInvoice(kindergartenId, invoiceId);
+  }
+
+  /**
+   * Parent-side guardian re-check for invoice/calendar read endpoints.
+   *
+   * Used by `ParentInvoiceController` for every route — `ChildAccessGuard`
+   * already handles `:childId` paths (cross-tenant + approved-active), but
+   * `:id` invoice routes need an explicit re-check anyway, AND the
+   * guardian role itself isn't surfaced by the guard. We need the role
+   * here to gate nanny per BP §4.13 (nanny → 403 on every billing read).
+   *
+   * Throws `ForbiddenException('not_a_guardian')` when the caller has no
+   * approved-active link to the child (catches the `:id` route where the
+   * caller may be a guardian of a different child in the same kg) and
+   * `ForbiddenException('nanny_cannot_view_invoice')` when the link is a
+   * nanny.
+   */
+  async assertNonNannyGuardianForRead(
+    kindergartenId: string,
+    userId: string,
+    childId: string,
+  ): Promise<void> {
+    if (!this.childGuardians) {
+      // Wiring sanity check — older test specs that build InvoiceService
+      // without ChildGuardianRepository can call business methods just
+      // fine, but the parent-side read assert is wired only when the
+      // module pulls in ChildModule. If we somehow get here without the
+      // dep, fail closed (treat as "not a guardian") rather than leaking
+      // data through a missing check.
+      throw new ForbiddenException('not_a_guardian');
+    }
+    const guardian = await this.childGuardians.findApprovedActiveByUserAndChild(
+      kindergartenId,
+      childId,
+      userId,
+    );
+    if (!guardian) {
+      throw new ForbiddenException('not_a_guardian');
+    }
+    if (guardian.role.value === 'nanny') {
+      throw new ForbiddenException('nanny_cannot_view_invoice');
+    }
   }
 
   // ── Admin one-off ──────────────────────────────────────────────────────

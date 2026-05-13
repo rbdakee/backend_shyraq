@@ -2,7 +2,6 @@ import {
   BadRequestException,
   Body,
   Controller,
-  ForbiddenException,
   HttpCode,
   HttpStatus,
   Param,
@@ -27,7 +26,6 @@ import { JwtAuthGuard } from '@/common/guards/jwt-auth.guard';
 import { PendingRoleSelectGuard } from '@/common/guards/pending-role-select.guard';
 import { RolesGuard } from '@/common/guards/roles.guard';
 import type { JwtPayload } from '@/common/types/jwt-payload';
-import { ChildGuardianRepository } from '@/modules/child/infrastructure/persistence/child-guardian.repository';
 import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-context';
 import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
 import {
@@ -52,8 +50,8 @@ function requireTenant(t: TenantContext): string {
  *
  * Path prefix is `/parent/invoices/:id/...` — we cannot rely on
  * `ChildAccessGuard` (which keys on `:childId` / `:guardianId`) so the guard
- * mount stays JWT + Roles only and the controller does an explicit guardian
- * re-check via `ChildGuardianRepository` after resolving the invoice.
+ * mount stays JWT + Roles only and `PaymentService.assertCanPay` does the
+ * explicit guardian re-check after the invoice is resolved.
  *
  * Permission gate (BP §4.13):
  *   - primary           → allowed.
@@ -70,7 +68,6 @@ export class ParentPaymentController {
   constructor(
     private readonly invoiceService: InvoiceService,
     private readonly paymentService: PaymentService,
-    private readonly guardians: ChildGuardianRepository,
   ) {}
 
   @Post(':id/pay')
@@ -99,7 +96,7 @@ export class ParentPaymentController {
   ): Promise<InitiatePaymentResponseDto> {
     const kgId = requireTenant(t);
     const invoice = await this.invoiceService.get(kgId, invoiceId);
-    await this.assertCanPay(kgId, user.sub, invoice.childId);
+    await this.paymentService.assertCanPay(kgId, user.sub, invoice.childId);
 
     if (dto.payment_mode === 'partial') {
       if (dto.amount === undefined || dto.amount === null) {
@@ -157,7 +154,7 @@ export class ParentPaymentController {
   ): Promise<InitiatePrepaymentResponseDto> {
     const kgId = requireTenant(t);
     const original = await this.invoiceService.get(kgId, invoiceId);
-    await this.assertCanPay(kgId, user.sub, original.childId);
+    await this.paymentService.assertCanPay(kgId, user.sub, original.childId);
 
     const prepaymentInvoice = await this.invoiceService.prepayInvoice(
       kgId,
@@ -190,35 +187,5 @@ export class ParentPaymentController {
         },
       },
     };
-  }
-
-  /**
-   * Verify the caller is an approved-active guardian of the child AND that
-   * their role permits payment per BP §4.13.
-   */
-  private async assertCanPay(
-    kgId: string,
-    userId: string,
-    childId: string,
-  ): Promise<void> {
-    const guardian = await this.guardians.findApprovedActiveByUserAndChild(
-      kgId,
-      childId,
-      userId,
-    );
-    if (!guardian) {
-      throw new ForbiddenException('not_a_guardian');
-    }
-    if (guardian.role.value === 'nanny') {
-      throw new ForbiddenException('nanny_cannot_pay');
-    }
-    // Defaults table (BP §4.13 / GuardianPermissions VO): primary + secondary
-    // both default to `pay_invoices=true`, nanny → false. The VO's
-    // `effective(role)` overlays per-row overrides on the role defaults so
-    // primary may revoke a secondary by flipping `pay_invoices=false`.
-    const effective = guardian.permissions.effective(guardian.role);
-    if (effective.pay_invoices !== true) {
-      throw new ForbiddenException('secondary_pay_not_allowed');
-    }
   }
 }

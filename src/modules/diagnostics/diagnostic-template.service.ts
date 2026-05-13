@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
+import { StaffMember } from '@/modules/staff/domain/entities/staff-member.entity';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import {
   DiagnosticTemplateListResult,
@@ -27,7 +29,41 @@ export class DiagnosticTemplateService {
   constructor(
     private readonly templates: DiagnosticTemplateRepository,
     private readonly clock: ClockPort,
+    // Optional so legacy spec wiring (which builds the service with two
+    // args) keeps working. Required at HTTP-pipeline time because
+    // `findStaffMemberByUserIdOrThrow` is called by every staff/admin
+    // controller — failing closed (NotFoundException) when missing.
+    private readonly staffMembers?: StaffMemberRepository,
   ) {}
+
+  /**
+   * Resolve a user → their active staff_members row in this kindergarten.
+   * Centralised here so controllers no longer touch `StaffMemberRepository`
+   * directly (CLAUDE.md §4: controllers stay thin HTTP-edge).
+   *
+   * Used by the admin / staff diagnostic-template controllers — `createdBy`
+   * stamping (admin create), `specialist_type` filter (staff list).
+   * Throws `NotFoundException('staff_member_not_found')` when:
+   *   - the staff_members port is unwired (defensive guard for spec
+   *     paths that build the service standalone), or
+   *   - the user has no active staff_members row in this kg.
+   */
+  async findStaffMemberByUserIdOrThrow(
+    kgId: string,
+    userId: string,
+  ): Promise<StaffMember> {
+    if (!this.staffMembers) {
+      throw new NotFoundException('staff_member_not_found');
+    }
+    const staffMember = await this.staffMembers.findActiveByUserAndKindergarten(
+      userId,
+      kgId,
+    );
+    if (!staffMember) {
+      throw new NotFoundException('staff_member_not_found');
+    }
+    return staffMember;
+  }
 
   /**
    * INSERT a new diagnostic template. The constructor (`fromState`) runs

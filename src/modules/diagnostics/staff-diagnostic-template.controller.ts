@@ -2,7 +2,6 @@ import {
   BadRequestException,
   Controller,
   Get,
-  NotFoundException,
   Param,
   ParseUUIDPipe,
   Query,
@@ -21,7 +20,6 @@ import { Roles } from '@/common/decorators/roles.decorator';
 import { RolesGuard } from '@/common/guards/roles.guard';
 import { CurrentUser } from '@/common/decorators/current-user.decorator';
 import type { JwtPayload } from '@/common/types/jwt-payload';
-import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
 import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-context';
 import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
 import { ListDiagnosticTemplatesQueryDto } from './dto/list-diagnostic-templates-query.dto';
@@ -57,10 +55,7 @@ function requireTenant(t: TenantContext): string {
 @UseGuards(RolesGuard)
 @Roles('admin', 'specialist')
 export class StaffDiagnosticTemplateController {
-  constructor(
-    private readonly service: DiagnosticTemplateService,
-    private readonly staffMembers: StaffMemberRepository,
-  ) {}
+  constructor(private readonly service: DiagnosticTemplateService) {}
 
   @Get()
   @ApiOperation({
@@ -82,11 +77,10 @@ export class StaffDiagnosticTemplateController {
 
     if (!isAdmin) {
       // Non-admin: always scope to caller's own specialist_type.
-      const staffMember =
-        await this.staffMembers.findActiveByUserAndKindergarten(user.sub, kgId);
-      if (!staffMember) {
-        throw new NotFoundException('staff_member_not_found');
-      }
+      const staffMember = await this.service.findStaffMemberByUserIdOrThrow(
+        kgId,
+        user.sub,
+      );
       // Mentors may not have a specialist_type; if so they see all active.
       effectiveSpecialistType = staffMember.specialistType ?? undefined;
     } else if (isAdmin && !query.all && !query.specialist_type) {

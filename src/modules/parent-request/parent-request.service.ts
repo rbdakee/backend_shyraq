@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomInt } from 'node:crypto';
 import { AllConfigType } from '@/config/config.type';
@@ -180,6 +180,34 @@ export class ParentRequestService {
     private readonly configService: ConfigService<AllConfigType>,
     private readonly invoiceService: InvoiceService,
   ) {}
+
+  /**
+   * Resolve a user → active staff_members row in this kg, and package it as a
+   * `CallerStaffContext` for downstream service methods (acceptRequest /
+   * rejectRequest / listForStaffInbox / addStaffMessage / etc.).
+   *
+   * Pulled out of `StaffParentRequestController` so the controller no longer
+   * imports `StaffMemberRepository` directly (CLAUDE.md §4 — controllers stay
+   * thin HTTP-edge). Throws `NotFoundException('staff_member_not_found')` on
+   * missing row.
+   */
+  async resolveCallerByUserIdOrThrow(
+    kindergartenId: string,
+    userId: string,
+  ): Promise<CallerStaffContext> {
+    const staff = await this.staffRepo.findActiveByUserAndKindergarten(
+      userId,
+      kindergartenId,
+    );
+    if (!staff) {
+      throw new NotFoundException('staff_member_not_found');
+    }
+    return {
+      staffMemberId: staff.id,
+      userId: staff.userId,
+      role: staff.role as StaffRole,
+    };
+  }
 
   // ── OTP for trusted-person flow ───────────────────────────────────────
 

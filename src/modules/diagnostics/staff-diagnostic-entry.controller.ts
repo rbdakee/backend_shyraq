@@ -5,7 +5,6 @@ import {
   Get,
   HttpCode,
   HttpStatus,
-  NotFoundException,
   Param,
   ParseUUIDPipe,
   Patch,
@@ -29,7 +28,6 @@ import { Roles } from '@/common/decorators/roles.decorator';
 import { RolesGuard } from '@/common/guards/roles.guard';
 import { CurrentUser } from '@/common/decorators/current-user.decorator';
 import type { JwtPayload } from '@/common/types/jwt-payload';
-import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
 import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-context';
 import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
 import { CreateDiagnosticEntryDto } from './dto/create-diagnostic-entry.dto';
@@ -93,7 +91,6 @@ export class StaffDiagnosticEntryController {
   constructor(
     private readonly service: DiagnosticEntryService,
     private readonly templateService: DiagnosticTemplateService,
-    private readonly staffMembers: StaffMemberRepository,
   ) {}
 
   @Get()
@@ -117,11 +114,10 @@ export class StaffDiagnosticEntryController {
     const isAdmin = user.role === 'admin';
     let effectiveSpecialistId: string | undefined = query.specialist_id;
     if (!isAdmin) {
-      const staffMember =
-        await this.staffMembers.findActiveByUserAndKindergarten(user.sub, kgId);
-      if (!staffMember) {
-        throw new NotFoundException('staff_member_not_found');
-      }
+      const staffMember = await this.service.findStaffMemberByUserIdOrThrow(
+        kgId,
+        user.sub,
+      );
       effectiveSpecialistId = staffMember.id;
     }
     const result = await this.service.listByKgFiltered(kgId, {
@@ -165,13 +161,10 @@ export class StaffDiagnosticEntryController {
     @Body() dto: CreateDiagnosticEntryDto,
   ): Promise<DiagnosticEntryResponseDto> {
     const kgId = requireTenant(t);
-    const staffMember = await this.staffMembers.findActiveByUserAndKindergarten(
-      user.sub,
+    const staffMember = await this.service.findStaffMemberByUserIdOrThrow(
       kgId,
+      user.sub,
     );
-    if (!staffMember) {
-      throw new NotFoundException('staff_member_not_found');
-    }
     const entry = await this.service.create(kgId, {
       childId: dto.child_id,
       templateId: dto.template_id,
@@ -231,13 +224,10 @@ export class StaffDiagnosticEntryController {
     @Body() dto: UpdateDiagnosticEntryDto,
   ): Promise<DiagnosticEntryResponseDto> {
     const kgId = requireTenant(t);
-    const staffMember = await this.staffMembers.findActiveByUserAndKindergarten(
-      user.sub,
+    const staffMember = await this.service.findStaffMemberByUserIdOrThrow(
       kgId,
+      user.sub,
     );
-    if (!staffMember) {
-      throw new NotFoundException('staff_member_not_found');
-    }
     // Admin callers bypass the author check by passing their own staff id as
     // the expected author. The service will assert authoredBy(staffMemberId);
     // to let admins through we pass the entry's actual specialist_id when the

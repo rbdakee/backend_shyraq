@@ -1,9 +1,17 @@
 import { randomUUID } from 'node:crypto';
-import { Injectable } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { NotificationPort } from '@/common/notifications/notification.port';
+import { ChildGuardianRepository } from '@/modules/child/infrastructure/persistence/child-guardian.repository';
 import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
 import { ChildNotFoundError } from '@/modules/child/domain/errors/child-not-found.error';
+import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
+import { StaffMember } from '@/modules/staff/domain/entities/staff-member.entity';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { NannyNoDiagnosticsAccessError } from './domain/errors/nanny-no-diagnostics-access.error';
 import { formatDateInTimezone } from '@/shared-kernel/domain/value-objects/day-of-week.vo';
 import { DiagnosticTemplateRepository } from './diagnostic-template.repository';
 import {
@@ -40,7 +48,72 @@ export class DiagnosticEntryService {
     private readonly children: ChildRepository,
     private readonly notification: NotificationPort,
     private readonly clock: ClockPort,
+    // Optional so older spec wiring (which builds the service standalone
+    // without StaffModule wired in) keeps working. Used by
+    // `findStaffMemberByUserIdOrThrow` — fails closed when missing.
+    private readonly staffMembers?: StaffMemberRepository,
+    // Optional for the same reason — the parent-side permission gate
+    // is the only consumer.
+    private readonly childGuardians?: ChildGuardianRepository,
   ) {}
+
+  /**
+   * Resolve a user → their active staff_members row in this kindergarten.
+   * Pulled here from the diagnostic controllers (CLAUDE.md §4 — controllers
+   * stay thin HTTP-edge). Throws `NotFoundException('staff_member_not_found')`
+   * when the user has no active row in this kg.
+   */
+  async findStaffMemberByUserIdOrThrow(
+    kgId: string,
+    userId: string,
+  ): Promise<StaffMember> {
+    if (!this.staffMembers) {
+      throw new NotFoundException('staff_member_not_found');
+    }
+    const staffMember = await this.staffMembers.findActiveByUserAndKindergarten(
+      userId,
+      kgId,
+    );
+    if (!staffMember) {
+      throw new NotFoundException('staff_member_not_found');
+    }
+    return staffMember;
+  }
+
+  /**
+   * Parent-side permission gate (BP §8.5): caller must be an approved-active
+   * guardian of `:childId` AND have `view_diagnostics = true`.
+   * `ChildAccessGuard` already validates the cross-tenant approved status —
+   * this method re-validates explicitly to also surface the permission flag
+   * (nanny defaults to `view_diagnostics=false`).
+   *
+   * Throws:
+   *   - `ForbiddenException('not_a_guardian')` — defensive re-check.
+   *   - `NannyNoDiagnosticsAccessError` — guardian has the link but
+   *     `view_diagnostics=false` (nanny role, or primary revoked the
+   *     permission on a secondary's row).
+   */
+  async assertParentCanViewDiagnostics(
+    kgId: string,
+    userId: string,
+    childId: string,
+  ): Promise<void> {
+    if (!this.childGuardians) {
+      throw new ForbiddenException('not_a_guardian');
+    }
+    const guardian = await this.childGuardians.findApprovedActiveByUserAndChild(
+      kgId,
+      childId,
+      userId,
+    );
+    if (!guardian) {
+      throw new ForbiddenException('not_a_guardian');
+    }
+    const effective = guardian.permissions.effective(guardian.role);
+    if (!effective.view_diagnostics) {
+      throw new NannyNoDiagnosticsAccessError();
+    }
+  }
 
   /**
    * Create a new entry against an existing, active template. Validates the

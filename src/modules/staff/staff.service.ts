@@ -4,6 +4,7 @@ import { Locale } from '@/shared-kernel/domain/value-objects/locale.vo';
 import { Phone } from '@/shared-kernel/domain/value-objects/phone.vo';
 import { SmsPort } from '@/modules/auth/sms.port';
 import { GroupRepository } from '@/modules/group/infrastructure/persistence/group.repository';
+import { KindergartenRepository } from '@/modules/kindergarten/infrastructure/persistence/kindergarten.repository';
 import { UserRepository } from '@/modules/users/infrastructure/persistence/user.repository';
 import { StaffMember, StaffRole } from './domain/entities/staff-member.entity';
 import { SpecialistType } from './domain/value-objects/specialist-type.vo';
@@ -59,6 +60,14 @@ export class StaffService {
     // is wrapped in `forwardRef` and we mirror that here.
     @Inject(forwardRef(() => GroupRepository))
     private readonly groups: GroupRepository,
+    // KindergartenRepository is provided by KindergartenModule. Same
+    // forwardRef pattern (KindergartenModule already imports StaffModule
+    // for seeding admin staff_members on kg creation). Optional so legacy
+    // spec wiring that constructs StaffService standalone (without
+    // KindergartenModule) keeps passing — `create()` reads it lazily and
+    // falls back to the caller-supplied `options.kindergartenName`.
+    @Inject(forwardRef(() => KindergartenRepository))
+    private readonly kindergartens?: KindergartenRepository,
   ) {}
 
   // ── reads ────────────────────────────────────────────────────────────────
@@ -82,6 +91,13 @@ export class StaffService {
    * Creates a staff member: find-or-create user by phone, then insert
    * staff_members with the supplied role/specialist matrix. A best-effort
    * welcome SMS is sent post-commit; SMS failures never roll back the row.
+   *
+   * Looks up the kindergarten name internally for the welcome SMS template
+   * — callers no longer need to inject `KindergartenRepository` (CLAUDE.md
+   * §4 — controllers stay thin HTTP-edge). `options.kindergartenName`
+   * remains supported as a fallback for callers that already have the
+   * name in hand (e.g. KindergartenService seeding admins right after
+   * create).
    */
   async create(
     kindergartenId: string,
@@ -112,12 +128,27 @@ export class StaffService {
       hiredAt: input.hiredAt ?? this.clock.now(),
     });
 
+    // Resolve the kg name for the welcome SMS template. Caller-supplied
+    // option wins (KindergartenService seeding already has the name);
+    // otherwise look it up via the kindergartens port. We swallow any
+    // lookup failure into '' so a transient kg-read blip never blocks
+    // staff creation — the SMS itself is best-effort downstream.
+    let kindergartenName = options?.kindergartenName ?? '';
+    if (!kindergartenName && this.kindergartens) {
+      try {
+        const kg = await this.kindergartens.findById(kindergartenId);
+        kindergartenName = kg?.name ?? '';
+      } catch {
+        kindergartenName = '';
+      }
+    }
+
     // Best-effort welcome SMS — never throws, never rolls back.
     void this.sendBestEffortWelcomeSms(
       kindergartenId,
       phone,
       created.id,
-      options?.kindergartenName ?? '',
+      kindergartenName,
     );
 
     return created;

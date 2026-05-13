@@ -1,10 +1,11 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { ForbiddenException, Inject, Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { DataSource } from 'typeorm';
 import { NotificationPort } from '@/common/notifications/notification.port';
 import { tenantStorage } from '@/database/tenant-storage';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
+import { ChildGuardianRepository } from '@/modules/child/infrastructure/persistence/child-guardian.repository';
 import {
   Payment,
   PaymentProvider,
@@ -112,7 +113,56 @@ export class PaymentService {
     private readonly notificationPort: NotificationPort,
     @Inject(ClockPort) private readonly clock: ClockPort,
     private readonly dataSource: DataSource,
+    // Optional so legacy spec wiring (which builds PaymentService without
+    // the parent-side dependency) keeps working. `assertCanPay` fails
+    // closed when missing.
+    private readonly childGuardians?: ChildGuardianRepository,
   ) {}
+
+  /**
+   * Parent-side guardian re-check used by `ParentPaymentController` before
+   * initiating a payment / prepayment. The path prefix is
+   * `/parent/invoices/:id/...` so `ChildAccessGuard` (which keys on
+   * `:childId`) can't run, hence the explicit re-check at the service
+   * boundary.
+   *
+   * Throws:
+   *   - `ForbiddenException('not_a_guardian')` — no approved-active link
+   *     to the child (covers cross-tenant attack: kg_A guardian trying to
+   *     pay kg_B invoice).
+   *   - `ForbiddenException('nanny_cannot_pay')` — link is a nanny;
+   *     BP §4.13 forbids nanny payments end-to-end.
+   *   - `ForbiddenException('secondary_pay_not_allowed')` — primary has
+   *     revoked `pay_invoices` on this secondary's row.
+   */
+  async assertCanPay(
+    kindergartenId: string,
+    userId: string,
+    childId: string,
+  ): Promise<void> {
+    if (!this.childGuardians) {
+      throw new ForbiddenException('not_a_guardian');
+    }
+    const guardian = await this.childGuardians.findApprovedActiveByUserAndChild(
+      kindergartenId,
+      childId,
+      userId,
+    );
+    if (!guardian) {
+      throw new ForbiddenException('not_a_guardian');
+    }
+    if (guardian.role.value === 'nanny') {
+      throw new ForbiddenException('nanny_cannot_pay');
+    }
+    // Defaults table (BP §4.13 / GuardianPermissions VO): primary + secondary
+    // both default to `pay_invoices=true`, nanny → false. The VO's
+    // `effective(role)` overlays per-row overrides on the role defaults so
+    // primary may revoke a secondary by flipping `pay_invoices=false`.
+    const effective = guardian.permissions.effective(guardian.role);
+    if (effective.pay_invoices !== true) {
+      throw new ForbiddenException('secondary_pay_not_allowed');
+    }
+  }
 
   // ── public API ─────────────────────────────────────────────────────────
 

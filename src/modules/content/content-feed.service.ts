@@ -48,6 +48,34 @@ export class ContentFeedService {
     @Inject(ClockPort) private readonly clock: ClockPort,
   ) {}
 
+  /**
+   * Parent-side per-child stories list. Looks up the child to discover its
+   * `current_group_id`, then returns the active stories for that group. If
+   * the child is unfound (`ChildAccessGuard` should already have caught
+   * this in the HTTP path) or has no group assignment, returns `[]`.
+   *
+   * Pulled out of `ParentContentController` so the controller layer no
+   * longer touches `ChildRepository` / `GroupStoryRepository` directly
+   * (CLAUDE.md §4 — controllers stay thin HTTP-edge).
+   */
+  async listActiveStoriesForChild(
+    kindergartenId: string,
+    childId: string,
+  ): Promise<GroupStory[]> {
+    const child = await this.childRepo.findById(kindergartenId, childId);
+    if (!child) {
+      // ChildAccessGuard should have caught this already, but guard defensively.
+      return [];
+    }
+    const childState = child.toState();
+    const groupId = childState.currentGroupId;
+    if (!groupId) {
+      return [];
+    }
+    const now = this.clock.now();
+    return this.storyRepo.listActiveByGroup(kindergartenId, groupId, now);
+  }
+
   async getParentChildFeed(
     kindergartenId: string,
     childId: string,
