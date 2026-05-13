@@ -5,6 +5,7 @@ import {
   Get,
   HttpCode,
   HttpStatus,
+  Inject,
   Param,
   ParseUUIDPipe,
   Post,
@@ -28,6 +29,7 @@ import { Roles } from '@/common/decorators/roles.decorator';
 import { JwtAuthGuard } from '@/common/guards/jwt-auth.guard';
 import { PendingRoleSelectGuard } from '@/common/guards/pending-role-select.guard';
 import { RolesGuard } from '@/common/guards/roles.guard';
+import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-context';
 import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
 import { ActivityEventResponseDto } from './dto/activity-event.response.dto';
@@ -58,7 +60,10 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 @UseGuards(JwtAuthGuard, PendingRoleSelectGuard, RolesGuard)
 @Roles('mentor', 'specialist', 'reception')
 export class ScheduleStaffController {
-  constructor(private readonly service: ScheduleService) {}
+  constructor(
+    private readonly service: ScheduleService,
+    @Inject(ClockPort) private readonly clock: ClockPort,
+  ) {}
 
   @Get('today')
   @ApiOperation({ summary: "Today's events for the requested group." })
@@ -89,7 +94,7 @@ export class ScheduleStaffController {
     @Query() q: StaffWeekQuery,
   ): Promise<ScheduleWeekResponseDto> {
     const kgId = requireTenant(t);
-    const start = q.weekStart ? new Date(q.weekStart) : new Date();
+    const start = q.weekStart ? new Date(q.weekStart) : this.clock.now();
     const view = await this.service.getGroupWeek(kgId, q.groupId, start);
     return groupEventsByDay(
       view.weekStart,

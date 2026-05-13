@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Controller,
   Get,
+  Inject,
   Param,
   ParseUUIDPipe,
   Query,
@@ -21,6 +22,7 @@ import {
 import { ChildAccessGuard } from '@/common/guards/child-access.guard';
 import { JwtAuthGuard } from '@/common/guards/jwt-auth.guard';
 import { PendingRoleSelectGuard } from '@/common/guards/pending-role-select.guard';
+import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-context';
 import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
 import { AttendancePresenter } from './attendance.presenter';
@@ -56,6 +58,7 @@ export class ParentAttendanceController {
   constructor(
     private readonly attendanceService: AttendanceService,
     private readonly timelineService: TimelineService,
+    @Inject(ClockPort) private readonly clock: ClockPort,
   ) {}
 
   @Get(':childId/timeline')
@@ -145,7 +148,7 @@ export class ParentAttendanceController {
     const kgId = requireTenant(t);
     const isoDate =
       q.date ??
-      new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Almaty' });
+      this.clock.now().toLocaleDateString('en-CA', { timeZone: 'Asia/Almaty' });
     const status = await this.attendanceService.getDailyStatusByChildAndDate(
       kgId,
       childId,

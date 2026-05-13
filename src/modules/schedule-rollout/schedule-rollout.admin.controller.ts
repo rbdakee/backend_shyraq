@@ -3,6 +3,7 @@ import {
   Controller,
   HttpCode,
   HttpStatus,
+  Inject,
   Post,
   UseGuards,
 } from '@nestjs/common';
@@ -22,6 +23,7 @@ import { SuperAdminScope } from '@/common/decorators/super-admin-scope.decorator
 import { JwtAuthGuard } from '@/common/guards/jwt-auth.guard';
 import { PendingRoleSelectGuard } from '@/common/guards/pending-role-select.guard';
 import { RolesGuard } from '@/common/guards/roles.guard';
+import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { RunWeeklyRolloutDto } from './dto/run-weekly-rollout.dto';
 import { RolloutSummaryResponseDto } from './dto/rollout-summary.response.dto';
 import { WeeklyRolloutService } from './weekly-rollout.service';
@@ -48,7 +50,10 @@ import { WeeklyRolloutService } from './weekly-rollout.service';
 @Roles('super_admin')
 @SuperAdminScope()
 export class ScheduleRolloutAdminController {
-  constructor(private readonly rollout: WeeklyRolloutService) {}
+  constructor(
+    private readonly rollout: WeeklyRolloutService,
+    @Inject(ClockPort) private readonly clock: ClockPort,
+  ) {}
 
   @Post('run')
   @HttpCode(HttpStatus.OK)
@@ -83,7 +88,7 @@ export class ScheduleRolloutAdminController {
   ): Promise<RolloutSummaryResponseDto> {
     const fromMonday = dto.fromMonday
       ? new Date(`${dto.fromMonday}T00:00:00.000Z`)
-      : this.rollout.computePreviousMonday(new Date());
+      : this.rollout.computePreviousMonday(this.clock.now());
     const summary = await this.rollout.runWeeklyRollout({
       fromMonday,
       source: 'manual',
