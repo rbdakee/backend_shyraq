@@ -242,5 +242,25 @@ export class B16CustomDiscounts1777890000000 implements MigrationInterface {
     // ENUMs (after all referencing tables are dropped)
     await queryRunner.query(`DROP TYPE IF EXISTS "custom_discount_type"`);
     await queryRunner.query(`DROP TYPE IF EXISTS "custom_discount_status"`);
+
+    // Restore TRUNCATE privilege on the two tables this migration created.
+    // The global RevokeTruncateFromAppRole migration is still applied at this
+    // point (it runs before B16 in migration order), so other tables remain
+    // protected. We only restore the two tables that no longer exist — but the
+    // GRANT is a no-op once the tables are dropped; it is here for symmetry
+    // and to satisfy the down() contract in test environments where tables are
+    // re-created (up → down → up cycles).
+    await queryRunner.query(
+      `GRANT TRUNCATE ON "custom_discounts", "custom_discount_applications" TO "shyraq_app"`,
+    );
+
+    // Drop the shared trigger-helper function. It was created (or replaced)
+    // by this migration's up(). No other migration currently calls it, so
+    // it is safe to drop on rollback. CASCADE removes any remaining triggers
+    // that depend on it (should be zero by the time we reach this line, but
+    // CASCADE is defensive against future up() additions).
+    await queryRunner.query(
+      `DROP FUNCTION IF EXISTS update_updated_at_column() CASCADE`,
+    );
   }
 }
