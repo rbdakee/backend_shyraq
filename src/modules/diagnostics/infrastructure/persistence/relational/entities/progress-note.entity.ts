@@ -41,4 +41,14 @@ export class ProgressNoteRelationalEntity {
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt!: Date;
+
+  /**
+   * Optimistic-lock token (B22a T4). Bumped by the conditional UPDATE
+   * in the relational repository's `update()` method. Internal only —
+   * not exposed via DTO. Note that this table is otherwise append-only
+   * (no `updated_at` column / trigger) — `row_version` is the sole
+   * mutable bookkeeping field.
+   */
+  @Column({ name: 'row_version', type: 'int', default: 1 })
+  rowVersion!: number;
 }

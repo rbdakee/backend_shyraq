@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Repository } from 'typeorm';
 import { tenantStorage } from '@/database/tenant-storage';
+import { OptimisticLockError } from '@/shared-kernel/domain/errors';
 import { formatDateInTimezone } from '@/shared-kernel/domain/value-objects/day-of-week.vo';
 import { DiagnosticEntry } from '../../../../domain/entities/diagnostic-entry.entity';
 import {
@@ -12,6 +13,17 @@ import {
 } from '../../../../diagnostic-entry.repository';
 import { DiagnosticEntryRelationalEntity } from '../entities/diagnostic-entry.entity';
 import { DiagnosticEntryMapper } from '../mappers/diagnostic-entry.mapper';
+
+/** See `diagnostic-template.relational-repository.ts` for the rationale. */
+function unwrapReturning<T>(raw: unknown): T[] {
+  if (Array.isArray(raw) && raw.length === 2 && Array.isArray(raw[0])) {
+    return raw[0] as T[];
+  }
+  if (Array.isArray(raw)) {
+    return raw as T[];
+  }
+  return [];
+}
 
 function encodeCursor(assessmentDate: Date, id: string): string {
   return Buffer.from(`${assessmentDate.toISOString()}|${id}`).toString(
@@ -57,8 +69,9 @@ export class DiagnosticEntryRelationalRepository extends DiagnosticEntryReposito
       `INSERT INTO diagnostic_entries
          (id, kindergarten_id, child_id, template_id, specialist_id,
           assessment_date, data, summary, recommendations, attachments,
-          created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6::date, $7::jsonb, $8, $9, $10, $11, $12)`,
+          created_at, updated_at, row_version)
+       VALUES ($1, $2, $3, $4, $5, $6::date, $7::jsonb, $8, $9, $10,
+               $11, $12, $13)`,
       [
         s.id,
         s.kindergartenId,
@@ -72,6 +85,7 @@ export class DiagnosticEntryRelationalRepository extends DiagnosticEntryReposito
         s.attachments.length > 0 ? s.attachments : null,
         s.createdAt,
         s.updatedAt,
+        s.rowVersion,
       ],
     );
     const persisted = await repo.findOne({
@@ -90,9 +104,52 @@ export class DiagnosticEntryRelationalRepository extends DiagnosticEntryReposito
     return row ? DiagnosticEntryMapper.toDomain(row) : null;
   }
 
-  async update(entry: DiagnosticEntry): Promise<DiagnosticEntry> {
+  async update(
+    entry: DiagnosticEntry,
+    expectedRowVersion?: number,
+  ): Promise<DiagnosticEntry> {
     const m = this.manager();
     const s = entry.toState();
+    if (expectedRowVersion !== undefined) {
+      // B22a T4 — conditional UPDATE with row_version guard. See sibling
+      // template repo for the rationale; the entry table follows the
+      // same single-statement bump pattern.
+      const result = unwrapReturning<{ row_version: number }>(
+        await m.query(
+          `UPDATE diagnostic_entries
+              SET data = $3::jsonb,
+                  summary = $4,
+                  recommendations = $5,
+                  attachments = $6,
+                  updated_at = $7,
+                  row_version = row_version + 1
+            WHERE id = $1
+              AND kindergarten_id = $2
+              AND row_version = $8
+            RETURNING row_version`,
+          [
+            s.id,
+            s.kindergartenId,
+            JSON.stringify(s.data),
+            s.summary,
+            s.recommendations,
+            s.attachments.length > 0 ? s.attachments : null,
+            s.updatedAt,
+            expectedRowVersion,
+          ],
+        ),
+      );
+      if (result.length === 0) {
+        throw new OptimisticLockError();
+      }
+      const persisted = await m
+        .getRepository(DiagnosticEntryRelationalEntity)
+        .findOne({ where: { id: s.id, kindergartenId: s.kindergartenId } });
+      if (!persisted) {
+        throw new Error(`diagnostic_entry_update_lost id=${s.id}`);
+      }
+      return DiagnosticEntryMapper.toDomain(persisted);
+    }
     await m.getRepository(DiagnosticEntryRelationalEntity).update(
       { id: s.id, kindergartenId: s.kindergartenId },
       {

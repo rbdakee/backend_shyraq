@@ -33,7 +33,17 @@ export abstract class DiagnosticEntryRepository {
 
   abstract findById(kgId: string, id: string): Promise<DiagnosticEntry | null>;
 
-  abstract update(entry: DiagnosticEntry): Promise<DiagnosticEntry>;
+  /**
+   * Conditional UPDATE for optimistic-lock race protection (B22a T4).
+   * When `expectedRowVersion` is supplied, the implementation issues
+   * `WHERE row_version = $expectedRowVersion` and bumps `row_version`
+   * by 1 in the same statement. Throws `OptimisticLockError` (HTTP
+   * 409 `optimistic_lock_conflict`) if zero rows match.
+   */
+  abstract update(
+    entry: DiagnosticEntry,
+    expectedRowVersion?: number,
+  ): Promise<DiagnosticEntry>;
 
   abstract list(
     kgId: string,

@@ -26,6 +26,12 @@ export interface DiagnosticEntryState {
   attachments: string[];
   createdAt: Date;
   updatedAt: Date;
+  /**
+   * Optimistic-lock token (B22a T4). Internal — not exposed via DTO.
+   * Bumped by the relational repo's conditional UPDATE; the service
+   * layer captures `loaded.rowVersion` and passes it back.
+   */
+  rowVersion: number;
 }
 
 export interface DiagnosticEntryUpdatePatch {
@@ -137,6 +143,10 @@ export class DiagnosticEntry {
 
   get updatedAt(): Date {
     return this.state.updatedAt;
+  }
+
+  get rowVersion(): number {
+    return this.state.rowVersion;
   }
 
   // ── invariants ───────────────────────────────────────────────────────────

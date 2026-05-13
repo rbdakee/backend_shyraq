@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { OptimisticLockError } from '@/shared-kernel/domain/errors';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { DiagnosticTemplateService } from './diagnostic-template.service';
 import {
@@ -54,10 +55,32 @@ class FakeTemplateRepo extends DiagnosticTemplateRepository {
     return this.findById(kgId, id);
   }
 
+  /**
+   * In-memory mirror of the relational repo's optimistic-lock contract:
+   * when `expectedRowVersion` is supplied, the snapshot's current
+   * row_version must match — otherwise throw `OptimisticLockError`.
+   * Mirrors the row_version bump deterministically so unit specs can
+   * pin behaviour without spinning up Postgres.
+   */
   update(
     t: DiagnosticTemplate,
-    _expectedVersion?: number,
+    expectedRowVersion?: number,
   ): Promise<DiagnosticTemplate> {
+    if (expectedRowVersion !== undefined) {
+      const current = this.rows.get(t.id);
+      if (!current || current.kindergartenId !== t.kindergartenId) {
+        throw new OptimisticLockError();
+      }
+      if (current.rowVersion !== expectedRowVersion) {
+        throw new OptimisticLockError();
+      }
+      const bumped = DiagnosticTemplate.fromState({
+        ...t.toState(),
+        rowVersion: current.rowVersion + 1,
+      });
+      this.rows.set(t.id, bumped);
+      return Promise.resolve(bumped);
+    }
     this.rows.set(t.id, t);
     return Promise.resolve(t);
   }
@@ -111,6 +134,7 @@ function buildTemplate(
     isActive: boolean;
     schema: TemplateSchema;
     version: number;
+    rowVersion: number;
   }> = {},
 ): DiagnosticTemplate {
   return DiagnosticTemplate.fromState({
@@ -120,6 +144,7 @@ function buildTemplate(
     name: 'Initial assessment',
     description: null,
     version: overrides.version ?? 1,
+    rowVersion: overrides.rowVersion ?? 1,
     isActive: overrides.isActive ?? true,
     schema: overrides.schema ?? validSchema,
     createdBy: STAFF,
@@ -233,6 +258,39 @@ describe('DiagnosticTemplateService', () => {
           schema: { sections: 'not-an-array' } as unknown as TemplateSchema,
         }),
       ).rejects.toMatchObject({ code: 'diagnostic_template_schema_invalid' });
+    });
+
+    it('throws OptimisticLockError when repo signals stale row_version', async () => {
+      // Race-protection regression (B22a T4 / SM3): the service must
+      // surface the repo's `OptimisticLockError` so DomainErrorFilter
+      // maps it to 409 `optimistic_lock_conflict`. We simulate the
+      // race by patching `findById` to return a stale snapshot
+      // (row_version=1) while the underlying store has already
+      // advanced (row_version=2) — exactly the SELECT-then-UPDATE
+      // window the optimistic lock guards.
+      const initial = buildTemplate({ rowVersion: 1 });
+      repo.put(initial);
+      // Concurrent writer landed first → store now at row_version=2.
+      const winner = buildTemplate({ id: initial.id, rowVersion: 2 });
+      repo.put(winner);
+      // The "loser" service call reads the snapshot it had BEFORE the
+      // winner committed (still row_version=1). Real Postgres exposes
+      // this gap via the read-then-conditional-update pattern.
+      jest.spyOn(repo, 'findById').mockResolvedValueOnce(initial);
+      await expect(
+        service.update(KG, initial.id, { name: 'Late writer' }),
+      ).rejects.toBeInstanceOf(OptimisticLockError);
+    });
+
+    it('passes expectedRowVersion to repo on subsequent update success', async () => {
+      // Sanity: after a successful PATCH the repo bumps row_version, so
+      // a follow-up service.update against the latest aggregate succeeds.
+      const initial = buildTemplate();
+      repo.put(initial);
+      const first = await service.update(KG, initial.id, { name: 'A' });
+      expect(first.rowVersion).toBe(2);
+      const second = await service.update(KG, initial.id, { name: 'B' });
+      expect(second.rowVersion).toBe(3);
     });
   });
 

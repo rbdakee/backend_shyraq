@@ -57,4 +57,12 @@ export class DiagnosticEntryRelationalEntity {
 
   @UpdateDateColumn({ name: 'updated_at', type: 'timestamptz' })
   updatedAt!: Date;
+
+  /**
+   * Optimistic-lock token (B22a T4). Bumped by the conditional UPDATE
+   * in the relational repository's `update()` method. Internal only —
+   * not exposed via DTO.
+   */
+  @Column({ name: 'row_version', type: 'int', default: 1 })
+  rowVersion!: number;
 }

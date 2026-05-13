@@ -61,6 +61,8 @@ export class ProgressNoteService {
       mediaUrls: Array.isArray(input.mediaUrls) ? input.mediaUrls : [],
       notedAt: input.notedAt ?? now,
       createdAt: now,
+      // B22a T4 — optimistic-lock token starts at 1 (matches DB DEFAULT).
+      rowVersion: 1,
     };
     const note = ProgressNote.fromState(state, now);
     const persisted = await this.notes.create(note);
@@ -80,6 +82,11 @@ export class ProgressNoteService {
   /**
    * PATCH body / mediaUrls. Author-only — `assertAuthoredBy` throws 403
    * on mismatch. Empty body rejected by the entity invariant (400).
+   *
+   * Race protection (B22a T4 — closes B18 T6-M4): `expectedRowVersion`
+   * captured BEFORE the domain mutation; concurrent PATCHes serialise
+   * via the conditional UPDATE in the relational repo. Late writers
+   * receive `OptimisticLockError` (HTTP 409).
    */
   async update(
     kgId: string,
@@ -92,8 +99,9 @@ export class ProgressNoteService {
       throw new ProgressNoteNotFoundError(id);
     }
     existing.assertAuthoredBy(callerMentorId);
+    const expectedRowVersion = existing.rowVersion;
     const updated = existing.update(patch, this.clock.now());
-    return this.notes.update(updated);
+    return this.notes.update(updated, expectedRowVersion);
   }
 
   /**

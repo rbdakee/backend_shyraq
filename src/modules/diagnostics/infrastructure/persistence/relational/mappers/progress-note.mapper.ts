@@ -15,6 +15,7 @@ export class ProgressNoteMapper {
       mediaUrls: row.mediaUrls ?? [],
       notedAt: row.notedAt,
       createdAt: row.createdAt,
+      rowVersion: Number(row.rowVersion ?? 1),
     };
     // Rehydrate skips the future-skew check — historical rows can legitimately
     // exist with `noted_at` written under a different server clock.
@@ -34,6 +35,7 @@ export class ProgressNoteMapper {
       mediaUrls: s.mediaUrls.length > 0 ? s.mediaUrls : null,
       notedAt: s.notedAt,
       createdAt: s.createdAt,
+      rowVersion: s.rowVersion,
     };
   }
 }

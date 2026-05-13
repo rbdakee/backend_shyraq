@@ -1498,4 +1498,61 @@ describe('B18 Diagnostics & Progress (e2e)', () => {
         .expect(403);
     });
   });
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // Scenario O — Optimistic-lock race on template PATCH (B22a T4 — closes
+  // SM3 + B18 T6-M4)
+  // ══════════════════════════════════════════════════════════════════════════════
+
+  describe('Scenario O: Optimistic-lock 409 on stale template PATCH', () => {
+    it(
+      'launching N concurrent PATCHes against the same template — at least ' +
+        'one losing writer returns 409 optimistic_lock_conflict',
+      async () => {
+        const { adminToken } = await createKgWithAdmin('tpl-o', '+77010100231');
+        const created = await createTemplate(adminToken);
+
+        // Launch N concurrent admin PATCHes against the same template.
+        // The HTTP layer doesn't expose `row_version` on the wire, so
+        // we can't pin a stale snapshot from the client side. Instead
+        // we rely on connection-pool parallelism: with N=8 requests
+        // hitting the same row, two or more findById SELECTs will
+        // overlap with the first UPDATE's commit window, causing at
+        // least one conditional UPDATE to find 0 matching rows →
+        // service throws `OptimisticLockError` → DomainErrorFilter
+        // maps to 409 `optimistic_lock_conflict`.
+        //
+        // The test is correctness-asserting (NOT timing-asserting):
+        //   - at least 1 request must return 200 (someone wins),
+        //   - at least 1 request must return 409 (someone loses),
+        //   - every 409 response carries `error === 'optimistic_lock_conflict'`,
+        //   - no other status code is acceptable.
+        const N = 8;
+        const responses = await Promise.all(
+          Array.from({ length: N }, (_, i) =>
+            request(server)
+              .patch(`/api/v1/admin/diagnostic-templates/${created.id}`)
+              .set('Authorization', `Bearer ${adminToken}`)
+              .send({ name: `Writer ${i}` }),
+          ),
+        );
+
+        const statuses = responses.map((r) => r.status);
+        const wins = statuses.filter((s) => s === 200).length;
+        const conflicts = statuses.filter((s) => s === 409).length;
+        const others = statuses.filter((s) => s !== 200 && s !== 409);
+
+        expect(others).toEqual([]); // no surprise 5xx / 4xx
+        expect(wins).toBeGreaterThanOrEqual(1);
+        expect(conflicts).toBeGreaterThanOrEqual(1);
+        expect(wins + conflicts).toBe(N);
+
+        for (const r of responses) {
+          if (r.status === 409) {
+            expect(r.body.error).toBe('optimistic_lock_conflict');
+          }
+        }
+      },
+    );
+  });
 });

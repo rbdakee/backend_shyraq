@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { InMemoryNotificationAdapter } from '@/common/notifications/in-memory-notification.adapter';
 import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
 import { ChildNotFoundError } from '@/modules/child/domain/errors/child-not-found.error';
+import { OptimisticLockError } from '@/shared-kernel/domain/errors';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { ProgressNoteService } from './progress-note.service';
 import {
@@ -44,7 +45,26 @@ class FakeNoteRepo extends ProgressNoteRepository {
     if (!n || n.kindergartenId !== kgId) return Promise.resolve(null);
     return Promise.resolve(n);
   }
-  update(n: ProgressNote): Promise<ProgressNote> {
+  /**
+   * In-memory mirror of the relational repo's optimistic-lock contract:
+   * see `diagnostic-template.service.spec.ts` for the shared rationale.
+   */
+  update(n: ProgressNote, expectedRowVersion?: number): Promise<ProgressNote> {
+    if (expectedRowVersion !== undefined) {
+      const current = this.rows.get(n.id);
+      if (!current || current.kindergartenId !== n.kindergartenId) {
+        throw new OptimisticLockError();
+      }
+      if (current.rowVersion !== expectedRowVersion) {
+        throw new OptimisticLockError();
+      }
+      const bumped = ProgressNote.rehydrate({
+        ...n.toState(),
+        rowVersion: current.rowVersion + 1,
+      });
+      this.rows.set(n.id, bumped);
+      return Promise.resolve(bumped);
+    }
     this.rows.set(n.id, n);
     return Promise.resolve(n);
   }
@@ -88,6 +108,7 @@ function buildNote(
     id: string;
     mentorId: string;
     body: string;
+    rowVersion: number;
   }> = {},
 ): ProgressNote {
   return ProgressNote.fromState(
@@ -100,6 +121,7 @@ function buildNote(
       mediaUrls: [],
       notedAt: NOW,
       createdAt: NOW,
+      rowVersion: overrides.rowVersion ?? 1,
     },
     NOW,
   );
@@ -204,6 +226,23 @@ describe('ProgressNoteService', () => {
       await expect(
         service.update(KG, note.id, MENTOR_A, { body: '' }),
       ).rejects.toMatchObject({ code: 'empty_body' });
+    });
+
+    it('throws OptimisticLockError when repo signals stale row_version', async () => {
+      // Race-protection regression (B22a T4 / B18 T6-M4): the service
+      // must surface the repo's `OptimisticLockError` so DomainErrorFilter
+      // maps it to 409 `optimistic_lock_conflict`. We simulate the
+      // race by patching `findById` to return a stale snapshot while
+      // the underlying store has already advanced — exactly the
+      // SELECT-then-UPDATE window the optimistic lock guards.
+      const stale = buildNote({ rowVersion: 1 });
+      repo.put(stale);
+      // Concurrent writer landed first → store now at row_version=2.
+      repo.put(buildNote({ id: stale.id, rowVersion: 2 }));
+      jest.spyOn(repo, 'findById').mockResolvedValueOnce(stale);
+      await expect(
+        service.update(KG, stale.id, MENTOR_A, { body: 'late' }),
+      ).rejects.toBeInstanceOf(OptimisticLockError);
     });
   });
 

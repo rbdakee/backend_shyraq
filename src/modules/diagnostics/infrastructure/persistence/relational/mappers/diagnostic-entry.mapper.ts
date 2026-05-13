@@ -36,6 +36,7 @@ export class DiagnosticEntryMapper {
       attachments: row.attachments ?? [],
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
+      rowVersion: Number(row.rowVersion ?? 1),
     };
     // `rehydrate` skips the future-date invariant — historical rows can
     // legitimately predate today's clock.
@@ -59,6 +60,7 @@ export class DiagnosticEntryMapper {
       attachments: s.attachments.length > 0 ? s.attachments : null,
       createdAt: s.createdAt,
       updatedAt: s.updatedAt,
+      rowVersion: s.rowVersion,
     };
   }
 }

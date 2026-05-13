@@ -96,6 +96,8 @@ export class DiagnosticEntryService {
       attachments: Array.isArray(input.attachments) ? input.attachments : [],
       createdAt: now,
       updatedAt: now,
+      // B22a T4 — optimistic-lock token starts at 1 (matches DB DEFAULT).
+      rowVersion: 1,
     };
     const entry = DiagnosticEntry.fromState(state, now);
     const persisted = await this.entries.create(entry);
@@ -130,6 +132,11 @@ export class DiagnosticEntryService {
    * passes for admins too. If `data` is patched, re-validate against the
    * template stored on the entry (NOT a new templateId — entries are bound
    * to a single template per BP §8.4).
+   *
+   * Race protection (B22a T4 — closes B18 T6-M4): `expectedRowVersion`
+   * captured BEFORE the domain mutation; concurrent PATCHes serialise
+   * via the conditional UPDATE in the relational repo. Late writers
+   * receive `OptimisticLockError` (HTTP 409).
    */
   async update(
     kgId: string,
@@ -153,8 +160,9 @@ export class DiagnosticEntryService {
       validateEntryData(template.schema, patch.data);
     }
 
+    const expectedRowVersion = existing.rowVersion;
     const updated = existing.update(patch, this.clock.now());
-    return this.entries.update(updated);
+    return this.entries.update(updated, expectedRowVersion);
   }
 
   async getById(kgId: string, id: string): Promise<DiagnosticEntry> {

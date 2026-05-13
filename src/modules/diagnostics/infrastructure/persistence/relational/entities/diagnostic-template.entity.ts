@@ -39,6 +39,16 @@ export class DiagnosticTemplateRelationalEntity {
   @Column({ name: 'version', type: 'int', default: 1 })
   version!: number;
 
+  /**
+   * Optimistic-lock token (B22a T4). Bumped by every conditional UPDATE
+   * via raw SQL (`SET row_version = row_version + 1`); we deliberately
+   * avoid TypeORM's `@VersionColumn()` + `.save()` magic to keep all
+   * persistence under our explicit raw-SQL pattern. Internal only — not
+   * exposed via DTO.
+   */
+  @Column({ name: 'row_version', type: 'int', default: 1 })
+  rowVersion!: number;
+
   @Column({ name: 'is_active', type: 'boolean', default: true })
   isActive!: boolean;
 

@@ -45,18 +45,26 @@ export abstract class DiagnosticTemplateRepository {
   ): Promise<DiagnosticTemplate | null>;
 
   /**
-   * Conditional UPDATE. When `expectedVersion` is supplied, the implementation
-   * issues `WHERE version = $expectedVersion` so a stale read does not
-   * silently overwrite. On version mismatch the impl returns the freshly-
-   * loaded row so the caller can decide; the service layer translates that
-   * into a 409 if needed.
+   * Conditional UPDATE for optimistic-lock race protection (B22a T4).
    *
-   * When `expectedVersion` is omitted, the update is unconditional (race-
-   * tolerant; admin-only writers + low contention).
+   * When `expectedRowVersion` is supplied, the implementation issues
+   * `WHERE row_version = $expectedRowVersion` and bumps `row_version`
+   * by 1 in the same statement. If zero rows match (someone else
+   * mutated the row between the caller's read and write), the impl
+   * throws `OptimisticLockError` (HTTP 409 `optimistic_lock_conflict`).
+   *
+   * When `expectedRowVersion` is omitted, the update is unconditional —
+   * retained for any internal callers (none today) that opt out of
+   * race protection. All HTTP-facing service paths supply it.
+   *
+   * NOTE: `row_version` is the OPTIMISTIC-LOCK token (internal only),
+   * distinct from the public `version` field which represents the
+   * SCHEMA version (semantic, exposed via DTO, bumped only on schema
+   * diff). See B22a T4 + SM3.
    */
   abstract update(
     template: DiagnosticTemplate,
-    expectedVersion?: number,
+    expectedRowVersion?: number,
   ): Promise<DiagnosticTemplate>;
 
   abstract list(

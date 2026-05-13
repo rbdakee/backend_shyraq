@@ -88,6 +88,7 @@ function makeState(
     name: 'Speech Assessment v1',
     description: 'Default speech assessment template',
     version: 1,
+    rowVersion: 1,
     isActive: true,
     schema: minimalSchema,
     createdBy: 'staff-uuid-0001',
@@ -134,6 +135,14 @@ describe('DiagnosticTemplate domain entity', () => {
     expect(() =>
       DiagnosticTemplate.fromState(makeState({ version: 0 })),
     ).toThrow(InvariantViolationError);
+  });
+
+  it('throws when rowVersion is 0', () => {
+    // Row-version invariant: must be a positive integer (matches DB
+    // DEFAULT 1 + the conditional UPDATE's row-version arithmetic).
+    expect(() =>
+      DiagnosticTemplate.fromState(makeState({ rowVersion: 0 })),
+    ).toThrow(/invalid_row_version/);
   });
 
   it('throws when schema is invalid', () => {

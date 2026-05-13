@@ -20,6 +20,12 @@ export interface ProgressNoteState {
   mediaUrls: string[];
   notedAt: Date;
   createdAt: Date;
+  /**
+   * Optimistic-lock token (B22a T4). Internal — not exposed via DTO.
+   * Bumped by the relational repo's conditional UPDATE; the service
+   * layer captures `loaded.rowVersion` and passes it back.
+   */
+  rowVersion: number;
 }
 
 export interface ProgressNoteUpdatePatch {
@@ -98,6 +104,10 @@ export class ProgressNote {
 
   get createdAt(): Date {
     return this.state.createdAt;
+  }
+
+  get rowVersion(): number {
+    return this.state.rowVersion;
   }
 
   // ── invariants ───────────────────────────────────────────────────────────
