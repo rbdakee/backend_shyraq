@@ -209,8 +209,88 @@ Email + password (не OTP). Access-токен — тот же JWT HS256 (`JWT_A
 | GET | `/saas/kindergartens` | Список всех садиков (с фильтрами: `plan`, `is_active`, поиск по имени). |
 | POST | `/saas/kindergartens` | Атомарное создание tenant'а. Body: `{name, slug, address?, phone?, plan?, settings?, admin: {full_name, phone, locale?}}`. В одной TypeORM-транзакции: `kindergartens` insert + find-or-create `users` по `admin.phone` (если phone уже существует — переиспользуем `user_id`, имя/locale не меняем) + `staff_members` (role=`admin`, `is_active=true`). После commit — `SmsPort.send` welcome-SMS (best-effort, log-on-fail, транзакцию не откатывает). Response 201 `{kindergarten, staff_member, user}`. Ошибки: 400 (invalid slug/phone format), 409 `kindergarten_slug_taken`, 422 (validation). **Активация admin'а = welcome-SMS + обычный B1 OTP-flow** (см. §0.1 `/auth/otp/request`+`/auth/otp/verify`); отдельного invite-token / magic-link нет. |
 | GET | `/saas/kindergartens/:id` | Подробности садика: настройки, подписка, статистика (кол-во детей, активных подписок). |
+| GET | `/saas/kindergartens/:id/admins` | Список администраторов конкретного садика (строго `staff_members.role='admin'`). Опциональный query `is_active?: boolean` — при отсутствии возвращаются ВСЕ admin'ы (активные + деактивированные). Response 200: **plain array** (без offset-пагинации). См. §1.2.1. |
+| POST | `/saas/kindergartens/:id/admins` | Добавить ещё одного admin'а в существующий садик. Body `{full_name, phone, locale?}`. Find-or-create `users` по `phone` (имя/locale существующего user'а не перезаписываются) + `staff_members(role=admin, is_active=true)`. Best-effort invite-SMS. Строгий 409-конфликт если для пары `(kg, user)` уже есть staff-строка (любого `is_active`). См. §1.2.1. |
 | PATCH | `/saas/kindergartens/:id` | Обновить `settings` (timezone, currency, late_pickup_fee_amount, otp_expiry_seconds, prepay скидки, payment_grace_days, fiscal-конфиг), `plan`, `is_active`. |
 | DELETE | `/saas/kindergartens/:id` | Soft-delete (через `is_active=false`), cascade-архивация активных сущностей. |
+
+#### 1.2.1 Kindergarten admins — list / add
+
+**Auth (оба endpoint'а):** `Authorization: Bearer <jwt>` где `role ∈ {super_admin, support}`; `@SuperAdminScope()` (RLS bypass, tenant передаётся явно в `:id`). Отсутствие/невалидный/отозванный токен → **401**. Роль не super_admin/support (например kindergarten-`admin`) → **403**.
+
+##### GET `/saas/kindergartens/:id/admins`
+
+Возвращает всех staff-членов садика `:id` с `role='admin'`.
+
+- **Path:** `id` — uuid садика (валидируется `ParseUUIDPipe`).
+- **Query (опционально):** `is_active` — boolean (`true`/`false`, class-transformer coercion). Отсутствует → возвращаются ВСЕ admin'ы (активные + деактивированные).
+- **Реализация:** `staff.listByKindergarten(id, { role: 'admin', isActive: query.is_active })`. Поля `full_name`/`phone`/`locale` берутся из связанного `users` (staff-строка, созданная через kg-admin flow, не денормализует эти поля).
+- **Response 200** — plain array (НЕ offset-paginated):
+
+```json
+[
+  {
+    "staff_member_id": "e2e2b6a7-1a2b-4c3d-9e8f-0a1b2c3d4e5f",
+    "user_id": "d3e2b6a7-1a2b-4c3d-9e8f-0a1b2c3d4e5f",
+    "full_name": "Айгерим Нурланкызы",
+    "phone": "+77011112233",
+    "locale": "ru",
+    "is_active": true,
+    "hired_at": "2026-04-28",
+    "fired_at": null,
+    "created_at": "2026-04-28T10:00:00.000Z"
+  }
+]
+```
+
+`hired_at` — `YYYY-MM-DD` или `null`; `fired_at` — `YYYY-MM-DD` или `null`; `created_at` — ISO-8601.
+
+- **Errors:** 404 `kindergarten_not_found` (садик `:id` не существует); 401 (нет/невалидный bearer); 403 (роль не super_admin/support).
+
+##### POST `/saas/kindergartens/:id/admins`
+
+Добавляет ещё одного admin'а в существующий садик.
+
+- **Path:** `id` — uuid садика (`ParseUUIDPipe`).
+- **Body** (`AddKindergartenAdminDto`, snake_case):
+
+```json
+{ "full_name": "Жанна Серикова", "phone": "+77011115566", "locale": "kk" }
+```
+
+`full_name` — string (required); `phone` — string E.164 `^\+[1-9]\d{1,14}$` (required); `locale` — `'ru' | 'kk'` (optional, default `ru`).
+
+- **Логика (в request-scoped TX):**
+  1. `kindergartens.findById(:id)` → отсутствует → **404 `kindergarten_not_found`**.
+  2. `kg.isArchived` → **409 `kindergarten_archived`**.
+  3. DTO-валидация (`ValidationPipe`): невалидный `phone`/`locale` отвергается class-validator ДО сервиса → **422** (стандартный nest validation envelope: `{ "status": 422, "errors": { "phone": "invalid_phone_format" } }` — НЕ `invariant_violation`). Сервисный `Phone.parse` / `Locale.parse` (достижим только если DTO прошёл) бросает `InvariantViolationError` → **400**, где `error`/`message` — описательный код инварианта (напр. `phone must be E.164`), а не литерал `invariant_violation`.
+  4. find-or-create `users` по `phone` — существующий user НЕ перезаписывается (full_name/locale патчатся только у только что созданного).
+  5. строгий conflict-check `staff.findByUserAndKindergarten(userId, :id)` (любой `is_active`): строка с `role='admin'` → **409 `admin_already_exists`**; строка с `role≠'admin'` → **409 `staff_already_exists`**; нет строки → продолжаем.
+  6. `staff.create({ role: 'admin', hiredAt: now })`.
+  7. Best-effort invite-SMS (`buildAdminInviteSms`) — не откатывает TX, не бросает; результат в `invite_sms_sent`.
+- **Response 201:**
+
+```json
+{
+  "kindergarten_id": "7c2c2b6a-1a2b-4c3d-9e8f-0a1b2c3d4e5f",
+  "user": {
+    "id": "d3e2b6a7-1a2b-4c3d-9e8f-0a1b2c3d4e5f",
+    "phone": "+77011115566",
+    "full_name": "Жанна Серикова",
+    "locale": "kk"
+  },
+  "staff_member": {
+    "id": "e2e2b6a7-1a2b-4c3d-9e8f-0a1b2c3d4e5f",
+    "role": "admin",
+    "is_active": true,
+    "hired_at": "2026-04-28",
+    "created_at": "2026-04-28T10:00:00.000Z"
+  },
+  "invite_sms_sent": true
+}
+```
+
+- **Errors:** **422** class-validator (невалидный `phone`/`locale` отвергнут DTO; тело — `{ "status": 422, "errors": { "<field>": "<constraint>" } }`, НЕ `invariant_violation`); **400** `<invariant-code>` (сервисный `Phone.parse`/`Locale.parse`, достижим только если DTO прошёл — `error`/`message` это описательный код инварианта, не литерал `invariant_violation`); 401; 403; 404 `kindergarten_not_found`; 409 `kindergarten_archived`; 409 `admin_already_exists` (уже есть admin-строка для пары; включая race losing-request); 409 `staff_already_exists` (есть non-admin staff-строка для пары). Тело доменной ошибки (4xx через `DomainErrorFilter`): `{ "statusCode": <int>, "error": "<code>", "message": "<code>" }`.
 
 ### 1.3 SaaS Subscriptions
 

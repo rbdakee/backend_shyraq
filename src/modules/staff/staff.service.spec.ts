@@ -97,6 +97,16 @@ class FakeStaffRepo extends StaffMemberRepository {
     );
   }
 
+  findByUserAndKindergarten(
+    userId: string,
+    kindergartenId: string,
+  ): Promise<StaffMember | null> {
+    const matches = this.rows.filter(
+      (r) => r.userId === userId && r.kindergartenId === kindergartenId,
+    );
+    return Promise.resolve(matches[matches.length - 1] ?? null);
+  }
+
   listByKindergarten(
     kindergartenId: string,
     _filters?: ListStaffFilters,

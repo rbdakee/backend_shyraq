@@ -28,14 +28,18 @@ import { Roles } from '@/common/decorators/roles.decorator';
 import { SuperAdminScope } from '@/common/decorators/super-admin-scope.decorator';
 import { JwtAuthGuard } from '@/common/guards/jwt-auth.guard';
 import { RolesGuard } from '@/common/guards/roles.guard';
+import { AddKindergartenAdminDto } from './dto/add-kindergarten-admin.dto';
 import { CreateKindergartenDto } from './dto/create-kindergarten.dto';
 import { InviteAdminDto } from './dto/invite-admin.dto';
 import {
+  AddKindergartenAdminResponseDto,
   CreateKindergartenResponseDto,
   InviteAdminResponseDto,
+  KindergartenAdminDto,
   KindergartenDto,
   KindergartenListResponseDto,
 } from './dto/kindergarten-response.dto';
+import { ListKindergartenAdminsQueryDto } from './dto/list-kindergarten-admins-query.dto';
 import { ListKindergartensQueryDto } from './dto/list-kindergartens-query.dto';
 import { KindergartenPresenter } from './kindergarten.presenter';
 import { KindergartenService } from './kindergarten.service';
@@ -176,6 +180,115 @@ export class SuperAdminKindergartenController {
       kindergarten_id: result.kindergartenId,
       sent: result.sent,
     };
+  }
+
+  @Get(':id/admins')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'List admins of a kindergarten.',
+    description:
+      'Returns a plain array (NOT offset-paginated) of staff_members with role=admin for the kindergarten. Optional `is_active` filter; omit it to return ALL admins (active + deactivated). full_name/phone/locale are resolved from the linked users row.',
+  })
+  @ApiParam({ name: 'id', example: '7c2c2b6a-1a2b-4c3d-9e8f-0a1b2c3d4e5f' })
+  @ApiOkResponse({ type: [KindergartenAdminDto] })
+  @ApiUnauthorizedResponse({
+    description: 'Bearer missing/invalid/revoked.',
+    schema: {
+      example: { statusCode: 401, message: 'Unauthorized' },
+    },
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller is not super_admin/support.',
+    schema: {
+      example: { statusCode: 403, message: 'Forbidden resource' },
+    },
+  })
+  @ApiNotFoundResponse({
+    description: 'Kindergarten not found.',
+    schema: {
+      example: {
+        statusCode: 404,
+        error: 'kindergarten_not_found',
+        message: 'kindergarten_not_found',
+      },
+    },
+  })
+  async listAdmins(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Query() query: ListKindergartenAdminsQueryDto,
+  ): Promise<KindergartenAdminDto[]> {
+    const rows = await this.service.listAdmins(id, query.is_active);
+    return KindergartenPresenter.adminList(rows);
+  }
+
+  @Post(':id/admins')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({
+    summary: 'Add another admin to an existing kindergarten.',
+    description:
+      'Find-or-create user by phone (existing identity untouched), then a staff_members row with role=admin. Strict 409 if ANY staff row already exists for the (kg, user) pair regardless of is_active. Best-effort invite SMS afterwards.',
+  })
+  @ApiParam({ name: 'id', example: '7c2c2b6a-1a2b-4c3d-9e8f-0a1b2c3d4e5f' })
+  @ApiBody({
+    type: AddKindergartenAdminDto,
+    examples: {
+      minimal: {
+        summary: 'Minimal valid payload',
+        value: { full_name: 'Жанна Серикова', phone: '+77011115566' },
+      },
+      withLocale: {
+        summary: 'With explicit locale',
+        value: {
+          full_name: 'Жанна Серикова',
+          phone: '+77011115566',
+          locale: 'kk',
+        },
+      },
+    },
+  })
+  @ApiCreatedResponse({ type: AddKindergartenAdminResponseDto })
+  @ApiBadRequestResponse({
+    description: 'Invalid phone/locale format (`invariant_violation`).',
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Bearer missing/invalid/revoked.',
+    schema: { example: { statusCode: 401, message: 'Unauthorized' } },
+  })
+  @ApiForbiddenResponse({
+    description: 'Caller is not super_admin/support.',
+    schema: { example: { statusCode: 403, message: 'Forbidden resource' } },
+  })
+  @ApiNotFoundResponse({
+    description: 'Kindergarten not found (`kindergarten_not_found`).',
+    schema: {
+      example: {
+        statusCode: 404,
+        error: 'kindergarten_not_found',
+        message: 'kindergarten_not_found',
+      },
+    },
+  })
+  @ApiConflictResponse({
+    description:
+      'Kindergarten archived (`kindergarten_archived`), or an admin (`admin_already_exists`) / non-admin staff (`staff_already_exists`) row already exists for the (kg, user) pair.',
+    schema: {
+      example: {
+        statusCode: 409,
+        error: 'admin_already_exists',
+        message: 'admin_already_exists',
+      },
+    },
+  })
+  async addAdmin(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: AddKindergartenAdminDto,
+  ): Promise<AddKindergartenAdminResponseDto> {
+    const added = await this.service.addAdmin(id, {
+      fullName: dto.full_name,
+      phone: dto.phone,
+      locale: dto.locale,
+    });
+    return KindergartenPresenter.addedAdmin(added);
   }
 
   @Post(':id/archive')

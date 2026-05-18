@@ -54,6 +54,19 @@ export abstract class StaffMemberRepository {
     kindergartenId: string,
   ): Promise<StaffMember | null>;
 
+  /**
+   * Returns the staff_members row for (userId, kindergartenId) regardless of
+   * `is_active`. Unlike `findActiveByUserAndKindergarten` this surfaces a
+   * deactivated/archived row too — used by the SuperAdmin add-admin flow to
+   * detect a strict conflict (an inactive admin still blocks re-adding via
+   * the partial unique index resurrection path). Returns the most recently
+   * created row when multiple historical rows exist.
+   */
+  abstract findByUserAndKindergarten(
+    userId: string,
+    kindergartenId: string,
+  ): Promise<StaffMember | null>;
+
   abstract listByKindergarten(
     kindergartenId: string,
     filters?: ListStaffFilters,

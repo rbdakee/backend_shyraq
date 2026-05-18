@@ -73,6 +73,19 @@ class FakeStaffRepo extends StaffMemberRepository {
     }
     return Promise.resolve(this.store);
   }
+  findByUserAndKindergarten(
+    userId: string,
+    kindergartenId: string,
+  ): Promise<StaffMember | null> {
+    if (!this.store) return Promise.resolve(null);
+    if (
+      this.store.userId !== userId ||
+      this.store.kindergartenId !== kindergartenId
+    ) {
+      return Promise.resolve(null);
+    }
+    return Promise.resolve(this.store);
+  }
   // Remaining abstract stubs.
   create(_: CreateStaffMemberInput): Promise<StaffMember> {
     return Promise.reject(new Error('unused'));

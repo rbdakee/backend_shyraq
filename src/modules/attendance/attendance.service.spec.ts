@@ -414,6 +414,12 @@ class FakeStaffRepo extends StaffMemberRepository {
     const r = this.rows.get(`${kg}|${userId}`) ?? null;
     return Promise.resolve(r);
   }
+  findByUserAndKindergarten(
+    _userId: string,
+    _kg: string,
+  ): Promise<StaffMember | null> {
+    return Promise.resolve(null);
+  }
   listByKindergarten(
     _kg: string,
     _f?: ListStaffFilters,
