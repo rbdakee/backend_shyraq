@@ -169,6 +169,47 @@ export class AttendanceEventRelationalRepository extends AttendanceEventReposito
     return rows.map((r) => AttendanceEventMapper.toDomain(r));
   }
 
+  // ── B-DASH — Dashboard attendance-today aggregate ─────────────────────
+
+  async lastEventBucketsForDate(
+    kindergartenId: string,
+    dayStartIso: string,
+    dayEndExclusiveIso: string,
+    groupId?: string,
+  ): Promise<{ inKindergarten: number; checkedOut: number }> {
+    const params: unknown[] = [kindergartenId, dayStartIso, dayEndExclusiveIso];
+    let groupJoin = '';
+    let groupWhere = '';
+    if (groupId) {
+      groupJoin =
+        'JOIN children c ON c.id = ae.child_id AND c.kindergarten_id = ae.kindergarten_id';
+      params.push(groupId);
+      groupWhere = `AND c.current_group_id = $${params.length}`;
+    }
+    const rows = await this.manager().query(
+      `WITH last_ev AS (
+         SELECT DISTINCT ON (ae.child_id) ae.child_id, ae.event_type
+           FROM attendance_events ae
+           ${groupJoin}
+          WHERE ae.kindergarten_id = $1
+            AND ae.recorded_at >= $2
+            AND ae.recorded_at < $3
+            ${groupWhere}
+          ORDER BY ae.child_id, ae.recorded_at DESC, ae.event_type DESC
+       )
+       SELECT
+         COUNT(*) FILTER (WHERE event_type = 'check_in')::text AS in_kg,
+         COUNT(*) FILTER (WHERE event_type = 'check_out')::text AS checked_out
+         FROM last_ev`,
+      params,
+    );
+    const r = rows?.[0] ?? {};
+    return {
+      inKindergarten: Number(r.in_kg ?? 0),
+      checkedOut: Number(r.checked_out ?? 0),
+    };
+  }
+
   private manager(): EntityManager {
     const ctx = tenantStorage.getStore();
     return ctx?.entityManager ?? this.repo.manager;

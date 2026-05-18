@@ -242,9 +242,11 @@ describe('B8 attendance (e2e)', () => {
     expect(checkInRes.body.id).toBeDefined();
     expect(checkInRes.body.recordedAt).toBeDefined();
 
-    // Admin reads today's dashboard → child daily status is present
+    // Admin reads today's daily-status list → child daily status is present.
+    // (The dashboard/attendance-today route was reworked into an aggregate
+    // donut in B-DASH; the per-child array now lives on GET /admin/daily-status.)
     const dashRes = await request(server)
-      .get('/api/v1/admin/dashboard/attendance-today')
+      .get('/api/v1/admin/daily-status')
       .set('Authorization', `Bearer ${a.adminToken}`)
       .expect(200);
     expect(Array.isArray(dashRes.body)).toBe(true);
@@ -539,83 +541,6 @@ describe('B8 attendance (e2e)', () => {
     expect(listRes.body.length).toBeGreaterThanOrEqual(1);
     const ev = listRes.body[0] as { childId: string; eventType: string };
     expect(ev.childId).toBe(childId);
-  });
-
-  // ── L. Dashboard groupId filter (T6 H2 fix) ──────────────────────────────
-
-  it('honours ?groupId on /admin/dashboard/attendance-today (Scenario L)', async () => {
-    const a = await createKgWithAdmin('att-l', '+77011130014');
-    // Two groups + two children, each in a different group.
-    const groupA = await request(server)
-      .post('/api/v1/groups')
-      .set('Authorization', `Bearer ${a.adminToken}`)
-      .send({ name: 'Group-A', capacity: 20 })
-      .expect(201);
-    const groupB = await request(server)
-      .post('/api/v1/groups')
-      .set('Authorization', `Bearer ${a.adminToken}`)
-      .send({ name: 'Group-B', capacity: 20 })
-      .expect(201);
-    const groupAId = groupA.body.id as string;
-    const groupBId = groupB.body.id as string;
-
-    const childA = await createChild(a.adminToken, {
-      full_name: 'L-Child-A',
-      date_of_birth: '2022-12-10',
-    });
-    const childB = await createChild(a.adminToken, {
-      full_name: 'L-Child-B',
-      date_of_birth: '2022-12-11',
-    });
-
-    // Assign children to groups via direct UPDATE (matches helper used by
-    // schedule.e2e-spec / meal.e2e-spec for the same scenario).
-    await ctx.dataSource.transaction(async (m) => {
-      await m.query(`SET LOCAL app.bypass_rls = 'true'`);
-      await m.query(`UPDATE children SET current_group_id = $1 WHERE id = $2`, [
-        groupAId,
-        childA,
-      ]);
-      await m.query(`UPDATE children SET current_group_id = $1 WHERE id = $2`, [
-        groupBId,
-        childB,
-      ]);
-    });
-
-    // Both children get a daily_status row (sick) for today.
-    const today = new Date().toLocaleDateString('en-CA', {
-      timeZone: 'Asia/Almaty',
-    });
-    await request(server)
-      .post('/api/v1/staff/daily-status')
-      .set('Authorization', `Bearer ${a.staffToken}`)
-      .send({ childId: childA, date: today, status: 'sick' })
-      .expect(200);
-    await request(server)
-      .post('/api/v1/staff/daily-status')
-      .set('Authorization', `Bearer ${a.staffToken}`)
-      .send({ childId: childB, date: today, status: 'sick' })
-      .expect(200);
-
-    // Dashboard with ?groupId=groupA → only childA.
-    const dashARes = await request(server)
-      .get('/api/v1/admin/dashboard/attendance-today')
-      .set('Authorization', `Bearer ${a.adminToken}`)
-      .query({ groupId: groupAId })
-      .expect(200);
-    const idsA = (dashARes.body as { childId: string }[]).map((r) => r.childId);
-    expect(idsA).toContain(childA);
-    expect(idsA).not.toContain(childB);
-
-    // Dashboard with ?groupId=groupB → only childB.
-    const dashBRes = await request(server)
-      .get('/api/v1/admin/dashboard/attendance-today')
-      .set('Authorization', `Bearer ${a.adminToken}`)
-      .query({ groupId: groupBId })
-      .expect(200);
-    const idsB = (dashBRes.body as { childId: string }[]).map((r) => r.childId);
-    expect(idsB).toContain(childB);
-    expect(idsB).not.toContain(childA);
   });
 
   // ── M. Parent daily-status garbage date validation (T6 M1 fix) ──────────

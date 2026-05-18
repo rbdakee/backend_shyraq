@@ -375,12 +375,12 @@ class FakeGroupRepo extends GroupRepository {
 }
 
 class FakeAttendanceEventRepo extends AttendanceEventRepository {
-  buckets = {
-    inKindergarten: 0,
-    checkedOut: 0,
-    childIdsWithCheckIn: [] as string[],
-  };
-  args: { date: string; groupId?: string } | null = null;
+  buckets = { inKindergarten: 0, checkedOut: 0 };
+  args: {
+    dayStartIso: string;
+    dayEndExclusiveIso: string;
+    groupId?: string;
+  } | null = null;
   create(_kg: string, e: AttendanceEvent): Promise<AttendanceEvent> {
     return Promise.resolve(e);
   }
@@ -412,21 +412,23 @@ class FakeAttendanceEventRepo extends AttendanceEventRepository {
   // B-DASH override
   lastEventBucketsForDate(
     _kg: string,
-    date: string,
+    dayStartIso: string,
+    dayEndExclusiveIso: string,
     groupId?: string,
-  ): Promise<{
-    inKindergarten: number;
-    checkedOut: number;
-    childIdsWithCheckIn: string[];
-  }> {
-    this.args = { date, groupId };
+  ): Promise<{ inKindergarten: number; checkedOut: number }> {
+    this.args = { dayStartIso, dayEndExclusiveIso, groupId };
     return Promise.resolve(this.buckets);
   }
 }
 
 class FakeDailyStatusRepo extends ChildDailyStatusRepository {
   statusCounts: Record<string, number> = {};
-  args: { date: string; groupId?: string } | null = null;
+  args: {
+    date: string;
+    dayStartIso: string;
+    dayEndExclusiveIso: string;
+    groupId?: string;
+  } | null = null;
   findByChildAndDate(): Promise<ChildDailyStatus | null> {
     return Promise.resolve(null);
   }
@@ -449,9 +451,11 @@ class FakeDailyStatusRepo extends ChildDailyStatusRepository {
   countByStatusForDate(
     _kg: string,
     date: string,
+    dayStartIso: string,
+    dayEndExclusiveIso: string,
     groupId?: string,
   ): Promise<Record<string, number>> {
-    this.args = { date, groupId };
+    this.args = { date, dayStartIso, dayEndExclusiveIso, groupId };
     return Promise.resolve(this.statusCounts);
   }
 }
@@ -662,6 +666,80 @@ describe('DashboardService.getPaymentsOverview', () => {
     expect(h.payment.providerArgs).toEqual({
       from: '2026-04-30T19:00:00.000Z',
       to: '2026-05-31T19:00:00.000Z',
+    });
+  });
+});
+
+// ── attendance-today ─────────────────────────────────────────────────────
+
+describe('DashboardService.getAttendanceToday', () => {
+  it('returns the 5-bucket aggregate mapped from event + daily-status ports', async () => {
+    const h = makeService(new Date('2026-05-18T06:00:00.000Z'));
+    h.event.buckets = { inKindergarten: 42, checkedOut: 7 };
+    h.daily.statusCounts = {
+      absent: 5,
+      on_vacation: 3,
+      sick: 2,
+      present: 40,
+    };
+
+    const res = await h.service.getAttendanceToday(KG, {});
+
+    expect(res).toEqual({
+      in_kindergarten: 42,
+      checked_out: 7,
+      absent: 5,
+      on_vacation: 3,
+      sick: 2,
+    });
+  });
+
+  it('returns zeros when no events and no daily-status rows exist', async () => {
+    const h = makeService(new Date('2026-05-18T06:00:00.000Z'));
+    const res = await h.service.getAttendanceToday(KG, {});
+    expect(res).toEqual({
+      in_kindergarten: 0,
+      checked_out: 0,
+      absent: 0,
+      on_vacation: 0,
+      sick: 0,
+    });
+  });
+
+  it('defaults the date to Asia/Almaty today and derives the day instant window', async () => {
+    // 20:00 UTC 2026-05-18 = 01:00 Almaty 2026-05-19.
+    const h = makeService(new Date('2026-05-18T20:00:00.000Z'));
+    await h.service.getAttendanceToday(KG, {});
+
+    expect(h.daily.args).toEqual({
+      date: '2026-05-19',
+      dayStartIso: '2026-05-18T19:00:00.000Z', // Almaty 2026-05-19 00:00
+      dayEndExclusiveIso: '2026-05-19T19:00:00.000Z', // Almaty 2026-05-20 00:00
+      groupId: undefined,
+    });
+    expect(h.event.args).toEqual({
+      dayStartIso: '2026-05-18T19:00:00.000Z',
+      dayEndExclusiveIso: '2026-05-19T19:00:00.000Z',
+      groupId: undefined,
+    });
+  });
+
+  it('honours an explicit date override and propagates the group filter', async () => {
+    const h = makeService(new Date('2026-05-18T06:00:00.000Z'));
+    const groupId = 'a1b2c3d4-0000-0000-0000-000000000001';
+
+    await h.service.getAttendanceToday(KG, { date: '2026-04-10', groupId });
+
+    expect(h.daily.args).toEqual({
+      date: '2026-04-10',
+      dayStartIso: '2026-04-09T19:00:00.000Z',
+      dayEndExclusiveIso: '2026-04-10T19:00:00.000Z',
+      groupId,
+    });
+    expect(h.event.args).toEqual({
+      dayStartIso: '2026-04-09T19:00:00.000Z',
+      dayEndExclusiveIso: '2026-04-10T19:00:00.000Z',
+      groupId,
     });
   });
 });

@@ -195,15 +195,39 @@ export class DashboardService {
   }
 
   async getAttendanceToday(
-    _kindergartenId: string,
-    _opts: { groupId?: string; date?: string },
+    kindergartenId: string,
+    opts: { groupId?: string; date?: string },
   ): Promise<AttendanceTodayResult> {
-    return Promise.resolve({
-      in_kindergarten: 0,
-      checked_out: 0,
-      absent: 0,
-      on_vacation: 0,
-      sick: 0,
-    });
+    const { today } = this.almatyBoundaries();
+    const date = opts.date ?? today;
+    // Almaty calendar day for `date` as a half-open UTC instant window —
+    // used for the event last-event window and the absent no-check_in
+    // exclusion (§1.3, §2.3).
+    const dayStartIso = this.almatyDayStartUtc(date).toISOString();
+    const dayEndExclusiveIso = this.almatyDayStartUtc(date, 1).toISOString();
+
+    const [statusCounts, eventBuckets] = await Promise.all([
+      this.dailyStatusRepo.countByStatusForDate(
+        kindergartenId,
+        date,
+        dayStartIso,
+        dayEndExclusiveIso,
+        opts.groupId,
+      ),
+      this.attendanceEventRepo.lastEventBucketsForDate(
+        kindergartenId,
+        dayStartIso,
+        dayEndExclusiveIso,
+        opts.groupId,
+      ),
+    ]);
+
+    return {
+      in_kindergarten: eventBuckets.inKindergarten,
+      checked_out: eventBuckets.checkedOut,
+      absent: statusCounts['absent'] ?? 0,
+      on_vacation: statusCounts['on_vacation'] ?? 0,
+      sick: statusCounts['sick'] ?? 0,
+    };
   }
 }

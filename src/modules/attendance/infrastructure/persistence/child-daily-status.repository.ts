@@ -66,6 +66,34 @@ export abstract class ChildDailyStatusRepository {
     kindergartenId: string,
     filter: ListDailyStatusFilter,
   ): Promise<ChildDailyStatus[]>;
+
+  // ── B-DASH — Dashboard attendance-today aggregate ─────────────────────
+
+  /**
+   * Histogram of child_daily_status by status for one calendar `date`
+   * (YYYY-MM-DD), optionally scoped to a group via
+   * `children.current_group_id`. Returns `{ status: count }`.
+   *
+   * Special-case for the `absent` bucket (§2.3): a child whose
+   * daily_status is `absent` but who has a `check_in` event within the
+   * Asia/Almaty day window [dayStartIso, dayEndExclusiveIso) is NOT counted
+   * as absent. This NOT-EXISTS exclusion lives here (child_daily_status and
+   * attendance_events are both in the attendance bounded context) so the
+   * service stays a pure composition. Other statuses are a plain
+   * GROUP BY status.
+   *
+   * Default stub so older in-memory test fakes compile; the relational
+   * impl overrides.
+   */
+  countByStatusForDate(
+    _kindergartenId: string,
+    _date: string,
+    _dayStartIso: string,
+    _dayEndExclusiveIso: string,
+    _groupId?: string,
+  ): Promise<Record<string, number>> {
+    return Promise.resolve({});
+  }
 }
 
 export interface ListDailyStatusFilter {
