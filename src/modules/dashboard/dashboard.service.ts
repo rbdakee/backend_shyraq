@@ -98,6 +98,16 @@ export class DashboardService {
     return { today, monthStartUtc, yearStartUtc, nowUtc };
   }
 
+  /**
+   * UTC instant of an Asia/Almaty-local midnight for the given calendar date
+   * (`YYYY-MM-DD`), optionally offset by whole days. `addDays = 1` on the
+   * range `to` yields the exclusive upper bound of an inclusive day range.
+   */
+  private almatyDayStartUtc(dateStr: string, addDays = 0): Date {
+    const [y, m, d] = dateStr.split('-').map((p) => Number(p));
+    return new Date(Date.UTC(y, m - 1, d + addDays) - ALMATY_OFFSET_MS);
+  }
+
   async getSummary(kindergartenId: string): Promise<DashboardSummaryResult> {
     const { today, monthStartUtc, yearStartUtc, nowUtc } =
       this.almatyBoundaries();
@@ -142,20 +152,46 @@ export class DashboardService {
   }
 
   async getPaymentsOverview(
-    _kindergartenId: string,
+    kindergartenId: string,
     range: { from: string; to: string },
   ): Promise<PaymentsOverviewResult> {
+    // YYYY-MM-DD compares lexicographically, so `to < from` is the invalid case.
     if (range.to < range.from) {
       throw new BadRequestException('invalid_date_range');
     }
-    const empty: PaymentBucket = { count: 0, amount: 0 };
-    return Promise.resolve({
-      paid: { ...empty },
-      pending: { ...empty },
-      overdue: { ...empty },
-      refunded: { ...empty },
-      by_provider: [],
-    });
+
+    const { today } = this.almatyBoundaries();
+    // Provider breakdown filters payments.paid_at (timestamptz). The query
+    // [from, to] is interpreted as inclusive Asia/Almaty calendar days, so the
+    // window is [from 00:00 Almaty, (to + 1d) 00:00 Almaty) in UTC. Buckets
+    // filter invoice.period_start (a date column) directly with from/to.
+    const fromInstantIso = this.almatyDayStartUtc(range.from).toISOString();
+    const toExclusiveInstantIso = this.almatyDayStartUtc(
+      range.to,
+      1,
+    ).toISOString();
+
+    const [buckets, byProvider] = await Promise.all([
+      this.invoiceRepo.aggregateByStatusBetween(
+        kindergartenId,
+        range.from,
+        range.to,
+        today,
+      ),
+      this.paymentRepo.aggregateByProviderBetween(
+        kindergartenId,
+        fromInstantIso,
+        toExclusiveInstantIso,
+      ),
+    ]);
+
+    return {
+      paid: buckets.paid,
+      pending: buckets.pending,
+      overdue: buckets.overdue,
+      refunded: buckets.refunded,
+      by_provider: byProvider,
+    };
   }
 
   async getAttendanceToday(

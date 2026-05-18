@@ -414,6 +414,62 @@ export class InvoiceRelationalRepository extends InvoiceRepository {
       amount: Number(result?.[0]?.amount ?? 0),
     };
   }
+
+  async aggregateByStatusBetween(
+    kindergartenId: string,
+    from: string,
+    to: string,
+    today: string,
+  ): Promise<{
+    paid: { count: number; amount: number };
+    pending: { count: number; amount: number };
+    overdue: { count: number; amount: number };
+    refunded: { count: number; amount: number };
+  }> {
+    const result = await this.manager().query(
+      `SELECT
+         COUNT(*) FILTER (WHERE status = 'paid')::text AS paid_count,
+         COALESCE(SUM(amount_after_discount) FILTER (WHERE status = 'paid'), 0)::text AS paid_amount,
+         COUNT(*) FILTER (
+           WHERE status IN ('pending', 'partial') AND due_date >= $4::date
+         )::text AS pending_count,
+         COALESCE(SUM(amount_after_discount) FILTER (
+           WHERE status IN ('pending', 'partial') AND due_date >= $4::date
+         ), 0)::text AS pending_amount,
+         COUNT(*) FILTER (
+           WHERE status IN ('pending', 'partial') AND due_date < $4::date
+         )::text AS overdue_count,
+         COALESCE(SUM(amount_after_discount) FILTER (
+           WHERE status IN ('pending', 'partial') AND due_date < $4::date
+         ), 0)::text AS overdue_amount,
+         COUNT(*) FILTER (WHERE status = 'refunded')::text AS refunded_count,
+         COALESCE(SUM(amount_after_discount) FILTER (WHERE status = 'refunded'), 0)::text AS refunded_amount
+       FROM invoices
+      WHERE kindergarten_id = $1
+        AND period_start >= $2::date
+        AND period_start <= $3::date`,
+      [kindergartenId, from, to, today],
+    );
+    const r = result?.[0] ?? {};
+    return {
+      paid: {
+        count: Number(r.paid_count ?? 0),
+        amount: Number(r.paid_amount ?? 0),
+      },
+      pending: {
+        count: Number(r.pending_count ?? 0),
+        amount: Number(r.pending_amount ?? 0),
+      },
+      overdue: {
+        count: Number(r.overdue_count ?? 0),
+        amount: Number(r.overdue_amount ?? 0),
+      },
+      refunded: {
+        count: Number(r.refunded_count ?? 0),
+        amount: Number(r.refunded_amount ?? 0),
+      },
+    };
+  }
 }
 
 /**

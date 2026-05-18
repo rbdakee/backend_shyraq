@@ -150,4 +150,23 @@ export abstract class PaymentRepository {
   ): Promise<number> {
     return Promise.resolve(0);
   }
+
+  /**
+   * Payments-overview provider breakdown (§2.2 — basis is PAYMENTS, the only
+   * rows that carry `provider`): `status='completed'`, paid_at in the
+   * half-open instant window [fromIso, toIsoExclusive), GROUP BY provider,
+   * count + SUM(amount). The window bounds are UTC instants the service
+   * derives from the Asia/Almaty calendar [from, to] day range. Ordered by
+   * provider for a stable response.
+   *
+   * Default stub so older in-memory test fakes compile; the relational impl
+   * overrides.
+   */
+  aggregateByProviderBetween(
+    _kindergartenId: string,
+    _fromIso: string,
+    _toIsoExclusive: string,
+  ): Promise<Array<{ provider: string; count: number; amount: number }>> {
+    return Promise.resolve([]);
+  }
 }

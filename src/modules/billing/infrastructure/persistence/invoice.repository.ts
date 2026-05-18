@@ -263,4 +263,36 @@ export abstract class InvoiceRepository {
   ): Promise<{ count: number; amount: number }> {
     return Promise.resolve({ count: 0, amount: 0 });
   }
+
+  /**
+   * Payments-overview status buckets (documented assumption §2.2 — basis is
+   * INVOICES, amount = SUM(amount_after_discount)). One query:
+   *   - paid     = status='paid'
+   *   - pending  = status IN ('pending','partial') AND due_date >= today
+   *   - overdue  = status IN ('pending','partial') AND due_date < today (§0#4)
+   *   - refunded = status='refunded'
+   * Period filter: `period_start` ∈ [from, to] (calendar dates, inclusive).
+   * `today` is the Asia/Almaty calendar date `YYYY-MM-DD`.
+   *
+   * Default stub so older in-memory test fakes compile; the relational impl
+   * overrides with a single FILTER-aggregate query.
+   */
+  aggregateByStatusBetween(
+    _kindergartenId: string,
+    _from: string,
+    _to: string,
+    _today: string,
+  ): Promise<{
+    paid: { count: number; amount: number };
+    pending: { count: number; amount: number };
+    overdue: { count: number; amount: number };
+    refunded: { count: number; amount: number };
+  }> {
+    return Promise.resolve({
+      paid: { count: 0, amount: 0 },
+      pending: { count: 0, amount: 0 },
+      overdue: { count: 0, amount: 0 },
+      refunded: { count: 0, amount: 0 },
+    });
+  }
 }

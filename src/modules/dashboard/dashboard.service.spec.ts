@@ -19,6 +19,7 @@
  * Test names: `it('returns ...')` / `it('throws ...')` / `it('rejects ...')`
  * — NO `it('should ...')` (CLAUDE.md §7).
  */
+import { BadRequestException } from '@nestjs/common';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { Child } from '@/modules/child/domain/entities/child.entity';
 import {
@@ -580,5 +581,87 @@ describe('DashboardService.getSummary', () => {
     await h.service.getSummary(KG);
     // Almaty May-1 00:00 = UTC Apr-30 19:00.
     expect(h.payment.sumCalls[0].from).toBe('2026-04-30T19:00:00.000Z');
+  });
+});
+
+// ── payments-overview ────────────────────────────────────────────────────
+
+describe('DashboardService.getPaymentsOverview', () => {
+  it('returns invoice buckets and provider breakdown composed from each port', async () => {
+    const h = makeService(new Date('2026-05-18T06:00:00.000Z'));
+    h.invoice.statusBuckets = {
+      paid: { count: 96, amount: 1850000 },
+      pending: { count: 14, amount: 260000 },
+      overdue: { count: 4, amount: 320000 },
+      refunded: { count: 2, amount: 38000 },
+    };
+    h.payment.providerRows = [
+      { provider: 'halyk_epay', count: 16, amount: 250000 },
+      { provider: 'kaspi_pay', count: 80, amount: 1600000 },
+    ];
+
+    const res = await h.service.getPaymentsOverview(KG, {
+      from: '2026-05-01',
+      to: '2026-05-31',
+    });
+
+    expect(res).toEqual({
+      paid: { count: 96, amount: 1850000 },
+      pending: { count: 14, amount: 260000 },
+      overdue: { count: 4, amount: 320000 },
+      refunded: { count: 2, amount: 38000 },
+      by_provider: [
+        { provider: 'halyk_epay', count: 16, amount: 250000 },
+        { provider: 'kaspi_pay', count: 80, amount: 1600000 },
+      ],
+    });
+  });
+
+  it('rejects to < from with BadRequestException invalid_date_range', async () => {
+    const h = makeService(new Date('2026-05-18T06:00:00.000Z'));
+    await expect(
+      h.service.getPaymentsOverview(KG, {
+        from: '2026-05-31',
+        to: '2026-05-01',
+      }),
+    ).rejects.toThrow(BadRequestException);
+    await expect(
+      h.service.getPaymentsOverview(KG, {
+        from: '2026-05-31',
+        to: '2026-05-01',
+      }),
+    ).rejects.toThrow('invalid_date_range');
+  });
+
+  it('accepts an equal from/to single-day range (to === from is valid)', async () => {
+    const h = makeService(new Date('2026-05-18T06:00:00.000Z'));
+    await expect(
+      h.service.getPaymentsOverview(KG, {
+        from: '2026-05-18',
+        to: '2026-05-18',
+      }),
+    ).resolves.toBeDefined();
+  });
+
+  it('passes raw dates + Almaty today to invoice buckets and an Almaty-day instant window to provider breakdown', async () => {
+    const h = makeService(new Date('2026-05-18T06:00:00.000Z'));
+    await h.service.getPaymentsOverview(KG, {
+      from: '2026-05-01',
+      to: '2026-05-31',
+    });
+
+    // Buckets: raw calendar from/to + Asia/Almaty `today`.
+    expect(h.invoice.statusBetweenArgs).toEqual({
+      from: '2026-05-01',
+      to: '2026-05-31',
+      today: '2026-05-18',
+    });
+    // Provider window: [from 00:00 Almaty, (to+1d) 00:00 Almaty) in UTC.
+    // Almaty 2026-05-01 00:00 = UTC 2026-04-30T19:00:00Z.
+    // Almaty 2026-06-01 00:00 = UTC 2026-05-31T19:00:00Z.
+    expect(h.payment.providerArgs).toEqual({
+      from: '2026-04-30T19:00:00.000Z',
+      to: '2026-05-31T19:00:00.000Z',
+    });
   });
 });
