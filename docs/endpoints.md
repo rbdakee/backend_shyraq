@@ -263,7 +263,7 @@ Email + password (не OTP). Access-токен — тот же JWT HS256 (`JWT_A
 - **Логика (в request-scoped TX):**
   1. `kindergartens.findById(:id)` → отсутствует → **404 `kindergarten_not_found`**.
   2. `kg.isArchived` → **409 `kindergarten_archived`**.
-  3. `Phone.parse` / `Locale.parse` — невалидно → **400/422 `invariant_violation`**.
+  3. DTO-валидация (`ValidationPipe`): невалидный `phone`/`locale` отвергается class-validator ДО сервиса → **422** (стандартный nest validation envelope: `{ "status": 422, "errors": { "phone": "invalid_phone_format" } }` — НЕ `invariant_violation`). Сервисный `Phone.parse` / `Locale.parse` (достижим только если DTO прошёл) бросает `InvariantViolationError` → **400**, где `error`/`message` — описательный код инварианта (напр. `phone must be E.164`), а не литерал `invariant_violation`.
   4. find-or-create `users` по `phone` — существующий user НЕ перезаписывается (full_name/locale патчатся только у только что созданного).
   5. строгий conflict-check `staff.findByUserAndKindergarten(userId, :id)` (любой `is_active`): строка с `role='admin'` → **409 `admin_already_exists`**; строка с `role≠'admin'` → **409 `staff_already_exists`**; нет строки → продолжаем.
   6. `staff.create({ role: 'admin', hiredAt: now })`.
@@ -290,7 +290,7 @@ Email + password (не OTP). Access-токен — тот же JWT HS256 (`JWT_A
 }
 ```
 
-- **Errors:** 400/422 `invariant_violation` (невалидный phone/locale или class-validator); 401; 403; 404 `kindergarten_not_found`; 409 `kindergarten_archived`; 409 `admin_already_exists` (уже есть admin-строка для пары); 409 `staff_already_exists` (есть non-admin staff-строка для пары). Тело ошибки: `{ "statusCode": <int>, "error": "<code>", "message": "<code>" }`.
+- **Errors:** **422** class-validator (невалидный `phone`/`locale` отвергнут DTO; тело — `{ "status": 422, "errors": { "<field>": "<constraint>" } }`, НЕ `invariant_violation`); **400** `<invariant-code>` (сервисный `Phone.parse`/`Locale.parse`, достижим только если DTO прошёл — `error`/`message` это описательный код инварианта, не литерал `invariant_violation`); 401; 403; 404 `kindergarten_not_found`; 409 `kindergarten_archived`; 409 `admin_already_exists` (уже есть admin-строка для пары; включая race losing-request); 409 `staff_already_exists` (есть non-admin staff-строка для пары). Тело доменной ошибки (4xx через `DomainErrorFilter`): `{ "statusCode": <int>, "error": "<code>", "message": "<code>" }`.
 
 ### 1.3 SaaS Subscriptions
 

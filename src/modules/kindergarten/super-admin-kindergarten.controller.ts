@@ -248,14 +248,7 @@ export class SuperAdminKindergartenController {
   })
   @ApiCreatedResponse({ type: AddKindergartenAdminResponseDto })
   @ApiBadRequestResponse({
-    description: 'Invalid phone/locale format.',
-    schema: {
-      example: {
-        statusCode: 400,
-        error: 'invariant_violation',
-        message: 'invariant_violation',
-      },
-    },
+    description: 'Invalid phone/locale format (`invariant_violation`).',
   })
   @ApiUnauthorizedResponse({
     description: 'Bearer missing/invalid/revoked.',
