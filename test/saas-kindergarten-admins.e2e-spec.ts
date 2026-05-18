@@ -204,6 +204,51 @@ describe('SuperAdmin Kindergarten Admins — /api/v1/saas/kindergartens/:id/admi
     expect((res.body as ErrorBody).error).toBe('admin_already_exists');
   });
 
+  it('rejects re-adding an INACTIVE admin with 409 admin_already_exists and creates no resurrection row', async () => {
+    // Real-Postgres proof that the partial-unique-index resurrection gap is
+    // closed: an INACTIVE staff_members admin row (is_active=false) is exempt
+    // from idx_staff_members_kg_user_active, so a naive INSERT would succeed
+    // and "resurrect" a second row. addAdmin's strict any-status pre-insert
+    // check must block it instead.
+    const kgA = await createKg('kga-inactive', '+77011110090');
+    const ghostUserId = randomUUID();
+    const ghostPhone = '+77011110091';
+
+    await ctx.dataSource.transaction(async (m) => {
+      await m.query(`SET LOCAL app.bypass_rls = 'true'`);
+      await m.query(
+        `INSERT INTO users (id, phone, full_name, locale, is_active)
+         VALUES ($1, $2, 'Ghost Admin', 'ru', true)`,
+        [ghostUserId, ghostPhone],
+      );
+      await m.query(
+        `INSERT INTO staff_members
+           (kindergarten_id, user_id, role, is_active, hired_at)
+         VALUES ($1, $2, 'admin', false, '2026-01-01')`,
+        [kgA.kindergarten.id, ghostUserId],
+      );
+    });
+
+    const res = await request(server)
+      .post(`/api/v1/saas/kindergartens/${kgA.kindergarten.id}/admins`)
+      .set('Authorization', `Bearer ${saAccess}`)
+      .send({ full_name: 'Resurrected', phone: ghostPhone });
+    expect(res.status).toBe(409);
+    expect((res.body as ErrorBody).error).toBe('admin_already_exists');
+
+    // No second staff_members row was created for the (kg, user) pair.
+    const count = await ctx.dataSource.transaction(async (m) => {
+      await m.query(`SET LOCAL app.bypass_rls = 'true'`);
+      const rows = (await m.query(
+        `SELECT count(*)::int AS n FROM staff_members
+         WHERE kindergarten_id = $1 AND user_id = $2`,
+        [kgA.kindergarten.id, ghostUserId],
+      )) as Array<{ n: number }>;
+      return rows[0].n;
+    });
+    expect(count).toBe(1);
+  });
+
   it('404 kindergarten_not_found for unknown kg (list + add)', async () => {
     const missing = '00000000-0000-0000-0000-000000000000';
     const listRes = await request(server)
