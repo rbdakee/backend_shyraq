@@ -116,3 +116,100 @@ export class InviteAdminResponseDto {
   })
   sent!: boolean;
 }
+
+export class KindergartenAdminDto {
+  @ApiProperty({ example: 'e2e2b6a7-1a2b-4c3d-9e8f-0a1b2c3d4e5f' })
+  staff_member_id!: string;
+
+  @ApiProperty({ example: 'd3e2b6a7-1a2b-4c3d-9e8f-0a1b2c3d4e5f' })
+  user_id!: string;
+
+  @ApiProperty({
+    example: 'Айгерим Нурланкызы',
+    nullable: true,
+    type: String,
+  })
+  full_name!: string | null;
+
+  @ApiProperty({ example: '+77011112233', nullable: true, type: String })
+  phone!: string | null;
+
+  @ApiProperty({
+    example: 'ru',
+    enum: ['ru', 'kk'],
+    nullable: true,
+    type: String,
+  })
+  locale!: string | null;
+
+  @ApiProperty({ example: true })
+  is_active!: boolean;
+
+  @ApiProperty({
+    example: '2026-04-28',
+    nullable: true,
+    type: String,
+    description: 'YYYY-MM-DD hire date; null when unset.',
+  })
+  hired_at!: string | null;
+
+  @ApiProperty({
+    example: null,
+    nullable: true,
+    type: String,
+    description: 'YYYY-MM-DD fired date; null when still active.',
+  })
+  fired_at!: string | null;
+
+  @ApiProperty({ example: '2026-04-28T10:00:00.000Z' })
+  created_at!: string;
+}
+
+export class AddedAdminStaffDto {
+  @ApiProperty({ example: 'e2e2b6a7-1a2b-4c3d-9e8f-0a1b2c3d4e5f' })
+  id!: string;
+
+  @ApiProperty({ example: 'admin', enum: ['admin'] })
+  role!: 'admin';
+
+  @ApiProperty({ example: true })
+  is_active!: boolean;
+
+  @ApiProperty({ example: '2026-04-28', nullable: true, type: String })
+  hired_at!: string | null;
+
+  @ApiProperty({ example: '2026-04-28T10:00:00.000Z' })
+  created_at!: string;
+}
+
+export class AddedAdminUserDto {
+  @ApiProperty({ example: 'd3e2b6a7-1a2b-4c3d-9e8f-0a1b2c3d4e5f' })
+  id!: string;
+
+  @ApiProperty({ example: '+77011115566' })
+  phone!: string;
+
+  @ApiProperty({ example: 'Жанна Серикова' })
+  full_name!: string;
+
+  @ApiProperty({ example: 'kk', enum: ['ru', 'kk'] })
+  locale!: string;
+}
+
+export class AddKindergartenAdminResponseDto {
+  @ApiProperty({ example: '7c2c2b6a-1a2b-4c3d-9e8f-0a1b2c3d4e5f' })
+  kindergarten_id!: string;
+
+  @ApiProperty({ type: AddedAdminUserDto })
+  user!: AddedAdminUserDto;
+
+  @ApiProperty({ type: AddedAdminStaffDto })
+  staff_member!: AddedAdminStaffDto;
+
+  @ApiProperty({
+    example: true,
+    description:
+      'true if the invite SMS adapter accepted the message. false means the adapter rejected it but the request still succeeded (best-effort).',
+  })
+  invite_sms_sent!: boolean;
+}

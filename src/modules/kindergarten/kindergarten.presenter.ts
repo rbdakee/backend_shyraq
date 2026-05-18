@@ -1,11 +1,17 @@
 import { Kindergarten } from './domain/entities/kindergarten.entity';
 import { StaffMember } from '@/modules/staff/domain/entities/staff-member.entity';
-import { CreatedKindergartenWithAdmin } from './kindergarten.service';
+import {
+  AddedAdmin,
+  CreatedKindergartenWithAdmin,
+  KindergartenAdminRow,
+} from './kindergarten.service';
 import { KindergartenListResult } from './infrastructure/persistence/kindergarten.repository';
 import {
+  AddKindergartenAdminResponseDto,
   CreateKindergartenResponseDto,
   CreatedKindergartenStaffDto,
   CreatedKindergartenUserDto,
+  KindergartenAdminDto,
   KindergartenDto,
   KindergartenListResponseDto,
 } from './dto/kindergarten-response.dto';
@@ -68,6 +74,48 @@ export const KindergartenPresenter = {
       phone: u.phone,
       full_name: u.fullName,
       locale: u.locale,
+    };
+  },
+
+  adminRow(row: KindergartenAdminRow): KindergartenAdminDto {
+    return {
+      staff_member_id: row.staffMemberId,
+      user_id: row.userId,
+      full_name: row.fullName,
+      phone: row.phone,
+      locale: row.locale,
+      is_active: row.isActive,
+      hired_at:
+        row.hiredAt !== null ? row.hiredAt.toISOString().slice(0, 10) : null,
+      fired_at:
+        row.firedAt !== null ? row.firedAt.toISOString().slice(0, 10) : null,
+      created_at: row.createdAt.toISOString(),
+    };
+  },
+
+  adminList(rows: KindergartenAdminRow[]): KindergartenAdminDto[] {
+    return rows.map((r) => KindergartenPresenter.adminRow(r));
+  },
+
+  addedAdmin(added: AddedAdmin): AddKindergartenAdminResponseDto {
+    const s = added.staffMember.toState();
+    return {
+      kindergarten_id: added.kindergartenId,
+      user: {
+        id: added.user.id,
+        phone: added.user.phone,
+        full_name: added.user.fullName,
+        locale: added.user.locale,
+      },
+      staff_member: {
+        id: s.id,
+        role: s.role as 'admin',
+        is_active: s.isActive,
+        hired_at:
+          s.hiredAt !== null ? s.hiredAt.toISOString().slice(0, 10) : null,
+        created_at: s.createdAt.toISOString(),
+      },
+      invite_sms_sent: added.inviteSmsSent,
     };
   },
 };
