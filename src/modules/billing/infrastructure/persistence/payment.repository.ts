@@ -128,4 +128,26 @@ export abstract class PaymentRepository {
     refundId: string,
     now: Date,
   ): Promise<Payment | null>;
+
+  // ── B-DASH — Dashboard revenue aggregate ──────────────────────────────
+
+  /**
+   * GROSS completed-payment revenue for a half-open instant window:
+   *
+   *   COALESCE(SUM(amount),0)
+   *   WHERE kindergarten_id=$1 AND status='completed'
+   *         AND paid_at >= $fromIso AND paid_at < $toIsoExclusive
+   *
+   * Locked decision §0#3: gross (refunds NOT subtracted). Bounds are UTC
+   * ISO instants derived from Asia/Almaty calendar month/year starts.
+   * Called twice by DashboardService (MTD, YTD). Default stub so older
+   * in-memory test fakes compile; the relational impl overrides.
+   */
+  sumCompletedBetween(
+    _kindergartenId: string,
+    _fromIso: string,
+    _toIsoExclusive: string,
+  ): Promise<number> {
+    return Promise.resolve(0);
+  }
 }

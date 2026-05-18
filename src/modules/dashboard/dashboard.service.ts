@@ -4,7 +4,6 @@ import { ChildRepository } from '@/modules/child/infrastructure/persistence/chil
 import { EnrollmentRepository } from '@/modules/enrollment/infrastructure/persistence/enrollment.repository';
 import { InvoiceRepository } from '@/modules/billing/infrastructure/persistence/invoice.repository';
 import { PaymentRepository } from '@/modules/billing/infrastructure/persistence/payment.repository';
-import { RefundRepository } from '@/modules/billing/infrastructure/persistence/refund.repository';
 import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
 import { GroupRepository } from '@/modules/group/infrastructure/persistence/group.repository';
 import { AttendanceEventRepository } from '@/modules/attendance/infrastructure/persistence/attendance-event.repository';
@@ -69,7 +68,6 @@ export class DashboardService {
     private readonly enrollmentRepo: EnrollmentRepository,
     private readonly invoiceRepo: InvoiceRepository,
     private readonly paymentRepo: PaymentRepository,
-    private readonly refundRepo: RefundRepository,
     private readonly staffRepo: StaffMemberRepository,
     private readonly groupRepo: GroupRepository,
     private readonly attendanceEventRepo: AttendanceEventRepository,
@@ -100,19 +98,47 @@ export class DashboardService {
     return { today, monthStartUtc, yearStartUtc, nowUtc };
   }
 
-  // Phase A scaffold — real bodies land in phases B/C/D.
+  async getSummary(kindergartenId: string): Promise<DashboardSummaryResult> {
+    const { today, monthStartUtc, yearStartUtc, nowUtc } =
+      this.almatyBoundaries();
+    const nowIso = nowUtc.toISOString();
 
-  async getSummary(_kindergartenId: string): Promise<DashboardSummaryResult> {
-    return Promise.resolve({
-      active_children: 0,
-      enrollments_in_processing: 0,
-      invoices_overdue_count: 0,
-      invoices_overdue_amount: 0,
-      mtd_revenue: 0,
-      ytd_revenue: 0,
-      active_staff: 0,
-      active_groups: 0,
-    });
+    const [
+      activeChildren,
+      enrollmentsInProcessing,
+      overdue,
+      mtdRevenue,
+      ytdRevenue,
+      activeStaff,
+      activeGroups,
+    ] = await Promise.all([
+      this.childRepo.countActiveByKindergarten(kindergartenId),
+      this.enrollmentRepo.countInProcessing(kindergartenId),
+      this.invoiceRepo.aggregateOverdue(kindergartenId, today),
+      this.paymentRepo.sumCompletedBetween(
+        kindergartenId,
+        monthStartUtc.toISOString(),
+        nowIso,
+      ),
+      this.paymentRepo.sumCompletedBetween(
+        kindergartenId,
+        yearStartUtc.toISOString(),
+        nowIso,
+      ),
+      this.staffRepo.countActive(kindergartenId),
+      this.groupRepo.countActive(kindergartenId),
+    ]);
+
+    return {
+      active_children: activeChildren,
+      enrollments_in_processing: enrollmentsInProcessing,
+      invoices_overdue_count: overdue.count,
+      invoices_overdue_amount: overdue.amount,
+      mtd_revenue: mtdRevenue,
+      ytd_revenue: ytdRevenue,
+      active_staff: activeStaff,
+      active_groups: activeGroups,
+    };
   }
 
   async getPaymentsOverview(

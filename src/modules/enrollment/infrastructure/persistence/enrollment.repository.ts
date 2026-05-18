@@ -65,4 +65,17 @@ export abstract class EnrollmentRepository {
     kindergartenId: string,
     filter: EnrollmentListFilter,
   ): Promise<EnrollmentListResult>;
+
+  // ── B-DASH — Dashboard summary aggregate ──────────────────────────────
+
+  /**
+   * COUNT of enrollments in the active funnel — `status IN ('new',
+   * 'in_processing','waitlist')` (locked product decision §0#2: the whole
+   * active pipeline, not just the literal `in_processing`). Default stub so
+   * older in-memory test fakes compile; the relational impl overrides with a
+   * real COUNT query.
+   */
+  countInProcessing(_kindergartenId: string): Promise<number> {
+    return Promise.resolve(0);
+  }
 }

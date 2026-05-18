@@ -136,4 +136,15 @@ export abstract class GroupRepository {
   ): Promise<boolean> {
     return Promise.resolve(false);
   }
+
+  // ── B-DASH — Dashboard summary aggregate ──────────────────────────────
+
+  /**
+   * COUNT of active groups (`archived_at IS NULL`, locked decision §0#5).
+   * Default stub so older in-memory test fakes compile; the relational impl
+   * overrides with a real COUNT query.
+   */
+  countActive(_kindergartenId: string): Promise<number> {
+    return Promise.resolve(0);
+  }
 }

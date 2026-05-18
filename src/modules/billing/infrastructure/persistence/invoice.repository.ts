@@ -242,4 +242,25 @@ export abstract class InvoiceRepository {
   ): Promise<Invoice | null> {
     return Promise.resolve(null);
   }
+
+  // ── B-DASH — Dashboard aggregates ─────────────────────────────────────
+
+  /**
+   * Overdue aggregate for the dashboard summary. Locked decision §0#4:
+   * computed by due_date, NOT by `status='overdue'` (a background
+   * pending→overdue flip may not have run yet → false zeros).
+   *
+   *   COUNT(*) + COALESCE(SUM(amount_after_discount),0)
+   *   WHERE kindergarten_id=$1 AND due_date < $today::date
+   *         AND status IN ('pending','partial')
+   *
+   * `today` is the Asia/Almaty calendar date `YYYY-MM-DD`. Default stub so
+   * older in-memory test fakes compile; the relational impl overrides.
+   */
+  aggregateOverdue(
+    _kindergartenId: string,
+    _today: string,
+  ): Promise<{ count: number; amount: number }> {
+    return Promise.resolve({ count: 0, amount: 0 });
+  }
 }

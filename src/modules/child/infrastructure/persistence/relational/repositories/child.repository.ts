@@ -473,6 +473,19 @@ export class ChildRelationalRepository extends ChildRepository {
     return rows.map((r) => ({ id: r.id, fullName: r.full_name }));
   }
 
+  // ── B-DASH — Dashboard summary aggregate ──────────────────────────────
+
+  async countActiveByKindergarten(kindergartenId: string): Promise<number> {
+    const rows = await this.manager().query(
+      `SELECT COUNT(*)::text AS count
+         FROM children
+        WHERE kindergarten_id = $1
+          AND status = 'active'`,
+      [kindergartenId],
+    );
+    return Number(rows?.[0]?.count ?? 0);
+  }
+
   private manager(): EntityManager {
     const ctx = tenantStorage.getStore();
     return ctx?.entityManager ?? this.repo.manager;

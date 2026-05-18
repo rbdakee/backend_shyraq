@@ -393,6 +393,27 @@ export class InvoiceRelationalRepository extends InvoiceRepository {
       .findOne({ where: { id, kindergartenId } });
     return row ? InvoiceMapper.toDomain(row) : null;
   }
+
+  // ── B-DASH — Dashboard aggregates ─────────────────────────────────────
+
+  async aggregateOverdue(
+    kindergartenId: string,
+    today: string,
+  ): Promise<{ count: number; amount: number }> {
+    const result = await this.manager().query(
+      `SELECT COUNT(*)::text AS count,
+              COALESCE(SUM(amount_after_discount), 0)::text AS amount
+         FROM invoices
+        WHERE kindergarten_id = $1
+          AND due_date < $2::date
+          AND status IN ('pending', 'partial')`,
+      [kindergartenId, today],
+    );
+    return {
+      count: Number(result?.[0]?.count ?? 0),
+      amount: Number(result?.[0]?.amount ?? 0),
+    };
+  }
 }
 
 /**
