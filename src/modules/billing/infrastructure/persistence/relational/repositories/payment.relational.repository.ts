@@ -320,6 +320,52 @@ export class PaymentRelationalRepository extends PaymentRepository {
       .findOne({ where: { id, kindergartenId } });
     return row ? PaymentMapper.toDomain(row) : null;
   }
+
+  // ── B-DASH — Dashboard revenue aggregate ──────────────────────────────
+
+  async sumCompletedBetween(
+    kindergartenId: string,
+    fromIso: string,
+    toIsoExclusive: string,
+  ): Promise<number> {
+    const result = await this.manager().query(
+      `SELECT COALESCE(SUM(amount), 0)::text AS amount
+         FROM payments
+        WHERE kindergarten_id = $1
+          AND status = 'completed'
+          AND paid_at >= $2
+          AND paid_at < $3`,
+      [kindergartenId, fromIso, toIsoExclusive],
+    );
+    return Number(result?.[0]?.amount ?? 0);
+  }
+
+  async aggregateByProviderBetween(
+    kindergartenId: string,
+    fromIso: string,
+    toIsoExclusive: string,
+  ): Promise<Array<{ provider: string; count: number; amount: number }>> {
+    const rows = await this.manager().query(
+      `SELECT provider,
+              COUNT(*)::text AS count,
+              COALESCE(SUM(amount), 0)::text AS amount
+         FROM payments
+        WHERE kindergarten_id = $1
+          AND status = 'completed'
+          AND paid_at >= $2
+          AND paid_at < $3
+        GROUP BY provider
+        ORDER BY provider`,
+      [kindergartenId, fromIso, toIsoExclusive],
+    );
+    return (rows ?? []).map(
+      (r: { provider: string; count: string; amount: string }) => ({
+        provider: r.provider,
+        count: Number(r.count ?? 0),
+        amount: Number(r.amount ?? 0),
+      }),
+    );
+  }
 }
 
 // ── error helpers ────────────────────────────────────────────────────────

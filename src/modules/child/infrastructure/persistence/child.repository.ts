@@ -285,4 +285,15 @@ export abstract class ChildRepository {
   ): Promise<Array<{ id: string; fullName: string }>> {
     return Promise.resolve([]);
   }
+
+  // ── B-DASH — Dashboard summary aggregate ──────────────────────────────
+
+  /**
+   * COUNT of children with `status = 'active'` in the kg. Default stub so
+   * older in-memory test fakes compile; the relational impl overrides with a
+   * real COUNT query.
+   */
+  countActiveByKindergarten(_kindergartenId: string): Promise<number> {
+    return Promise.resolve(0);
+  }
 }

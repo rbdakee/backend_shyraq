@@ -295,6 +295,19 @@ export class GroupRelationalRepository extends GroupRepository {
     });
   }
 
+  // ── B-DASH — Dashboard summary aggregate ──────────────────────────────
+
+  async countActive(kindergartenId: string): Promise<number> {
+    const rows = await this.manager().query(
+      `SELECT COUNT(*)::text AS count
+         FROM groups
+        WHERE kindergarten_id = $1
+          AND archived_at IS NULL`,
+      [kindergartenId],
+    );
+    return Number(rows?.[0]?.count ?? 0);
+  }
+
   private manager(): EntityManager {
     const ctx = tenantStorage.getStore();
     return ctx?.entityManager ?? this.repo.manager;

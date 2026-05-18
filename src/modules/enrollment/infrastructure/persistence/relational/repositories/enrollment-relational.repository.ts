@@ -182,6 +182,19 @@ export class EnrollmentRelationalRepository extends EnrollmentRepository {
     };
   }
 
+  // ── B-DASH — Dashboard summary aggregate ──────────────────────────────
+
+  async countInProcessing(kindergartenId: string): Promise<number> {
+    const rows = await this.manager().query(
+      `SELECT COUNT(*)::text AS count
+         FROM enrollments
+        WHERE kindergarten_id = $1
+          AND status IN ('new', 'in_processing', 'waitlist')`,
+      [kindergartenId],
+    );
+    return Number(rows?.[0]?.count ?? 0);
+  }
+
   private manager(): EntityManager {
     const ctx = tenantStorage.getStore();
     return ctx?.entityManager ?? this.repo.manager;

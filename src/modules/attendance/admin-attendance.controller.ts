@@ -16,7 +16,6 @@ import {
   ApiNotFoundResponse,
   ApiOkResponse,
   ApiOperation,
-  ApiQuery,
   ApiTags,
   ApiTooManyRequestsResponse,
   ApiUnauthorizedResponse,
@@ -137,39 +136,6 @@ export class AdminAttendanceController {
       { isAdmin: true },
     );
     return AttendancePresenter.event(updated);
-  }
-
-  // ── Dashboard ─────────────────────────────────────────────────────────────
-
-  @Get('dashboard/attendance-today')
-  @ApiOperation({
-    summary:
-      "Today's attendance summary: list of child_daily_status records for the current day (Asia/Almaty TZ). Optional ?groupId= filter.",
-  })
-  @ApiOkResponse({ type: [DailyStatusResponseDto] })
-  @ApiUnauthorizedResponse({ description: 'Bearer missing/invalid/revoked.' })
-  @ApiForbiddenResponse({ description: 'Caller is not admin/reception.' })
-  @ApiQuery({
-    name: 'groupId',
-    required: false,
-    description: 'Filter by group id.',
-  })
-  @ApiQuery({
-    name: 'date',
-    required: false,
-    description: 'Date override YYYY-MM-DD (defaults to today in Asia/Almaty).',
-  })
-  async dashboardToday(
-    @Tenant() t: TenantContext,
-    @Query('groupId') groupId?: string,
-    @Query('date') date?: string,
-  ): Promise<DailyStatusResponseDto[]> {
-    const kgId = requireTenant(t);
-    const statuses = await this.attendanceService.dashboardAttendanceToday(
-      kgId,
-      { groupId, date },
-    );
-    return statuses.map((s) => AttendancePresenter.dailyStatus(s));
   }
 
   // ── Daily status list ────────────────────────────────────────────────────

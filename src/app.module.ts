@@ -23,6 +23,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { BillingModule } from './modules/billing/billing.module';
 import { BillingLifecycleBridgeModule } from './modules/billing/billing-lifecycle-bridge.module';
 import { ContentModule } from './modules/content/content.module';
+import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { DiagnosticsModule } from './modules/diagnostics/diagnostics.module';
 import { CameraModule } from './modules/camera/camera.module';
 import { ChildModule } from './modules/child/child.module';
@@ -147,6 +148,7 @@ const resolveI18nPath = (): string => {
     // after `BillingModule` so the underlying provider exists.
     BillingLifecycleBridgeModule,
     ContentModule,
+    DashboardModule,
     DiagnosticsModule,
     // FINDINGS.md SP5 — `ServeStaticModule` removed. Uploaded media is now
     // served by `MediaController` (`GET /api/v1/media/:kgId/:yyyyMm/:filename`)

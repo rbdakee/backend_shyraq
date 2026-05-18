@@ -100,4 +100,15 @@ export abstract class StaffMemberRepository {
    * provides its own EntityManager with the GUC already set.
    */
   abstract findAllActiveByUserId(userId: string): Promise<StaffMember[]>;
+
+  // ── B-DASH — Dashboard summary aggregate ──────────────────────────────
+
+  /**
+   * COUNT of active staff (`is_active = true AND archived_at IS NULL`,
+   * locked decision §0#5). Default stub so older in-memory test fakes
+   * compile; the relational impl overrides with a real COUNT query.
+   */
+  countActive(_kindergartenId: string): Promise<number> {
+    return Promise.resolve(0);
+  }
 }

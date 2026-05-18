@@ -189,6 +189,66 @@ export class ChildDailyStatusRelationalRepository extends ChildDailyStatusReposi
     return rows.map((r) => ChildDailyStatusMapper.toDomain(r));
   }
 
+  // ── B-DASH — Dashboard attendance-today aggregate ─────────────────────
+
+  async countByStatusForDate(
+    kindergartenId: string,
+    date: string,
+    dayStartIso: string,
+    dayEndExclusiveIso: string,
+    groupId?: string,
+  ): Promise<Record<string, number>> {
+    const params: unknown[] = [
+      kindergartenId,
+      date,
+      dayStartIso,
+      dayEndExclusiveIso,
+    ];
+    let groupJoin = '';
+    let groupWhere = '';
+    if (groupId) {
+      groupJoin =
+        'JOIN children c ON c.id = cds.child_id AND c.kindergarten_id = cds.kindergarten_id';
+      params.push(groupId);
+      groupWhere = `AND c.current_group_id = $${params.length}`;
+    }
+    // §2.3: a child whose daily_status is `absent` but who has a check_in
+    // event within the Almaty day window is NOT counted as absent. The
+    // NOT-EXISTS lives here — child_daily_status + attendance_events are the
+    // same (attendance) bounded context, so the service stays pure
+    // composition. Other statuses are a plain GROUP BY.
+    const rows = await this.manager().query(
+      `SELECT cds.status::text AS status, COUNT(*)::text AS count
+         FROM child_daily_status cds
+         ${groupJoin}
+        WHERE cds.kindergarten_id = $1
+          AND cds.date = $2::date
+          ${groupWhere}
+          AND NOT (
+            cds.status = 'absent'
+            AND EXISTS (
+              SELECT 1
+                FROM attendance_events ae
+               WHERE ae.kindergarten_id = cds.kindergarten_id
+                 AND ae.child_id = cds.child_id
+                 AND ae.event_type = 'check_in'
+                 AND ae.recorded_at >= $3
+                 AND ae.recorded_at < $4
+            )
+          )
+        GROUP BY cds.status`,
+      params,
+    );
+    const out: Record<string, number> = {};
+    for (const row of (rows ?? []) as Array<{
+      status: string;
+      count: string;
+    }>) {
+      out[row.status] = Number(row.count ?? 0);
+    }
+    return out;
+  }
+
   private manager(): EntityManager {
     const ctx = tenantStorage.getStore();
     return ctx?.entityManager ?? this.repo.manager;

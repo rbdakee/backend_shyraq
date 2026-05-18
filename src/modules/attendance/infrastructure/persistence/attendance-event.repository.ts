@@ -81,4 +81,28 @@ export abstract class AttendanceEventRepository {
     kindergartenId: string,
     filter: ListAttendanceEventsByKindergartenFilter,
   ): Promise<AttendanceEvent[]>;
+
+  // ── B-DASH — Dashboard attendance-today aggregate ─────────────────────
+
+  /**
+   * Per-child last-event-of-the-day buckets for the dashboard donut (§2.3).
+   * For each child with ≥1 event in the half-open instant window
+   * [dayStartIso, dayEndExclusiveIso) (the Asia/Almaty calendar day for the
+   * target date, computed UTC-side by the service per §1.3), take the latest
+   * event and bucket it:
+   *   - inKindergarten = last event is `check_in`
+   *   - checkedOut     = last event is `check_out`
+   * Optional `groupId` filters via `children.current_group_id`
+   * (attendance_events has no group_id). Default stub so older in-memory
+   * test fakes compile; the relational impl overrides with a DISTINCT ON
+   * last-event query.
+   */
+  lastEventBucketsForDate(
+    _kindergartenId: string,
+    _dayStartIso: string,
+    _dayEndExclusiveIso: string,
+    _groupId?: string,
+  ): Promise<{ inKindergarten: number; checkedOut: number }> {
+    return Promise.resolve({ inKindergarten: 0, checkedOut: 0 });
+  }
 }

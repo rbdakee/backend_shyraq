@@ -524,26 +524,6 @@ export class AttendanceService {
   }
 
   /**
-   * Dashboard: list children with their daily_status for today (or a given
-   * date), optionally scoped to a group.
-   */
-  async dashboardAttendanceToday(
-    kindergartenId: string,
-    opts: {
-      groupId?: string;
-      date?: string;
-    } = {},
-  ): Promise<ChildDailyStatus[]> {
-    const today = this.clock.now().toLocaleDateString('en-CA', {
-      timeZone: 'Asia/Almaty',
-    });
-    const date = opts.date ?? today;
-    const filter: ListDailyStatusFilter = { from: date, to: date, limit: 500 };
-    if (opts.groupId) filter.groupId = opts.groupId;
-    return this.dailyStatusRepo.list(kindergartenId, filter);
-  }
-
-  /**
    * Paged list of daily_status rows with optional filters. Used by
    * GET /admin/daily-status.
    */
