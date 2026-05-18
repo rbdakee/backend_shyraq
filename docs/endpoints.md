@@ -888,9 +888,9 @@ Qundylyq реализуется как `content_posts` с `content_type='qundyly
 
 | Метод | Путь | Назначение |
 |---|---|---|
-| GET | `/admin/dashboard/summary` | Агрегат: `{active_children, enrollments_in_processing, invoices_overdue_count, invoices_overdue_amount, mtd_revenue, ytd_revenue, active_staff, active_groups}`. |
-| GET | `/admin/dashboard/attendance-today` | `{in_kindergarten, checked_out, absent, on_vacation, sick}` — считается по `attendance_events` за текущий день + `child_daily_status`. Параметр `group_id` — опциональный фильтр. |
-| GET | `/admin/dashboard/payments-overview` | Параметры: `from`, `to` (период). Возвращает `{paid: {count, amount}, pending: {count, amount}, overdue: {count, amount}, refunded: {count, amount}}` + breakdown по `provider`. |
+| GET | `/admin/dashboard/summary` | Guard: `JwtAuthGuard, PendingRoleSelectGuard, RolesGuard` + `@Roles('admin','reception')`. Агрегат: `{active_children, enrollments_in_processing, invoices_overdue_count, invoices_overdue_amount, mtd_revenue, ytd_revenue, active_staff, active_groups}`. `mtd_revenue`/`ytd_revenue` — БРУТТО `SUM(payments.amount)` (`status='completed'`) за календарный месяц/год в Asia/Almaty (возвраты не вычитаются). `invoices_overdue_*` — инвойсы `due_date < сегодня(Asia/Almaty) AND status IN ('pending','partial')`. Деньги — целые тенге (number). |
+| GET | `/admin/dashboard/attendance-today` | Параметры (опц.): `group_id` (UUID, snake_case — фильтр по `children.current_group_id`), `date` (YYYY-MM-DD, default = сегодня Asia/Almaty). Ответ: `{in_kindergarten, checked_out, absent, on_vacation, sick}`. `in_kindergarten`/`checked_out` — по последнему событию дня в `attendance_events`; `absent` — `child_daily_status='absent'` без check_in за день; `on_vacation`/`sick` — по `child_daily_status`. |
+| GET | `/admin/dashboard/payments-overview` | Параметры: `from`, `to` (YYYY-MM-DD, обязательны; `to < from` → 400 `invalid_date_range`). Ответ: `{paid, pending, overdue, refunded}` (каждый `{count, amount}` по инвойсам, фильтр `period_start ∈ [from,to]`) + `by_provider: [{provider, count, amount}]` (платежи `status='completed'`, `paid_at ∈ [from,to]`, GROUP BY provider). |
 
 ### 2.23 Identity QR — Admin Controls
 
