@@ -318,12 +318,32 @@ export class KindergartenService {
       throw new StaffAlreadyExistsError(kg.id, user.id);
     }
 
-    const staff = await this.staff.create({
-      kindergartenId: kg.id,
-      userId: user.id,
-      role: 'admin',
-      hiredAt: this.clock.now(),
-    });
+    let staff: StaffMember;
+    try {
+      staff = await this.staff.create({
+        kindergartenId: kg.id,
+        userId: user.id,
+        role: 'admin',
+        hiredAt: this.clock.now(),
+      });
+    } catch (err) {
+      // Concurrency: a racing request inserted a conflicting row between the
+      // pre-insert check above and create(). The partial unique index fires
+      // 23505, which the relational repo always maps to
+      // StaffAlreadyExistsError (shared mapping used by other callers). Re-read
+      // the now-existing row so the losing request returns the correct
+      // contract code when the conflicting row is an admin.
+      if (err instanceof StaffAlreadyExistsError) {
+        const racedRow = await this.staff.findByUserAndKindergarten(
+          user.id,
+          kg.id,
+        );
+        if (racedRow?.role === 'admin') {
+          throw new AdminAlreadyExistsError(kg.id, user.id);
+        }
+      }
+      throw err;
+    }
 
     const inviteSmsSent = await this.sendBestEffortSms(
       adminPhone.toString(),
