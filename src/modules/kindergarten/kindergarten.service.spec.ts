@@ -12,8 +12,12 @@ import {
 } from '@/modules/staff/domain/entities/staff-member.entity';
 import {
   CreateStaffMemberInput,
+  ListStaffFilters,
   StaffMemberRepository,
 } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
+import { AdminAlreadyExistsError } from '@/modules/staff/domain/errors/admin-already-exists.error';
+import { StaffAlreadyExistsError } from '@/modules/staff/domain/errors/staff-already-exists.error';
+import { KindergartenArchivedError } from './domain/errors/kindergarten-archived.error';
 import { Kindergarten } from './domain/entities/kindergarten.entity';
 import { FiscalSettingsForbiddenError } from './domain/errors/fiscal-settings-forbidden.error';
 import { KindergartenNotFoundError } from './domain/errors/kindergarten-not-found.error';
@@ -141,6 +145,40 @@ class FakeStaffRepo extends StaffMemberRepository {
   shouldThrowOnCreate: Error | null = null;
   deactivatedKgs: { kg: string; affected: number }[] = [];
 
+  /** Seed an arbitrary staff row (used by list / conflict tests). */
+  seed(input: {
+    id?: string;
+    kindergartenId: string;
+    userId: string;
+    role: 'admin' | 'mentor' | 'specialist' | 'reception';
+    isActive?: boolean;
+    specialistType?: string | null;
+    hiredAt?: Date | null;
+    firedAt?: Date | null;
+    createdAt?: Date;
+  }): StaffMember {
+    const sm = StaffMember.hydrate({
+      id: input.id ?? `staff-seed-${this.rows.length + 1}`,
+      kindergartenId: input.kindergartenId,
+      userId: input.userId,
+      fullName: null,
+      phone: null,
+      role: input.role,
+      specialistType:
+        input.role === 'specialist'
+          ? ((input.specialistType ?? 'psychologist') as never)
+          : null,
+      isActive: input.isActive ?? true,
+      hiredAt: input.hiredAt ?? null,
+      firedAt: input.firedAt ?? null,
+      archivedAt: null,
+      createdAt: input.createdAt ?? new Date('2026-04-28T10:00:00.000Z'),
+      updatedAt: new Date('2026-04-28T10:00:00.000Z'),
+    });
+    this.rows.push(sm);
+    return sm;
+  }
+
   create(input: CreateStaffMemberInput): Promise<StaffMember> {
     if (this.shouldThrowOnCreate) {
       const e = this.shouldThrowOnCreate;
@@ -198,10 +236,18 @@ class FakeStaffRepo extends StaffMemberRepository {
     return Promise.resolve(matches[matches.length - 1] ?? null);
   }
 
-  listByKindergarten(kindergartenId: string): Promise<StaffMember[]> {
-    return Promise.resolve(
-      this.rows.filter((r) => r.kindergartenId === kindergartenId),
-    );
+  listByKindergarten(
+    kindergartenId: string,
+    filters?: ListStaffFilters,
+  ): Promise<StaffMember[]> {
+    let out = this.rows.filter((r) => r.kindergartenId === kindergartenId);
+    if (filters?.role !== undefined) {
+      out = out.filter((r) => r.role === filters.role);
+    }
+    if (filters?.isActive !== undefined) {
+      out = out.filter((r) => r.isActive === filters.isActive);
+    }
+    return Promise.resolve(out);
   }
 
   update(): Promise<StaffMember | null> {
@@ -673,6 +719,252 @@ describe('KindergartenService', () => {
       await expect(
         service.getMyKindergarten('00000000-0000-0000-0000-000000000000'),
       ).rejects.toBeInstanceOf(KindergartenNotFoundError);
+    });
+  });
+
+  describe('listAdmins', () => {
+    async function seededKg(): Promise<{
+      service: KindergartenService;
+      staff: FakeStaffRepo;
+      users: FakeUserRepo;
+      kgId: string;
+    }> {
+      const { service, staff, users } = buildService();
+      const created = await service.createKindergarten({
+        name: 'Admins Garden',
+        slug: 'admins-garden',
+        admin: { fullName: 'First Admin', phone: '+77010000001' },
+      });
+      return { service, staff, users, kgId: created.kindergarten.id };
+    }
+
+    it('returns only role=admin rows and resolves identity from users', async () => {
+      const { service, staff, users, kgId } = await seededKg();
+      // The createKindergarten admin user is u-+77010000001 (FakeUserRepo).
+      const rows = await service.listAdmins(kgId);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].userId).toBe('u-+77010000001');
+      expect(rows[0].fullName).toBe('First Admin');
+      expect(rows[0].phone).toBe('+77010000001');
+      expect(rows[0].locale).toBe('ru');
+      expect(rows[0].isActive).toBe(true);
+      expect(users).toBeDefined();
+      expect(staff).toBeDefined();
+    });
+
+    it('excludes mentor / specialist / reception staff rows', async () => {
+      const { service, staff, kgId } = await seededKg();
+      staff.seed({ kindergartenId: kgId, userId: 'u-m', role: 'mentor' });
+      staff.seed({
+        kindergartenId: kgId,
+        userId: 'u-sp',
+        role: 'specialist',
+        specialistType: 'psychologist',
+      });
+      staff.seed({ kindergartenId: kgId, userId: 'u-r', role: 'reception' });
+
+      const rows = await service.listAdmins(kgId);
+      expect(rows).toHaveLength(1);
+      expect(rows.every((r) => r.userId === 'u-+77010000001')).toBe(true);
+    });
+
+    it('respects the is_active filter (true → only active admins)', async () => {
+      const { service, staff, kgId } = await seededKg();
+      staff.seed({
+        kindergartenId: kgId,
+        userId: 'u-inactive-admin',
+        role: 'admin',
+        isActive: false,
+      });
+
+      const all = await service.listAdmins(kgId);
+      expect(all).toHaveLength(2);
+
+      const activeOnly = await service.listAdmins(kgId, true);
+      expect(activeOnly).toHaveLength(1);
+      expect(activeOnly[0].isActive).toBe(true);
+
+      const inactiveOnly = await service.listAdmins(kgId, false);
+      expect(inactiveOnly).toHaveLength(1);
+      expect(inactiveOnly[0].isActive).toBe(false);
+      expect(inactiveOnly[0].userId).toBe('u-inactive-admin');
+    });
+
+    it('throws KindergartenNotFoundError when kg does not exist', async () => {
+      const { service } = buildService();
+      await expect(
+        service.listAdmins('00000000-0000-0000-0000-000000000000'),
+      ).rejects.toBeInstanceOf(KindergartenNotFoundError);
+    });
+  });
+
+  describe('addAdmin', () => {
+    async function gardenWithKg(): Promise<{
+      service: KindergartenService;
+      staff: FakeStaffRepo;
+      users: FakeUserRepo;
+      sms: FakeSms;
+      kgId: string;
+    }> {
+      const { service, staff, users, sms } = buildService();
+      const created = await service.createKindergarten({
+        name: 'Add Garden',
+        slug: 'add-garden',
+        admin: { fullName: 'Owner', phone: '+77010000010' },
+      });
+      sms.sent.length = 0; // discard welcome SMS
+      return { service, staff, users, sms, kgId: created.kindergarten.id };
+    }
+
+    it('creates a brand-new user and an admin staff row', async () => {
+      const { service, staff, users, kgId } = await gardenWithKg();
+      const res = await service.addAdmin(kgId, {
+        fullName: 'Жанна Серикова',
+        phone: '+77010000011',
+        locale: 'kk',
+      });
+      expect(res.kindergartenId).toBe(kgId);
+      expect(res.user.phone).toBe('+77010000011');
+      expect(res.user.fullName).toBe('Жанна Серикова');
+      expect(res.user.locale).toBe('kk');
+      expect(res.staffMember.role).toBe<StaffRole>('admin');
+      expect(res.staffMember.isActive).toBe(true);
+      expect(res.inviteSmsSent).toBe(true);
+      // 2 admin rows now: owner + new.
+      const admins = staff.rows.filter(
+        (r) => r.kindergartenId === kgId && r.role === 'admin',
+      );
+      expect(admins).toHaveLength(2);
+      expect(users.byPhone.has('+77010000011')).toBe(true);
+    });
+
+    it('reuses an existing user by phone without overwriting identity', async () => {
+      const { service, users, kgId } = await gardenWithKg();
+      users.put(
+        User.hydrate({
+          id: 'u-pre',
+          phone: '+77010000012',
+          fullName: 'Pre Existing',
+          avatarUrl: null,
+          iin: null,
+          dateOfBirth: null,
+          locale: 'kk',
+        }),
+      );
+      const before = users.updateCount;
+      const res = await service.addAdmin(kgId, {
+        fullName: 'Ignored Name',
+        phone: '+77010000012',
+        locale: 'ru',
+      });
+      expect(res.user.id).toBe('u-pre');
+      expect(res.user.fullName).toBe('Pre Existing');
+      expect(res.user.locale).toBe('kk');
+      expect(users.updateCount).toBe(before); // not patched
+      expect(res.staffMember.userId).toBe('u-pre');
+    });
+
+    it('throws AdminAlreadyExistsError when an admin row already exists', async () => {
+      const { service, kgId } = await gardenWithKg();
+      // Owner admin already exists for +77010000010.
+      await expect(
+        service.addAdmin(kgId, {
+          fullName: 'Dup',
+          phone: '+77010000010',
+        }),
+      ).rejects.toBeInstanceOf(AdminAlreadyExistsError);
+    });
+
+    it('throws StaffAlreadyExistsError when a non-admin staff row exists for the pair', async () => {
+      const { service, staff, users, kgId } = await gardenWithKg();
+      users.put(
+        User.hydrate({
+          id: 'u-mentor',
+          phone: '+77010000013',
+          fullName: 'Mentor Person',
+          avatarUrl: null,
+          iin: null,
+          dateOfBirth: null,
+          locale: 'ru',
+        }),
+      );
+      staff.seed({
+        kindergartenId: kgId,
+        userId: 'u-mentor',
+        role: 'mentor',
+      });
+      await expect(
+        service.addAdmin(kgId, {
+          fullName: 'Mentor Person',
+          phone: '+77010000013',
+        }),
+      ).rejects.toBeInstanceOf(StaffAlreadyExistsError);
+    });
+
+    it('still conflicts (409) when the existing staff row is INACTIVE', async () => {
+      const { service, staff, users, kgId } = await gardenWithKg();
+      users.put(
+        User.hydrate({
+          id: 'u-dead-admin',
+          phone: '+77010000014',
+          fullName: 'Dead Admin',
+          avatarUrl: null,
+          iin: null,
+          dateOfBirth: null,
+          locale: 'ru',
+        }),
+      );
+      staff.seed({
+        kindergartenId: kgId,
+        userId: 'u-dead-admin',
+        role: 'admin',
+        isActive: false,
+      });
+      await expect(
+        service.addAdmin(kgId, {
+          fullName: 'Dead Admin',
+          phone: '+77010000014',
+        }),
+      ).rejects.toBeInstanceOf(AdminAlreadyExistsError);
+    });
+
+    it('throws KindergartenArchivedError when the kg is archived', async () => {
+      const { service, kgId } = await gardenWithKg();
+      await service.archiveKindergarten(kgId);
+      await expect(
+        service.addAdmin(kgId, {
+          fullName: 'Late',
+          phone: '+77010000015',
+        }),
+      ).rejects.toBeInstanceOf(KindergartenArchivedError);
+    });
+
+    it('throws KindergartenNotFoundError when the kg does not exist', async () => {
+      const { service } = buildService();
+      await expect(
+        service.addAdmin('00000000-0000-0000-0000-000000000000', {
+          fullName: 'Nobody',
+          phone: '+77010000016',
+        }),
+      ).rejects.toBeInstanceOf(KindergartenNotFoundError);
+    });
+
+    it('rejects an invalid phone with InvariantViolationError', async () => {
+      const { service, kgId } = await gardenWithKg();
+      await expect(
+        service.addAdmin(kgId, { fullName: 'Bad', phone: 'not-a-phone' }),
+      ).rejects.toBeInstanceOf(InvariantViolationError);
+    });
+
+    it('still returns 201 with invite_sms_sent=false when the SMS adapter throws', async () => {
+      const { service, sms, kgId } = await gardenWithKg();
+      sms.shouldThrow = true;
+      const res = await service.addAdmin(kgId, {
+        fullName: 'No SMS',
+        phone: '+77010000017',
+      });
+      expect(res.staffMember.role).toBe<StaffRole>('admin');
+      expect(res.inviteSmsSent).toBe(false);
     });
   });
 });
