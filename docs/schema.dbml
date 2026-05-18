@@ -295,7 +295,7 @@ Table staff_members {
   updated_at      timestamptz [not null, default: `now()`]
 
   indexes {
-    (kindergarten_id, user_id) [unique]
+    (kindergarten_id, user_id) [unique, name: 'idx_staff_members_kg_user_active'] // PARTIAL: WHERE is_active = true — deactivate→reactivate cycles must not collide (see migration 1777593602000-StaffAndKindergartenSettings.ts)
     (kindergarten_id, role)
   }
 }
