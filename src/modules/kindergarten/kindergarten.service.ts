@@ -5,6 +5,8 @@ import { Phone } from '@/shared-kernel/domain/value-objects/phone.vo';
 import { UserRepository } from '@/modules/users/infrastructure/persistence/user.repository';
 import { SmsPort } from '@/modules/auth/sms.port';
 import { StaffMember } from '@/modules/staff/domain/entities/staff-member.entity';
+import { AdminAlreadyExistsError } from '@/modules/staff/domain/errors/admin-already-exists.error';
+import { StaffAlreadyExistsError } from '@/modules/staff/domain/errors/staff-already-exists.error';
 import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
 import {
   Kindergarten,
@@ -50,6 +52,41 @@ export interface UpdateSettingsInput {
   settings: KindergartenSettings;
   /** When true (SuperAdmin path), `fiscal_*` keys are allowed. */
   allowFiscalKeys?: boolean;
+}
+
+export interface AddAdminInput {
+  fullName: string;
+  phone: string;
+  locale?: string;
+}
+
+/**
+ * One row of `GET /saas/kindergartens/:id/admins`. `fullName`/`phone`/
+ * `locale` come from the linked `users` row — the kg-admin staff row is
+ * created without denormalising those identity fields.
+ */
+export interface KindergartenAdminRow {
+  staffMemberId: string;
+  userId: string;
+  fullName: string | null;
+  phone: string | null;
+  locale: string | null;
+  isActive: boolean;
+  hiredAt: Date | null;
+  firedAt: Date | null;
+  createdAt: Date;
+}
+
+export interface AddedAdmin {
+  kindergartenId: string;
+  user: {
+    id: string;
+    phone: string;
+    fullName: string;
+    locale: string;
+  };
+  staffMember: StaffMember;
+  inviteSmsSent: boolean;
 }
 
 /**
@@ -198,6 +235,114 @@ export class KindergartenService {
       `admin-invite kg=${kg.id}`,
     );
     return { phone, kindergartenId: kg.id, sent };
+  }
+
+  // ------------------------------------------------------------ admins
+
+  /**
+   * Lists admins (`staff_members.role='admin'`) of a kindergarten. Optional
+   * `isActive` filter; omitted → both active and deactivated admins. The
+   * staff row created via the kg-admin flow does not denormalise
+   * full_name/phone/locale, so those are resolved from the linked `users`.
+   */
+  async listAdmins(
+    kindergartenId: string,
+    isActive?: boolean,
+  ): Promise<KindergartenAdminRow[]> {
+    const kg = await this.kindergartens.findById(kindergartenId);
+    if (!kg) throw new KindergartenNotFoundError(kindergartenId);
+
+    const members = await this.staff.listByKindergarten(kindergartenId, {
+      role: 'admin',
+      isActive,
+    });
+
+    const rows: KindergartenAdminRow[] = [];
+    for (const m of members) {
+      const s = m.toState();
+      const user = await this.users.findById(s.userId);
+      const u = user?.toState() ?? null;
+      rows.push({
+        staffMemberId: s.id,
+        userId: s.userId,
+        // Prefer the canonical users identity; fall back to the staff row's
+        // denormalised columns when present (e.g. seeded via /admin/staff).
+        fullName: u?.fullName ?? s.fullName,
+        phone: u?.phone ?? s.phone,
+        locale: u?.locale ?? null,
+        isActive: s.isActive,
+        hiredAt: s.hiredAt,
+        firedAt: s.firedAt,
+        createdAt: s.createdAt,
+      });
+    }
+    return rows;
+  }
+
+  /**
+   * Adds another admin to an existing kindergarten. Find-or-create user by
+   * phone (existing identity untouched), strict-409 conflict check against
+   * ANY staff row for the pair (active or not), then a staff_members row
+   * with role=admin. Best-effort invite SMS afterwards — never throws.
+   */
+  async addAdmin(
+    kindergartenId: string,
+    input: AddAdminInput,
+  ): Promise<AddedAdmin> {
+    const kg = await this.kindergartens.findById(kindergartenId);
+    if (!kg) throw new KindergartenNotFoundError(kindergartenId);
+    if (kg.isArchived) throw new KindergartenArchivedError(kindergartenId);
+
+    const adminPhone = Phone.parse(input.phone);
+    const locale = input.locale ? Locale.parse(input.locale) : Locale.default();
+
+    // Find-or-create user by phone — existing identity is NOT overwritten;
+    // only a freshly created user gets the supplied full name / locale.
+    let user = await this.users.findByPhone(adminPhone.toString());
+    if (!user) {
+      user = await this.users.upsertByPhone(adminPhone.toString());
+      user = await this.users.update(user.id, {
+        fullName: input.fullName,
+        locale: locale.toString(),
+      });
+    }
+
+    // Strict conflict — any existing staff row for the pair blocks the add,
+    // regardless of is_active (an inactive admin would resurrect via the
+    // partial unique index path).
+    const existing = await this.staff.findByUserAndKindergarten(user.id, kg.id);
+    if (existing) {
+      if (existing.role === 'admin') {
+        throw new AdminAlreadyExistsError(kg.id, user.id);
+      }
+      throw new StaffAlreadyExistsError(kg.id, user.id);
+    }
+
+    const staff = await this.staff.create({
+      kindergartenId: kg.id,
+      userId: user.id,
+      role: 'admin',
+      hiredAt: this.clock.now(),
+    });
+
+    const inviteSmsSent = await this.sendBestEffortSms(
+      adminPhone.toString(),
+      buildAdminInviteSms(locale.toString(), kg.name),
+      `admin-add kg=${kg.id}`,
+    );
+
+    const userState = user.toState();
+    return {
+      kindergartenId: kg.id,
+      user: {
+        id: userState.id,
+        phone: userState.phone,
+        fullName: userState.fullName,
+        locale: userState.locale,
+      },
+      staffMember: staff,
+      inviteSmsSent,
+    };
   }
 
   // ----------------------------------------------------------- archive / restore
