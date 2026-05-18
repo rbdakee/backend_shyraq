@@ -44,5 +44,10 @@ import { EnrollmentService } from './enrollment.service';
       useClass: EnrollmentStatusLogRelationalRepository,
     },
   ],
+  // B-DASH: DashboardModule composes EnrollmentRepository for the
+  // `enrollments_in_processing` summary counter. Other modules (Billing,
+  // Child, Staff, Group, Attendance) already export their ports; Enrollment
+  // did not, so expose it here.
+  exports: [EnrollmentRepository],
 })
 export class EnrollmentModule {}
