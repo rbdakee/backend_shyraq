@@ -405,6 +405,12 @@ class FakeStaffRepo extends StaffMemberRepository {
         null,
     );
   }
+  findByUserAndKindergarten(
+    _userId: string,
+    _kindergartenId: string,
+  ): Promise<StaffMember | null> {
+    return Promise.resolve(null);
+  }
   listByKindergarten(
     _kg: string,
     _f?: ListStaffFilters,

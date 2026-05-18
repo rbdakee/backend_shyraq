@@ -32,6 +32,7 @@ import { FiscalSettingsForbiddenError } from '@/modules/kindergarten/domain/erro
 import { KindergartenArchivedError } from '@/modules/kindergarten/domain/errors/kindergarten-archived.error';
 import { KindergartenNotFoundError } from '@/modules/kindergarten/domain/errors/kindergarten-not-found.error';
 import { KindergartenSlugTakenError } from '@/modules/kindergarten/domain/errors/kindergarten-slug-taken.error';
+import { AdminAlreadyExistsError } from '@/modules/staff/domain/errors/admin-already-exists.error';
 import { StaffAlreadyExistsError } from '@/modules/staff/domain/errors/staff-already-exists.error';
 import { ArchiveReasonRequiredError } from '@/modules/child/domain/errors/archive-reason-required.error';
 import { ArchivedChildNotTransferableError } from '@/modules/child/domain/errors/archived-child-not-transferable.error';
@@ -144,6 +145,7 @@ export class DomainErrorFilter implements ExceptionFilter {
     if (err instanceof KindergartenSlugTakenError) return HttpStatus.CONFLICT;
     if (err instanceof KindergartenArchivedError) return HttpStatus.CONFLICT;
     if (err instanceof StaffAlreadyExistsError) return HttpStatus.CONFLICT;
+    if (err instanceof AdminAlreadyExistsError) return HttpStatus.CONFLICT;
     if (err instanceof FiscalSettingsForbiddenError)
       return HttpStatus.FORBIDDEN;
     // Children & guardians — B21 archive/reactivate lifecycle errors

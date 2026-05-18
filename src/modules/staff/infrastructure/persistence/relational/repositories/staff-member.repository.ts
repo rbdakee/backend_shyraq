@@ -87,6 +87,25 @@ export class StaffMemberRelationalRepository extends StaffMemberRepository {
     return row ? StaffMemberMapper.toDomain(row) : null;
   }
 
+  async findByUserAndKindergarten(
+    userId: string,
+    kindergartenId: string,
+  ): Promise<StaffMember | null> {
+    // Any-status lookup. Order by created_at DESC so the most recent
+    // historical row wins when deactivate→reactivate cycles produced
+    // several rows for the same pair.
+    const row = await this.manager()
+      .getRepository(StaffMemberEntity)
+      .findOne({
+        where: {
+          user_id: userId,
+          kindergarten_id: kindergartenId,
+        },
+        order: { created_at: 'DESC' },
+      });
+    return row ? StaffMemberMapper.toDomain(row) : null;
+  }
+
   async listByKindergarten(
     kindergartenId: string,
     filters?: ListStaffFilters,
