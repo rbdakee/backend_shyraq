@@ -48,3 +48,13 @@ lerna-debug.log*
 
 # Local file-storage adapter output (test + dev uploads land here)
 /uploads/
+
+# Local deployment notes
+/docs/deploy.md
+
+# Local frontend/superadmin handoff docs (kept untracked intentionally)
+# Exception: DASHBOARD_BACKEND_PLAN.md is tracked as the work contract.
+/docs/admin_frontend/*
+!/docs/admin_frontend/DASHBOARD_BACKEND_PLAN.md
+/docs/superadmin_fixes/
+/docs/superadmin_frontend/
