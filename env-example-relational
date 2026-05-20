@@ -83,7 +83,45 @@ RATE_LIMIT_SUPER_ADMIN_LOGIN_LIMIT=10
 RATE_LIMIT_SUPER_ADMIN_LOGIN_WINDOW_SEC=3600
 
 # --- Providers (all default to mock until real credentials added) ---
+# SMS_PROVIDER selects the SmsPort adapter wired into AuthModule. Used for OTP
+# delivery (auth, parent-request, pickup) and welcome notifications.
+# 'mock'      — logs the message; never hits the network. Default.
+# 'whatsapp'  — Meta WhatsApp Cloud API. Sends freeform text via the recipient's
+#               24-hour customer-service window. Requires the user to have
+#               messaged your WhatsApp Business number within the last 24h,
+#               otherwise Meta rejects with code 131047 (re-engagement). Template
+#               delivery (no 24h limit) requires an approved Authentication
+#               template — not implemented yet.
 SMS_PROVIDER=mock
+
+# WhatsApp Cloud API credentials (required only when SMS_PROVIDER=whatsapp).
+# Find them in Meta for Developers → your App → WhatsApp → API Setup.
+# WHATSAPP_PHONE_NUMBER_ID — id of the WABA phone number that SENDS messages.
+# WHATSAPP_ACCESS_TOKEN    — System User permanent token (preferred) or
+#                            temporary 24h token (dev only).
+# WHATSAPP_API_VERSION     — Graph API version, defaults to v21.0.
+# WHATSAPP_BUSINESS_ACCOUNT_ID — informational only (logged for diagnostics).
+# WHATSAPP_PHONE_NUMBER_ID=
+# WHATSAPP_ACCESS_TOKEN=
+# WHATSAPP_API_VERSION=v21.0
+# WHATSAPP_BUSINESS_ACCOUNT_ID=
+#
+# Dev-only escape hatch: reroute every outgoing WhatsApp message to a single
+# wa_id. Useful **only** for Meta test-sandbox numbers (the +1 555 ... numbers
+# Meta gives out before a real WABA is wired up), where the recipient must be
+# in a 5-entry whitelist managed via the Meta dashboard. The dashboard has a
+# bug for +7 numbers — it silently inserts the local trunk-prefix `8`, storing
+# `787772270088` in the whitelist instead of `77772270088`. Meta's whitelist
+# matcher is a literal string compare (not wa_id normalization), so our
+# adapter's correctly-normalized E.164 output gets rejected with code 131030
+# even though the wa_id is the same. The override re-routes every send to the
+# wa_id Meta actually has in its whitelist.
+#
+# A production / real-number WABA does NOT need this — real numbers have no
+# whitelist and Meta normalizes wa_ids consistently. Leave UNSET in production.
+# When set and NODE_ENV !== production, the adapter emits a startup WARN and
+# a per-send WARN with masked phone. Ignored in production.
+# WHATSAPP_DEV_RECIPIENT_OVERRIDE=
 
 # --- Billing & payments (B13) ---
 # PAYMENT_PROVIDER selects the payment-provider adapter wired into BillingModule.
