@@ -12,6 +12,7 @@ import { AuthService } from './auth.service';
 import { BcryptPasswordHasherAdapter } from './infrastructure/adapters/bcrypt-password-hasher.adapter';
 import { JsonwebtokenJwtAdapter } from './infrastructure/adapters/jsonwebtoken-jwt.adapter';
 import { MockSmsAdapter } from './infrastructure/adapters/mock-sms.adapter';
+import { WhatsAppCloudSmsAdapter } from './infrastructure/adapters/whatsapp-cloud-sms.adapter';
 import { RefreshTokenEntity } from './infrastructure/persistence/relational/entities/refresh-token.entity';
 import { SaasRefreshTokenEntity } from './infrastructure/persistence/relational/entities/saas-refresh-token.entity';
 import { SaasUserEntity } from './infrastructure/persistence/relational/entities/saas-user.entity';
@@ -64,7 +65,23 @@ import {
   controllers: [AuthController, SuperAdminAuthController],
   providers: [
     AuthService,
-    { provide: SmsPort, useClass: MockSmsAdapter },
+    {
+      provide: SmsPort,
+      inject: [ConfigService],
+      useFactory: (cs: ConfigService<AllConfigType>) => {
+        const provider = cs.getOrThrow('auth.smsProvider', { infer: true });
+        if (provider === 'whatsapp') {
+          const cfg = cs.getOrThrow('auth.whatsapp', { infer: true });
+          if (!cfg) {
+            throw new Error(
+              'SMS_PROVIDER=whatsapp but auth.whatsapp config is null',
+            );
+          }
+          return new WhatsAppCloudSmsAdapter(cfg);
+        }
+        return new MockSmsAdapter();
+      },
+    },
     { provide: JwtTokenPort, useClass: JsonwebtokenJwtAdapter },
     { provide: PasswordHasherPort, useClass: BcryptPasswordHasherAdapter },
     { provide: OtpStorePort, useClass: RedisOtpStoreAdapter },
