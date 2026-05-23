@@ -33,6 +33,20 @@ export interface UpdateStaffInput {
 }
 
 /**
+ * Identity overlay for staff-list responses. `staff_members` carries its
+ * own `full_name`/`phone` columns, but the kg-admin seed row created by
+ * `KindergartenService.createKindergarten()` deliberately leaves them
+ * null — see [`kindergarten.service.ts`](../kindergarten/kindergarten.service.ts)
+ * `listAdmins()` which falls back to `users` for the same reason. Without
+ * the overlay, `GET /admin/staff` returns `full_name: null, phone: null`
+ * for the seed-admin row even though the user has both populated.
+ */
+export interface StaffIdentityOverlay {
+  fullName: string | null;
+  phone: string | null;
+}
+
+/**
  * StaffService — application layer for the P4 admin/staff CRUD surface.
  *
  * Atomicity model: every public method runs inside the request-scoped
@@ -83,6 +97,25 @@ export class StaffService {
     const row = await this.staff.findById(kindergartenId, id);
     if (!row) throw new StaffNotFoundError(id);
     return row;
+  }
+
+  /**
+   * Resolves the identity overlay for a staff row. If the row already has
+   * both `full_name` and `phone` set we skip the user lookup (the common
+   * case for staff created via POST /admin/staff). Only the kg-admin seed
+   * row falls through to `users`, which is intentionally not tenant-scoped.
+   */
+  async resolveIdentity(member: StaffMember): Promise<StaffIdentityOverlay> {
+    const s = member.toState();
+    if (s.fullName !== null && s.phone !== null) {
+      return { fullName: s.fullName, phone: s.phone };
+    }
+    const user = await this.users.findById(s.userId);
+    const u = user?.toState() ?? null;
+    return {
+      fullName: s.fullName ?? u?.fullName ?? null,
+      phone: s.phone ?? u?.phone ?? null,
+    };
   }
 
   // ── create ───────────────────────────────────────────────────────────────

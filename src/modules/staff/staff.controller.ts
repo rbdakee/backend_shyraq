@@ -27,6 +27,7 @@ import { CreateStaffDto } from './dto/create-staff.dto';
 import { ListStaffQueryDto } from './dto/list-staff-query.dto';
 import { StaffMemberDto } from './dto/staff-response.dto';
 import { UpdateStaffDto } from './dto/update-staff.dto';
+import { StaffMember } from './domain/entities/staff-member.entity';
 import { StaffPresenter } from './staff.presenter';
 import { StaffService } from './staff.service';
 import { StaffNotFoundError } from './domain/errors/staff-not-found.error';
@@ -53,6 +54,16 @@ import { StaffNotFoundError } from './domain/errors/staff-not-found.error';
 export class StaffController {
   constructor(private readonly service: StaffService) {}
 
+  /**
+   * Builds the response DTO with the identity overlay applied. Necessary
+   * because the kg-admin seed row stores null `full_name`/`phone` on
+   * `staff_members` — the canonical values live on `users`.
+   */
+  private async present(row: StaffMember): Promise<StaffMemberDto> {
+    const identity = await this.service.resolveIdentity(row);
+    return StaffPresenter.staff(row, identity);
+  }
+
   @Get()
   @ApiOperation({ summary: 'List staff in the caller’s kindergarten.' })
   @ApiOkResponse({ type: [StaffMemberDto] })
@@ -68,7 +79,7 @@ export class StaffController {
       archived: query.archived,
       search: query.search,
     });
-    return rows.map((r) => StaffPresenter.staff(r));
+    return Promise.all(rows.map((r) => this.present(r)));
   }
 
   @Get(':id')
@@ -80,7 +91,7 @@ export class StaffController {
   ): Promise<StaffMemberDto> {
     if (!tenant.kgId) throw new StaffNotFoundError(id);
     const row = await this.service.getById(tenant.kgId, id);
-    return StaffPresenter.staff(row);
+    return this.present(row);
   }
 
   @Post()
@@ -99,7 +110,7 @@ export class StaffController {
       specialistType: dto.specialist_type ?? null,
       hiredAt: dto.hired_at ? new Date(dto.hired_at) : null,
     });
-    return StaffPresenter.staff(row);
+    return this.present(row);
   }
 
   @Patch(':id')
@@ -124,7 +135,7 @@ export class StaffController {
       patch.firedAt = dto.fired_at ? new Date(dto.fired_at) : null;
     }
     const row = await this.service.update(tenant.kgId, id, patch);
-    return StaffPresenter.staff(row);
+    return this.present(row);
   }
 
   @Post(':id/deactivate')
@@ -137,7 +148,7 @@ export class StaffController {
   ): Promise<StaffMemberDto> {
     if (!tenant.kgId) throw new StaffNotFoundError(id);
     const row = await this.service.deactivate(tenant.kgId, id);
-    return StaffPresenter.staff(row);
+    return this.present(row);
   }
 
   @Post(':id/activate')
@@ -150,7 +161,7 @@ export class StaffController {
   ): Promise<StaffMemberDto> {
     if (!tenant.kgId) throw new StaffNotFoundError(id);
     const row = await this.service.activate(tenant.kgId, id);
-    return StaffPresenter.staff(row);
+    return this.present(row);
   }
 
   @Post(':id/archive')
@@ -163,7 +174,7 @@ export class StaffController {
   ): Promise<StaffMemberDto> {
     if (!tenant.kgId) throw new StaffNotFoundError(id);
     const row = await this.service.archive(tenant.kgId, id);
-    return StaffPresenter.staff(row);
+    return this.present(row);
   }
 
   @Post(':id/restore')
@@ -176,6 +187,6 @@ export class StaffController {
   ): Promise<StaffMemberDto> {
     if (!tenant.kgId) throw new StaffNotFoundError(id);
     const row = await this.service.restore(tenant.kgId, id);
-    return StaffPresenter.staff(row);
+    return this.present(row);
   }
 }
