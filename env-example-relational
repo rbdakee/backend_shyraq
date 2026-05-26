@@ -60,9 +60,9 @@ REFRESH_TOKEN_TTL_DAYS=30
 BCRYPT_COST=12
 
 # --- OTP ---
-# 6-digit numeric code, 5-minute TTL by default.
+# 6-digit numeric code, 30-minute TTL by default.
 OTP_LENGTH=6
-OTP_TTL_SECONDS=300
+OTP_TTL_SECONDS=1800
 
 # --- SuperAdmin seed user ---
 # Used by seed scripts to upsert bootstrap super_admin row.
@@ -86,12 +86,15 @@ RATE_LIMIT_SUPER_ADMIN_LOGIN_WINDOW_SEC=3600
 # SMS_PROVIDER selects the SmsPort adapter wired into AuthModule. Used for OTP
 # delivery (auth, parent-request, pickup) and welcome notifications.
 # 'mock'      — logs the message; never hits the network. Default.
-# 'whatsapp'  — Meta WhatsApp Cloud API. Sends freeform text via the recipient's
-#               24-hour customer-service window. Requires the user to have
-#               messaged your WhatsApp Business number within the last 24h,
-#               otherwise Meta rejects with code 131047 (re-engagement). Template
-#               delivery (no 24h limit) requires an approved Authentication
-#               template — not implemented yet.
+# 'whatsapp'  — Meta WhatsApp Cloud API.
+#               * Auth-login OTP and parent-request OTP go through a pre-approved
+#                 Authentication-category TEMPLATE (default `otp_ru`) — bypasses
+#                 the 24h customer-service window, works for cold recipients.
+#               * Pickup-request OTP and all welcome/admin-invite messages still
+#                 use FREEFORM text (single-variable template can't carry the
+#                 child/kindergarten context). Freeform requires the recipient
+#                 to have messaged the WABA number within 24h, otherwise Meta
+#                 rejects with code 131047.
 SMS_PROVIDER=mock
 
 # WhatsApp Cloud API credentials (required only when SMS_PROVIDER=whatsapp).
@@ -105,6 +108,20 @@ SMS_PROVIDER=mock
 # WHATSAPP_ACCESS_TOKEN=
 # WHATSAPP_API_VERSION=v21.0
 # WHATSAPP_BUSINESS_ACCOUNT_ID=
+#
+# OTP template (Authentication category, approved in Meta Business Manager).
+# WHATSAPP_OTP_TEMPLATE_NAME       — template name, default `otp_ru`.
+# WHATSAPP_OTP_TEMPLATE_LANGUAGE   — BCP-47 language code matching the template
+#                                    language, default `ru`.
+# WHATSAPP_OTP_TEMPLATE_HAS_BUTTON — `true` (default) if the template has a
+#                                    one-tap/copy-code button — Meta's
+#                                    Authentication wizard includes one by
+#                                    default and the API then requires the code
+#                                    passed both in body AND in button
+#                                    parameter. Set `false` for body-only.
+# WHATSAPP_OTP_TEMPLATE_NAME=otp_ru
+# WHATSAPP_OTP_TEMPLATE_LANGUAGE=ru
+# WHATSAPP_OTP_TEMPLATE_HAS_BUTTON=true
 #
 # Dev-only escape hatch: reroute every outgoing WhatsApp message to a single
 # wa_id. Useful **only** for Meta test-sandbox numbers (the +1 555 ... numbers

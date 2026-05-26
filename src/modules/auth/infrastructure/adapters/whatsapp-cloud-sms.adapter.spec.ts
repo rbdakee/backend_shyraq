@@ -9,6 +9,11 @@ const config: WhatsAppConfig = {
   accessToken: 'test-token',
   apiVersion: 'v21.0',
   businessAccountId: '1505344244376148',
+  otpTemplate: {
+    name: 'otp_ru',
+    language: 'ru',
+    hasButton: true,
+  },
   devRecipientOverride: null,
 };
 
@@ -120,5 +125,105 @@ describe('WhatsAppCloudSmsAdapter', () => {
 
     expect(result.txnId).toBe('wamid.override');
     expect(JSON.parse(calls[0].init.body as string).to).toBe('787772270088');
+  });
+
+  describe('sendOtp', () => {
+    it('posts an authentication template with body and copy-code button when hasButton=true', async () => {
+      const { fetchImpl, calls } = makeFetch([
+        jsonResponse(200, { messages: [{ id: 'wamid.otp' }] }),
+      ]);
+      const adapter = new WhatsAppCloudSmsAdapter(config, fetchImpl);
+
+      const result = await adapter.sendOtp('+7 (777) 227-00-88', '123456');
+
+      expect(result.txnId).toBe('wamid.otp');
+      expect(JSON.parse(calls[0].init.body as string)).toEqual({
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to: '77772270088',
+        type: 'template',
+        template: {
+          name: 'otp_ru',
+          language: { code: 'ru' },
+          components: [
+            { type: 'body', parameters: [{ type: 'text', text: '123456' }] },
+            {
+              type: 'button',
+              sub_type: 'url',
+              index: '0',
+              parameters: [{ type: 'text', text: '123456' }],
+            },
+          ],
+        },
+      });
+    });
+
+    it('omits the button component when hasButton=false', async () => {
+      const { fetchImpl, calls } = makeFetch([
+        jsonResponse(200, { messages: [{ id: 'wamid.body-only' }] }),
+      ]);
+      const adapter = new WhatsAppCloudSmsAdapter(
+        { ...config, otpTemplate: { ...config.otpTemplate, hasButton: false } },
+        fetchImpl,
+      );
+
+      await adapter.sendOtp('77772270088', '999000');
+
+      const payload = JSON.parse(calls[0].init.body as string);
+      expect(payload.template.components).toEqual([
+        { type: 'body', parameters: [{ type: 'text', text: '999000' }] },
+      ]);
+    });
+
+    it('honors a custom template name and language from config', async () => {
+      const { fetchImpl, calls } = makeFetch([
+        jsonResponse(200, { messages: [{ id: 'wamid.kk' }] }),
+      ]);
+      const adapter = new WhatsAppCloudSmsAdapter(
+        {
+          ...config,
+          otpTemplate: { name: 'otp_kk', language: 'kk', hasButton: true },
+        },
+        fetchImpl,
+      );
+
+      await adapter.sendOtp('77772270088', '424242');
+
+      const payload = JSON.parse(calls[0].init.body as string);
+      expect(payload.template.name).toBe('otp_kk');
+      expect(payload.template.language).toEqual({ code: 'kk' });
+    });
+
+    it('reroutes the recipient when devRecipientOverride is set', async () => {
+      const { fetchImpl, calls } = makeFetch([
+        jsonResponse(200, { messages: [{ id: 'wamid.otp-override' }] }),
+      ]);
+      const adapter = new WhatsAppCloudSmsAdapter(
+        { ...config, devRecipientOverride: '787772270088' },
+        fetchImpl,
+      );
+
+      await adapter.sendOtp('+77051112233', '111222');
+
+      expect(JSON.parse(calls[0].init.body as string).to).toBe('787772270088');
+    });
+
+    it('throws when Meta rejects the template send', async () => {
+      const { fetchImpl } = makeFetch([
+        jsonResponse(400, {
+          error: {
+            message: 'Template name does not exist in the translation',
+            type: 'OAuthException',
+            code: 132001,
+            fbtrace_id: 'XyZ',
+          },
+        }),
+      ]);
+      const adapter = new WhatsAppCloudSmsAdapter(config, fetchImpl);
+
+      await expect(adapter.sendOtp('77772270088', '000111')).rejects.toThrow(
+        /whatsapp_send_failed: 132001/,
+      );
+    });
   });
 });

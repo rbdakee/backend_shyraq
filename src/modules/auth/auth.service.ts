@@ -201,7 +201,7 @@ export class AuthService implements OnModuleInit {
     await this.otpStore.storeCode(phone, code, ttlSec);
 
     if (!this.isTestPhone(phone)) {
-      await this.sms.send(phone, `Shyraq: ${code}`);
+      await this.sms.sendOtp(phone, code);
     }
     return { resendAfterSec: OTP_RESEND_AFTER_SEC };
   }

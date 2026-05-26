@@ -1,10 +1,25 @@
 export type SmsProvider = 'mock' | 'whatsapp';
 
+export type WhatsAppOtpTemplateConfig = {
+  /** Approved template name in Meta Business Manager (e.g. `otp_ru`). */
+  name: string;
+  /** BCP-47 language code matching the template language (e.g. `ru`). */
+  language: string;
+  /**
+   * `true` when the template includes a one-tap/copy-code button. Meta's
+   * Authentication-category templates default to having one — the API then
+   * requires the code passed BOTH in the body parameter AND in the button
+   * parameter. Set `false` only for body-only templates.
+   */
+  hasButton: boolean;
+};
+
 export type WhatsAppConfig = {
   phoneNumberId: string;
   accessToken: string;
   apiVersion: string;
   businessAccountId: string | null;
+  otpTemplate: WhatsAppOtpTemplateConfig;
   /**
    * Sandbox-only override (Meta dashboard bug workaround). When set AND
    * NODE_ENV !== 'production', every outgoing message is re-routed to this
