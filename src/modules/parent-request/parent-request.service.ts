@@ -43,13 +43,12 @@ import {
 } from './parent-request.repository';
 import { ParentRequestMessageRepository } from './parent-request-message.repository';
 import { ParentRequestOtpStorePort } from './infrastructure/otp/parent-request-otp-store.port';
-import { parentRequestOtpTemplate } from './infrastructure/sms/parent-request-sms.templates';
 import {
   InvariantViolationError,
   NotFoundError,
 } from '@/shared-kernel/domain/errors';
 
-const PARENT_REQUEST_OTP_TTL_SEC = 300;
+const PARENT_REQUEST_OTP_TTL_SEC = 1800;
 const PARENT_REQUEST_OTP_LOCK_TTL_SEC = 15 * 60;
 const PARENT_REQUEST_OTP_MAX_FAILED_ATTEMPTS = 3;
 
@@ -251,10 +250,7 @@ export class ParentRequestService {
       PARENT_REQUEST_OTP_TTL_SEC,
     );
 
-    await this.sms.send(
-      phone,
-      parentRequestOtpTemplate(code, 'trusted_person'),
-    );
+    await this.sms.sendOtp(phone, code);
 
     return { otpRef, expiresIn: PARENT_REQUEST_OTP_TTL_SEC };
   }

@@ -13,4 +13,12 @@ export class MockSmsAdapter extends SmsPort {
     );
     return Promise.resolve({ txnId });
   }
+
+  sendOtp(phone: string, code: string): Promise<SmsSendResult> {
+    const txnId = randomUUID();
+    this.logger.log(
+      `[MOCK SMS otp] phone=${phone} txnId=${txnId} code="${code}"`,
+    );
+    return Promise.resolve({ txnId });
+  }
 }

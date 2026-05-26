@@ -21,16 +21,19 @@ interface WhatsAppApiResponse {
 }
 
 /**
- * WhatsApp Cloud API adapter for SmsPort. Sends freeform `text` messages via
- * Meta Graph API. Freeform requires an open 24-hour customer service window
- * — the recipient must have messaged the WhatsApp Business number within the
- * last 24h. Outside that window Meta rejects with error code 131047 and a
- * pre-approved template is required.
+ * WhatsApp Cloud API adapter for SmsPort. Supports two delivery modes:
  *
- * Template-based delivery is not implemented yet. Once the business account
- * is verified and an Authentication template is approved, extend this
- * adapter with a template path so OTP delivery works without depending on
- * the 24h window.
+ *   - `send(phone, message)` — freeform `text` body via Meta Graph API.
+ *     Requires an open 24-hour customer service window (recipient must have
+ *     messaged the WABA number within the last 24h). Outside that window
+ *     Meta rejects with error code 131047. Used for welcome / non-OTP
+ *     messages where cold delivery is not required.
+ *
+ *   - `sendOtp(phone, code)` — pre-approved Authentication-category template
+ *     (default `otp_ru`). Bypasses the 24h window — required for OTPs that
+ *     must reach cold recipients (trusted persons, first-time logins).
+ *     Template name/language/button presence is configurable via
+ *     WHATSAPP_OTP_TEMPLATE_* env vars.
  *
  * `devRecipientOverride` is a sandbox-only escape hatch — see the comment on
  * `WhatsAppConfig.devRecipientOverride` and the README of env-example for the
@@ -59,13 +62,7 @@ export class WhatsAppCloudSmsAdapter extends SmsPort {
   }
 
   async send(phone: string, message: string): Promise<SmsSendResult> {
-    const realRecipient = normalizeRecipient(phone);
-    const to = this.config.devRecipientOverride ?? realRecipient;
-    if (to !== realRecipient) {
-      this.logger.warn(
-        `WhatsApp dev-override: original=${maskPhone(realRecipient)} → override=${maskPhone(to)}`,
-      );
-    }
+    const to = this.resolveRecipient(phone);
     const body = {
       messaging_product: 'whatsapp',
       recipient_type: 'individual',
@@ -73,7 +70,59 @@ export class WhatsAppCloudSmsAdapter extends SmsPort {
       type: 'text',
       text: { preview_url: false, body: message },
     };
+    return this.post(body, to, 'text');
+  }
 
+  async sendOtp(phone: string, code: string): Promise<SmsSendResult> {
+    const to = this.resolveRecipient(phone);
+    const tpl = this.config.otpTemplate;
+    const components: Array<Record<string, unknown>> = [
+      {
+        type: 'body',
+        parameters: [{ type: 'text', text: code }],
+      },
+    ];
+    if (tpl.hasButton) {
+      // Meta Authentication-template button (sub_type `url` for one-tap
+      // auto-fill, also works for the copy-code variant). Index is a string
+      // per the API contract.
+      components.push({
+        type: 'button',
+        sub_type: 'url',
+        index: '0',
+        parameters: [{ type: 'text', text: code }],
+      });
+    }
+    const body = {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to,
+      type: 'template',
+      template: {
+        name: tpl.name,
+        language: { code: tpl.language },
+        components,
+      },
+    };
+    return this.post(body, to, `template:${tpl.name}`);
+  }
+
+  private resolveRecipient(phone: string): string {
+    const realRecipient = normalizeRecipient(phone);
+    const to = this.config.devRecipientOverride ?? realRecipient;
+    if (to !== realRecipient) {
+      this.logger.warn(
+        `WhatsApp dev-override: original=${maskPhone(realRecipient)} → override=${maskPhone(to)}`,
+      );
+    }
+    return to;
+  }
+
+  private async post(
+    body: Record<string, unknown>,
+    to: string,
+    kind: string,
+  ): Promise<SmsSendResult> {
     let response: Response;
     try {
       response = await this.fetchImpl(this.endpoint, {
@@ -86,7 +135,7 @@ export class WhatsAppCloudSmsAdapter extends SmsPort {
       });
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      this.logger.error(`WhatsApp send failed (network): ${reason}`);
+      this.logger.error(`WhatsApp ${kind} send failed (network): ${reason}`);
       throw new Error(`whatsapp_send_failed: ${reason}`);
     }
 
@@ -97,7 +146,7 @@ export class WhatsAppCloudSmsAdapter extends SmsPort {
       const errMsg = json?.error?.message ?? response.statusText;
       const trace = json?.error?.fbtrace_id ?? '-';
       this.logger.error(
-        `WhatsApp send rejected: status=${response.status} code=${errCode} fbtrace=${trace} msg="${errMsg}" to=${maskPhone(to)}`,
+        `WhatsApp ${kind} rejected: status=${response.status} code=${errCode} fbtrace=${trace} msg="${errMsg}" to=${maskPhone(to)}`,
       );
       throw new Error(`whatsapp_send_failed: ${errCode} ${errMsg}`);
     }
@@ -105,13 +154,13 @@ export class WhatsAppCloudSmsAdapter extends SmsPort {
     const messageId = json?.messages?.[0]?.id;
     if (!messageId) {
       this.logger.error(
-        `WhatsApp send returned 2xx but no message id: ${JSON.stringify(json)}`,
+        `WhatsApp ${kind} returned 2xx but no message id: ${JSON.stringify(json)}`,
       );
       throw new Error('whatsapp_send_failed: missing message id');
     }
 
     this.logger.log(
-      `WhatsApp sent: to=${maskPhone(to)} message_id=${messageId}`,
+      `WhatsApp sent (${kind}): to=${maskPhone(to)} message_id=${messageId}`,
     );
     return { txnId: messageId };
   }

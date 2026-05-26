@@ -556,6 +556,13 @@ class FakeSmsPort extends SmsPort {
     this.sent.push({ phone, message });
     return Promise.resolve({ txnId: `sms-${this.sent.length}` });
   }
+  sendOtp(_phone: string, _code: string): Promise<{ txnId: string }> {
+    return Promise.reject(
+      new Error(
+        'sendOtp not used by PickupRequestService — pickup OTP carries extra context and stays on freeform send()',
+      ),
+    );
+  }
 }
 
 class FakeNotificationPort extends NotificationPort {

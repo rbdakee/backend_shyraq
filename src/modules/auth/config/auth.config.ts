@@ -94,6 +94,18 @@ class EnvironmentVariablesValidator {
   @IsString()
   @IsOptional()
   WHATSAPP_DEV_RECIPIENT_OVERRIDE: string;
+
+  @IsString()
+  @IsOptional()
+  WHATSAPP_OTP_TEMPLATE_NAME: string;
+
+  @IsString()
+  @IsOptional()
+  WHATSAPP_OTP_TEMPLATE_LANGUAGE: string;
+
+  @IsString()
+  @IsOptional()
+  WHATSAPP_OTP_TEMPLATE_HAS_BUTTON: string;
 }
 
 function buildWhatsAppConfig(provider: SmsProvider): WhatsAppConfig | null {
@@ -126,11 +138,22 @@ function buildWhatsAppConfig(provider: SmsProvider): WhatsAppConfig | null {
     }
   }
 
+  const hasButtonRaw = process.env.WHATSAPP_OTP_TEMPLATE_HAS_BUTTON?.trim();
+  const hasButton =
+    hasButtonRaw === undefined || hasButtonRaw === ''
+      ? true
+      : hasButtonRaw.toLowerCase() === 'true';
+
   return {
     phoneNumberId,
     accessToken,
     apiVersion: process.env.WHATSAPP_API_VERSION?.trim() || 'v21.0',
     businessAccountId: process.env.WHATSAPP_BUSINESS_ACCOUNT_ID?.trim() || null,
+    otpTemplate: {
+      name: process.env.WHATSAPP_OTP_TEMPLATE_NAME?.trim() || 'otp_ru',
+      language: process.env.WHATSAPP_OTP_TEMPLATE_LANGUAGE?.trim() || 'ru',
+      hasButton,
+    },
     devRecipientOverride,
   };
 }
@@ -156,7 +179,7 @@ export default registerAs<AuthConfig>('auth', () => {
       : 6,
     otpTtlSeconds: process.env.OTP_TTL_SECONDS
       ? parseInt(process.env.OTP_TTL_SECONDS, 10)
-      : 300,
+      : 1800,
     rateLimitOtpRequestLimit: process.env.RATE_LIMIT_OTP_REQUEST_LIMIT
       ? parseInt(process.env.RATE_LIMIT_OTP_REQUEST_LIMIT, 10)
       : 5,

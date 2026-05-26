@@ -280,9 +280,18 @@ class FakeOtpStore extends OtpStorePort {
 }
 
 class FakeSms extends SmsPort {
-  sent: { phone: string; message: string }[] = [];
+  sent: {
+    phone: string;
+    message?: string;
+    code?: string;
+    kind: 'text' | 'otp';
+  }[] = [];
   send(phone: string, message: string): Promise<SmsSendResult> {
-    this.sent.push({ phone, message });
+    this.sent.push({ phone, message, kind: 'text' });
+    return Promise.resolve({ txnId: `txn-${this.sent.length}` });
+  }
+  sendOtp(phone: string, code: string): Promise<SmsSendResult> {
+    this.sent.push({ phone, code, kind: 'otp' });
     return Promise.resolve({ txnId: `txn-${this.sent.length}` });
   }
 }

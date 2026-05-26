@@ -164,6 +164,9 @@ class FakeSmsPort extends SmsPort {
   send(_phone: string, _message: string): Promise<SmsSendResult> {
     return Promise.resolve({ txnId: 'noop' });
   }
+  sendOtp(_phone: string, _code: string): Promise<SmsSendResult> {
+    return Promise.resolve({ txnId: 'noop-otp' });
+  }
 }
 
 /**

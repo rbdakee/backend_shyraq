@@ -347,6 +347,11 @@ class FakeSms extends SmsPort {
     this.sent.push({ phone, message });
     return Promise.resolve({ txnId: `txn-${this.sent.length}` });
   }
+  sendOtp(_phone: string, _code: string): Promise<SmsSendResult> {
+    return Promise.reject(
+      new Error('sendOtp not used by KindergartenService — should not be hit'),
+    );
+  }
 }
 
 class FixedClock extends ClockPort {

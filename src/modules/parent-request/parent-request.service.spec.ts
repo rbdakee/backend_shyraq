@@ -713,9 +713,18 @@ class FakeAuthOtpStore extends OtpStorePort {
 }
 
 class FakeSmsPort extends SmsPort {
-  sent: { phone: string; message: string }[] = [];
+  sent: {
+    phone: string;
+    message?: string;
+    code?: string;
+    kind: 'text' | 'otp';
+  }[] = [];
   send(phone: string, message: string): Promise<{ txnId: string }> {
-    this.sent.push({ phone, message });
+    this.sent.push({ phone, message, kind: 'text' });
+    return Promise.resolve({ txnId: `sms-${this.sent.length}` });
+  }
+  sendOtp(phone: string, code: string): Promise<{ txnId: string }> {
+    this.sent.push({ phone, code, kind: 'otp' });
     return Promise.resolve({ txnId: `sms-${this.sent.length}` });
   }
 }
@@ -1097,11 +1106,12 @@ describe('ParentRequestService', () => {
         CHILD,
         PHONE,
       );
-      expect(res.expiresIn).toBe(300);
+      expect(res.expiresIn).toBe(1800);
       expect(res.otpRef).toBe(`otp:request:trusted-person:${PARENT_USER}`);
       expect(h.sms.sent).toHaveLength(1);
       expect(h.sms.sent[0].phone).toBe(PHONE);
-      expect(h.sms.sent[0].message).toContain('Shyraq');
+      expect(h.sms.sent[0].kind).toBe('otp');
+      expect(h.sms.sent[0].code).toMatch(/^\d{6}$/);
       expect(h.otpStore.codes.get(PARENT_USER)?.code).toMatch(/^\d{6}$/);
     });
 
