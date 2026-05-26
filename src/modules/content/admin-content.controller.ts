@@ -19,6 +19,7 @@ import { FilesInterceptor } from '@nestjs/platform-express';
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
+  ApiBody,
   ApiConflictResponse,
   ApiConsumes,
   ApiCreatedResponse,
@@ -121,6 +122,86 @@ export class AdminContentController {
       'Create a content post draft (or scheduled if scheduled_for is provided). Supports up to 5 media file uploads via multipart/form-data `files` field.',
   })
   @ApiConsumes('multipart/form-data', 'application/json')
+  @ApiBody({
+    description:
+      'multipart/form-data: scalar fields as form-fields, up to 5 binary uploads in `files`. application/json: same fields, no `files`. In multipart, object fields (`title_i18n`, `body_i18n`, `metadata`) must be JSON-stringified.',
+    schema: {
+      type: 'object',
+      required: ['content_type', 'target_type'],
+      properties: {
+        content_type: {
+          type: 'string',
+          enum: ['news', 'menu', 'schedule_pub', 'qundylyq', 'birthday'],
+          example: 'news',
+        },
+        target_type: {
+          type: 'string',
+          enum: ['all', 'group', 'child'],
+          example: 'all',
+        },
+        target_group_id: {
+          type: 'string',
+          format: 'uuid',
+          nullable: true,
+          example: '550e8400-e29b-41d4-a716-446655440000',
+        },
+        target_child_id: {
+          type: 'string',
+          format: 'uuid',
+          nullable: true,
+          example: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
+        },
+        title: {
+          type: 'string',
+          maxLength: 500,
+          nullable: true,
+          example: 'Важное объявление',
+        },
+        body: {
+          type: 'string',
+          nullable: true,
+          example: 'Просим всех родителей ознакомиться с новыми правилами.',
+        },
+        title_i18n: {
+          type: 'object',
+          additionalProperties: { type: 'string' },
+          nullable: true,
+          example: { ru: 'Важное объявление', kk: 'Маңызды хабарландыру' },
+        },
+        body_i18n: {
+          type: 'object',
+          additionalProperties: { type: 'string' },
+          nullable: true,
+          example: { ru: 'Текст', kk: 'Мәтін' },
+        },
+        metadata: {
+          type: 'object',
+          additionalProperties: true,
+          nullable: true,
+          example: { month: '2026-05', theme: 'Kindness' },
+        },
+        scheduled_for: {
+          type: 'string',
+          format: 'date-time',
+          nullable: true,
+          example: '2026-05-10T07:00:00.000Z',
+        },
+        expires_at: {
+          type: 'string',
+          format: 'date-time',
+          nullable: true,
+          example: '2026-05-17T23:59:59.000Z',
+        },
+        files: {
+          type: 'array',
+          maxItems: 5,
+          items: { type: 'string', format: 'binary' },
+          description:
+            'Up to 5 media files (multipart only). `image/*` ≤ 10 MB; `video/*` ≤ 100 MB per file.',
+        },
+      },
+    },
+  })
   @ApiCreatedResponse({
     type: ContentPostResponseDto,
     description: 'Post created. Default status: draft.',
@@ -243,9 +324,86 @@ export class AdminContentController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
-      'Update a content post (draft or scheduled only). Optionally attach new media files via multipart `files` field.',
+      'Update a content post (draft or scheduled only). Optionally attach new media files via multipart `files` field — uploaded files REPLACE existing media_urls in full. Published posts are immutable (409 content_already_published).',
   })
   @ApiConsumes('multipart/form-data', 'application/json')
+  @ApiBody({
+    description:
+      'Partial patch. multipart/form-data: scalar fields as form-fields + up to 5 binary uploads in `files` (replaces existing `media_urls` wholesale; omit `files` to leave media unchanged). application/json: same scalar fields, no `files`. In multipart, object fields must be JSON-stringified.',
+    schema: {
+      type: 'object',
+      properties: {
+        target_type: {
+          type: 'string',
+          enum: ['all', 'group', 'child'],
+          example: 'all',
+        },
+        target_group_id: {
+          type: 'string',
+          format: 'uuid',
+          nullable: true,
+          example: '550e8400-e29b-41d4-a716-446655440000',
+        },
+        target_child_id: {
+          type: 'string',
+          format: 'uuid',
+          nullable: true,
+          example: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
+        },
+        title: {
+          type: 'string',
+          maxLength: 500,
+          nullable: true,
+          example: 'Обновлённое объявление',
+        },
+        body: {
+          type: 'string',
+          nullable: true,
+          example: 'Текст объявления изменён.',
+        },
+        title_i18n: {
+          type: 'object',
+          additionalProperties: { type: 'string' },
+          nullable: true,
+          example: {
+            ru: 'Обновлённое объявление',
+            kk: 'Жаңартылған хабарландыру',
+          },
+        },
+        body_i18n: {
+          type: 'object',
+          additionalProperties: { type: 'string' },
+          nullable: true,
+          example: { ru: 'Текст изменён.', kk: 'Мәтін өзгерді.' },
+        },
+        metadata: {
+          type: 'object',
+          additionalProperties: true,
+          nullable: true,
+          example: { month: '2026-05', theme: 'Kindness' },
+        },
+        scheduled_for: {
+          type: 'string',
+          format: 'date-time',
+          nullable: true,
+          example: '2026-05-10T07:00:00.000Z',
+        },
+        expires_at: {
+          type: 'string',
+          format: 'date-time',
+          nullable: true,
+          example: '2026-05-17T23:59:59.000Z',
+        },
+        files: {
+          type: 'array',
+          maxItems: 5,
+          items: { type: 'string', format: 'binary' },
+          description:
+            'Up to 5 media files (multipart only). If provided, REPLACES `media_urls` entirely. `image/*` ≤ 10 MB; `video/*` ≤ 100 MB per file. To leave media unchanged, omit this field. There is no way to remove or reorder individual existing media files via this endpoint.',
+        },
+      },
+    },
+  })
   @ApiOkResponse({ type: ContentPostResponseDto })
   @ApiBadRequestResponse({ description: 'Validation error.' })
   @ApiUnauthorizedResponse({ description: 'Bearer missing/invalid/revoked.' })
@@ -417,6 +575,21 @@ export class AdminContentController {
       'Upload a single media file. Returns URL + key for use in create/update body. Accepts image/* and video/* (≤10 MB / ≤100 MB).',
   })
   @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    description: 'Single file upload. Field name is `file` (not `files`).',
+    schema: {
+      type: 'object',
+      required: ['file'],
+      properties: {
+        file: {
+          type: 'string',
+          format: 'binary',
+          description:
+            'Single media file. `image/*` ≤ 10 MB; `video/*` ≤ 100 MB.',
+        },
+      },
+    },
+  })
   @ApiOkResponse({ type: UploadMediaResponseDto })
   @ApiBadRequestResponse({
     description: 'file_upload_error — empty file or unsupported type.',
