@@ -49,6 +49,19 @@ export class TestSmsAdapter extends MockSmsAdapter {
     this.log.push({ phone, message });
     return super.send(phone, message);
   }
+
+  /**
+   * Template OTPs flow through the same capture as freeform send — we
+   * synthesize a `Shyraq: <code>` body so existing e2e tests that pull the
+   * code via a 6-digit regex on lastSent.message keep working without
+   * each test having to know which delivery mode the service picked.
+   */
+  override sendOtp(phone: string, code: string) {
+    const message = `Shyraq: ${code}`;
+    this.lastSent = { phone, message };
+    this.log.push({ phone, message });
+    return super.sendOtp(phone, code);
+  }
 }
 
 export async function createTestApp(
