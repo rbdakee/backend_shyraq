@@ -35,7 +35,10 @@ import { Iin } from '@/shared-kernel/domain/value-objects/iin.vo';
 import { KindergartenId } from '@/shared-kernel/domain/value-objects/kindergarten-id.vo';
 import { Phone } from '@/shared-kernel/domain/value-objects/phone.vo';
 import { UserId } from '@/shared-kernel/domain/value-objects/user-id.vo';
-import { ChildGuardianRepository } from './infrastructure/persistence/child-guardian.repository';
+import {
+  ChildGuardianRepository,
+  PendingApplicantRequestView,
+} from './infrastructure/persistence/child-guardian.repository';
 import {
   ChildGroupHistoryRecord,
   ChildListFilters,
@@ -1240,6 +1243,23 @@ export class ChildService {
     primaryUserId: string,
   ): Promise<ChildGuardian[]> {
     return this.guardians.findPendingForPrimary(kindergartenId, primaryUserId);
+  }
+
+  /**
+   * APPLICANT-perspective: the caller's OWN `link` requests still in
+   * `pending_approval`, across every kindergarten they applied to. Complements
+   * `listPendingApprovalsForPrimary` (the primary's "who do I approve" view).
+   *
+   * The repo lookup is cross-tenant (bypasses RLS) because a parent in
+   * pending-role-select state has no `kindergarten_id` on their JWT. Child PII
+   * is masked by the presenter before reaching the HTTP response — the view
+   * carries the raw child name only so the presenter can derive the masked
+   * form.
+   */
+  listPendingApplicantRequests(
+    userId: string,
+  ): Promise<PendingApplicantRequestView[]> {
+    return this.guardians.findPendingByApplicantUserId(userId);
   }
 
   /**

@@ -47,6 +47,7 @@ export class RefreshTokenRelationalRepository extends RefreshTokenRepository {
         device_id: input.deviceId,
         ip_address: input.ipAddress,
         expires_at: input.expiresAt,
+        audience: input.audience,
       });
     } else {
       await this.repo.manager.transaction(async (tx) => {
@@ -58,6 +59,7 @@ export class RefreshTokenRelationalRepository extends RefreshTokenRepository {
           device_id: input.deviceId,
           ip_address: input.ipAddress,
           expires_at: input.expiresAt,
+          audience: input.audience,
         });
       });
     }
@@ -102,10 +104,13 @@ export class RefreshTokenRelationalRepository extends RefreshTokenRepository {
         device_id: opts.deviceIdOverride ?? existing.device_id,
         ip_address: opts.ipAddressOverride ?? existing.ip_address,
         expires_at: opts.newExpiresAt,
+        // Carry the audience forward unchanged so a refresh never jumps apps.
+        audience: existing.audience,
       });
       return {
         userId: existing.user_id,
         kindergartenId: existing.kindergarten_id,
+        audience: existing.audience,
       };
     });
   }

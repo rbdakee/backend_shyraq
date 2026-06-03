@@ -1,21 +1,25 @@
 ﻿/**
- * B11 T0 — verify that POST /auth/role/select works for the parent path.
+ * B11 T0 — verify the multi-kg parent path under the app-aware auth contract.
  *
- * Pre-existing concern (IMPLEMENTATION_PLAN.md §5 Active, B10 T7 finding):
- *   selectRole for parent triggers a refresh-token RLS violation because no
- *   app.kindergarten_id GUC is set in the surrounding TX (no
- *   KindergartenScopeGuard on the endpoint). After B10 T7-2 follow-up
- *   (cbca0da), RefreshTokenRelationalRepository.create carries an else-branch
- *   that opens its own TX with SET LOCAL app.bypass_rls = true when no
- *   ambient tenant context is present. This test confirms the fix holds.
+ * Contract (docs/endpoints.md §0.1): parents NEVER role-select. A parent who
+ * is an approved guardian in 2+ kindergartens is issued an UNSCOPED
+ * (kindergarten_id=null) access+refresh pair DIRECTLY from /auth/otp/verify
+ * (pending_role_select:false, refresh_token non-null). The kg=null token then
+ * fans out cross-tenant so GET /parent/children returns children from every kg.
+ * The old /auth/role/select step for parents is obsolete by design.
+ *
+ * RLS-regression value preserved here (was the original point of this spec):
+ *   - the unscoped refresh token must be rotatable (proves the row was actually
+ *     inserted despite there being no ambient app.kindergarten_id GUC), and
+ *   - the unscoped access token must fan out cross-tenant — GET /parent/children
+ *     returns one child per kg.
  *
  * Scenario:
  *   1. Super-admin creates two kindergartens (kg_A, kg_B).
  *   2. Same parent phone is the contact for an enrollment in each kg.
- *   3. Parent passes OTP — auto-approve fires for both pending-primary rows.
- *      assembleRoles sees 2 approved guardian entries -> pending_role_select: true.
- *   4. Parent calls POST /auth/role/select { kindergartenId: kg_A.id, role: parent }
- *      -> MUST return 200 + access_token + refresh_token (no 500 / 403).
+ *   3. Parent passes OTP (app=parent) — auto-approve fires for both
+ *      pending-primary rows. Two approved guardian entries in different kgs ->
+ *      direct unscoped token (pending_role_select:false, refresh non-null).
  */
 import type { Server } from 'node:http';
 import bcrypt from 'bcryptjs';
@@ -89,7 +93,7 @@ describe('B11 T0 — parent selectRole RLS regression (e2e)', () => {
       })
       .expect(201);
     const body = res.body as CreatedKgResp;
-    const auth = await otpLogin(adminPhone);
+    const auth = await otpLogin(adminPhone, 'admin');
     return { kgId: body.kindergarten.id, adminToken: auth.access_token };
   }
 
@@ -101,16 +105,19 @@ describe('B11 T0 — parent selectRole RLS regression (e2e)', () => {
     return m[1];
   }
 
-  async function otpLogin(phone: string): Promise<AuthBody> {
+  async function otpLogin(
+    phone: string,
+    app: 'parent' | 'staff' | 'admin' = 'parent',
+  ): Promise<AuthBody> {
     ctx.sms.lastSent = null;
     await request(server)
       .post('/api/v1/auth/otp/request')
-      .send({ phone })
+      .send({ phone, app })
       .expect(202);
     const code = extractCode();
     const res = await request(server)
       .post('/api/v1/auth/otp/verify')
-      .send({ phone, code })
+      .send({ phone, code, app })
       .expect(200);
     return res.body as AuthBody;
   }
@@ -176,7 +183,7 @@ describe('B11 T0 — parent selectRole RLS regression (e2e)', () => {
     saAccess = await loginSuperAdmin();
   });
 
-  it('issues access+refresh for parent path via selectRole when guardian in 2 kgs (Scenario P)', async () => {
+  it('issues an unscoped access+refresh directly from verify for a parent who is guardian in 2 kgs (no role-select) (Scenario P)', async () => {
     // Create two kindergartens.
     const a = await createKgWithAdmin('srp-a', '+77011130001');
     const b = await createKgWithAdmin('srp-b', '+77011130002');
@@ -184,7 +191,7 @@ describe('B11 T0 — parent selectRole RLS regression (e2e)', () => {
     const parentPhone = '+77011140001';
 
     // Enroll parent phone as contact in kg_A — seeds pending_primary row.
-    await runEnrollmentCardCreated(a.adminToken, {
+    const enrollA = await runEnrollmentCardCreated(a.adminToken, {
       contactName: 'Parent P',
       contactPhone: parentPhone,
       childName: 'Child-A',
@@ -192,50 +199,49 @@ describe('B11 T0 — parent selectRole RLS regression (e2e)', () => {
     });
 
     // Enroll same parent phone in kg_B — seeds another pending_primary row.
-    await runEnrollmentCardCreated(b.adminToken, {
+    const enrollB = await runEnrollmentCardCreated(b.adminToken, {
       contactName: 'Parent P',
       contactPhone: parentPhone,
       childName: 'Child-B',
       childDob: '2021-09-15',
     });
 
-    // Parent OTP login — auto-approve fires for both pending-primary rows.
-    // Two approved guardian entries -> pending_role_select: true, refresh_token: null.
+    // Parent OTP login (app=parent) — auto-approve fires for both
+    // pending-primary rows. Per the app-aware contract, a parent who is a
+    // guardian in 2+ kgs gets an UNSCOPED token DIRECTLY from verify: no
+    // role-select, refresh_token non-null. Both kg roles are reported so the
+    // client knows the guardian spans multiple kindergartens.
     const initial = await otpLogin(parentPhone);
-    expect(initial.pending_role_select).toBe(true);
-    expect(initial.refresh_token).toBeNull();
+    expect(initial.pending_role_select).toBe(false);
+    expect(initial.refresh_token).not.toBeNull();
+    expect(initial.refresh_token as string).toMatch(/^[0-9a-f]{64}$/);
     expect(initial.roles).toHaveLength(2);
     const kgIds = initial.roles.map((r) => r.kindergarten_id);
     expect(kgIds).toContain(a.kgId);
     expect(kgIds).toContain(b.kgId);
 
-    // Parent selects kg_A — the path under test.
-    // POST /auth/role/select has no KindergartenScopeGuard -> no ambient TX
-    // -> RefreshTokenRelationalRepository.create uses else-branch (bypass_rls TX).
-    // Without cbca0da this would fail with an RLS violation (500).
-    const selectRes = await request(server)
-      .post('/api/v1/auth/role/select')
-      .set('Authorization', `Bearer ${initial.access_token}`)
-      .send({ kindergartenId: a.kgId, role: 'parent' })
-      .expect(200);
-
-    const selected = selectRes.body as AuthBody;
-    expect(selected.pending_role_select).toBe(false);
-    expect(typeof selected.access_token).toBe('string');
-    expect(selected.access_token.length).toBeGreaterThan(0);
-    expect(selected.refresh_token).not.toBeNull();
-    expect((selected.refresh_token as string).length).toBe(64);
-    expect(selected.roles).toEqual([
-      { role: 'parent', kindergarten_id: a.kgId, group_id: null },
-    ]);
-
-    // Verify the issued refresh token is rotatable (proves the row was inserted).
+    // RLS-regression (a): the unscoped refresh token is rotatable. There is no
+    // ambient app.kindergarten_id GUC for a kg=null parent session, so the
+    // refresh_tokens row must have been inserted via the bypass_rls branch —
+    // a successful rotation (200 + new non-null refresh) proves that.
     const refreshRes = await request(server)
       .post('/api/v1/auth/refresh')
-      .send({ refreshToken: selected.refresh_token })
+      .send({ refreshToken: initial.refresh_token })
       .expect(200);
     const refreshed = refreshRes.body as AuthBody;
     expect(typeof refreshed.access_token).toBe('string');
     expect(refreshed.refresh_token).not.toBeNull();
+
+    // RLS-regression (b): the unscoped access token fans out cross-tenant —
+    // GET /parent/children returns BOTH children (one per kg). This proves the
+    // kg=null parent token escapes single-tenant scoping.
+    const list = await request(server)
+      .get('/api/v1/parent/children')
+      .set('Authorization', `Bearer ${initial.access_token}`)
+      .expect(200);
+    expect(list.body).toHaveLength(2);
+    const childIds = (list.body as Array<{ id: string }>).map((c) => c.id);
+    expect(childIds).toContain(enrollA.childId);
+    expect(childIds).toContain(enrollB.childId);
   });
 });

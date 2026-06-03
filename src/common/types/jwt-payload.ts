@@ -7,6 +7,8 @@ export interface JwtPayload {
   role: string;
   kindergarten_id?: string | null;
   pending_role_select?: boolean;
+  /** App audience the session belongs to: 'parent' | 'staff' | 'admin'. */
+  aud?: string;
   jti?: string;
   iat?: number;
   exp?: number;

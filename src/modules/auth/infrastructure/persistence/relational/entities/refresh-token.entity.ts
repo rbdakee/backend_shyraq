@@ -28,6 +28,9 @@ export class RefreshTokenEntity {
   @Column({ type: 'varchar', nullable: true })
   ip_address!: string | null;
 
+  @Column({ type: 'varchar', length: 16, nullable: true })
+  audience!: string | null;
+
   @Column({ type: 'timestamptz' })
   expires_at!: Date;
 

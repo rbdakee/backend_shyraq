@@ -3,6 +3,13 @@ export interface IssueAccessPayload {
   role: string;
   kindergarten_id?: string | null;
   pending_role_select?: boolean;
+  /**
+   * App audience the session belongs to (`parent`/`staff`/`admin`). Stored as
+   * a plain `aud` payload property — NOT passed to jsonwebtoken's `audience`
+   * sign option — so the verify path (which omits the `audience` option) never
+   * enforces it and existing tokens without `aud` keep verifying.
+   */
+  aud?: string;
 }
 
 export interface IssueAccessResult {
@@ -27,6 +34,7 @@ export interface VerifiedAccessClaims {
   role: string;
   kindergarten_id?: string | null;
   pending_role_select?: boolean;
+  aud?: string;
   jti?: string;
   iat?: number;
   exp?: number;

@@ -17,6 +17,7 @@ describe('RefreshTokenMapper', () => {
     e.ip_address = '127.0.0.1';
     e.expires_at = expiresAt;
     e.revoked_at = null;
+    e.audience = null;
     e.created_at = new Date('2024-01-01T00:00:00Z');
     return Object.assign(e, overrides);
   }
@@ -59,5 +60,14 @@ describe('RefreshTokenMapper', () => {
     expect(back.token_hash).toBe(entity.token_hash);
     expect(back.expires_at).toEqual(entity.expires_at);
     expect(back.revoked_at).toBeNull();
+  });
+
+  it('toDomain + toPersistence carry the audience column', () => {
+    const domain = RefreshTokenMapper.toDomain(
+      buildEntity({ audience: 'staff' }),
+    );
+    expect(domain.audience).toBe('staff');
+    const back = RefreshTokenMapper.toPersistence(domain);
+    expect(back.audience).toBe('staff');
   });
 });

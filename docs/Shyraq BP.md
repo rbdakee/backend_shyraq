@@ -124,6 +124,14 @@
     - С правом `Approval`
     - Без права `Approval`
 
+### Дополнения (архитектурные)
+
+- **Parent App = open registration.** `POST /auth/otp/request` с `app=parent` отправляет OTP всегда (даже если телефона ещё нет в `users`); в ответе `registered` сообщает, новый это номер или существующий — клиент решает, показывать экран регистрации или логина. Это отличается от Staff/Admin (closed-app, §3).
+- **Audience-изоляция.** Один телефон может быть и `parent`, и `admin`/`staff` (в разных садиках). `app=parent` фильтрует роли до резолва и зашивает `aud='parent'` в токен + `refresh_tokens.audience` — Parent App физически не может получить admin-scope токен. См. `endpoints.md` §0.1.
+- **Токен выдаётся даже при 0 детей.** `verify` всегда возвращает implicit-`parent` токен (`kindergarten_id=null`), чтобы родитель мог пройти онбординг профиля и `Добавить ребёнка`. Гейт «нужен ≥1 ребёнок для входа в кабинет» обрабатывает **клиент** по полю `parent_context` в ответе verify: `{approved_children_count, pending_requests_count}`. 0 approved и 0 pending → экран «Добавить ребёнка»; есть только pending → экран «ожидает подтверждения»; есть approved → кабинет.
+- **Онбординг профиля** (когда `verify` вернул `profile_complete:false`, т.е. не заполнены `full_name`+`date_of_birth`+`iin`) переиспользует существующую пару `GET /users/me` (автофилл того, что admin мог заполнить при создании опекуна) + `PATCH /users/me` (дозаполнение). Отдельного регистрационного endpoint'а нет.
+- **Перспектива заявителя (шаг 10 «Ожидается Approval»).** Второй родитель/няня, отправивший `link`-заявку, видит свои заявки в статусе ожидания через **`GET /parent/children/pending-requests`** (`status='pending_approval' AND user_id=self`, cross-tenant, маскированное имя ребёнка без PII). Это дополняет `GET /parent/approvals/pending` — перспективу primary-родителя, который эти заявки подтверждает. Primary-родитель **не** подтверждает себя: его строка заводится из админки сразу `approved` (или авто-approve по OTP при enrollment, §0.1).
+
 ## 3. Staff and Admin Account Provisioning
 
 ## Process
@@ -185,6 +193,9 @@
 - **Identity QR** выдаётся каждому staff-пользователю (для авторизации у турникета, если Face ID не зарегистрирован).
 - **Атомарность create-staff + assign-mentor (B3).** `POST /admin/staff` с `role=mentor` и переданным `group_id` выполняет вставку `staff_members` и `group_mentors` в одной транзакции. Если у группы ещё нет активного primary — новый mentor становится primary (`is_primary=true`) автоматически. Инварианты `idx_group_mentors_one_active` / `idx_group_mentors_one_primary_per_group` enforced на DB-уровне (partial unique indexes); гонка → `P2002` → 409 `mentor_one_active_group_violation` / `group_primary_conflict`.
 - **Bootstrap первого admin'а (B2 Tenant Bootstrap).** Шаги 1–2 основного flow выполняет уже существующий admin — но **первый** admin садика создаётся иначе: SuperAdmin через `POST /super-admin/kindergartens` в одной транзакции создаёт `kindergartens` + `users` (find-or-create по phone) + `staff_members(role=admin, is_active=true)`. Активация admin'а идёт по welcome-SMS («Кабинет <name> готов, войдите по телефону <phone>») + обычный OTP-flow §0.1 `/auth/otp/request`+`/auth/otp/verify` — **отдельного invite-token / magic-link нет**. Начиная со второго staff-члена — основной flow §3 (admin создаёт в Admin Web).
+- **Staff/Admin = closed app (existence-check до OTP).** В отличие от Parent App, сотрудник/админ заходит только если был заведён инвайтом (`POST /admin/staff` или bootstrap выше). `POST /auth/otp/request` с `app=staff`/`admin` сперва проверяет наличие активной `staff_members` с допустимой ролью; нет → **404 `not_invited`, OTP не отправляется** (шаги 5–6 не достигаются). Это и есть «Система активирует учётную запись» (шаг 3) как предусловие входа.
+- **Audience-разделение Staff vs Admin (строгое).** `app=admin` принимает только роль `admin`; `app=staff` — `mentor`/`specialist`/`reception`. **Admin не заходит в Staff App, и наоборот** (роль фильтруется по `app`, `aud` зашивается в токен). Если у телефона нет роли под запрошенную аппку → 403 `no_role_for_app`.
+- **Выбор при нескольких садиках (шаги 8–9).** `staff_members` имеет `UNIQUE (kindergarten_id, user_id) WHERE is_active` → у юзера максимум одна активная роль в одном садике. Поэтому «выбор роли» — это фактически **выбор садика**: при 2+ активных записях `verify` возвращает `pending_role_select` со списком садиков, клиент шлёт `kindergarten_id` в `/auth/role/select` (роль derive из записи — отдельно слать `role` не нужно). Если в каком-то садике у сотрудника одна роль — это и есть его роль там; «несколько ролей у одного человека в одном садике» схемой не предусмотрено.
 
 ## 4. Payments
 

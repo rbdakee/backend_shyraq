@@ -26,7 +26,10 @@ import {
   UserUpdateInput,
 } from '@/modules/users/infrastructure/persistence/user.repository';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
-import { ChildGuardianRepository } from './infrastructure/persistence/child-guardian.repository';
+import {
+  ChildGuardianRepository,
+  PendingApplicantRequestView,
+} from './infrastructure/persistence/child-guardian.repository';
 import {
   ChildArchiveResult,
   ChildGroupHistoryRecord,
@@ -45,6 +48,7 @@ import {
   NoopBillingLifecycleAdapter,
 } from './infrastructure/billing-lifecycle.port';
 import { ChildService } from './child.service';
+import { maskName } from './child.presenter';
 import { Child } from './domain/entities/child.entity';
 import { ChildGuardian } from './domain/entities/child-guardian.entity';
 import {
@@ -441,6 +445,17 @@ class FakeGuardianRepo extends ChildGuardianRepository {
   }
   findApprovedActiveByUserAndChild(): Promise<ChildGuardian | null> {
     return Promise.resolve(null);
+  }
+
+  // Applicant-perspective views are seeded directly (the projection carries
+  // child + kindergarten names the ChildGuardian aggregate does not hold —
+  // in production the relational repo populates them via a JOIN).
+  applicantViews = new Map<string, PendingApplicantRequestView[]>();
+
+  override findPendingByApplicantUserId(
+    userId: string,
+  ): Promise<PendingApplicantRequestView[]> {
+    return Promise.resolve(this.applicantViews.get(userId) ?? []);
   }
 }
 
@@ -2415,5 +2430,49 @@ describe('ChildService — selfUnlinkFromChild', () => {
     await expect(
       service.selfUnlinkFromChild(KG, pendingUser.id, ctx.childId),
     ).rejects.toBeInstanceOf(ChildAccessDeniedError);
+  });
+});
+
+describe('ChildService — listPendingApplicantRequests', () => {
+  it("returns the caller's pending link requests", async () => {
+    const { service, guardians } = setup();
+    const userId = randomUUID();
+    const views: PendingApplicantRequestView[] = [
+      {
+        id: randomUUID(),
+        role: 'secondary',
+        canPickup: false,
+        childName: 'Алия Бекова',
+        kindergartenName: 'Балапан',
+        createdAt: NOW,
+      },
+    ];
+    guardians.applicantViews.set(userId, views);
+
+    const result = await service.listPendingApplicantRequests(userId);
+
+    expect(result).toEqual(views);
+  });
+
+  it('returns an empty list when the caller has no pending requests', async () => {
+    const { service } = setup();
+    const result = await service.listPendingApplicantRequests(randomUUID());
+    expect(result).toEqual([]);
+  });
+});
+
+describe('maskName', () => {
+  it('masks each name word to first letter + ****', () => {
+    expect(maskName('Алия Бекова')).toBe('А**** Б****');
+    expect(maskName('Алия')).toBe('А****');
+  });
+
+  it('returns an empty string for empty / whitespace-only input', () => {
+    expect(maskName('')).toBe('');
+    expect(maskName('   ')).toBe('');
+  });
+
+  it('collapses repeated whitespace between words', () => {
+    expect(maskName('  Алия   Бекова  ')).toBe('А**** Б****');
   });
 });

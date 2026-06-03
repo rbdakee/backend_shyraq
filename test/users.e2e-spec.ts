@@ -27,7 +27,7 @@ describe('Users — /api/v1/users/me (e2e)', () => {
   async function loginAsParent(): Promise<{ access: string; userId: string }> {
     await request(server)
       .post('/api/v1/auth/otp/request')
-      .send({ phone: PARENT_PHONE })
+      .send({ phone: PARENT_PHONE, app: 'parent' })
       .expect(202);
     const last = ctx.sms.lastSent;
     if (!last) throw new Error('no SMS captured');
@@ -36,7 +36,7 @@ describe('Users — /api/v1/users/me (e2e)', () => {
     const code = m[1];
     const verify = await request(server)
       .post('/api/v1/auth/otp/verify')
-      .send({ phone: PARENT_PHONE, code })
+      .send({ phone: PARENT_PHONE, code, app: 'parent' })
       .expect(200);
     const body = verify.body as AuthBody;
     return { access: body.access_token, userId: body.user.id };

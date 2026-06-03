@@ -106,7 +106,7 @@ describe('B6 parent onboarding (e2e)', () => {
 
     // Admin has exactly one staff role (admin in this kg) — OTP verify will
     // assemble that single role and issue a kg-scoped access token.
-    const auth = await otpLogin(phone);
+    const auth = await otpLogin(phone, 'admin');
     return {
       kgId: body.kindergarten.id,
       adminUserId: body.user.id,
@@ -127,16 +127,19 @@ describe('B6 parent onboarding (e2e)', () => {
    * AuthBody — caller picks the access/refresh token. Each call clears
    * `ctx.sms.lastSent` first so concurrent OTPs do not bleed across parents.
    */
-  async function otpLogin(phone: string): Promise<AuthBody> {
+  async function otpLogin(
+    phone: string,
+    app: 'parent' | 'staff' | 'admin' = 'parent',
+  ): Promise<AuthBody> {
     ctx.sms.lastSent = null;
     await request(server)
       .post('/api/v1/auth/otp/request')
-      .send({ phone })
+      .send({ phone, app })
       .expect(202);
     const code = extractCode();
     const res = await request(server)
       .post('/api/v1/auth/otp/verify')
-      .send({ phone, code })
+      .send({ phone, code, app })
       .expect(200);
     return res.body as AuthBody;
   }
@@ -407,6 +410,43 @@ describe('B6 parent onboarding (e2e)', () => {
       .send({ iin, role: 'secondary' });
     expect(dup.status).toBe(409);
     expect(dup.body.error).toBe('already_pending_for_child');
+  });
+
+  // ── D2. Applicant's pending-requests view ───────────────────────────────
+  // Regression for a route-shadowing bug: `GET /parent/children/pending-requests`
+  // must NOT be captured by the `GET /parent/children/:id` param route (whose
+  // ChildAccessGuard would treat "pending-requests" as a child uuid → 500).
+  it('lists the applicant own pending link requests with a masked child name (Scenario D2)', async () => {
+    const a = await createKgWithAdmin('po-d2', '+77011120044');
+    const parentPhone = '+77011110022';
+    const iin = '001122339001';
+
+    await createChild(a.adminToken, {
+      full_name: 'Aigerim Maskedkyzy',
+      date_of_birth: '2021-08-15',
+      iin,
+    });
+
+    const auth = await otpLogin(parentPhone);
+    await request(server)
+      .post('/api/v1/parent/children/link')
+      .set('Authorization', `Bearer ${auth.access_token}`)
+      .send({ iin, role: 'secondary' })
+      .expect(201);
+
+    const res = await request(server)
+      .get('/api/v1/parent/children/pending-requests')
+      .set('Authorization', `Bearer ${auth.access_token}`)
+      .expect(200);
+
+    expect(Array.isArray(res.body)).toBe(true);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0].status).toBe('pending_approval');
+    expect(res.body[0].role).toBe('secondary');
+    // Child PII stays hidden: name is masked to first-letter + ****.
+    expect(res.body[0].child_name_masked).toBe('A**** M****');
+    expect(res.body[0]).not.toHaveProperty('iin');
+    expect(res.body[0].kindergarten?.name).toBeTruthy();
   });
 
   // ── E. Multi-kg parent ──────────────────────────────────────────────────

@@ -67,14 +67,14 @@ describe('Auth — /api/v1/auth/* (e2e)', () => {
   it('parent OTP request + verify issues a complete token pair', async () => {
     const reqRes = await request(server)
       .post('/api/v1/auth/otp/request')
-      .send({ phone: PARENT_PHONE });
+      .send({ phone: PARENT_PHONE, app: 'parent' });
     expect(reqRes.status).toBe(202);
     expect(reqRes.body).toMatchObject({ sent: true, resend_after_sec: 60 });
 
     const code = extractCode();
     const verifyRes = await request(server)
       .post('/api/v1/auth/otp/verify')
-      .send({ phone: PARENT_PHONE, code });
+      .send({ phone: PARENT_PHONE, code, app: 'parent' });
     expect(verifyRes.status).toBe(200);
     const body = verifyRes.body as AuthBody;
     expect(typeof body.access_token).toBe('string');
@@ -92,23 +92,23 @@ describe('Auth — /api/v1/auth/* (e2e)', () => {
   it('three wrong codes lock the phone with otp_locked', async () => {
     await request(server)
       .post('/api/v1/auth/otp/request')
-      .send({ phone: STAFF_PHONE })
+      .send({ phone: STAFF_PHONE, app: 'parent' })
       .expect(202);
 
     const wrong1 = await request(server)
       .post('/api/v1/auth/otp/verify')
-      .send({ phone: STAFF_PHONE, code: '111111' });
+      .send({ phone: STAFF_PHONE, code: '111111', app: 'parent' });
     expect(wrong1.status).toBe(400);
     expect((wrong1.body as ErrorBody).error).toBe('invalid_otp');
 
     const wrong2 = await request(server)
       .post('/api/v1/auth/otp/verify')
-      .send({ phone: STAFF_PHONE, code: '222222' });
+      .send({ phone: STAFF_PHONE, code: '222222', app: 'parent' });
     expect(wrong2.status).toBe(400);
 
     const wrong3 = await request(server)
       .post('/api/v1/auth/otp/verify')
-      .send({ phone: STAFF_PHONE, code: '333333' });
+      .send({ phone: STAFF_PHONE, code: '333333', app: 'parent' });
     expect(wrong3.status).toBe(429);
     expect((wrong3.body as ErrorBody).error).toBe('otp_locked');
   });
@@ -116,7 +116,7 @@ describe('Auth — /api/v1/auth/* (e2e)', () => {
   it('verify without prior request returns otp_expired_or_missing', async () => {
     const res = await request(server)
       .post('/api/v1/auth/otp/verify')
-      .send({ phone: PARENT_PHONE, code: '123456' });
+      .send({ phone: PARENT_PHONE, code: '123456', app: 'parent' });
     expect(res.status).toBe(400);
     expect((res.body as ErrorBody).error).toBe('otp_expired_or_missing');
   });
@@ -124,17 +124,17 @@ describe('Auth — /api/v1/auth/* (e2e)', () => {
   it('successful verify consumes the OTP — replay returns otp_expired_or_missing', async () => {
     await request(server)
       .post('/api/v1/auth/otp/request')
-      .send({ phone: PARENT_PHONE })
+      .send({ phone: PARENT_PHONE, app: 'parent' })
       .expect(202);
     const code = extractCode();
     await request(server)
       .post('/api/v1/auth/otp/verify')
-      .send({ phone: PARENT_PHONE, code })
+      .send({ phone: PARENT_PHONE, code, app: 'parent' })
       .expect(200);
 
     const replay = await request(server)
       .post('/api/v1/auth/otp/verify')
-      .send({ phone: PARENT_PHONE, code });
+      .send({ phone: PARENT_PHONE, code, app: 'parent' });
     expect(replay.status).toBe(400);
     expect((replay.body as ErrorBody).error).toBe('otp_expired_or_missing');
   });
@@ -144,7 +144,7 @@ describe('Auth — /api/v1/auth/* (e2e)', () => {
     for (let i = 0; i < 6; i++) {
       const res = await request(server)
         .post('/api/v1/auth/otp/request')
-        .send({ phone: PARENT_PHONE });
+        .send({ phone: PARENT_PHONE, app: 'parent' });
       statuses.push(res.status);
     }
     expect(statuses.slice(0, 5)).toEqual([202, 202, 202, 202, 202]);
@@ -154,19 +154,19 @@ describe('Auth — /api/v1/auth/* (e2e)', () => {
   it('rejects badly formatted phone via DTO validation', async () => {
     const res = await request(server)
       .post('/api/v1/auth/otp/request')
-      .send({ phone: 'not-a-phone' });
+      .send({ phone: 'not-a-phone', app: 'parent' });
     expect(res.status).toBe(422);
   });
 
   it('refresh rotates the token and the old refresh becomes invalid', async () => {
     await request(server)
       .post('/api/v1/auth/otp/request')
-      .send({ phone: PARENT_PHONE })
+      .send({ phone: PARENT_PHONE, app: 'parent' })
       .expect(202);
     const code = extractCode();
     const verify = await request(server)
       .post('/api/v1/auth/otp/verify')
-      .send({ phone: PARENT_PHONE, code })
+      .send({ phone: PARENT_PHONE, code, app: 'parent' })
       .expect(200);
     const oldRefresh = (verify.body as AuthBody).refresh_token!;
 
@@ -186,12 +186,12 @@ describe('Auth — /api/v1/auth/* (e2e)', () => {
   it('logout revokes refresh + blocklists access JTI (idempotent)', async () => {
     await request(server)
       .post('/api/v1/auth/otp/request')
-      .send({ phone: PARENT_PHONE })
+      .send({ phone: PARENT_PHONE, app: 'parent' })
       .expect(202);
     const code = extractCode();
     const verify = await request(server)
       .post('/api/v1/auth/otp/verify')
-      .send({ phone: PARENT_PHONE, code })
+      .send({ phone: PARENT_PHONE, code, app: 'parent' })
       .expect(200);
     const access = (verify.body as AuthBody).access_token;
     const refresh = (verify.body as AuthBody).refresh_token!;
@@ -216,12 +216,12 @@ describe('Auth — /api/v1/auth/* (e2e)', () => {
   it('selectRole rejects regular (non-pending) JWT with role_select_not_required', async () => {
     await request(server)
       .post('/api/v1/auth/otp/request')
-      .send({ phone: PARENT_PHONE })
+      .send({ phone: PARENT_PHONE, app: 'parent' })
       .expect(202);
     const code = extractCode();
     const verify = await request(server)
       .post('/api/v1/auth/otp/verify')
-      .send({ phone: PARENT_PHONE, code })
+      .send({ phone: PARENT_PHONE, code, app: 'parent' })
       .expect(200);
     const access = (verify.body as AuthBody).access_token;
 

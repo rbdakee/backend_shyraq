@@ -21,6 +21,8 @@ import {
 import { OtpAttempt } from './domain/entities/otp-attempt.entity';
 import { InvalidCredentialsError } from './domain/errors/invalid-credentials.error';
 import { NoActiveRolesError } from './domain/errors/no-active-roles.error';
+import { NoRoleForAppError } from './domain/errors/no-role-for-app.error';
+import { NotInvitedError } from './domain/errors/not-invited.error';
 import { OtpExpiredError } from './domain/errors/otp-expired.error';
 import { OtpInvalidError } from './domain/errors/otp-invalid.error';
 import { OtpLockedError } from './domain/errors/otp-locked.error';
@@ -44,13 +46,32 @@ import { ChildGuardianRepository } from '@/modules/child/infrastructure/persiste
 const OTP_LOCKED_TTL_SEC = 900;
 const OTP_RESEND_AFTER_SEC = 60;
 
+/** Which client app the login targets — drives the audience filter. */
+export type AuthApp = 'parent' | 'staff' | 'admin';
+
+/** Roles allowed per app (docs/endpoints.md §0.1 audience table). */
+const APP_ALLOWED_ROLES: Record<AuthApp, ReadonlySet<string>> = {
+  parent: new Set(['parent']),
+  staff: new Set(['mentor', 'specialist', 'reception']),
+  admin: new Set(['admin']),
+};
+
+/** Map a staff/admin role to the app audience it belongs to. */
+function audienceForRole(role: string): AuthApp {
+  return role === 'admin' ? 'admin' : 'staff';
+}
+
 export interface RequestOtpResult {
   resendAfterSec: number;
+  /** Whether a users row already existed for this phone. */
+  registered: boolean;
 }
 
 export interface VerifyOtpInput {
   phone: string;
   code: string;
+  app: AuthApp;
+  kindergartenId?: string;
   deviceId?: string;
   ipAddress?: string;
 }
@@ -175,7 +196,29 @@ export class AuthService implements OnModuleInit {
 
   // ------------------------------------------------------------------ OTP
 
-  async requestOtp(phone: string): Promise<RequestOtpResult> {
+  async requestOtp(phone: string, app: AuthApp): Promise<RequestOtpResult> {
+    // Closed-app existence check (staff/admin) runs BEFORE any OTP is
+    // generated/sent: staff & admins are only ever created by invite, so an
+    // unknown phone must get 404 not_invited with no SMS leaked. Parent app is
+    // open-registration and never rejected here.
+    let registered = false;
+    if (app === 'staff' || app === 'admin') {
+      const user = await this.users.findByPhone(phone);
+      if (!user) {
+        throw new NotInvitedError();
+      }
+      registered = true;
+      const allowed = APP_ALLOWED_ROLES[app];
+      const staffEntries = await this.staff.findAllActiveByUserId(user.id);
+      const hasRole = staffEntries.some((s) => allowed.has(s.role));
+      if (!hasRole) {
+        throw new NotInvitedError();
+      }
+    } else {
+      const user = await this.users.findByPhone(phone);
+      registered = user !== null;
+    }
+
     if (await this.otpStore.isLocked(phone)) {
       throw new OtpLockedError();
     }
@@ -203,17 +246,26 @@ export class AuthService implements OnModuleInit {
     if (!this.isTestPhone(phone)) {
       await this.sms.sendOtp(phone, code);
     }
-    return { resendAfterSec: OTP_RESEND_AFTER_SEC };
+    return { resendAfterSec: OTP_RESEND_AFTER_SEC, registered };
   }
 
   async verifyOtp(input: VerifyOtpInput): Promise<AuthResult> {
     await this.consumeOtp(input.phone, input.code);
 
+    // Determine new-user BEFORE upsert (parent-app extra). A row created by
+    // this verify ⇒ isNewUser=true; an existing row (incl. admin-seeded
+    // guardian/staff) ⇒ false.
+    const existing = await this.users.findByPhone(input.phone);
+    const isNewUser = existing === null;
+
     const user = await this.users.upsertByPhone(input.phone);
     await this.autoApprovePendingPrimaries(user.id, this.clock.now());
-    return this.issueTokensForUser(user, {
+
+    return this.issueTokensForUser(user, input.app, {
       deviceId: input.deviceId ?? null,
       ipAddress: input.ipAddress ?? null,
+      requestedKindergartenId: input.kindergartenId ?? null,
+      isNewUser,
     });
   }
 
@@ -252,10 +304,23 @@ export class AuthService implements OnModuleInit {
       throw new RefreshInvalidError();
     }
 
-    const { roles, kindergartens } = await this.assembleRoles(user);
+    const { roles: allRoles } = await this.assembleRoles(user);
+
+    // Audience filter on rotation (STEP 3): re-resolve roles against the
+    // audience stored on the rotated row so a session never jumps apps. Legacy
+    // rows have audience=NULL → treat as "no filter" (pre-app-aware behavior)
+    // so existing sessions keep rotating without a forced re-login.
+    const audience = rotated.audience;
+    const roles =
+      audience === null
+        ? allRoles
+        : allRoles.filter((r) =>
+            APP_ALLOWED_ROLES[audience as AuthApp].has(r.role),
+          );
     if (roles.length === 0) {
       throw new NoActiveRolesError();
     }
+    const kindergartens = this.kindergartensFromRoles(roles);
 
     // Bind the rotated access token to the kg recorded on the ORIGINAL
     // refresh-token row, never to an arbitrary roles[0]. A user with roles
@@ -275,6 +340,9 @@ export class AuthService implements OnModuleInit {
       sub: user.id,
       role: matched.role,
       kindergarten_id: matched.kindergartenId,
+      // Re-bake the SAME audience onto the new access token (undefined for
+      // legacy null-audience rows so we don't invent an aud claim).
+      aud: audience ?? undefined,
     });
     return {
       accessToken: access.token,
@@ -341,10 +409,19 @@ export class AuthService implements OnModuleInit {
       );
     }
 
+    // Audience the selected session belongs to. Staff/admin roles map to
+    // their app (admin→admin, mentor/specialist/reception→staff); a parent
+    // selection (legacy multi-kg parent path) stays on the parent audience.
+    const selectedAudience: AuthApp =
+      selectedRole === 'parent' || selectedRole === null
+        ? 'parent'
+        : audienceForRole(selectedRole);
+
     const access = await this.jwt.issueAccessToken({
       sub: input.userId,
       role: selectedRole,
       kindergarten_id: selectedKindergartenId,
+      aud: selectedAudience,
     });
     const raw = generateRefreshToken();
     const ttlDays = this.configService.getOrThrow('auth.refreshTokenTtlDays', {
@@ -368,6 +445,7 @@ export class AuthService implements OnModuleInit {
             deviceId: input.deviceId ?? null,
             ipAddress: input.ipAddress ?? null,
             expiresAt,
+            audience: selectedAudience,
           }),
       );
     });
@@ -561,21 +639,70 @@ export class AuthService implements OnModuleInit {
 
   private async issueTokensForUser(
     user: User,
-    meta: { deviceId: string | null; ipAddress: string | null },
+    app: AuthApp,
+    meta: {
+      deviceId: string | null;
+      ipAddress: string | null;
+      requestedKindergartenId: string | null;
+      isNewUser: boolean;
+    },
   ): Promise<AuthResult> {
-    const { roles, kindergartens } = await this.assembleRoles(user);
+    const { roles: allRoles } = await this.assembleRoles(user);
+
+    // Audience filter (STEP 4): keep only roles allowed for the requested app
+    // BEFORE the role resolve. Closes cross-app escalation — a parent phone
+    // that also holds an admin role in some kg can never get an admin-scoped
+    // token out of the Parent App and vice-versa.
+    const allowed = APP_ALLOWED_ROLES[app];
+    const roles = allRoles.filter((r) => allowed.has(r.role));
     if (roles.length === 0) {
-      throw new NoActiveRolesError();
+      throw new NoRoleForAppError();
+    }
+    const kindergartens = this.kindergartensFromRoles(roles);
+
+    // Parent-app extras — only computed/emitted when app=parent.
+    const parentExtras =
+      app === 'parent'
+        ? await this.buildParentExtras(user, meta.isNewUser)
+        : {};
+
+    // Resolve which (role, kg) to commit the session to.
+    //   - parent app: NEVER role-selects. A guardian in 2+ kindergartens gets an
+    //     UNSCOPED (kg=null) session so GET /parent/children fans out
+    //     cross-tenant and the parent sees children in every kg (per-child
+    //     tenant is re-resolved by ChildAccessGuard). A single-kg parent keeps
+    //     the kg-scoped token. The response still lists every parent kg in
+    //     `roles[]`/`kindergartens[]` for client-side child-profile switching.
+    //   - staff/admin: if a kindergartenId was supplied and matches a filtered
+    //     role, skip the select step; else if exactly one role, issue; else
+    //     (2+ roles, no match) → pending_role_select.
+    let chosen: RoleView | null = null;
+    if (app === 'parent') {
+      const distinctKgs = new Set(
+        roles.map((r) => r.kindergartenId).filter((k) => k !== null),
+      );
+      chosen =
+        distinctKgs.size > 1
+          ? { role: 'parent', kindergartenId: null, groupId: null }
+          : roles[0];
+    } else if (meta.requestedKindergartenId) {
+      chosen =
+        roles.find((r) => r.kindergartenId === meta.requestedKindergartenId) ??
+        null;
+    }
+    if (!chosen && roles.length === 1) {
+      chosen = roles[0];
     }
 
-    // Multi-role branch — pending selection. Reserved for P3+; with the
-    // single implicit `parent` role today this branch never fires, but the
-    // shape stays so e2e/swagger documents the eventual response.
-    if (roles.length >= 2) {
+    if (!chosen) {
+      // Multi-kg staff/admin with no kg match → pending role select. No refresh
+      // issued; client must call /auth/role/select. Audience still travels on
+      // the temporary access token's `aud` claim.
       const access = await this.jwt.issueAccessToken({
         sub: user.id,
         role: 'staff_multi_role',
         pending_role_select: true,
+        aud: app,
       });
       return {
         accessToken: access.token,
@@ -586,15 +713,15 @@ export class AuthService implements OnModuleInit {
         roles,
         kindergartens,
         user: this.toUserSummary(user),
+        ...parentExtras,
       };
     }
 
-    const role = roles[0].role;
-    const kgId = roles[0].kindergartenId;
     const access = await this.jwt.issueAccessToken({
       sub: user.id,
-      role,
-      kindergarten_id: kgId,
+      role: chosen.role,
+      kindergarten_id: chosen.kindergartenId,
+      aud: app,
     });
     const raw = generateRefreshToken();
     const ttlDays = this.configService.getOrThrow('auth.refreshTokenTtlDays', {
@@ -603,11 +730,12 @@ export class AuthService implements OnModuleInit {
     const expiresAt = computeRefreshExpiresAt(this.clock.now(), ttlDays);
     await this.refreshTokens.create({
       userId: user.id,
-      kindergartenId: kgId,
+      kindergartenId: chosen.kindergartenId,
       tokenHash: hashRefreshToken(raw),
       deviceId: meta.deviceId,
       ipAddress: meta.ipAddress,
       expiresAt,
+      audience: app,
     });
     return {
       accessToken: access.token,
@@ -618,7 +746,56 @@ export class AuthService implements OnModuleInit {
       roles,
       kindergartens,
       user: this.toUserSummary(user),
+      ...parentExtras,
     };
+  }
+
+  /**
+   * Build the parent-app-only response extras (isNewUser, profileComplete,
+   * parentContext). Returns partial AuthResult fields spread by the caller.
+   */
+  private async buildParentExtras(
+    user: User,
+    isNewUser: boolean,
+  ): Promise<Partial<AuthResult>> {
+    const s = user.toState();
+    // profileComplete: full_name set & not equal to the phone (new users get
+    // full_name = phone), date_of_birth present, iin present.
+    const profileComplete =
+      s.fullName.length > 0 &&
+      s.fullName !== s.phone &&
+      s.dateOfBirth !== null &&
+      s.iin !== null;
+
+    const [approvedLinks, pending] = await Promise.all([
+      this.guardians.findApprovedActiveByUserIdCrossTenant(user.id),
+      this.guardians.findPendingByApplicantUserId(user.id),
+    ]);
+    const distinctChildIds = new Set(approvedLinks.map((g) => g.childId));
+
+    return {
+      isNewUser,
+      profileComplete,
+      parentContext: {
+        approvedChildrenCount: distinctChildIds.size,
+        pendingRequestsCount: pending.length,
+      },
+    };
+  }
+
+  /** Dedupe kindergartens (id only) from a role list — empty for null-kg rows. */
+  private kindergartensFromRoles(
+    roles: RoleView[],
+  ): { id: string; name: string; slug: string }[] {
+    const seen = new Set<string>();
+    const out: { id: string; name: string; slug: string }[] = [];
+    for (const r of roles) {
+      if (r.kindergartenId !== null && !seen.has(r.kindergartenId)) {
+        seen.add(r.kindergartenId);
+        out.push({ id: r.kindergartenId, name: '', slug: '' });
+      }
+    }
+    return out;
   }
 
   /**

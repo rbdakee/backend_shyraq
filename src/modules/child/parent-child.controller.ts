@@ -29,6 +29,7 @@ import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
 import { ChildPresenter } from './child.presenter';
 import { ChildService } from './child.service';
 import { ChildDto, GuardianDto } from './dto';
+import { PendingApplicantRequestDto } from './dto/pending-applicant-request.dto';
 
 /**
  * Parent-scoped read endpoints. Wrapped with `ChildAccessGuard` so that any
@@ -68,6 +69,37 @@ export class ParentChildController {
       ? await this.service.listMyChildren(t.kgId, user.sub)
       : await this.service.listMyChildrenCrossTenant(user.sub);
     return rows.map((c) => ChildPresenter.child(c));
+  }
+
+  // NOTE: declared BEFORE `@Get(':id')` so the static `pending-requests`
+  // segment wins over the `:id` param route (Express matches in registration
+  // order). ChildAccessGuard is a no-op here — there is no `:id`/`:childId`/
+  // `:guardianId` param, so it returns early without a guardian lookup.
+  @Get('pending-requests')
+  @ApiOperation({
+    summary: 'Мои заявки на привязку, ожидающие подтверждения (заявитель).',
+    description:
+      "Applicant's view of their OWN `link` requests still in " +
+      '`pending_approval` — the requests awaiting approval by an admin or the ' +
+      'primary guardian. Complements GET /parent/approvals/pending (the ' +
+      'primary guardian view of "who do I approve"). Cross-tenant: a parent ' +
+      'may have pending requests in several kindergartens. Child PII stays ' +
+      'hidden until approval (same rule as /link) — only a masked child name ' +
+      'is returned, never IIN / date-of-birth / photo / group.',
+  })
+  @ApiOkResponse({
+    description:
+      "The caller's pending link requests (possibly empty). Child name is " +
+      'masked to first-letter + ****.',
+    type: [PendingApplicantRequestDto],
+  })
+  @ApiUnauthorizedResponse({ description: 'invalid_token / token_revoked.' })
+  @ApiForbiddenResponse({ description: 'pending_role_select.' })
+  async pendingRequests(
+    @CurrentUser() user: JwtPayload,
+  ): Promise<PendingApplicantRequestDto[]> {
+    const views = await this.service.listPendingApplicantRequests(user.sub);
+    return views.map((v) => ChildPresenter.pendingApplicantRequest(v));
   }
 
   @Get(':id')

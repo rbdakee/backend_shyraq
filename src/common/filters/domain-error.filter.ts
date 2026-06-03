@@ -20,6 +20,8 @@ import { IinAlreadyTakenError } from '@/modules/users/domain/errors/iin-already-
 import { ProfileUniqueViolationError } from '@/modules/users/domain/errors/profile-unique-violation.error';
 import { InvalidCredentialsError } from '@/modules/auth/domain/errors/invalid-credentials.error';
 import { NoActiveRolesError } from '@/modules/auth/domain/errors/no-active-roles.error';
+import { NoRoleForAppError } from '@/modules/auth/domain/errors/no-role-for-app.error';
+import { NotInvitedError } from '@/modules/auth/domain/errors/not-invited.error';
 import { OtpExpiredError } from '@/modules/auth/domain/errors/otp-expired.error';
 import { OtpInvalidError } from '@/modules/auth/domain/errors/otp-invalid.error';
 import { OtpLockedError } from '@/modules/auth/domain/errors/otp-locked.error';
@@ -140,6 +142,8 @@ export class DomainErrorFilter implements ExceptionFilter {
     if (err instanceof RoleNotAvailableError) return HttpStatus.FORBIDDEN;
     if (err instanceof RoleSelectNotRequiredError) return HttpStatus.FORBIDDEN;
     if (err instanceof NoActiveRolesError) return HttpStatus.FORBIDDEN;
+    if (err instanceof NoRoleForAppError) return HttpStatus.FORBIDDEN;
+    if (err instanceof NotInvitedError) return HttpStatus.NOT_FOUND;
     if (err instanceof IinAlreadyTakenError) return HttpStatus.CONFLICT;
     if (err instanceof ProfileUniqueViolationError) return HttpStatus.CONFLICT;
     if (err instanceof KindergartenSlugTakenError) return HttpStatus.CONFLICT;

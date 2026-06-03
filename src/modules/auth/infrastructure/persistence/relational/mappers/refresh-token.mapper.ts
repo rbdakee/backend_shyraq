@@ -13,6 +13,7 @@ export class RefreshTokenMapper {
       tokenHash: entity.token_hash,
       expiresAt: entity.expires_at,
       revokedAt: entity.revoked_at,
+      audience: entity.audience,
     });
   }
 
@@ -24,6 +25,7 @@ export class RefreshTokenMapper {
     e.token_hash = domain.tokenHash;
     e.expires_at = domain.expiresAt;
     e.revoked_at = domain.revokedAt;
+    e.audience = domain.audience;
     return e;
   }
 
@@ -35,6 +37,7 @@ export class RefreshTokenMapper {
     e.token_hash = state.tokenHash;
     e.expires_at = state.expiresAt;
     e.revoked_at = state.revokedAt;
+    e.audience = state.audience;
     return e;
   }
 }

@@ -16,6 +16,8 @@ import { AuthService } from './auth.service';
 import { SaasUser } from './domain/entities/saas-user.entity';
 import { InvalidCredentialsError } from './domain/errors/invalid-credentials.error';
 import { NoActiveRolesError } from './domain/errors/no-active-roles.error';
+import { NoRoleForAppError } from './domain/errors/no-role-for-app.error';
+import { NotInvitedError } from './domain/errors/not-invited.error';
 import { OtpExpiredError } from './domain/errors/otp-expired.error';
 import { OtpInvalidError } from './domain/errors/otp-invalid.error';
 import { OtpLockedError } from './domain/errors/otp-locked.error';
@@ -60,7 +62,10 @@ import {
   UpdateStaffMemberInput,
 } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
 import { ChildGuardian } from '@/modules/child/domain/entities/child-guardian.entity';
-import { ChildGuardianRepository } from '@/modules/child/infrastructure/persistence/child-guardian.repository';
+import {
+  ChildGuardianRepository,
+  PendingApplicantRequestView,
+} from '@/modules/child/infrastructure/persistence/child-guardian.repository';
 import { NotificationPort } from '@/common/notifications/notification.port';
 
 class FixedClock implements ClockPort {
@@ -131,6 +136,7 @@ interface InMemoryRow {
   tokenHash: string;
   expiresAt: Date;
   revokedAt: Date | null;
+  audience: string | null;
 }
 class FakeRefreshRepo extends RefreshTokenRepository {
   rows: InMemoryRow[] = [];
@@ -141,6 +147,7 @@ class FakeRefreshRepo extends RefreshTokenRepository {
       tokenHash: input.tokenHash,
       expiresAt: input.expiresAt,
       revokedAt: null,
+      audience: input.audience,
     });
     return Promise.resolve();
   }
@@ -156,10 +163,12 @@ class FakeRefreshRepo extends RefreshTokenRepository {
       tokenHash: opts.newTokenHash,
       expiresAt: opts.newExpiresAt,
       revokedAt: null,
+      audience: row.audience,
     });
     return Promise.resolve({
       userId: row.userId,
       kindergartenId: row.kindergartenId,
+      audience: row.audience,
     });
   }
   revokeByHash(tokenHash: string, now: Date): Promise<void> {
@@ -383,6 +392,10 @@ class FakeStaffRepo extends StaffMemberRepository {
 class FakeGuardianRepo extends ChildGuardianRepository {
   approvedKindergartenIdsByUserId = new Map<string, string[]>();
   guardians = new Map<string, ChildGuardian>();
+  /** Approved-active links per user (cross-tenant), keyed by userId. */
+  approvedActiveByUserId = new Map<string, ChildGuardian[]>();
+  /** Pending applicant requests per user, keyed by userId. */
+  pendingByApplicantUserId = new Map<string, PendingApplicantRequestView[]>();
 
   put(g: ChildGuardian): void {
     this.guardians.set(g.id, g);
@@ -461,12 +474,17 @@ class FakeGuardianRepo extends ChildGuardianRepository {
     return Promise.resolve(null);
   }
   findApprovedActiveByUserIdCrossTenant(
-    _userId: string,
+    userId: string,
   ): Promise<ChildGuardian[]> {
-    return Promise.resolve([]);
+    return Promise.resolve(this.approvedActiveByUserId.get(userId) ?? []);
   }
   findApprovedActiveByUserAndChild(): Promise<ChildGuardian | null> {
     return Promise.resolve(null);
+  }
+  findPendingByApplicantUserId(
+    userId: string,
+  ): Promise<PendingApplicantRequestView[]> {
+    return Promise.resolve(this.pendingByApplicantUserId.get(userId) ?? []);
   }
 }
 
@@ -671,7 +689,7 @@ describe('AuthService', () => {
   describe('requestOtp', () => {
     it('stores a 6-digit code and dispatches SMS', async () => {
       const { service, otpStore, sms } = build();
-      const result = await service.requestOtp('+77012345678');
+      const result = await service.requestOtp('+77012345678', 'parent');
       expect(result.resendAfterSec).toBe(60);
       const stored = await otpStore.readCode('+77012345678');
       expect(stored?.code).toMatch(/^\d{6}$/);
@@ -682,19 +700,19 @@ describe('AuthService', () => {
     it('throws OtpRateLimitedError when 6th call within window', async () => {
       const { service } = build();
       for (let i = 0; i < 5; i++) {
-        await service.requestOtp('+77012345678');
+        await service.requestOtp('+77012345678', 'parent');
       }
-      await expect(service.requestOtp('+77012345678')).rejects.toBeInstanceOf(
-        OtpRateLimitedError,
-      );
+      await expect(
+        service.requestOtp('+77012345678', 'parent'),
+      ).rejects.toBeInstanceOf(OtpRateLimitedError);
     });
 
     it('throws OtpLockedError when phone is locked', async () => {
       const { service, otpStore } = build();
       otpStore.lockedPhones.add('+77012345678');
-      await expect(service.requestOtp('+77012345678')).rejects.toBeInstanceOf(
-        OtpLockedError,
-      );
+      await expect(
+        service.requestOtp('+77012345678', 'parent'),
+      ).rejects.toBeInstanceOf(OtpLockedError);
     });
   });
 
@@ -778,7 +796,7 @@ describe('AuthService', () => {
 
     it('honours OTP_TEST_PHONES in development (no real SMS sent)', async () => {
       const { service, otpStore, sms } = buildWithTestPhone('development');
-      await service.requestOtp(TEST_PHONE);
+      await service.requestOtp(TEST_PHONE, 'parent');
       // Test phone → no SMS dispatched
       expect(sms.sent).toHaveLength(0);
       const stored = await otpStore.readCode(TEST_PHONE);
@@ -789,13 +807,13 @@ describe('AuthService', () => {
     it('sends a real random code for non-test phone in development', async () => {
       const { service, sms } = buildWithTestPhone('development');
       const normalPhone = '+77011111111';
-      await service.requestOtp(normalPhone);
+      await service.requestOtp(normalPhone, 'parent');
       expect(sms.sent).toHaveLength(1);
     });
 
     it('ignores OTP_TEST_PHONES in production and sends real SMS', async () => {
       const { service, otpStore, sms } = buildWithTestPhone('production');
-      await service.requestOtp(TEST_PHONE);
+      await service.requestOtp(TEST_PHONE, 'parent');
       // Production: backdoor disabled → real SMS dispatched
       expect(sms.sent).toHaveLength(1);
       const stored = await otpStore.readCode(TEST_PHONE);
@@ -811,6 +829,7 @@ describe('AuthService', () => {
       const res = await service.verifyOtp({
         phone: '+77012345678',
         code: '123456',
+        app: 'parent',
       });
       expect(res.accessToken).toMatch(/^access\./);
       expect(res.refreshToken).not.toBeNull();
@@ -831,6 +850,7 @@ describe('AuthService', () => {
       const res = await service.verifyOtp({
         phone: '+77012345678',
         code: '123456',
+        app: 'parent',
       });
 
       expect(res.pendingRoleSelect).toBe(false);
@@ -843,7 +863,11 @@ describe('AuthService', () => {
     it('throws OtpExpiredError when no code stored', async () => {
       const { service } = build();
       await expect(
-        service.verifyOtp({ phone: '+77012345678', code: '123456' }),
+        service.verifyOtp({
+          phone: '+77012345678',
+          code: '123456',
+          app: 'parent',
+        }),
       ).rejects.toBeInstanceOf(OtpExpiredError);
     });
 
@@ -851,7 +875,11 @@ describe('AuthService', () => {
       const { service, otpStore } = build();
       await otpStore.storeCode('+77012345678', '123456', 300);
       await expect(
-        service.verifyOtp({ phone: '+77012345678', code: '000000' }),
+        service.verifyOtp({
+          phone: '+77012345678',
+          code: '000000',
+          app: 'parent',
+        }),
       ).rejects.toBeInstanceOf(OtpInvalidError);
     });
 
@@ -859,13 +887,25 @@ describe('AuthService', () => {
       const { service, otpStore } = build();
       await otpStore.storeCode('+77012345678', '123456', 300);
       await expect(
-        service.verifyOtp({ phone: '+77012345678', code: '000000' }),
+        service.verifyOtp({
+          phone: '+77012345678',
+          code: '000000',
+          app: 'parent',
+        }),
       ).rejects.toBeInstanceOf(OtpInvalidError);
       await expect(
-        service.verifyOtp({ phone: '+77012345678', code: '111111' }),
+        service.verifyOtp({
+          phone: '+77012345678',
+          code: '111111',
+          app: 'parent',
+        }),
       ).rejects.toBeInstanceOf(OtpInvalidError);
       await expect(
-        service.verifyOtp({ phone: '+77012345678', code: '222222' }),
+        service.verifyOtp({
+          phone: '+77012345678',
+          code: '222222',
+          app: 'parent',
+        }),
       ).rejects.toBeInstanceOf(OtpLockedError);
       expect(otpStore.lockedPhones.has('+77012345678')).toBe(true);
     });
@@ -873,10 +913,428 @@ describe('AuthService', () => {
     it('consumes the OTP — replay rejects with OtpExpiredError', async () => {
       const { service, otpStore } = build();
       await otpStore.storeCode('+77012345678', '123456', 300);
-      await service.verifyOtp({ phone: '+77012345678', code: '123456' });
+      await service.verifyOtp({
+        phone: '+77012345678',
+        code: '123456',
+        app: 'parent',
+      });
       await expect(
-        service.verifyOtp({ phone: '+77012345678', code: '123456' }),
+        service.verifyOtp({
+          phone: '+77012345678',
+          code: '123456',
+          app: 'parent',
+        }),
       ).rejects.toBeInstanceOf(OtpExpiredError);
+    });
+  });
+
+  describe('app-aware auth (audience filter)', () => {
+    const PHONE = '+77012345678';
+    const KG_A = '11111111-1111-1111-1111-111111111111';
+    const CHILD_A = '33333333-3333-3333-3333-333333333333';
+    const CHILD_B = '44444444-4444-4444-4444-444444444444';
+    const USER_UUID = '55555555-5555-5555-5555-555555555555';
+
+    function activeStaff(
+      userId: string,
+      kindergartenId: string,
+      role: 'admin' | 'mentor' | 'specialist' | 'reception',
+    ): StaffMember {
+      return StaffMember.hydrate({
+        id: `staff-${kindergartenId}-${role}`,
+        kindergartenId,
+        userId,
+        fullName: 'X',
+        phone: null,
+        role,
+        specialistType: role === 'specialist' ? 'psychologist' : null,
+        isActive: true,
+        hiredAt: new Date('2025-01-01'),
+        firedAt: null,
+        archivedAt: null,
+        createdAt: new Date('2025-01-01'),
+        updatedAt: new Date('2025-01-01'),
+      });
+    }
+
+    function approvedLink(
+      userId: string,
+      kindergartenId: string,
+      childId: string,
+    ): ChildGuardian {
+      return ChildGuardian.hydrate({
+        id: `guardian-${childId}`,
+        kindergartenId,
+        childId,
+        userId,
+        role: 'secondary',
+        status: 'approved',
+        hasApprovalRights: false,
+        approvedBy: userId,
+        approvedAt: new Date('2025-01-01T00:00:00Z'),
+        revokedBy: null,
+        revokedAt: null,
+        canPickup: true,
+        permissions: {},
+        permissionsUpdatedBy: null,
+        permissionsUpdatedAt: null,
+        createdAt: new Date('2025-01-01T00:00:00Z'),
+        updatedAt: new Date('2025-01-01T00:00:00Z'),
+      });
+    }
+
+    describe('requestOtp existence-check', () => {
+      it('rejects staff login when phone has no active staff role', async () => {
+        const { service, users, sms } = build();
+        users.put(
+          User.hydrate({
+            id: 'user-1',
+            phone: PHONE,
+            fullName: 'X',
+            avatarUrl: null,
+            iin: null,
+            dateOfBirth: null,
+            locale: 'ru',
+          }),
+        );
+        // No staff_members rows for this user.
+        await expect(service.requestOtp(PHONE, 'staff')).rejects.toBeInstanceOf(
+          NotInvitedError,
+        );
+        // OTP never sent on the rejected closed-app path.
+        expect(sms.sent).toHaveLength(0);
+      });
+
+      it('throws not_invited for an unknown phone on the admin app', async () => {
+        const { service, sms } = build();
+        await expect(service.requestOtp(PHONE, 'admin')).rejects.toBeInstanceOf(
+          NotInvitedError,
+        );
+        expect(sms.sent).toHaveLength(0);
+      });
+
+      it('allows staff login when phone has an active staff role', async () => {
+        const { service, users, staffRepo } = build();
+        users.put(
+          User.hydrate({
+            id: 'user-1',
+            phone: PHONE,
+            fullName: 'X',
+            avatarUrl: null,
+            iin: null,
+            dateOfBirth: null,
+            locale: 'ru',
+          }),
+        );
+        staffRepo.rows.push(activeStaff('user-1', KG_A, 'mentor'));
+        const res = await service.requestOtp(PHONE, 'staff');
+        expect(res.registered).toBe(true);
+      });
+
+      it('returns registered=false for a brand-new parent phone', async () => {
+        const { service } = build();
+        const res = await service.requestOtp(PHONE, 'parent');
+        expect(res.registered).toBe(false);
+      });
+
+      it('returns registered=true for an existing parent phone', async () => {
+        const { service, users } = build();
+        users.put(
+          User.hydrate({
+            id: 'user-1',
+            phone: PHONE,
+            fullName: 'X',
+            avatarUrl: null,
+            iin: null,
+            dateOfBirth: null,
+            locale: 'ru',
+          }),
+        );
+        const res = await service.requestOtp(PHONE, 'parent');
+        expect(res.registered).toBe(true);
+      });
+    });
+
+    describe('verifyOtp audience filter', () => {
+      it('throws when no role matches the requested app', async () => {
+        // A parent-only phone (no staff rows) logging into the Staff App.
+        const { service, otpStore } = build();
+        await otpStore.storeCode(PHONE, '123456', 300);
+        await expect(
+          service.verifyOtp({ phone: PHONE, code: '123456', app: 'staff' }),
+        ).rejects.toBeInstanceOf(NoRoleForAppError);
+      });
+
+      it('filters roles to the parent audience', async () => {
+        // User is admin in kg-A AND parent (guardian) in kg-A. Logging into
+        // the parent app must surface ONLY the parent role, never admin.
+        const { service, otpStore, users, staffRepo, guardianRepo } = build();
+        users.put(
+          User.hydrate({
+            id: 'user-1',
+            phone: PHONE,
+            fullName: 'X',
+            avatarUrl: null,
+            iin: null,
+            dateOfBirth: null,
+            locale: 'ru',
+          }),
+        );
+        const KG_OTHER = '22222222-2222-2222-2222-222222222222';
+        staffRepo.rows.push(activeStaff('user-1', KG_A, 'admin'));
+        guardianRepo.approvedKindergartenIdsByUserId.set('user-1', [KG_OTHER]);
+        await otpStore.storeCode(PHONE, '123456', 300);
+
+        const res = await service.verifyOtp({
+          phone: PHONE,
+          code: '123456',
+          app: 'parent',
+        });
+
+        expect(res.roles).toEqual([
+          { role: 'parent', kindergartenId: KG_OTHER, groupId: null },
+        ]);
+        expect(res.pendingRoleSelect).toBe(false);
+      });
+
+      it('issues directly for a parent who is a guardian in multiple kindergartens (never role-selects)', async () => {
+        // Approved guardian in two different kgs → 2 parent rows. The parent app
+        // must NOT role-select; it issues an UNSCOPED (kg=null) session so
+        // GET /parent/children fans out cross-tenant and the parent sees
+        // children in both kgs.
+        const { service, otpStore, users, guardianRepo, refresh } = build();
+        users.put(
+          User.hydrate({
+            id: 'user-1',
+            phone: PHONE,
+            fullName: 'X',
+            avatarUrl: null,
+            iin: null,
+            dateOfBirth: null,
+            locale: 'ru',
+          }),
+        );
+        const KG_B = '22222222-2222-2222-2222-222222222222';
+        guardianRepo.approvedKindergartenIdsByUserId.set('user-1', [
+          KG_A,
+          KG_B,
+        ]);
+        await otpStore.storeCode(PHONE, '123456', 300);
+
+        const res = await service.verifyOtp({
+          phone: PHONE,
+          code: '123456',
+          app: 'parent',
+        });
+
+        expect(res.pendingRoleSelect).toBe(false);
+        expect(res.refreshToken).not.toBeNull();
+        // Both guardian kgs surfaced for client-side child switching.
+        expect(res.roles).toEqual([
+          { role: 'parent', kindergartenId: KG_A, groupId: null },
+          { role: 'parent', kindergartenId: KG_B, groupId: null },
+        ]);
+        // The committed session is UNSCOPED (kg=null) under the parent audience
+        // so the children list fans out cross-tenant.
+        expect(refresh.rows).toHaveLength(1);
+        expect(refresh.rows[0].kindergartenId).toBeNull();
+        expect(refresh.rows[0].audience).toBe('parent');
+      });
+
+      it('issues directly for staff when kindergartenId matches one role', async () => {
+        const { service, otpStore, users, staffRepo } = build();
+        const KG_B = '22222222-2222-2222-2222-222222222222';
+        users.put(
+          User.hydrate({
+            id: 'user-1',
+            phone: PHONE,
+            fullName: 'X',
+            avatarUrl: null,
+            iin: null,
+            dateOfBirth: null,
+            locale: 'ru',
+          }),
+        );
+        staffRepo.rows.push(activeStaff('user-1', KG_A, 'mentor'));
+        staffRepo.rows.push(activeStaff('user-1', KG_B, 'reception'));
+        await otpStore.storeCode(PHONE, '123456', 300);
+
+        const res = await service.verifyOtp({
+          phone: PHONE,
+          code: '123456',
+          app: 'staff',
+          kindergartenId: KG_B,
+        });
+
+        expect(res.pendingRoleSelect).toBe(false);
+        expect(res.refreshToken).not.toBeNull();
+      });
+
+      it('returns pending_role_select for multi-kg staff without a kg match', async () => {
+        const { service, otpStore, users, staffRepo } = build();
+        const KG_B = '22222222-2222-2222-2222-222222222222';
+        users.put(
+          User.hydrate({
+            id: 'user-1',
+            phone: PHONE,
+            fullName: 'X',
+            avatarUrl: null,
+            iin: null,
+            dateOfBirth: null,
+            locale: 'ru',
+          }),
+        );
+        staffRepo.rows.push(activeStaff('user-1', KG_A, 'mentor'));
+        staffRepo.rows.push(activeStaff('user-1', KG_B, 'reception'));
+        await otpStore.storeCode(PHONE, '123456', 300);
+
+        const res = await service.verifyOtp({
+          phone: PHONE,
+          code: '123456',
+          app: 'staff',
+        });
+
+        expect(res.pendingRoleSelect).toBe(true);
+        expect(res.refreshToken).toBeNull();
+      });
+
+      it('bakes the audience onto the issued refresh-token row', async () => {
+        const { service, otpStore, users, staffRepo, refresh } = build();
+        users.put(
+          User.hydrate({
+            id: 'user-1',
+            phone: PHONE,
+            fullName: 'X',
+            avatarUrl: null,
+            iin: null,
+            dateOfBirth: null,
+            locale: 'ru',
+          }),
+        );
+        staffRepo.rows.push(activeStaff('user-1', KG_A, 'mentor'));
+        await otpStore.storeCode(PHONE, '123456', 300);
+
+        await service.verifyOtp({ phone: PHONE, code: '123456', app: 'staff' });
+
+        expect(refresh.rows).toHaveLength(1);
+        expect(refresh.rows[0].audience).toBe('staff');
+      });
+    });
+
+    describe('parent-only response extras', () => {
+      it('returns parent_context with approved + pending counts', async () => {
+        const { service, otpStore, users, guardianRepo } = build();
+        users.put(
+          User.hydrate({
+            id: USER_UUID,
+            phone: PHONE,
+            fullName: 'X',
+            avatarUrl: null,
+            iin: null,
+            dateOfBirth: null,
+            locale: 'ru',
+          }),
+        );
+        // Two approved links (distinct children) + one pending request.
+        guardianRepo.approvedActiveByUserId.set(USER_UUID, [
+          approvedLink(USER_UUID, KG_A, CHILD_A),
+          approvedLink(USER_UUID, KG_A, CHILD_B),
+        ]);
+        guardianRepo.pendingByApplicantUserId.set(USER_UUID, [
+          {
+            id: 'req-1',
+            role: 'secondary',
+            canPickup: false,
+            childName: 'Hidden',
+            kindergartenName: 'KG',
+            createdAt: new Date('2025-01-01T00:00:00Z'),
+          },
+        ]);
+        await otpStore.storeCode(PHONE, '123456', 300);
+
+        const res = await service.verifyOtp({
+          phone: PHONE,
+          code: '123456',
+          app: 'parent',
+        });
+
+        expect(res.parentContext).toEqual({
+          approvedChildrenCount: 2,
+          pendingRequestsCount: 1,
+        });
+        expect(res.isNewUser).toBe(false);
+        expect(res.profileComplete).toBe(false);
+      });
+
+      it('returns is_new_user=true for a brand-new parent phone', async () => {
+        const { service, otpStore } = build();
+        await otpStore.storeCode(PHONE, '123456', 300);
+
+        const res = await service.verifyOtp({
+          phone: PHONE,
+          code: '123456',
+          app: 'parent',
+        });
+
+        expect(res.isNewUser).toBe(true);
+        // New users get full_name = phone → profile not complete.
+        expect(res.profileComplete).toBe(false);
+        expect(res.parentContext).toEqual({
+          approvedChildrenCount: 0,
+          pendingRequestsCount: 0,
+        });
+      });
+
+      it('reports profile_complete=true when full_name + dob + iin are set', async () => {
+        const { service, otpStore, users } = build();
+        users.put(
+          User.hydrate({
+            id: 'user-1',
+            phone: PHONE,
+            fullName: 'Aisha Bekova',
+            avatarUrl: null,
+            iin: '900101300123',
+            dateOfBirth: new Date('1990-01-01'),
+            locale: 'ru',
+          }),
+        );
+        await otpStore.storeCode(PHONE, '123456', 300);
+
+        const res = await service.verifyOtp({
+          phone: PHONE,
+          code: '123456',
+          app: 'parent',
+        });
+
+        expect(res.profileComplete).toBe(true);
+      });
+
+      it('does not include parent extras for staff login', async () => {
+        const { service, otpStore, users, staffRepo } = build();
+        users.put(
+          User.hydrate({
+            id: 'user-1',
+            phone: PHONE,
+            fullName: 'X',
+            avatarUrl: null,
+            iin: null,
+            dateOfBirth: null,
+            locale: 'ru',
+          }),
+        );
+        staffRepo.rows.push(activeStaff('user-1', KG_A, 'mentor'));
+        await otpStore.storeCode(PHONE, '123456', 300);
+
+        const res = await service.verifyOtp({
+          phone: PHONE,
+          code: '123456',
+          app: 'staff',
+        });
+
+        expect(res.isNewUser).toBeUndefined();
+        expect(res.profileComplete).toBeUndefined();
+        expect(res.parentContext).toBeUndefined();
+      });
     });
   });
 
@@ -953,7 +1411,7 @@ describe('AuthService', () => {
         childId: CHILD_A,
       });
 
-      await service.verifyOtp({ phone: PHONE, code: '123456' });
+      await service.verifyOtp({ phone: PHONE, code: '123456', app: 'parent' });
 
       const after = guardianRepo.guardians.get(seeded.id);
       expect(after?.status.value).toBe('approved');
@@ -979,7 +1437,7 @@ describe('AuthService', () => {
         childId: CHILD_B,
       });
 
-      await service.verifyOtp({ phone: PHONE, code: '123456' });
+      await service.verifyOtp({ phone: PHONE, code: '123456', app: 'parent' });
 
       expect(guardianRepo.guardians.get(a.id)?.status.value).toBe('approved');
       expect(guardianRepo.guardians.get(b.id)?.status.value).toBe('approved');
@@ -996,6 +1454,7 @@ describe('AuthService', () => {
       const res = await service.verifyOtp({
         phone: PHONE,
         code: '123456',
+        app: 'parent',
       });
 
       expect(res.accessToken).toMatch(/^access\./);
@@ -1015,7 +1474,7 @@ describe('AuthService', () => {
         role: 'secondary',
       });
 
-      await service.verifyOtp({ phone: PHONE, code: '123456' });
+      await service.verifyOtp({ phone: PHONE, code: '123456', app: 'parent' });
 
       const after = guardianRepo.guardians.get(sec.id);
       expect(after?.status.value).toBe('pending_approval');
@@ -1034,7 +1493,11 @@ describe('AuthService', () => {
         status: 'approved',
       });
 
-      await service.verifyOtp({ phone: '+77012345678', code: '123456' });
+      await service.verifyOtp({
+        phone: '+77012345678',
+        code: '123456',
+        app: 'parent',
+      });
 
       // Should remain in its original (approved) state — no idempotent retouch.
       const after = guardianRepo.guardians.get(approved.id);
@@ -1059,7 +1522,7 @@ describe('AuthService', () => {
         childId: CHILD_B,
       });
 
-      await service.verifyOtp({ phone: PHONE, code: '123456' });
+      await service.verifyOtp({ phone: PHONE, code: '123456', app: 'parent' });
 
       expect(notifications.approved).toHaveLength(2);
       expect(notifications.approved.map((e) => e.kindergartenId)).toEqual(
@@ -1076,7 +1539,7 @@ describe('AuthService', () => {
       const { service, otpStore, notifications } = deps;
       await otpStore.storeCode(PHONE, '123456', 300);
 
-      await service.verifyOtp({ phone: PHONE, code: '123456' });
+      await service.verifyOtp({ phone: PHONE, code: '123456', app: 'parent' });
 
       expect(notifications.approved).toHaveLength(0);
     });
@@ -1093,6 +1556,7 @@ describe('AuthService', () => {
         deviceId: null,
         ipAddress: null,
         expiresAt: computeRefreshExpiresAt(new Date('2025-01-01'), 30),
+        audience: null,
       });
       users.put(
         User.hydrate({
@@ -1132,6 +1596,7 @@ describe('AuthService', () => {
         deviceId: null,
         ipAddress: null,
         expiresAt: new Date('2024-01-01'), // before fixed clock 2025-01-01
+        audience: null,
       });
       await expect(
         service.refreshToken({ rawRefreshToken: raw }),
@@ -1148,6 +1613,7 @@ describe('AuthService', () => {
         deviceId: null,
         ipAddress: null,
         expiresAt: computeRefreshExpiresAt(new Date('2025-01-01'), 30),
+        audience: null,
       });
       refresh.rows[0].revokedAt = new Date('2025-01-01');
       await expect(
@@ -1199,6 +1665,7 @@ describe('AuthService', () => {
         deviceId: null,
         ipAddress: null,
         expiresAt: computeRefreshExpiresAt(new Date('2025-01-01'), 30),
+        audience: null,
       });
 
       const issueSpy = jest.spyOn(jwt, 'issueAccessToken');
@@ -1264,6 +1731,7 @@ describe('AuthService', () => {
         deviceId: null,
         ipAddress: null,
         expiresAt: computeRefreshExpiresAt(new Date('2025-01-01'), 30),
+        audience: null,
       });
 
       await expect(
@@ -1312,6 +1780,7 @@ describe('AuthService', () => {
         deviceId: null,
         ipAddress: null,
         expiresAt: computeRefreshExpiresAt(new Date('2025-01-01'), 30),
+        audience: null,
       });
 
       const issueSpy = jest.spyOn(jwt, 'issueAccessToken');
@@ -1350,6 +1819,7 @@ describe('AuthService', () => {
         deviceId: null,
         ipAddress: null,
         expiresAt: computeRefreshExpiresAt(new Date('2025-01-01'), 30),
+        audience: null,
       });
 
       const issueSpy = jest.spyOn(jwt, 'issueAccessToken');
@@ -1358,6 +1828,99 @@ describe('AuthService', () => {
       const claims = issueSpy.mock.calls[0][0];
       expect(claims.role).toBe('parent');
       expect(claims.kindergarten_id).toBeNull();
+    });
+
+    it('re-resolves roles filtered by the stored audience and re-bakes aud', async () => {
+      // Refresh row carries audience='staff'. The user is staff (admin) in kg-A
+      // AND parent in kg-B. Rotation must filter to the staff role + re-bake
+      // aud='staff', never surface the parent role.
+      const { service, refresh, users, guardianRepo, staffRepo, jwt } = build();
+      const userId = 'user-1';
+      users.put(
+        User.hydrate({
+          id: userId,
+          phone: '+77000000000',
+          fullName: 'X',
+          avatarUrl: null,
+          iin: null,
+          dateOfBirth: null,
+          locale: 'ru',
+        }),
+      );
+      staffRepo.rows.push(
+        StaffMember.hydrate({
+          id: 'staff-1',
+          kindergartenId: 'kg-A',
+          userId,
+          fullName: 'X',
+          phone: null,
+          role: 'admin',
+          specialistType: null,
+          isActive: true,
+          hiredAt: new Date('2025-01-01'),
+          firedAt: null,
+          archivedAt: null,
+          createdAt: new Date('2025-01-01'),
+          updatedAt: new Date('2025-01-01'),
+        }),
+      );
+      guardianRepo.approvedKindergartenIdsByUserId.set(userId, ['kg-B']);
+      const raw = generateRefreshToken();
+      await refresh.create({
+        userId,
+        kindergartenId: 'kg-A',
+        tokenHash: hashRefreshToken(raw),
+        deviceId: null,
+        ipAddress: null,
+        expiresAt: computeRefreshExpiresAt(new Date('2025-01-01'), 30),
+        audience: 'admin',
+      });
+
+      const issueSpy = jest.spyOn(jwt, 'issueAccessToken');
+      const res = await service.refreshToken({ rawRefreshToken: raw });
+
+      const claims = issueSpy.mock.calls[0][0];
+      expect(claims.role).toBe('admin');
+      expect(claims.aud).toBe('admin');
+      // Parent role in kg-B is filtered out of the admin-audience session.
+      expect(res.roles.some((r) => r.role === 'parent')).toBe(false);
+      // New refresh row carries the same audience forward.
+      const fresh = refresh.rows.find((r) => r.revokedAt === null);
+      expect(fresh?.audience).toBe('admin');
+    });
+
+    it('treats legacy null-audience refresh rows as unfiltered', async () => {
+      // audience=null → old behavior: no audience filter, aud claim omitted.
+      const { service, refresh, users, jwt } = build();
+      const userId = 'user-1';
+      users.put(
+        User.hydrate({
+          id: userId,
+          phone: '+77000000000',
+          fullName: 'X',
+          avatarUrl: null,
+          iin: null,
+          dateOfBirth: null,
+          locale: 'ru',
+        }),
+      );
+      const raw = generateRefreshToken();
+      await refresh.create({
+        userId,
+        kindergartenId: null,
+        tokenHash: hashRefreshToken(raw),
+        deviceId: null,
+        ipAddress: null,
+        expiresAt: computeRefreshExpiresAt(new Date('2025-01-01'), 30),
+        audience: null,
+      });
+
+      const issueSpy = jest.spyOn(jwt, 'issueAccessToken');
+      await service.refreshToken({ rawRefreshToken: raw });
+
+      const claims = issueSpy.mock.calls[0][0];
+      expect(claims.role).toBe('parent');
+      expect(claims.aud).toBeUndefined();
     });
   });
 
@@ -1372,6 +1935,7 @@ describe('AuthService', () => {
         deviceId: null,
         ipAddress: null,
         expiresAt: computeRefreshExpiresAt(new Date('2025-01-01'), 30),
+        audience: null,
       });
       await service.logout({
         userId: 'user-1',
@@ -1393,6 +1957,7 @@ describe('AuthService', () => {
           deviceId: null,
           ipAddress: null,
           expiresAt: computeRefreshExpiresAt(new Date('2025-01-01'), 30),
+          audience: null,
         });
       }
       await service.logout({ userId: 'user-1' });

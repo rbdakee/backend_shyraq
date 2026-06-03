@@ -38,6 +38,11 @@ export class JsonwebtokenJwtAdapter extends JwtTokenPort {
     if (payload.kindergarten_id)
       claims.kindergarten_id = payload.kindergarten_id;
     if (payload.pending_role_select === true) claims.pending_role_select = true;
+    // `aud` stored as a normal payload property (like kindergarten_id /
+    // pending_role_select) — NOT via jsonwebtoken's `audience` sign option.
+    // The verify path below omits the `audience` verify option, so this claim
+    // is informational and can never break verification of existing tokens.
+    if (payload.aud) claims.aud = payload.aud;
 
     const token = await this.jwt.signAsync(claims, {
       secret: this.configService.getOrThrow('auth.jwtAccessSecret', {
@@ -80,6 +85,7 @@ export class JsonwebtokenJwtAdapter extends JwtTokenPort {
     if (typeof payload.pending_role_select === 'boolean') {
       out.pending_role_select = payload.pending_role_select;
     }
+    if (typeof payload.aud === 'string') out.aud = payload.aud;
     if (typeof payload.jti === 'string') out.jti = payload.jti;
     if (typeof payload.iat === 'number') out.iat = payload.iat;
     if (typeof payload.exp === 'number') out.exp = payload.exp;

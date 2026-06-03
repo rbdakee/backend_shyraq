@@ -5,6 +5,8 @@ export interface CreateRefreshInput {
   deviceId: string | null;
   ipAddress: string | null;
   expiresAt: Date;
+  /** App audience baked into the session ('parent'|'staff'|'admin'); null for legacy. */
+  audience: string | null;
 }
 
 export interface RotateOpts {
@@ -19,6 +21,12 @@ export interface RotateOpts {
 export interface RotateResult {
   userId: string;
   kindergartenId: string | null;
+  /**
+   * Audience stored on the rotated (original) row, carried forward onto the
+   * new row. NULL for legacy rows issued before the audience column existed —
+   * callers treat NULL as "no audience filter" to keep old sessions working.
+   */
+  audience: string | null;
 }
 
 export abstract class RefreshTokenRepository {
