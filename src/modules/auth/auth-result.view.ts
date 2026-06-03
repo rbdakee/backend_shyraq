@@ -24,6 +24,11 @@ export interface UserSummaryView {
   locale: string;
 }
 
+export interface ParentContextView {
+  approvedChildrenCount: number;
+  pendingRequestsCount: number;
+}
+
 export interface AuthResult {
   accessToken: string;
   refreshToken: string | null;
@@ -33,6 +38,10 @@ export interface AuthResult {
   roles: RoleView[];
   kindergartens: KindergartenSummaryView[];
   user: UserSummaryView;
+  /** Parent-app-only extras — present only when app=parent, omitted otherwise. */
+  isNewUser?: boolean;
+  profileComplete?: boolean;
+  parentContext?: ParentContextView;
 }
 
 export interface SuperAdminAuthResult {

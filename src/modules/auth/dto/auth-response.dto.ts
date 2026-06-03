@@ -54,6 +54,20 @@ export class AuthUserResponseDto {
   locale!: string;
 }
 
+export class ParentContextResponseDto {
+  @ApiProperty({
+    example: 0,
+    description: 'Count of children the user is an approved guardian of',
+  })
+  approved_children_count!: number;
+
+  @ApiProperty({
+    example: 1,
+    description: "Count of the user's own link requests still pending_approval",
+  })
+  pending_requests_count!: number;
+}
+
 export class AuthResponseDto {
   @ApiProperty({
     example:
@@ -89,11 +103,42 @@ export class AuthResponseDto {
 
   @ApiProperty({ type: AuthUserResponseDto })
   user!: AuthUserResponseDto;
+
+  @ApiProperty({
+    required: false,
+    example: true,
+    description:
+      'Parent app only — true when this verify created the users row. Omitted for staff/admin.',
+  })
+  is_new_user?: boolean;
+
+  @ApiProperty({
+    required: false,
+    example: false,
+    description:
+      'Parent app only — true when full_name + date_of_birth + iin are all set. Omitted for staff/admin.',
+  })
+  profile_complete?: boolean;
+
+  @ApiProperty({
+    required: false,
+    type: ParentContextResponseDto,
+    description:
+      'Parent app only — approved-children + pending-request counters. Omitted for staff/admin.',
+  })
+  parent_context?: ParentContextResponseDto;
 }
 
 export class OtpRequestResponseDto {
   @ApiProperty({ example: true })
   sent!: boolean;
+
+  @ApiProperty({
+    example: true,
+    description:
+      'Whether a users row already existed for this phone (always true on the staff/admin path).',
+  })
+  registered!: boolean;
 
   @ApiProperty({ example: 60 })
   resend_after_sec!: number;

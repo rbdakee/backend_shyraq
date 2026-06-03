@@ -1,6 +1,25 @@
 import { ChildGuardian } from '../../domain/entities/child-guardian.entity';
 
 /**
+ * Read-projection over a single pending `child_guardians` row from the
+ * APPLICANT's perspective (the caller's own `link` request awaiting approval).
+ *
+ * Carries the child + kindergarten NAMES that the `ChildGuardian` domain
+ * aggregate does not hold — populated by the relational repo via a JOIN
+ * through `children` and `kindergartens`. The applicant-facing presenter masks
+ * `childName` before it reaches the HTTP response (PII is hidden until the
+ * primary guardian approves the link).
+ */
+export interface PendingApplicantRequestView {
+  id: string;
+  role: string;
+  canPickup: boolean;
+  childName: string;
+  kindergartenName: string;
+  createdAt: Date;
+}
+
+/**
  * Port over the `child_guardians` table.
  *
  * Cross-tenant lookups (used by ChildAccessGuard / RoleAssembler) deliberately
@@ -237,6 +256,26 @@ export abstract class ChildGuardianRepository {
   findApprovedUserIdsByKindergarten(
     _kindergartenId: string,
   ): Promise<string[]> {
+    return Promise.resolve([]);
+  }
+
+  /**
+   * APPLICANT-perspective lookup of the caller's OWN pending link requests.
+   * Returns every `child_guardians` row where `user_id = userId AND
+   * status = 'pending_approval'`, CROSS-TENANT (a parent may have requests in
+   * several kindergartens). Bypasses RLS via `app.bypass_rls=true` inside its
+   * own transaction — mirrors `findPendingPrimaryByUserIdCrossTenant` /
+   * `findApprovedActiveByUserIdCrossTenant`. The caller is responsible for
+   * masking child PII before exposing the result (the data belongs to the
+   * caller's own requests, so cross-tenant exposure is bounded to their rows).
+   *
+   * Non-abstract default-no-op so older test fakes keep compiling; the
+   * relational impl overrides with the real JOIN through `children` +
+   * `kindergartens` to populate `childName` + `kindergartenName`.
+   */
+  findPendingByApplicantUserId(
+    _userId: string,
+  ): Promise<PendingApplicantRequestView[]> {
     return Promise.resolve([]);
   }
 }

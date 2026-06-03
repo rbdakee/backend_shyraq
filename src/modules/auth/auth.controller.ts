@@ -58,7 +58,10 @@ export class AuthController {
   })
   @ApiBody({
     type: RequestOtpDto,
-    examples: { default: { value: { phone: '+77012345678' } } },
+    examples: {
+      parent: { value: { phone: '+77012345678', app: 'parent' } },
+      staff: { value: { phone: '+77012345678', app: 'staff' } },
+    },
   })
   @ApiOkResponse({
     type: OtpRequestResponseDto,
@@ -70,8 +73,11 @@ export class AuthController {
       'Either the per-phone rate limit was exceeded (otp_rate_limit) or the phone is locked out from too many wrong codes (otp_locked).',
   })
   async requestOtp(@Body() dto: RequestOtpDto): Promise<OtpRequestResponseDto> {
-    const { resendAfterSec } = await this.auth.requestOtp(dto.phone);
-    return { sent: true, resend_after_sec: resendAfterSec };
+    const { resendAfterSec, registered } = await this.auth.requestOtp(
+      dto.phone,
+      dto.app,
+    );
+    return { sent: true, registered, resend_after_sec: resendAfterSec };
   }
 
   @Post('otp/verify')
@@ -85,7 +91,17 @@ export class AuthController {
   @ApiBody({
     type: VerifyOtpDto,
     examples: {
-      default: { value: { phone: '+77012345678', code: '123456' } },
+      parent: {
+        value: { phone: '+77012345678', code: '123456', app: 'parent' },
+      },
+      staff: {
+        value: {
+          phone: '+77012345678',
+          code: '123456',
+          app: 'staff',
+          kindergartenId: '5b3d3b8a-7f4f-4d2a-9c84-9a7c1c1c1c1c',
+        },
+      },
     },
   })
   @ApiHeader({
@@ -112,6 +128,8 @@ export class AuthController {
     const result = await this.auth.verifyOtp({
       phone: dto.phone,
       code: dto.code,
+      app: dto.app,
+      kindergartenId: dto.kindergartenId,
       deviceId: deviceId && deviceId.length > 0 ? deviceId : undefined,
       ipAddress: req.ip,
     });

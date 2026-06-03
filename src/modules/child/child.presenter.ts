@@ -3,6 +3,8 @@ import {
   PermissionKey,
 } from '@/shared-kernel/domain/value-objects/guardian-permissions.vo';
 import { ChildGroupHistoryRecord } from './infrastructure/persistence/child.repository';
+import { PendingApplicantRequestView } from './infrastructure/persistence/child-guardian.repository';
+import { PendingApplicantRequestDto } from './dto/pending-applicant-request.dto';
 import { Child } from './domain/entities/child.entity';
 import { ChildGuardian } from './domain/entities/child-guardian.entity';
 import { ChildStatusHistory } from './domain/entities/child-status-history.entity';
@@ -16,6 +18,26 @@ import {
 
 function toIsoDate(d: Date): string {
   return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Mask a person's name for the applicant-facing pending-requests view: split
+ * on whitespace, and reduce each word to its FIRST character + `****`.
+ *
+ *   "Алия Бекова" → "А**** Б****"
+ *   "Алия"        → "А****"
+ *   ""            → ""        (empty / whitespace-only stays empty)
+ *
+ * Pure function — exported so it can be unit-tested in isolation. Used to keep
+ * child PII hidden until the primary guardian approves the link (same gating
+ * as the `/link` endpoint, which never echoes child data).
+ */
+export function maskName(name: string): string {
+  return name
+    .split(/\s+/)
+    .filter((word) => word.length > 0)
+    .map((word) => `${[...word][0]}****`)
+    .join(' ');
 }
 
 export class ChildPresenter {
@@ -112,5 +134,25 @@ export class ChildPresenter {
 
   static lockedKeys(): readonly string[] {
     return LOCKED_PERMISSION_KEYS;
+  }
+
+  /**
+   * APPLICANT-perspective pending link request → snake_case response DTO.
+   * Child PII is masked (`maskName`) — only the first letter of each name word
+   * is exposed, never the full name / IIN / dob / photo. `status` is always
+   * `pending_approval` for this endpoint.
+   */
+  static pendingApplicantRequest(
+    v: PendingApplicantRequestView,
+  ): PendingApplicantRequestDto {
+    return {
+      id: v.id,
+      role: v.role,
+      can_pickup: v.canPickup,
+      status: 'pending_approval',
+      child_name_masked: maskName(v.childName),
+      kindergarten: { name: v.kindergartenName },
+      created_at: v.createdAt.toISOString(),
+    };
   }
 }

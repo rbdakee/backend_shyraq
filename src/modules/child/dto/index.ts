@@ -27,6 +27,10 @@ export {
 } from './guardian-response.dto';
 export { LinkChildDto } from './link-child.dto';
 export {
+  PendingApplicantRequestDto,
+  PendingRequestKindergartenDto,
+} from './pending-applicant-request.dto';
+export {
   ChildStatusHistoryDto,
   ChildStatusHistoryListResponseDto,
   ListChildStatusHistoryQueryDto,

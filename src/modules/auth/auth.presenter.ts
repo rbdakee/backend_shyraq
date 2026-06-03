@@ -19,7 +19,7 @@ import {
  */
 export const AuthPresenter = {
   authResult(result: AuthResult): AuthResponseDto {
-    return {
+    const dto: AuthResponseDto = {
       access_token: result.accessToken,
       refresh_token: result.refreshToken,
       token_type: result.tokenType,
@@ -35,6 +35,19 @@ export const AuthPresenter = {
       ),
       user: userSummary(result.user),
     };
+    // Parent-app extras: only emit when the service populated them (app=parent).
+    // Keeping them absent for /auth/refresh, /auth/role/select and super-admin
+    // responses avoids leaking parent-only shape into staff/admin clients.
+    if (result.isNewUser !== undefined) dto.is_new_user = result.isNewUser;
+    if (result.profileComplete !== undefined)
+      dto.profile_complete = result.profileComplete;
+    if (result.parentContext !== undefined) {
+      dto.parent_context = {
+        approved_children_count: result.parentContext.approvedChildrenCount,
+        pending_requests_count: result.parentContext.pendingRequestsCount,
+      };
+    }
+    return dto;
   },
   superAdminAuthResult(
     result: SuperAdminAuthResult,

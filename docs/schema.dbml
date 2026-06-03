@@ -273,6 +273,7 @@ Table refresh_tokens {
   token_hash      varchar     [unique, not null]
   device_id       varchar
   ip_address      varchar
+  audience        varchar(16) // 'parent'|'staff'|'admin'; NULL for legacy rows (no audience filter on refresh)
   expires_at      timestamptz [not null]
   revoked_at      timestamptz
   created_at      timestamptz [not null, default: `now()`]

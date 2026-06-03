@@ -5,6 +5,8 @@ export interface RefreshTokenState {
   tokenHash: string;
   expiresAt: Date;
   revokedAt: Date | null;
+  /** App audience the session belongs to; null for legacy rows. */
+  audience: string | null;
 }
 
 /**
@@ -20,6 +22,7 @@ export class RefreshToken {
     readonly tokenHash: string,
     readonly expiresAt: Date,
     private _revokedAt: Date | null,
+    readonly audience: string | null,
   ) {}
 
   static hydrate(state: RefreshTokenState): RefreshToken {
@@ -30,6 +33,7 @@ export class RefreshToken {
       state.tokenHash,
       state.expiresAt,
       state.revokedAt,
+      state.audience,
     );
   }
 

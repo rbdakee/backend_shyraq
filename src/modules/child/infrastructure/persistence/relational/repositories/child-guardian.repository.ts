@@ -3,7 +3,10 @@ import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Repository } from 'typeorm';
 import { tenantStorage } from '@/database/tenant-storage';
 import { ChildGuardian } from '../../../../domain/entities/child-guardian.entity';
-import { ChildGuardianRepository } from '../../child-guardian.repository';
+import {
+  ChildGuardianRepository,
+  PendingApplicantRequestView,
+} from '../../child-guardian.repository';
 import { ChildGuardianEntity } from '../entities/child-guardian.entity';
 import { ChildGuardianMapper } from '../mappers/child-guardian.mapper';
 
@@ -427,6 +430,54 @@ export class ChildGuardianRelationalRepository extends ChildGuardianRepository {
       [kindergartenId],
     )) as Array<{ user_id: string }>;
     return rows.map((r) => r.user_id);
+  }
+
+  /**
+   * APPLICANT-perspective lookup of the caller's own pending link requests,
+   * cross-tenant. Bypasses RLS the same way the other cross-tenant methods do
+   * (own TX + `app.bypass_rls=true`). JOINs `children` + `kindergartens` to
+   * project the child + kindergarten names the response needs. The service /
+   * presenter masks the child name before exposing it.
+   */
+  override async findPendingByApplicantUserId(
+    userId: string,
+  ): Promise<PendingApplicantRequestView[]> {
+    return this.dataSource.transaction(async (manager) => {
+      await manager.query(`SET LOCAL app.bypass_rls = 'true'`);
+      const rows = (await manager.query(
+        `SELECT g.id           AS id,
+                g.role         AS role,
+                g.can_pickup   AS can_pickup,
+                g.created_at   AS created_at,
+                c.full_name    AS child_name,
+                k.name         AS kindergarten_name
+           FROM child_guardians g
+           JOIN children c
+             ON c.id = g.child_id
+            AND c.kindergarten_id = g.kindergarten_id
+           JOIN kindergartens k
+             ON k.id = g.kindergarten_id
+          WHERE g.user_id = $1
+            AND g.status = 'pending_approval'
+          ORDER BY g.created_at ASC`,
+        [userId],
+      )) as Array<{
+        id: string;
+        role: string;
+        can_pickup: boolean;
+        created_at: Date;
+        child_name: string;
+        kindergarten_name: string;
+      }>;
+      return rows.map((r) => ({
+        id: r.id,
+        role: r.role,
+        canPickup: r.can_pickup,
+        childName: r.child_name,
+        kindergartenName: r.kindergarten_name,
+        createdAt: r.created_at,
+      }));
+    });
   }
 
   private manager(): EntityManager {

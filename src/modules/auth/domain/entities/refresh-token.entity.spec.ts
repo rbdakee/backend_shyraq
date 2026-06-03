@@ -8,6 +8,7 @@ describe('RefreshToken (domain)', () => {
     tokenHash: 'h'.repeat(64),
     expiresAt: new Date(Date.now() + 60_000),
     revokedAt: null as Date | null,
+    audience: null as string | null,
   };
 
   it('isActive=true for a fresh un-revoked token', () => {
