@@ -174,9 +174,16 @@ FILE_STORAGE_PROVIDER=local
 
 # --- Push notifications (B9) ---
 # PUSH_PROVIDER selects the PushNotificationPort adapter for mobile push.
-# 'mock' | 'fcm'. Real FCM adapter is Phase B (stub exists today, switches by env).
+# 'mock' | 'fcm'. 'mock' logs every push (dev + tests); 'fcm' delivers via
+# firebase-admin (FCM HTTP v1).
 PUSH_PROVIDER=mock
-# FCM credentials only required when PUSH_PROVIDER=fcm.
+# FCM service-account credentials — REQUIRED when PUSH_PROVIDER=fcm (bootstrap
+# fails loudly if any is missing). Take them from the Firebase console:
+#   Project settings → Service accounts → Generate new private key (JSON).
+# Map the JSON fields: project_id → FIREBASE_PROJECT_ID,
+# client_email → FIREBASE_CLIENT_EMAIL, private_key → FIREBASE_PRIVATE_KEY.
+# Keep the private key on ONE line with literal \n escapes (the adapter
+# restores real newlines); wrapping it in double quotes is fine.
 # FIREBASE_PROJECT_ID=
 # FIREBASE_CLIENT_EMAIL=
 # FIREBASE_PRIVATE_KEY=
