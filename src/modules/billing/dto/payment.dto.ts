@@ -9,8 +9,10 @@ import {
   IsString,
   IsUUID,
   IsUrl,
+  Matches,
   Max,
   Min,
+  ValidateIf,
 } from 'class-validator';
 import type {
   PaymentProvider,
@@ -83,6 +85,17 @@ export class InitiatePaymentDto {
   })
   @IsUrl()
   return_url!: string;
+
+  @ApiProperty({
+    example: '77011234567',
+    required: false,
+    description:
+      'Required when provider=kaspi_pay — phone Kaspi sends the remote invoice to. Ignored for other providers.',
+  })
+  @ValidateIf((o: InitiatePaymentDto) => o.provider === 'kaspi_pay')
+  @IsString()
+  @Matches(/^7\d{10}$/, { message: 'invalid_phone_format' })
+  kaspi_phone_number?: string;
 }
 
 export class InitiatePrepaymentDto {
@@ -117,6 +130,17 @@ export class InitiatePrepaymentDto {
   })
   @IsUrl()
   return_url!: string;
+
+  @ApiProperty({
+    example: '77011234567',
+    required: false,
+    description:
+      'Required when provider=kaspi_pay — phone Kaspi sends the remote invoice to. Ignored for other providers.',
+  })
+  @ValidateIf((o: InitiatePrepaymentDto) => o.provider === 'kaspi_pay')
+  @IsString()
+  @Matches(/^7\d{10}$/, { message: 'invalid_phone_format' })
+  kaspi_phone_number?: string;
 }
 
 // ── query DTO ──────────────────────────────────────────────────────────────
@@ -319,6 +343,15 @@ export class InitiatePrepaymentResponseDto {
     nullable: true,
   })
   redirect_url!: string | null;
+
+  @ApiProperty({
+    example: 'kaspi://pay?...',
+    nullable: true,
+    required: false,
+    description:
+      'Provider deeplink (Kaspi). The only way the parent pays a Kaspi prepayment.',
+  })
+  deeplink?: string | null;
 
   @ApiProperty({ type: PrepaymentPreviewDto })
   preview!: PrepaymentPreviewDto;

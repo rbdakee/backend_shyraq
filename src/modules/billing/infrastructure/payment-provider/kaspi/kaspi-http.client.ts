@@ -10,6 +10,14 @@ export interface KaspiHttpResponse {
   status: number;
   /** Parsed JSON body, or null if the body was empty/non-JSON. */
   json: unknown;
+  /**
+   * Raw `set-cookie` header values from the response (one entry per cookie).
+   * Populated via undici's `Headers.getSetCookie()`. K5's SMS-onboarding flow
+   * threads the rotating `user_token` cookie between the 3 entrance steps —
+   * existing K3/K6 callers simply ignore this field (additive, non-breaking).
+   * Empty array when the response set no cookies.
+   */
+  setCookie: string[];
 }
 
 export interface KaspiRequestOptions {
@@ -64,6 +72,7 @@ export class KaspiHttpClient {
     }
 
     const json = await safeJson(response);
+    const setCookie = readSetCookie(response);
 
     if (!response.ok) {
       this.logger.warn(
@@ -71,8 +80,27 @@ export class KaspiHttpClient {
       );
     }
 
-    return { status: response.status, json };
+    return { status: response.status, json, setCookie };
   }
+}
+
+/**
+ * Reads all `set-cookie` values from a fetch Response. Node's undici exposes
+ * `Headers.getSetCookie()`; we feature-detect it so a custom test `fetchImpl`
+ * returning a minimal/absent `headers` object does not crash (existing K3/K6
+ * test doubles return Response stubs with no `headers` at all).
+ */
+function readSetCookie(res: Response): string[] {
+  const headers = res.headers as
+    | (Headers & { getSetCookie?: () => string[] })
+    | undefined;
+  if (!headers) return [];
+  if (typeof headers.getSetCookie === 'function') {
+    return headers.getSetCookie();
+  }
+  const single =
+    typeof headers.get === 'function' ? headers.get('set-cookie') : null;
+  return single ? [single] : [];
 }
 
 async function safeJson(res: Response): Promise<unknown> {

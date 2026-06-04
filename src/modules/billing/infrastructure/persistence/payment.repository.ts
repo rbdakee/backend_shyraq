@@ -116,10 +116,19 @@ export abstract class PaymentRepository {
     now: Date,
   ): Promise<Payment | null>;
 
+  /**
+   * Conditional transition `initiated → processing`. Optionally persists the
+   * provider txn id (Kaspi QrOperationId) and merges `providerPayload` into the
+   * existing `provider_payload` so the K8 poller / refund can correlate via
+   * `provider_txn_id`. Both extra params are optional to keep older callers
+   * (synchronous providers) working unchanged.
+   */
   abstract markProcessingConditional(
     kindergartenId: string,
     id: string,
     now: Date,
+    providerTxnId?: string | null,
+    providerPayload?: Record<string, unknown> | null,
   ): Promise<Payment | null>;
 
   abstract markRefundedConditional(

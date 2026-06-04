@@ -104,6 +104,10 @@ export class ParentPaymentController {
       }
     }
 
+    if (dto.provider === 'kaspi_pay' && !dto.kaspi_phone_number) {
+      throw new BadRequestException('kaspi_phone_required');
+    }
+
     const amount =
       dto.payment_mode === 'full'
         ? invoice.amountAfterDiscount.toNumber()
@@ -117,6 +121,7 @@ export class ParentPaymentController {
       idempotencyKey: dto.idempotency_key,
       payerUserId: user.sub,
       returnUrl: dto.return_url,
+      kaspiPhoneNumber: dto.kaspi_phone_number,
     });
 
     return {
@@ -156,6 +161,10 @@ export class ParentPaymentController {
     const original = await this.invoiceService.get(kgId, invoiceId);
     await this.paymentService.assertCanPay(kgId, user.sub, original.childId);
 
+    if (dto.provider === 'kaspi_pay' && !dto.kaspi_phone_number) {
+      throw new BadRequestException('kaspi_phone_required');
+    }
+
     const prepaymentInvoice = await this.invoiceService.prepayInvoice(
       kgId,
       original.childId,
@@ -170,6 +179,7 @@ export class ParentPaymentController {
       idempotencyKey: dto.idempotency_key,
       payerUserId: user.sub,
       returnUrl: dto.return_url,
+      kaspiPhoneNumber: dto.kaspi_phone_number,
     });
 
     const presented = InvoicePresenter.one(prepaymentInvoice);
@@ -177,6 +187,7 @@ export class ParentPaymentController {
       invoice_id: prepaymentInvoice.id,
       payment_id: result.payment.id,
       redirect_url: result.redirectUrl ?? null,
+      deeplink: result.deeplink ?? null,
       preview: {
         base_amount: prepaymentInvoice.amountDue.toNumber(),
         discount_pct: prepaymentInvoice.discountPct ?? 0,

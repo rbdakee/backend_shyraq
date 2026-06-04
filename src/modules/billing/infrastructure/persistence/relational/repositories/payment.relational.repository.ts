@@ -268,11 +268,28 @@ export class PaymentRelationalRepository extends PaymentRepository {
     kindergartenId: string,
     id: string,
     now: Date,
+    providerTxnId?: string | null,
+    providerPayload?: Record<string, unknown> | null,
   ): Promise<Payment | null> {
-    return this.transitionConditional(kindergartenId, id, ['initiated'], {
+    const patch: Partial<PaymentTypeOrmEntity> = {
       status: 'processing',
       updatedAt: now,
-    });
+    };
+    if (providerTxnId != null) {
+      patch.providerTxnId = providerTxnId;
+    }
+    if (providerPayload != null) {
+      // Merge into the existing provider_payload (mirror markFailedConditional's
+      // merge semantics) so previously-stashed hints are not clobbered.
+      const current = await this.findById(kindergartenId, id);
+      const mergedPayload = {
+        ...(current?.providerPayload ?? {}),
+        ...providerPayload,
+      };
+      // jsonb — cast to satisfy TypeORM QueryDeepPartial.
+      patch.providerPayload = mergedPayload as unknown as undefined;
+    }
+    return this.transitionConditional(kindergartenId, id, ['initiated'], patch);
   }
 
   async markRefundedConditional(

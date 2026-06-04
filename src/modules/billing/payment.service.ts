@@ -45,6 +45,11 @@ export interface InitiatePaymentInput {
   idempotencyKey: string;
   payerUserId?: string | null;
   returnUrl: string;
+  /**
+   * Payer phone in Kaspi format (7XXXXXXXXXX). Required when provider=kaspi_pay.
+   * The controller enforces the 400 `kaspi_phone_required` guard before calling `initiate`.
+   */
+  kaspiPhoneNumber?: string | null;
 }
 
 export interface InitiatePaymentResult {
@@ -277,12 +282,19 @@ export class PaymentService {
     // exception types to the controller layer.
     let providerResult;
     try {
+      // Kaspi requires whole tenge; adapter rounds defensively (Math.round in
+      // KaspiPaymentProvider). MoneyKzt.toNumber() quantizes to 2dp (banker's
+      // rounding) so sub-tenge tiyn can appear here. The adapter's rounding is
+      // the last-resort guard; no money is created or destroyed — any sub-tenge
+      // fraction in an invoice is a rounding artefact from percentage discounts.
       providerResult = await this.paymentProvider.createPayment({
+        kindergartenId,
         invoiceId: invoice.id,
         amountKzt: payment.amount.toNumber(),
         currency: 'KZT',
         returnUrl: input.returnUrl,
         payerUserId: input.payerUserId ?? undefined,
+        phoneNumber: input.kaspiPhoneNumber ?? undefined,
         idempotencyKey: input.idempotencyKey,
       });
     } catch (err) {
@@ -323,24 +335,31 @@ export class PaymentService {
       );
       if (failed) payment = failed;
     } else {
-      // 'initiated' — async path. Persist redirect hints into the payload
-      // so an idempotent retry can read them back.
-      if (Object.keys(redirectPayload).length > 0) {
-        const updatedNow = this.clock.now();
-        await this.paymentRepo
-          .markProcessingConditional(kindergartenId, payment.id, updatedNow)
-          .catch((err) => {
-            this.logger.warn(
-              `payment.initiate: failed to mark processing payment=${payment.id}: ${err instanceof Error ? err.message : err}`,
-            );
-          });
-        // Re-read so caller sees the latest snapshot.
-        const refreshed = await this.paymentRepo.findById(
+      // 'initiated' — async path (e.g. Kaspi). ALWAYS persist the provider txn
+      // id (QrOperationId) so the K8 poller and refund can correlate via
+      // provider_txn_id, plus any redirect/deeplink hints for an idempotent
+      // retry. Without this the Kaspi operation id is lost and settlement is
+      // impossible.
+      const updatedNow = this.clock.now();
+      await this.paymentRepo
+        .markProcessingConditional(
           kindergartenId,
           payment.id,
-        );
-        if (refreshed) payment = refreshed;
-      }
+          updatedNow,
+          providerResult.providerPaymentId,
+          redirectPayload,
+        )
+        .catch((err) => {
+          this.logger.warn(
+            `payment.initiate: failed to mark processing payment=${payment.id}: ${err instanceof Error ? err.message : err}`,
+          );
+        });
+      // Re-read so caller sees the latest snapshot.
+      const refreshed = await this.paymentRepo.findById(
+        kindergartenId,
+        payment.id,
+      );
+      if (refreshed) payment = refreshed;
     }
 
     return {

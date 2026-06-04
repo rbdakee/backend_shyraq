@@ -68,6 +68,14 @@ import { NotificationNotFoundError } from '@/modules/notification/domain/errors/
 import { PushTokenNotFoundError } from '@/modules/notification/domain/errors/push-token-not-found.error';
 import { PaymentProviderError } from '@/modules/billing/domain/errors/payment-provider.error';
 import {
+  KaspiAppVersionOutdatedError,
+  KaspiFinishFailedError,
+  KaspiOtpInvalidError,
+  KaspiPhoneRequiredError,
+  KaspiUnknownProcessError,
+  KaspiWebhookUnsupportedError,
+} from '@/modules/billing/domain/errors/kaspi-connect.errors';
+import {
   FileStorageMalformedKeyError,
   FileStorageNotFoundError,
   FileStorageTransientError,
@@ -203,6 +211,23 @@ export class DomainErrorFilter implements ExceptionFilter {
     // PaymentProviderError → 502 Bad Gateway; the raw provider reason is
     // intentionally NOT propagated to the response body (only `details.provider`).
     if (err instanceof PaymentProviderError) return HttpStatus.BAD_GATEWAY;
+    // B24 Kaspi onboarding (§2.25). 409/404 fall through to the Conflict/
+    // NotFound base branches below; these three need explicit mappings.
+    if (err instanceof KaspiUnknownProcessError) return HttpStatus.BAD_REQUEST;
+    if (err instanceof KaspiOtpInvalidError) return HttpStatus.UNAUTHORIZED;
+    // K6 — Kaspi payment adapter errors.
+    // kaspi_phone_required → 400 (clean path is the K7 DTO guard; this maps it
+    // for direct callers that bypass PaymentService's provider catch-all).
+    if (err instanceof KaspiPhoneRequiredError) return HttpStatus.BAD_REQUEST;
+    // kaspi_webhook_unsupported → 501 (Kaspi has no inbound callback; settlement
+    // is via the K8 poller). Matches docs/endpoints.md §4.5 error catalog.
+    if (err instanceof KaspiWebhookUnsupportedError)
+      return HttpStatus.NOT_IMPLEMENTED;
+    // Both Kaspi-upstream failures map to 502 (mirrors PaymentProviderError);
+    // the raw Kaspi reason is kept server-side only, never in the body.
+    if (err instanceof KaspiAppVersionOutdatedError)
+      return HttpStatus.BAD_GATEWAY;
+    if (err instanceof KaspiFinishFailedError) return HttpStatus.BAD_GATEWAY;
     // B22b T9 — discriminated file-storage errors.
     // MalformedKey → 400 (bad request, never retry)
     // NotFound     → 404 (key missing from store)

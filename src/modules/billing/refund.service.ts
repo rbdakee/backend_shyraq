@@ -231,6 +231,7 @@ export class RefundService {
     let providerResult;
     try {
       providerResult = await this.paymentProvider.refund({
+        kindergartenId,
         providerPaymentId: payment.providerTxnId ?? payment.id,
         amountKzt: refund.amount.toNumber(),
         reason: refund.reason,
