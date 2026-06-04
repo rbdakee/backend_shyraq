@@ -247,8 +247,8 @@
 
 ### Payment Options
 
-- **`Halyk ePay`** — Halyk Bank, любые карты
-- **`Kaspi Pay API`** — Kaspi.kz (не статичный QR, а нативный API)
+- **`Kaspi Pay API`** — Kaspi.kz (не статичный QR, а нативный API). **Основной метод оплаты — реализуется первым (B24).** Родитель вводит номер телефона → садик выставляет удалённый счёт (`remote/create`) → родитель платит в приложении Kaspi.
+- **`Halyk ePay`** — Halyk Bank, любые карты (Phase B, после Kaspi)
 - **`TipTopPay`** ИЛИ **`Freedom Pay`** — для карт других банков (финальный выбор провайдера — до интеграции)
 
 ### Alternative Flows
@@ -285,6 +285,18 @@
 - **Хук enrollment → первый инвойс:** при переходе enrollment в `card_created` (BP §1) система автоматически вызывает `BillingService.generateFirstInvoice(kgId, childId, enrollmentDate)` в ambient TX. Закрывает `TODO(B13)` в `EnrollmentService.transition()`.
 - **Хук late_pickup → инвойс:** при `accept` заявки типа `late_pickup` (BP §6) система вызывает `BillingService.generateLatePickupInvoice(kgId, childId, parentRequestId)` и проставляет `parent_requests.invoice_id`. Закрывает `TODO(B13)` в `ParentRequestService.accept()`.
 - **B13 demo-ready (Phase A):** функционал §4 (без §4.1) закрыт на Mock-адаптерах в коммите `df1c9af`. Тарифы, invoice CRUD, monthly cron, parent pay (full / partial / prepayment 3/6/12/24 м), webhook flow, refund flow (pending → approved → processed), pro-rata holidays. Provider-agnostic ports готовы — реальный Halyk ePay подключается одной строкой через `PAYMENT_PROVIDER=halyk` в B14 / Phase B. Реальный ОФД — через `FISCAL_PROVIDER=<vendor>` в B15.
+
+#### Kaspi Pay — основной платёжный провайдер (B24, Phase B)
+
+Kaspi Pay подключается как новый адаптер `PaymentProviderPort` (`provider='kaspi_pay'`). Источник реализации — реверс-инжиниринг iOS-приложения Kaspi Pay (**не официальное API**); подробности — `kaspi_pay_test/HANDOFF.md`. Ключевые отличия от Mock/Halyk-модели:
+
+- **Per-tenant кассирская сессия.** У каждого садика свой подключённый кассирский аккаунт Kaspi. Креды (`token_sn`, ECDH-секрет, ECDSA-ключ устройства, отпечаток) хранятся в `kaspi_merchant_session` (одна строка на садик, RLS) — всё чувствительное зашифровано at-rest (AES-256-GCM, `KASPI_ENCRYPTION_KEY`). Адаптер резолвит сессию садика **в момент вызова** (`kindergartenId` прокидывается явно в порт) — единственное санкционированное отступление от singleton-паттерна провайдера.
+- **SMS-онбординг админом.** Админ садика подключает Kaspi через 3-шаговый SMS-флоу (`/admin/kaspi/connect/*`, см. endpoints §2.25); in-flight состояние между шагами — в Redis (TTL ~5 мин). Реконнект = повторный онбординг. Устройство-отпечаток генерируется **свой на каждый садик** (иначе конфликт регистрации `NewDeviceCashier` между аккаунтами).
+- **Оплата родителем.** Родитель вводит номер телефона (`kaspi_phone_number` в `/parent/invoices/:id/pay`) → `remote/create {PhoneNumber, Amount, Comment}` → `QrOperationId`. Редиректа нет (оплата в приложении Kaspi у клиента); возвращается `deeplink`. Сумма — целые тенге (Kaspi не принимает копейки).
+- **Settlement через поллер, не webhook.** У Kaspi нет входящего callback'а → завершение оплаты делает внутренний BullMQ-поллер (`kaspi-payment-status`, cross-tenant): `remote/details` по `QrOperationId` → `Processed`→completed / `Canceled\|Rejected\|Expired`→failed. Переиспользует ту же settlement-логику, что и webhook-путь (`PaymentService`).
+- **Версионный гейт.** Kaspi блокирует устаревший **билд** (`OldVersionToUpdate` по `app_build`, строка версии игнорируется). Конфиг `app_build` живёт в `kaspi_global_config` (single-row, правит суперадмин без передеплоя, endpoints §1.8) + cron health-check (SMS-free probe → алерт суперадмину заранее).
+- **Сессия и продление.** Сессия живёт долго; при истечении поллер сперва пробует `/refresh` (SignInLite, без SMS), при неудаче — `status=expired` + нотификация админу на переподключение. TOTP-MAC подписи требуют **точных часов сервера (NTP)** — дрейф ломает подпись.
+- **ToS / антифрод риск.** Неофициальный клиент против реального кассирского аккаунта — формально нарушает условия Kaspi; аккаунт теоретически могут пометить. Осознанное решение владельца (взвесить vs. официальный договор с банком для прод-объёмов).
 
 ### 4.1 Custom Discounts (праздничные и спец. скидки)
 

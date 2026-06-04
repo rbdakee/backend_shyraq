@@ -361,6 +361,22 @@ Email + password (не OTP). Access-токен — тот же JWT HS256 (`JWT_A
 | POST | `/saas/content/story-cleanup-run` | Ручной триггер `story-cleanup` процессора. Body: `{kindergarten_id?: 'uuid'}`. Удаляет `group_stories` с `expires_at <= NOW()`, вызывает `FileStoragePort.delete` для каждого. Response 200: `{triggered_at, deleted_count: int}`. |
 | POST | `/saas/content/publish-scheduled-run` | Ручной триггер `content-publish` процессора. Body: `{kindergarten_id?: 'uuid'}`. Публикует `content_posts` с `status='scheduled'` и `scheduled_for <= NOW()`. Response 200: `{triggered_at, published_count: int}`. |
 
+### 1.8 Kaspi Pay — Global Config (Super-Admin) — B24
+
+**Auth:** `@SuperAdminScope()` (bypass RLS). Глобальный конфиг Kaspi-клиента — single-row `kaspi_global_config`, общий для всех садиков.
+
+**Зачем:** Kaspi блокирует устаревший **билд** приложения (`OldVersionToUpdate`) — гейт смотрит на `app_build`, строку `app_version` игнорирует (эмпирически, floor сейчас = 1071). При блокировке суперадмин поднимает `app_build` здесь — **без передеплоя**, и все садики чинятся.
+
+| Метод | Путь | Назначение |
+|---|---|---|
+| GET | `/saas/kaspi/config` | Текущий глобальный конфиг. Response 200: `{app_version, app_build, platform_ver, model, brand, ua_native, ua_browser, entrance_url, mtoken_url, qrpay_url, updated_by, updated_at}`. |
+| PUT | `/saas/kaspi/config` | Обновить конфиг (частично). Body: `{app_version?, app_build?, platform_ver?, model?, brand?, ua_native?, ua_browser?, entrance_url?, mtoken_url?, qrpay_url?}`. Инвалидирует кэш во всех Kaspi-адаптерах. Response 200: обновлённый конфиг. Errors: 422 validation. |
+| POST | `/saas/kaspi/version-probe` | **SMS-free** проверка билда против гейта Kaspi. Body: `{app_build?, app_version?}` (default — текущие из config). Дёргает Kaspi `entrance/step` (init, SMS НЕ шлётся) и смотрит `OldVersionToUpdate`. Response 200: `{build, accepted: bool, alarm?: 'OldVersionToUpdate'}`. Используется как health-check (cron шлёт его текущим `app_build` → алерт суперадмину при `accepted=false`). |
+
+**Notes:**
+- Probe детерминированный и SMS-бесплатный (гейт срабатывает до отправки кода) — можно гонять для бинарного поиска текущего floor.
+- Cron `kaspi:version-health` периодически вызывает probe с конфиг-билдом; при `accepted=false` → outbox-нотификация суперадмину (чинить проактивно, до жалоб родителей).
+
 ---
 
 ## 2. Admin API (Admin Web, роль `admin`)
@@ -944,6 +960,24 @@ Qundylyq реализуется как `content_posts` с `content_type='qundyly
 - Retry endpoint полезен после исправления transient bugs в processor'е — re-enqueue вместо ручного UPDATE на DB-rows.
 - Полный список processor'ов в `lifecycle` queue: `pro-rata-refund` (B21). Будущие lifecycle-jobs наследуют этот же admin-surface.
 
+### 2.25 Kaspi Pay — подключение мерчанта (B24)
+
+<!-- B24 — SMS-онбординг кассирского аккаунта Kaspi Pay для садика. Per-tenant креды в kaspi_merchant_session. -->
+
+**Auth:** `JwtAuthGuard` + `KindergartenScopeGuard` + `@Roles('admin')`. Креды пишутся в `kaspi_merchant_session` своего садика (RLS).
+
+**Поток онбординга** — 3 шага SMS + finish; in-flight состояние между шагами в Redis (ключ по `processId`, TTL ~5 мин). ⚠️ `verify-otp` с валидным билдом шлёт **реальную SMS** кассиру — беречь попытки. Версия/билд приложения берётся из `kaspi_global_config` (§1.8).
+
+| Метод | Путь | Назначение |
+|---|---|---|
+| POST | `/admin/kaspi/connect/init` | Старт онбординга. Body пустой. Дёргает Kaspi `entrance/step` (SMS НЕ шлётся), кладёт в Redis `userToken` + draft device-fingerprint (свой на садик). Response 201: `{process_id}`. Errors: 409 `kaspi_already_connected` (есть active-сессия — сначала disconnect), 502 `kaspi_app_version_outdated` (гейт `OldVersionToUpdate` — суперадмину поднять `app_build`). |
+| POST | `/admin/kaspi/connect/send-phone` | Body: `{process_id, phone: '7XXXXXXXXXX'}` — номер кассира. Триггерит SMS-код Kaspi. Response 200: `{process_id, sms_sent: true}`. Errors: 400 `kaspi_unknown_process` (нет/протух `process_id`), 422 `invalid_phone_format`. |
+| POST | `/admin/kaspi/connect/verify-otp` | Body: `{process_id, otp: '123456'}`. Подтверждает код → авто-`finish` (ECDH-обмен → `vtokenSecret`) → org-context → сохраняет `kaspi_merchant_session` (всё чувствительное enc), `status=active`. Response 200: `{connected: true, phone, org_name, profile_id}`. Errors: 400 `kaspi_unknown_process`, 401 `kaspi_otp_invalid`, 502 `kaspi_finish_failed`. |
+| GET | `/admin/kaspi/status` | Текущее состояние подключения садика. Response 200: `{connected: bool, status: 'pending'\|'active'\|'expired'\|'revoked', phone?, org_name?, last_checked_at?}`. Никаких секретов в ответе. |
+| POST | `/admin/kaspi/disconnect` | Отключить Kaspi: `status=revoked` (+ опц. logout в Kaspi). Реконнект = повторный онбординг (перезапись строки). Response 200: `{status: 'revoked'}`. Errors: 404 `kaspi_not_connected`. |
+
+**Errors (§2.25):** 401, 403 `forbidden`, 400 `kaspi_unknown_process`, 401 `kaspi_otp_invalid`, 409 `kaspi_already_connected`, 404 `kaspi_not_connected`, 502 `kaspi_app_version_outdated` / `kaspi_finish_failed`, 429.
+
 ---
 
 ## 3. Staff API (Staff App — mentor / specialist / reception)
@@ -1277,7 +1311,7 @@ Reception может работать с заявками — см. Admin API `/
 |---|---|---|
 | GET | `/parent/children/:id/invoices` | Инвойсы ребёнка (фильтр: `status`, `invoice_type`, диапазон `due_date`). `ChildAccessGuard`: доступен для `primary`/`secondary`; 403 для `nanny`. |
 | GET | `/parent/invoices/:id` | Детали + `invoice_line_items` + применённые `custom_discount_applications`. |
-| POST | `/parent/invoices/:id/pay` | Инициировать оплату текущего invoice. Body: `{provider: 'mock'\|'halyk_epay'\|'kaspi_pay'\|'tiptoppay'\|'freedom_pay', payment_mode: 'full'\|'partial', amount?: 60000, idempotency_key: 'uuid-v4-client-generated'}`. **`idempotency_key` обязателен** — UUID, клиент генерирует per-attempt; повторный запрос с тем же ключом возвращает тот же `payment_id` (200 без дублирующего платежа). При `partial` `amount` обязателен и должен быть < `invoice.amount_after_discount - sum(payments_completed)`. Создаёт `payments (status='initiated')`, возвращает `{payment_id, redirect_url?, deeplink?}`. При `partial` после `webhook → completed` статус инвойса становится `partial`; при полном покрытии — `paid`. Доступен для `primary`/`secondary`; 403 для `nanny`. Errors: 404 `invoice_not_found`, 409 `invoice_already_paid`, 409 `payment_idempotency_conflict` (тот же ключ, другой invoice_id), 429 rate-limit. |
+| POST | `/parent/invoices/:id/pay` | Инициировать оплату текущего invoice. Body: `{provider: 'mock'\|'halyk_epay'\|'kaspi_pay'\|'tiptoppay'\|'freedom_pay', payment_mode: 'full'\|'partial', amount?: 60000, idempotency_key: 'uuid-v4-client-generated', kaspi_phone_number?: '7XXXXXXXXXX'}`. **`idempotency_key` обязателен** — UUID, клиент генерирует per-attempt; повторный запрос с тем же ключом возвращает тот же `payment_id` (200 без дублирующего платежа). При `partial` `amount` обязателен и должен быть < `invoice.amount_after_discount - sum(payments_completed)`. **`kaspi_phone_number` обязателен при `provider='kaspi_pay'`** (400 `kaspi_phone_required` иначе) — номер, на который Kaspi выставляет удалённый счёт (`remote/create`); для остальных провайдеров игнорируется. Создаёт `payments (status='initiated')`, возвращает `{payment_id, redirect_url?, deeplink?}`. **Для `kaspi_pay`** редиректа нет (оплата в приложении Kaspi у клиента) — возвращается `deeplink` (Kaspi `RecreateDeepLink`), `redirect_url=null`; завершение оплаты — через внутренний поллер (B24), НЕ через webhook. Требует подключённого `kaspi_merchant_session` (status=active) у садика — иначе 409 `kaspi_not_connected`. При `partial` после settlement статус инвойса становится `partial`; при полном покрытии — `paid`. Доступен для `primary`/`secondary`; 403 для `nanny`. Errors: 400 `kaspi_phone_required`, 404 `invoice_not_found`, 409 `invoice_already_paid`, 409 `kaspi_not_connected`, 409 `payment_idempotency_conflict` (тот же ключ, другой invoice_id), 429 rate-limit. |
 | POST | `/parent/invoices/:id/pay/prepayment` | Досрочная оплата. Body: `{months: 3\|6\|12\|24, provider, idempotency_key}`. Сервер: находит активный `tariff_assignments` ребёнка, берёт `discount_rules.prepay_{N}m_pct` (если `prepay_24m_pct` отсутствует — 400 `{error: 'prepayment_horizon_not_configured'}`), создаёт новый invoice `invoice_type='prepayment_{N}m'` с правильным `amount_after_discount`, инициирует платёж. Ответ: `{invoice_id, payment_id, redirect_url, preview: {base_amount, discount_pct, final_amount, covers_period: {from, to}}}`. Доступен только `primary`. |
 | GET | `/parent/children/:id/payment-calendar` | Календарь платежей в Kaspi-стиле. Параметры: `months_ahead=12` (1..24). Возвращает массив элементов на каждый месяц в окне: `{month: 'YYYY-MM', status: 'paid'\|'pending'\|'overdue'\|'partial'\|'projected', amount, invoice_id?, due_date, is_projection: bool, holidays_affected: int, prepayment_coverage?: {invoice_id, covers_through_month}}`. Для месяцев, где invoice уже создан (cron `billing:invoice-generate` или prepayment) — реальные данные. Для будущих месяцев — projection из активного `tariff_assignments` + `kindergarten_holidays` (pro-rata). Если месяц покрыт prepayment-invoice — `status='paid'`, `prepayment_coverage` указывает источник. Доступен для `primary`/`secondary`, **403 для `nanny`**. |
 | GET | `/parent/payments` | Мои платежи (`payer_user_id=me`). Фильтр: `status`, `provider`, `child_id`, диапазон дат. |
@@ -1308,11 +1342,14 @@ Reception может работать с заявками — см. Admin API `/
 
 **Предыдущие vendor-specific paths** (`/payments/webhook/halyk`, `/kaspi`, `/tiptoppay`, `/freedom-pay`) — задокументированы для будущих Phase B адаптеров; маршрутизируются через `/webhooks/payments/:provider` в B13+ или остаются как aliases в B14+.
 
+> **⚠️ `kaspi_pay` НЕ использует webhooks (B24).** У Kaspi-клиента нет входящего callback'а. `verifyWebhook` для `provider=kaspi_pay` бросает `kaspi_webhook_unsupported`; завершение оплаты выполняет внутренний BullMQ-поллер `kaspi-payment-status` (cross-tenant, `remote/details` по `QrOperationId` → `Processed`→settle). См. §4.7 и IMPLEMENTATION_PLAN B24/K8.
+
 **Error map (§4.5):**
 
 | HTTP | `error` | Когда |
 |---|---|---|
 | 400 | `webhook_signature_invalid` | Подпись не прошла верификацию |
+| 501 | `kaspi_webhook_unsupported` | Вызван webhook для `kaspi_pay` (завершение через поллер, не callback) |
 
 ### 4.6 Trusted People & Parent Pickup Requests
 

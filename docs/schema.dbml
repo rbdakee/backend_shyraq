@@ -702,6 +702,71 @@ Table payments {
 }
 
 // ─────────────────────────────────────────
+// KASPI PAY (B24 — основной платёжный провайдер, неофициальный клиент)
+// ─────────────────────────────────────────
+// Kaspi Pay подключается как per-tenant адаптер PaymentProviderPort
+// (provider='kaspi_pay'). В отличие от Mock/Halyk (singleton), у каждого
+// садика своя кассирская сессия Kaspi → креды хранятся per-tenant и
+// резолвятся в момент вызова. Источник реализации — реверс-инжиниринг
+// iOS-приложения Kaspi Pay (см. kaspi_pay_test/HANDOFF.md).
+
+// ENUM kaspi_session_status: pending | active | expired | revoked
+// (varchar в DBML; TypeORM-миграция создаёт PG ENUM kaspi_session_status)
+
+// B24 — FORCE ROW LEVEL SECURITY + tenant_isolation policy on kindergarten_id
+// Одна запись на садик (UNIQUE kindergarten_id) = один подключённый
+// кассирский аккаунт Kaspi. Всё чувствительное — зашифровано at-rest
+// (AES-256-GCM, CryptoCipherAdapter, ключ env KASPI_ENCRYPTION_KEY).
+Table kaspi_merchant_session {
+  id                   uuid    [pk, default: `gen_random_uuid()`]
+  kindergarten_id      uuid    [not null, unique, ref: > kindergartens.id] // один аккаунт на садик
+  connected_by_user_id uuid    [not null, ref: > users.id]                 // админ, подключивший Kaspi
+  status               varchar [not null, default: 'pending']
+  // kaspi_session_status: 'pending' → 'active' → {'expired','revoked'}
+  cashier_phone        varchar // номер кассира (отображение / реконнект)
+  kaspi_profile_id     varchar // profileId из org-context
+  kaspi_org_id         varchar // organizationId
+  org_name             varchar // имя организации (отображение)
+  token_sn             text    // tokenSN сессии (сам по себе не секрет, храним вместе)
+  vtoken_secret_enc    text    // ENC: ECDH-секрет для TOTP-MAC (X-Kb-TokenSnMac)
+  device_keypair_enc   text    // ENC: ECDSA-приватник устройства (X-Sign)
+  ecdh_keypair_enc     text    // ENC: ECDH-ключ с finish (нужен для /refresh SignInLite)
+  device_id            varchar // отпечаток устройства — СВОЙ на садик (не глобальный)
+  install_id           varchar
+  pin_hash             varchar
+  last_checked_at      timestamptz // когда поллер/health-check последний раз пинговал сессию
+  created_at           timestamptz [not null, default: `now()`]
+  updated_at           timestamptz [not null, default: `now()`]
+
+  indexes {
+    (kindergarten_id, status)
+  }
+
+  Note: 'FORCE ROW LEVEL SECURITY — tenant_isolation policy: kindergarten_id = current_setting(app.kindergarten_id)::uuid OR current_setting(app.bypass_rls) = true. UNIQUE(kindergarten_id) — один кассирский аккаунт на садик.'
+}
+
+// B24 — НЕ tenant-scoped, БЕЗ RLS, single-row. Глобальный конфиг Kaspi,
+// редактируемый суперадмином (saas-контроллер) без передеплоя.
+// Решает версионный гейт: Kaspi отдаёт OldVersionToUpdate по полю app_build
+// (строка app_version игнорируется — эмпирически, floor сейчас = 1071).
+// При блокировке суперадмин поднимает app_build и все садики чинятся.
+Table kaspi_global_config {
+  id            int         [pk, default: 1]   // single-row guard: CHECK (id = 1)
+  app_version   varchar     [not null]         // для UA-строк / косметики
+  app_build     varchar     [not null]         // ⚠️ ключевое поле гейта (app_build >= floor)
+  platform_ver  varchar     [not null]         // напр. '18.5'
+  model         varchar     [not null]         // напр. 'iPhone17,3'
+  brand         varchar     [not null]         // напр. 'Apple'
+  ua_native     varchar     [not null]         // User-Agent нативного клиента
+  ua_browser    varchar     [not null]         // User-Agent webview
+  entrance_url  varchar     [not null]         // https://entrance-pay.kaspi.kz
+  mtoken_url    varchar     [not null]         // https://mtoken.kaspi.kz
+  qrpay_url     varchar     [not null]         // https://qrpay.kaspi.kz
+  updated_by    uuid        [ref: > users.id]  // суперадмин-аудит
+  updated_at    timestamptz [not null, default: `now()`]
+}
+
+// ─────────────────────────────────────────
 // PARENT REQUESTS
 // ─────────────────────────────────────────
 
@@ -1506,4 +1571,13 @@ Table custom_discount_applications {
 //      — Правило: один активный токен на (user_id, purpose).
 //        Без NOW() predicate (PG отвергает non-IMMUTABLE);
 //        активность enforced в коде (revoke + insert TX).
+//
+//   8. (B24 Kaspi) UNIQUE на kaspi_merchant_session(kindergarten_id) — один
+//      кассирский аккаунт Kaspi на садик. Реализуется через [unique] на
+//      колонке (full unique, не partial — реконнект = UPDATE строки, не INSERT).
+//
+//   9. (B24 Kaspi) Single-row guard для kaspi_global_config:
+//      ALTER TABLE kaspi_global_config ADD CONSTRAINT chk_kaspi_global_config_singleton CHECK (id = 1);
+//      — гарантирует ровно одну строку глобального конфига. Seed-строка
+//        вставляется в миграции (id=1, app_build текущий floor).
 // ─────────────────────────────────────────
