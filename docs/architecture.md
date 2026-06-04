@@ -377,7 +377,7 @@ Worker (каждые 2с)
        ├─ resolve recipients (ChildGuardianRepository / GroupMentorRepository)
        ├─ apply notification_preferences filter
        ├─ apply nanny-policy (nanny получает только attendance.* и pickup.*)
-       ├─ PushNotificationPort.send(…)  ← MockPushAdapter (B9), FcmPushAdapter (B22)
+       ├─ PushNotificationPort.send(…)  ← MockPushAdapter (dev) | FcmPushAdapter (firebase-admin), env PUSH_PROVIDER
        ├─ WS broadcast в room (через Redis Pub/Sub → api WS gateway)
        └─ INSERT notifications (history row, status='sent')
   └─ UPDATE notification_outbox SET status='dispatched'/'failed', attempts=attempts+1

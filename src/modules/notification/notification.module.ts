@@ -7,6 +7,7 @@ import { GroupModule } from '@/modules/group/group.module';
 import { UsersModule } from '@/modules/users/users.module';
 import { PushNotificationPort } from '@/shared-kernel/domain/push-notification.port';
 import { FcmPushAdapter } from '@/shared-kernel/infrastructure/adapters/fcm-push.adapter';
+import { buildFirebaseConfig } from '@/shared-kernel/infrastructure/adapters/firebase-push.config';
 import { MockPushAdapter } from '@/shared-kernel/infrastructure/adapters/mock-push.adapter';
 import { NotificationTypeOrmEntity } from './infrastructure/persistence/relational/entities/notification.typeorm.entity';
 import { NotificationPreferenceTypeOrmEntity } from './infrastructure/persistence/relational/entities/notification-preference.typeorm.entity';
@@ -34,15 +35,24 @@ import { NotificationPreferencesController } from './notification-preferences.co
 
 /**
  * Picks the push adapter based on `process.env.PUSH_PROVIDER`. Defaults to
- * `mock` (logs + records calls). `fcm` resolves to the B22 stub which throws
- * — running the dispatcher with `PUSH_PROVIDER=fcm` is intentionally loud
- * so a misconfigured deployment fails before silently dropping events.
+ * `mock` (logs + records calls). `fcm` builds the real `firebase-admin`-backed
+ * `FcmPushAdapter`, validating the `FIREBASE_*` service-account creds at
+ * bootstrap so a misconfigured deployment fails loudly instead of silently
+ * dropping events.
  */
 function pushPortProvider(): Provider {
-  const provider = (process.env.PUSH_PROVIDER ?? 'mock').toLowerCase();
   return {
     provide: PushNotificationPort,
-    useClass: provider === 'fcm' ? FcmPushAdapter : MockPushAdapter,
+    useFactory: (): PushNotificationPort => {
+      const provider = (process.env.PUSH_PROVIDER ?? 'mock').toLowerCase();
+      if (provider === 'fcm') {
+        // `buildFirebaseConfig` throws if the FIREBASE_* creds are missing —
+        // a misconfigured `PUSH_PROVIDER=fcm` deployment fails at bootstrap
+        // instead of silently dropping every push at dispatch time.
+        return new FcmPushAdapter(buildFirebaseConfig());
+      }
+      return new MockPushAdapter();
+    },
   };
 }
 
