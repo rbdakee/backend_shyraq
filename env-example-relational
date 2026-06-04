@@ -188,6 +188,14 @@ PUSH_PROVIDER=mock
 # FIREBASE_CLIENT_EMAIL=
 # FIREBASE_PRIVATE_KEY=
 
+# --- Kaspi Pay (B24) ---
+# AES-256-GCM master key for at-rest encryption of Kaspi merchant credentials
+# (vtoken secret, device ECDSA keypair, ECDH keypair). MUST be 32 bytes hex (64 hex chars).
+# Generate: openssl rand -hex 32
+# Leave commented when Kaspi is not configured — the app boots with a
+# lazy-fail cipher. A blank value here would be coerced to "unset".
+# KASPI_ENCRYPTION_KEY=
+
 # --- Multi-tenancy (RLS) ---
 # DB role used by app — must NOT have BYPASSRLS. SuperAdmin queries use a separate role.
 # DATABASE_USERNAME above is the regular tenant-scoped role.
