@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 
 export type KaspiFetch = (
   input: string,
@@ -43,7 +43,13 @@ export class KaspiHttpClient {
   private readonly logger = new Logger(KaspiHttpClient.name);
   private readonly fetchImpl: KaspiFetch;
 
-  constructor(fetchImpl?: KaspiFetch) {
+  // `@Optional()` is load-bearing: when Nest instantiates KaspiHttpClient as a
+  // provider it would otherwise try to resolve a provider for the `fetchImpl`
+  // param (TS emits its function type as `Function`) and fail AppModule
+  // bootstrap with "can't resolve dependencies ... at index [0]". Optional →
+  // Nest injects undefined and the bare-fetch default below is used in prod;
+  // tests still pass an explicit `fetchImpl` double.
+  constructor(@Optional() fetchImpl?: KaspiFetch) {
     this.fetchImpl =
       fetchImpl ??
       ((input, init) => globalThis.fetch(input as RequestInfo, init));
