@@ -48,6 +48,7 @@ import {
   PaymentRepository,
 } from './infrastructure/persistence/payment.repository';
 import { InvoiceService } from './invoice.service';
+import { KindergartenRepository } from '@/modules/kindergarten/infrastructure/persistence/kindergarten.repository';
 import { PaymentService } from './payment.service';
 import { PaymentAccountService } from './payment-account.service';
 import { PaymentAccountRepository } from './infrastructure/persistence/payment-account.repository';
@@ -518,7 +519,7 @@ interface Harness {
   clock: FixedClock;
 }
 
-function buildHarness(): Harness {
+function buildHarness(opts?: { kindergartenName?: string }): Harness {
   const clock = new FixedClock(NOW);
   const paymentRepo = new FakePaymentRepo();
   const invoiceRepo = new FakeInvoiceRepo();
@@ -538,6 +539,15 @@ function buildHarness(): Harness {
     },
   } as unknown as InvoiceService;
   const txRunner = makeFakeTxRunner();
+  // Optional fake kindergarten repo — only used by the Kaspi-comment test.
+  const kindergartens = opts?.kindergartenName
+    ? ({
+        findById: () =>
+          Promise.resolve({ name: opts.kindergartenName } as {
+            name: string;
+          }),
+      } as unknown as KindergartenRepository)
+    : undefined;
   const service = new PaymentService(
     paymentRepo,
     invoiceRepo,
@@ -548,6 +558,8 @@ function buildHarness(): Harness {
     notifier,
     clock,
     txRunner,
+    undefined,
+    kindergartens,
   );
   return {
     service,
@@ -1633,6 +1645,63 @@ describe('PaymentService.initiate — K7 kaspi_pay phone plumbing', () => {
 
     expect(capturedInput).not.toBeNull();
     expect(capturedInput!.phoneNumber).toBe('77011234567');
+  });
+
+  it('builds a human-readable Comment from the kindergarten name for kaspi_pay', async () => {
+    const h = buildHarness({ kindergartenName: 'Солнышко' });
+    h.invoiceRepo.rows.set(INVOICE, makeInvoice());
+    h.paymentAccountRepo.put(makeAccount());
+
+    let capturedInput: CreatePaymentInput | null = null;
+    h.provider.createPaymentImpl = (input) => {
+      capturedInput = input;
+      return Promise.resolve({
+        providerPaymentId: `kaspi_${input.invoiceId}`,
+        status: 'completed',
+      });
+    };
+
+    await h.service.initiate(KG, {
+      invoiceId: INVOICE,
+      amount: 50000,
+      paymentMode: 'full',
+      provider: 'kaspi_pay',
+      idempotencyKey: 'idem-comment',
+      payerUserId: PAYER,
+      returnUrl: 'https://app/return',
+      kaspiPhoneNumber: '77011234567',
+    });
+
+    expect(capturedInput!.comment).toBe(
+      'Оплата услуг детского сада «Солнышко»',
+    );
+  });
+
+  it('does not build a Comment for non-kaspi providers (adapter falls back to invoiceId)', async () => {
+    const h = buildHarness({ kindergartenName: 'Солнышко' });
+    h.invoiceRepo.rows.set(INVOICE, makeInvoice());
+    h.paymentAccountRepo.put(makeAccount());
+
+    let capturedInput: CreatePaymentInput | null = null;
+    h.provider.createPaymentImpl = (input) => {
+      capturedInput = input;
+      return Promise.resolve({
+        providerPaymentId: `mock_${input.invoiceId}`,
+        status: 'completed',
+      });
+    };
+
+    await h.service.initiate(KG, {
+      invoiceId: INVOICE,
+      amount: 50000,
+      paymentMode: 'full',
+      provider: 'mock',
+      idempotencyKey: 'idem-comment-mock',
+      payerUserId: PAYER,
+      returnUrl: 'https://app/return',
+    });
+
+    expect(capturedInput!.comment).toBeUndefined();
   });
 
   it('leaves phoneNumber undefined when kaspiPhoneNumber is absent (non-kaspi provider)', async () => {

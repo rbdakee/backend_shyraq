@@ -14,9 +14,12 @@ export class KaspiSendPhoneDto {
   @ApiProperty({
     example: '77011234567',
     description:
-      "Cashier phone in Kaspi's 11-digit format (7XXXXXXXXXX). Triggers a real SMS.",
+      'Cashier phone. Accepts any common KZ form — bare 10-digit national ' +
+      '(7011234567), 11-digit with country code (77011234567), 8-prefixed ' +
+      '(87011234567), or E.164 (+77011234567). The backend normalizes to the ' +
+      "10-digit national number Kaspi's entrance step requires. Triggers a real SMS.",
   })
-  @Matches(/^7\d{10}$/, {
+  @Matches(/^(?:\+?7|8)?\d{10}$/, {
     message: 'invalid_phone_format',
   })
   phone!: string;
