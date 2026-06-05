@@ -256,6 +256,9 @@ class FakePaymentRepo extends PaymentRepository {
   findByProviderTxnIdCrossTenant(): Promise<Payment | null> {
     return Promise.resolve(null);
   }
+  findByIdCrossTenant(): Promise<Payment | null> {
+    return Promise.resolve(null);
+  }
   markCompletedConditional(): Promise<Payment | null> {
     return Promise.resolve(null);
   }

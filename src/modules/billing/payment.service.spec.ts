@@ -157,6 +157,14 @@ class FakePaymentRepo extends PaymentRepository {
     return Promise.resolve(null);
   }
 
+  findByIdCrossTenant(
+    kindergartenId: string,
+    id: string,
+  ): Promise<Payment | null> {
+    const p = this.rows.get(id);
+    return Promise.resolve(p && p.kindergartenId === kindergartenId ? p : null);
+  }
+
   markCompletedConditional(
     kindergartenId: string,
     id: string,
@@ -201,11 +209,22 @@ class FakePaymentRepo extends PaymentRepository {
     kindergartenId: string,
     id: string,
     now: Date,
+    providerTxnId?: string | null,
+    providerPayload?: Record<string, unknown> | null,
   ): Promise<Payment | null> {
     return Promise.resolve(
       this.transition(kindergartenId, id, ['initiated'], (s) => ({
         ...s,
         status: 'processing' as PaymentStatus,
+        ...(providerTxnId != null ? { providerTxnId } : {}),
+        ...(providerPayload != null
+          ? {
+              providerPayload: {
+                ...(s.providerPayload ?? {}),
+                ...providerPayload,
+              },
+            }
+          : {}),
         updatedAt: now,
       })),
     );
@@ -715,6 +734,39 @@ describe('PaymentService.initiate', () => {
 
     expect(result.redirectUrl).toBe('https://halyk/async');
     expect(result.payment.status).toBe('processing');
+    // FIX 1: the provider txn id is persisted on the initiated/async path so
+    // the K8 poller and refund can correlate via provider_txn_id.
+    expect(result.payment.providerTxnId).toBe('tx_async');
+  });
+
+  it('persists provider txn id + deeplink on the initiated async path (Kaspi)', async () => {
+    const h = buildHarness();
+    h.invoiceRepo.rows.set(INVOICE, makeInvoice());
+    h.paymentAccountRepo.put(makeAccount());
+    h.provider.createPaymentImpl = () =>
+      Promise.resolve({
+        providerPaymentId: 'QR-123',
+        status: 'initiated',
+        deeplink: 'kaspi://pay?op=QR-123',
+      });
+
+    const result = await h.service.initiate(KG, {
+      invoiceId: INVOICE,
+      amount: 50000,
+      paymentMode: 'full',
+      provider: 'kaspi_pay',
+      idempotencyKey: 'idem-kaspi-async',
+      payerUserId: PAYER,
+      returnUrl: 'https://app/return',
+      kaspiPhoneNumber: '77011234567',
+    });
+
+    expect(result.deeplink).toBe('kaspi://pay?op=QR-123');
+    expect(result.payment.status).toBe('processing');
+    // Persisted on the row (not just the transient result) — confirm via re-read.
+    const persisted = await h.paymentRepo.findById(KG, result.payment.id);
+    expect(persisted?.providerTxnId).toBe('QR-123');
+    expect(persisted?.providerPayload?.deeplink).toBe('kaspi://pay?op=QR-123');
   });
 
   it('marks payment completed and applies to invoice when provider returns completed (synchronous Mock)', async () => {
@@ -1548,6 +1600,97 @@ describe('PaymentService.markFailed / getById / list', () => {
     const ok = await h.service.list(KG, { status: 'completed' });
     expect(ok).toHaveLength(1);
     expect(ok[0].id).toBe('p2');
+  });
+});
+
+// ── K7 — kaspi_pay phoneNumber plumbing ──────────────────────────────────────
+
+describe('PaymentService.initiate — K7 kaspi_pay phone plumbing', () => {
+  it('plumbs kaspiPhoneNumber into the provider createPayment call for kaspi_pay', async () => {
+    const h = buildHarness();
+    h.invoiceRepo.rows.set(INVOICE, makeInvoice());
+    h.paymentAccountRepo.put(makeAccount());
+
+    let capturedInput: CreatePaymentInput | null = null;
+    h.provider.createPaymentImpl = (input) => {
+      capturedInput = input;
+      return Promise.resolve({
+        providerPaymentId: `kaspi_${input.invoiceId}`,
+        status: 'completed',
+      });
+    };
+
+    await h.service.initiate(KG, {
+      invoiceId: INVOICE,
+      amount: 50000,
+      paymentMode: 'full',
+      provider: 'kaspi_pay',
+      idempotencyKey: 'idem-k7-phone',
+      payerUserId: PAYER,
+      returnUrl: 'https://app/return',
+      kaspiPhoneNumber: '77011234567',
+    });
+
+    expect(capturedInput).not.toBeNull();
+    expect(capturedInput!.phoneNumber).toBe('77011234567');
+  });
+
+  it('leaves phoneNumber undefined when kaspiPhoneNumber is absent (non-kaspi provider)', async () => {
+    const h = buildHarness();
+    h.invoiceRepo.rows.set(INVOICE, makeInvoice());
+    h.paymentAccountRepo.put(makeAccount());
+
+    let capturedInput: CreatePaymentInput | null = null;
+    h.provider.createPaymentImpl = (input) => {
+      capturedInput = input;
+      return Promise.resolve({
+        providerPaymentId: `mock_${input.invoiceId}`,
+        status: 'completed',
+      });
+    };
+
+    await h.service.initiate(KG, {
+      invoiceId: INVOICE,
+      amount: 50000,
+      paymentMode: 'full',
+      provider: 'mock',
+      idempotencyKey: 'idem-k7-no-phone',
+      payerUserId: PAYER,
+      returnUrl: 'https://app/return',
+      // kaspiPhoneNumber intentionally omitted
+    });
+
+    expect(capturedInput).not.toBeNull();
+    expect(capturedInput!.phoneNumber).toBeUndefined();
+  });
+
+  it('leaves phoneNumber undefined when kaspiPhoneNumber is null', async () => {
+    const h = buildHarness();
+    h.invoiceRepo.rows.set(INVOICE, makeInvoice());
+    h.paymentAccountRepo.put(makeAccount());
+
+    let capturedInput: CreatePaymentInput | null = null;
+    h.provider.createPaymentImpl = (input) => {
+      capturedInput = input;
+      return Promise.resolve({
+        providerPaymentId: `mock_${input.invoiceId}`,
+        status: 'completed',
+      });
+    };
+
+    await h.service.initiate(KG, {
+      invoiceId: INVOICE,
+      amount: 50000,
+      paymentMode: 'full',
+      provider: 'mock',
+      idempotencyKey: 'idem-k7-null-phone',
+      payerUserId: PAYER,
+      returnUrl: 'https://app/return',
+      kaspiPhoneNumber: null,
+    });
+
+    expect(capturedInput).not.toBeNull();
+    expect(capturedInput!.phoneNumber).toBeUndefined();
   });
 });
 

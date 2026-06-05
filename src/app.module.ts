@@ -12,6 +12,7 @@ import databaseConfig from './database/config/database.config';
 import appConfig from './config/app.config';
 import redisConfig from './redis/config/redis.config';
 import authConfig from './modules/auth/config/auth.config';
+import kaspiCryptoConfig from './shared-kernel/config/kaspi-crypto.config';
 import { DbRoleCheckService } from './database/db-role-check.service';
 import { TypeOrmConfigService } from './database/typeorm-config.service';
 import { AllConfigType } from './config/config.type';
@@ -58,7 +59,13 @@ const resolveI18nPath = (): string => {
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      load: [databaseConfig, appConfig, redisConfig, authConfig],
+      load: [
+        databaseConfig,
+        appConfig,
+        redisConfig,
+        authConfig,
+        kaspiCryptoConfig,
+      ],
       envFilePath: ['.env'],
     }),
     TypeOrmModule.forRootAsync({

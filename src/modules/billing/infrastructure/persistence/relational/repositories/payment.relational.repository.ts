@@ -217,6 +217,25 @@ export class PaymentRelationalRepository extends PaymentRepository {
     });
   }
 
+  /**
+   * Cross-tenant lookup by `(kindergartenId, id)` — the K8 Kaspi status poller
+   * runs without an HTTP tenant context. Opens a dedicated TX so the
+   * `app.bypass_rls` SET LOCAL is scoped to exactly this lookup and never
+   * leaks into the ambient TX (mirrors `findByProviderTxnIdCrossTenant`).
+   */
+  async findByIdCrossTenant(
+    kindergartenId: string,
+    id: string,
+  ): Promise<Payment | null> {
+    return this.dataSource.transaction(async (em) => {
+      await em.query(`SELECT set_config('app.bypass_rls', 'true', true)`);
+      const row = await em.getRepository(PaymentTypeOrmEntity).findOne({
+        where: { id, kindergartenId },
+      });
+      return row ? PaymentMapper.toDomain(row) : null;
+    });
+  }
+
   async markCompletedConditional(
     kindergartenId: string,
     id: string,
@@ -268,11 +287,28 @@ export class PaymentRelationalRepository extends PaymentRepository {
     kindergartenId: string,
     id: string,
     now: Date,
+    providerTxnId?: string | null,
+    providerPayload?: Record<string, unknown> | null,
   ): Promise<Payment | null> {
-    return this.transitionConditional(kindergartenId, id, ['initiated'], {
+    const patch: Partial<PaymentTypeOrmEntity> = {
       status: 'processing',
       updatedAt: now,
-    });
+    };
+    if (providerTxnId != null) {
+      patch.providerTxnId = providerTxnId;
+    }
+    if (providerPayload != null) {
+      // Merge into the existing provider_payload (mirror markFailedConditional's
+      // merge semantics) so previously-stashed hints are not clobbered.
+      const current = await this.findById(kindergartenId, id);
+      const mergedPayload = {
+        ...(current?.providerPayload ?? {}),
+        ...providerPayload,
+      };
+      // jsonb — cast to satisfy TypeORM QueryDeepPartial.
+      patch.providerPayload = mergedPayload as unknown as undefined;
+    }
+    return this.transitionConditional(kindergartenId, id, ['initiated'], patch);
   }
 
   async markRefundedConditional(

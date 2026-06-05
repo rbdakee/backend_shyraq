@@ -77,6 +77,10 @@ export const CANONICAL_EVENT_KEYS = [
   // the lifecycle triplet.
   'child.archived',
   'child.reactivated',
+  // ── B24 Kaspi Pay — admin-facing alert when the cashier session expires
+  // and the silent SignInLite refresh fails (K8 poller). Recipients are kg
+  // admins (pre-resolved into the payload by the producer).
+  'kaspi.session_expired',
 ] as const;
 
 export type EventKey = (typeof CANONICAL_EVENT_KEYS)[number];

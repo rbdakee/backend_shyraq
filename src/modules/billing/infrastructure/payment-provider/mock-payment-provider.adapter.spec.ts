@@ -2,6 +2,7 @@ import { WebhookSignatureInvalidError } from '../../domain/errors';
 import { MockPaymentProvider } from './mock-payment-provider.adapter';
 
 const INVOICE_ID = '11111111-1111-1111-1111-111111111111';
+const KG_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 
 describe('MockPaymentProvider', () => {
   let adapter: MockPaymentProvider;
@@ -13,6 +14,7 @@ describe('MockPaymentProvider', () => {
   describe('createPayment', () => {
     it('returns providerPaymentId in mock_<invoiceId>_<16hex> shape with synchronous completed status', async () => {
       const result = await adapter.createPayment({
+        kindergartenId: KG_ID,
         invoiceId: INVOICE_ID,
         amountKzt: 50000,
         currency: 'KZT',
@@ -29,6 +31,7 @@ describe('MockPaymentProvider', () => {
 
     it('produces a different providerPaymentId on each call', async () => {
       const a = await adapter.createPayment({
+        kindergartenId: KG_ID,
         invoiceId: INVOICE_ID,
         amountKzt: 50000,
         currency: 'KZT',
@@ -36,6 +39,7 @@ describe('MockPaymentProvider', () => {
         idempotencyKey: 'idem-a',
       });
       const b = await adapter.createPayment({
+        kindergartenId: KG_ID,
         invoiceId: INVOICE_ID,
         amountKzt: 50000,
         currency: 'KZT',
@@ -130,6 +134,7 @@ describe('MockPaymentProvider', () => {
   describe('refund', () => {
     it('returns providerRefundId in mock_refund_<16hex> shape with processed status', async () => {
       const result = await adapter.refund({
+        kindergartenId: KG_ID,
         providerPaymentId: 'mock_abc_0123456789abcdef',
         amountKzt: 50000,
         reason: 'parent_requested',
@@ -142,12 +147,14 @@ describe('MockPaymentProvider', () => {
 
     it('produces a different providerRefundId on each call', async () => {
       const a = await adapter.refund({
+        kindergartenId: KG_ID,
         providerPaymentId: 'mock_abc_0123456789abcdef',
         amountKzt: 50000,
         reason: 'r',
         idempotencyKey: 'refund-a',
       });
       const b = await adapter.refund({
+        kindergartenId: KG_ID,
         providerPaymentId: 'mock_abc_0123456789abcdef',
         amountKzt: 50000,
         reason: 'r',
@@ -158,12 +165,14 @@ describe('MockPaymentProvider', () => {
 
     it('returns the same providerRefundId on duplicate idempotency key (T11 H1)', async () => {
       const a = await adapter.refund({
+        kindergartenId: KG_ID,
         providerPaymentId: 'mock_abc_0123456789abcdef',
         amountKzt: 50000,
         reason: 'r',
         idempotencyKey: 'refund-dup',
       });
       const b = await adapter.refund({
+        kindergartenId: KG_ID,
         providerPaymentId: 'mock_abc_0123456789abcdef',
         amountKzt: 50000,
         reason: 'r',
@@ -176,6 +185,7 @@ describe('MockPaymentProvider', () => {
   describe('createPayment idempotency (T11 H1)', () => {
     it('returns the same providerPaymentId on duplicate idempotency key', async () => {
       const a = await adapter.createPayment({
+        kindergartenId: KG_ID,
         invoiceId: INVOICE_ID,
         amountKzt: 50000,
         currency: 'KZT',
@@ -183,6 +193,7 @@ describe('MockPaymentProvider', () => {
         idempotencyKey: 'create-dup',
       });
       const b = await adapter.createPayment({
+        kindergartenId: KG_ID,
         invoiceId: INVOICE_ID,
         amountKzt: 50000,
         currency: 'KZT',

@@ -1,4 +1,12 @@
-import { ForbiddenException, Inject, Injectable, Logger } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Inject,
+  Injectable,
+  Logger,
+  Optional,
+} from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 import { randomUUID } from 'node:crypto';
 import { NotificationPort } from '@/common/notifications/notification.port';
 import { tenantStorage } from '@/database/tenant-storage';
@@ -31,6 +39,12 @@ import {
   PaymentRepository,
 } from './infrastructure/persistence/payment.repository';
 import { InvoiceService } from './invoice.service';
+import {
+  KASPI_PAYMENT_STATUS_JOB,
+  KASPI_PAYMENT_STATUS_QUEUE,
+  KASPI_POLL_AGGRESSIVE_INTERVAL_MS,
+  KaspiPaymentStatusJobData,
+} from './kaspi-payment-status.constants';
 import { PaymentAccountService } from './payment-account.service';
 
 export type PaymentInitiationMode = 'full' | 'partial';
@@ -45,6 +59,11 @@ export interface InitiatePaymentInput {
   idempotencyKey: string;
   payerUserId?: string | null;
   returnUrl: string;
+  /**
+   * Payer phone in Kaspi format (7XXXXXXXXXX). Required when provider=kaspi_pay.
+   * The controller enforces the 400 `kaspi_phone_required` guard before calling `initiate`.
+   */
+  kaspiPhoneNumber?: string | null;
 }
 
 export interface InitiatePaymentResult {
@@ -118,6 +137,14 @@ export class PaymentService {
     // the parent-side dependency) keeps working. `assertCanPay` fails
     // closed when missing.
     private readonly childGuardians?: ChildGuardianRepository,
+    // K8 — optional Kaspi status-poll queue. Mirrors MonthlyBillingScheduler's
+    // optional-queue pattern so the api/tests boot without Redis and the many
+    // existing PaymentService specs (which omit this trailing arg) keep
+    // compiling. When present, `initiate` enqueues the first poll job for a
+    // kaspi_pay payment. Best-effort: a queue-down never fails the parent-pay.
+    @Optional()
+    @InjectQueue(KASPI_PAYMENT_STATUS_QUEUE)
+    private readonly kaspiPollQueue?: Queue,
   ) {}
 
   /**
@@ -277,12 +304,19 @@ export class PaymentService {
     // exception types to the controller layer.
     let providerResult;
     try {
+      // Kaspi requires whole tenge; adapter rounds defensively (Math.round in
+      // KaspiPaymentProvider). MoneyKzt.toNumber() quantizes to 2dp (banker's
+      // rounding) so sub-tenge tiyn can appear here. The adapter's rounding is
+      // the last-resort guard; no money is created or destroyed — any sub-tenge
+      // fraction in an invoice is a rounding artefact from percentage discounts.
       providerResult = await this.paymentProvider.createPayment({
+        kindergartenId,
         invoiceId: invoice.id,
         amountKzt: payment.amount.toNumber(),
         currency: 'KZT',
         returnUrl: input.returnUrl,
         payerUserId: input.payerUserId ?? undefined,
+        phoneNumber: input.kaspiPhoneNumber ?? undefined,
         idempotencyKey: input.idempotencyKey,
       });
     } catch (err) {
@@ -323,23 +357,58 @@ export class PaymentService {
       );
       if (failed) payment = failed;
     } else {
-      // 'initiated' — async path. Persist redirect hints into the payload
-      // so an idempotent retry can read them back.
-      if (Object.keys(redirectPayload).length > 0) {
-        const updatedNow = this.clock.now();
-        await this.paymentRepo
-          .markProcessingConditional(kindergartenId, payment.id, updatedNow)
-          .catch((err) => {
-            this.logger.warn(
-              `payment.initiate: failed to mark processing payment=${payment.id}: ${err instanceof Error ? err.message : err}`,
-            );
-          });
-        // Re-read so caller sees the latest snapshot.
-        const refreshed = await this.paymentRepo.findById(
+      // 'initiated' — async path (e.g. Kaspi). ALWAYS persist the provider txn
+      // id (QrOperationId) so the K8 poller and refund can correlate via
+      // provider_txn_id, plus any redirect/deeplink hints for an idempotent
+      // retry. Without this the Kaspi operation id is lost and settlement is
+      // impossible.
+      const updatedNow = this.clock.now();
+      await this.paymentRepo
+        .markProcessingConditional(
           kindergartenId,
           payment.id,
-        );
-        if (refreshed) payment = refreshed;
+          updatedNow,
+          providerResult.providerPaymentId,
+          redirectPayload,
+        )
+        .catch((err) => {
+          this.logger.warn(
+            `payment.initiate: failed to mark processing payment=${payment.id}: ${err instanceof Error ? err.message : err}`,
+          );
+        });
+      // Re-read so caller sees the latest snapshot.
+      const refreshed = await this.paymentRepo.findById(
+        kindergartenId,
+        payment.id,
+      );
+      if (refreshed) payment = refreshed;
+
+      // K8 — kick off the self-rescheduling Kaspi status-poll chain. Kaspi
+      // sends no webhook, so this delayed-job chain is the only settlement
+      // driver. Best-effort: enqueue failures (Redis down) must NOT fail the
+      // parent-pay request — the payment row already carries the
+      // QrOperationId, so a later manual/poll path can still settle it.
+      if (input.provider === 'kaspi_pay' && this.kaspiPollQueue) {
+        const jobData: KaspiPaymentStatusJobData = {
+          kindergartenId,
+          paymentId: payment.id,
+        };
+        await this.kaspiPollQueue
+          .add(KASPI_PAYMENT_STATUS_JOB, jobData, {
+            // Deterministic jobId keeps the poll chain single-lived: BullMQ
+            // dedups a re-add of an already-queued tick, and a completed
+            // delayed job with this id is re-addable (the reschedule path).
+            jobId: `kaspi-poll:${payment.id}`,
+            attempts: 1,
+            delay: KASPI_POLL_AGGRESSIVE_INTERVAL_MS,
+            removeOnComplete: { count: 50 },
+            removeOnFail: { count: 50 },
+          })
+          .catch((err) => {
+            this.logger.warn(
+              `payment.initiate: failed to enqueue kaspi poll for payment=${payment.id}: ${err instanceof Error ? err.message : err}`,
+            );
+          });
       }
     }
 
@@ -399,6 +468,46 @@ export class PaymentService {
     });
 
     return { paymentId: found.id, status: verified.status };
+  }
+
+  /**
+   * Settlement entry-point driven by the K8 Kaspi status poller. Kaspi sends
+   * no webhook, so the poller resolves the terminal outcome
+   * (`remote/details → Processed | Canceled/…`) and calls this to settle.
+   *
+   * Mirrors `processWebhook`'s kg-scoped TX setup but the kg id + payment id
+   * are already known (the poller loaded the payment cross-tenant). It REUSES
+   * the same private `applyCompletedPayment` / `applyFailedPayment` helpers
+   * (advisory lock per (kg, invoice) + re-read-under-lock idempotency +
+   * conditional UPDATE WHERE status IN ('initiated','processing')). There is
+   * NO second settlement / credit path — a duplicate poll for an already-
+   * completed payment is a no-op.
+   */
+  async settleFromKaspiPoller(
+    kindergartenId: string,
+    paymentId: string,
+    terminal: VerifyWebhookResult,
+  ): Promise<ProcessWebhookResult> {
+    await this.tx.run(async (em) => {
+      await em.query(`SELECT set_config('app.kindergarten_id', $1, true)`, [
+        kindergartenId,
+      ]);
+      await tenantStorage.run(
+        { kgId: kindergartenId, bypass: false, entityManager: em },
+        async () => {
+          if (terminal.status === 'failed') {
+            await this.applyFailedPayment(kindergartenId, paymentId, terminal);
+          } else {
+            await this.applyCompletedPayment(
+              kindergartenId,
+              paymentId,
+              terminal,
+            );
+          }
+        },
+      );
+    });
+    return { paymentId, status: terminal.status };
   }
 
   /**

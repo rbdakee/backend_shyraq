@@ -20,11 +20,23 @@
  */
 
 export interface CreatePaymentInput {
+  /**
+   * Owning kindergarten. Required by per-tenant adapters (Kaspi resolves the
+   * kindergarten's merchant session + encrypted creds at call time). The Mock
+   * and Halyk adapters ignore it — backward-compatible.
+   */
+  kindergartenId: string;
   invoiceId: string;
   amountKzt: number;
   currency: 'KZT';
   returnUrl: string;
   payerUserId?: string;
+  /**
+   * Payer phone (digits). Required by `kaspi_pay` (`remote/create.PhoneNumber`);
+   * ignored by Mock/Halyk. The DTO-level 400 guard lands in K7; the Kaspi
+   * adapter also guards (throws `KaspiPhoneRequiredError` when absent).
+   */
+  phoneNumber?: string;
   idempotencyKey: string;
 }
 
@@ -49,6 +61,11 @@ export interface VerifyWebhookResult {
 }
 
 export interface RefundInput {
+  /**
+   * Owning kindergarten. Required by per-tenant adapters (Kaspi resolves the
+   * kindergarten's merchant session at call time). Mock/Halyk ignore it.
+   */
+  kindergartenId: string;
   providerPaymentId: string;
   amountKzt: number;
   reason: string;

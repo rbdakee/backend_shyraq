@@ -188,6 +188,35 @@ PUSH_PROVIDER=mock
 # FIREBASE_CLIENT_EMAIL=
 # FIREBASE_PRIVATE_KEY=
 
+# --- Kaspi Pay (B24) ---
+# AES-256-GCM master key for at-rest encryption of Kaspi merchant credentials
+# (vtoken secret, device ECDSA keypair, ECDH keypair). MUST be 32 bytes hex (64 hex chars).
+# Generate: openssl rand -hex 32
+# Leave commented when Kaspi is not configured — the app boots with a
+# lazy-fail cipher. A blank value here would be coerced to "unset".
+# KASPI_ENCRYPTION_KEY=
+
+# K8 status-poller cadence (Kaspi sends no webhook → a per-payment
+# self-rescheduling delayed job polls remote/details until a terminal status
+# or ExpireDate). All values in milliseconds; env-overridable so ops can
+# re-tune without a redeploy. Defaults (IMPLEMENTATION_PLAN.md §2.2):
+#   0–2 min   → every 5s   (aggressive — most payments land here)
+#   2–10 min  → every 20s  (backoff)
+#   10 min–ExpireDate → every 60s (tail)
+#   past ExpireDate / hard-cap → markFailed, stop the chain
+# KASPI_POLL_AGGRESSIVE_MS=5000
+# KASPI_POLL_BACKOFF_MS=20000
+# KASPI_POLL_TAIL_MS=60000
+# KASPI_POLL_AGGRESSIVE_WINDOW_MS=120000
+# KASPI_POLL_BACKOFF_WINDOW_MS=600000
+# Hard-cap fallback when remote/details carries no ExpireDate (default 24h).
+# KASPI_POLL_HARD_CAP_MS=86400000
+
+# K9 — Kaspi version-gate health cron (SMS-free probe → /health/ready checks.kaspi).
+KASPI_VERSION_HEALTH_CRON=disabled            # 'enabled' to run the probe cron (API process). Default off (tests/e2e must not hit live Kaspi).
+KASPI_VERSION_HEALTH_CRON_EXPRESSION=*/15 * * * *
+KASPI_VERSION_HEALTH_TTL_SECONDS=3600
+
 # --- Multi-tenancy (RLS) ---
 # DB role used by app — must NOT have BYPASSRLS. SuperAdmin queries use a separate role.
 # DATABASE_USERNAME above is the regular tenant-scoped role.

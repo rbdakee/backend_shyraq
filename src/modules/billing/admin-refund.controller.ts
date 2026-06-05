@@ -34,6 +34,7 @@ import {
   ApproveRefundDto,
   CreateRefundDto,
   ListRefundsQueryDto,
+  ProcessRefundDto,
   RefundResponseDto,
   RejectRefundDto,
 } from './dto/refund.dto';
@@ -186,9 +187,13 @@ export class AdminRefundController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
-      'Process an approved refund — calls the payment provider and atomically debits the payment account.',
+      'Process an approved refund — calls the payment provider and atomically debits the payment account. For kaspi_pay refunds the body MUST include acknowledge_kaspi_history_checked=true (Kaspi has no idempotency key — verify the refund/return history in the Kaspi app first or a blind retry may double-refund).',
   })
   @ApiOkResponse({ type: RefundResponseDto })
+  @ApiBadRequestResponse({
+    description:
+      'kaspi_refund_requires_history_ack — kaspi_pay refund processed without acknowledge_kaspi_history_checked=true.',
+  })
   @ApiUnauthorizedResponse({ description: 'Bearer missing/invalid/revoked.' })
   @ApiForbiddenResponse({ description: 'Caller is not admin.' })
   @ApiNotFoundResponse({ description: 'Refund or payment not found.' })
@@ -199,9 +204,12 @@ export class AdminRefundController {
   async process(
     @Tenant() t: TenantContext,
     @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: ProcessRefundDto = {},
   ): Promise<RefundResponseDto> {
     const kgId = requireTenant(t);
-    const refund = await this.service.process(kgId, id);
+    const refund = await this.service.process(kgId, id, {
+      acknowledgeKaspiHistoryChecked: dto.acknowledge_kaspi_history_checked,
+    });
     return RefundPresenter.one(refund);
   }
 }

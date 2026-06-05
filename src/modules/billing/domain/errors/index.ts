@@ -12,6 +12,7 @@ export { PaymentStatusInvalidError } from './payment-status-invalid.error';
 export { PaymentProviderError } from './payment-provider.error';
 export { RefundNotFoundError } from './refund-not-found.error';
 export { RefundAlreadyProcessedError } from './refund-already-processed.error';
+export { KaspiRefundHistoryAckRequiredError } from './kaspi-refund-history-ack-required.error';
 export { WebhookSignatureInvalidError } from './webhook-signature-invalid.error';
 export { PaymentAccountNotFoundError } from './payment-account-not-found.error';
 export { KindergartenHolidayAlreadyExistsError } from './kindergarten-holiday-already-exists.error';

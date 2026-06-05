@@ -21,6 +21,7 @@ import {
 } from './domain/entities/refund.entity';
 import {
   InvoiceNotFoundError,
+  KaspiRefundHistoryAckRequiredError,
   PaymentNotFoundError,
   PaymentProviderError,
   PaymentStatusInvalidError,
@@ -222,6 +223,9 @@ class FakePaymentRepo extends PaymentRepository {
   }
 
   findByProviderTxnIdCrossTenant(): Promise<Payment | null> {
+    return Promise.resolve(null);
+  }
+  findByIdCrossTenant(): Promise<Payment | null> {
     return Promise.resolve(null);
   }
 
@@ -931,5 +935,97 @@ describe('RefundService.process emissions (T5c)', () => {
 
     await expect(h.service.process(KG, seeded.id)).rejects.toThrow();
     expect(h.notifier.events).toHaveLength(0);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// K9 — Kaspi refund history-ack guard. Kaspi has NO idempotency key, so a
+// blind re-`process` after an ambiguous network failure can double-refund.
+// `process` therefore requires `opts.acknowledgeKaspiHistoryChecked === true`
+// for `kaspi_pay` refunds, while mock/halyk_epay refunds are unaffected.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('RefundService.process — K9 Kaspi history-ack guard', () => {
+  it('throws KaspiRefundHistoryAckRequiredError when processing a kaspi_pay refund without acknowledge flag', async () => {
+    const h = buildHarness();
+    h.paymentRepo.rows.set(
+      PAYMENT,
+      makePayment({ provider: 'kaspi_pay', providerTxnId: 'qr_op_kaspi' }),
+    );
+    h.invoiceRepo.rows.set(INVOICE, makeInvoice({ status: 'paid' }));
+    h.invoiceRepo.paidSums.set(INVOICE, 50000);
+    h.paymentAccountRepo.put(makeAccount(50000));
+    const seeded = seedRefund(h.refundRepo, { status: 'approved' });
+
+    // No opts at all → rejects.
+    await expect(h.service.process(KG, seeded.id)).rejects.toBeInstanceOf(
+      KaspiRefundHistoryAckRequiredError,
+    );
+    // Explicit false flag → still rejects.
+    await expect(
+      h.service.process(KG, seeded.id, {
+        acknowledgeKaspiHistoryChecked: false,
+      }),
+    ).rejects.toBeInstanceOf(KaspiRefundHistoryAckRequiredError);
+
+    // Provider refund() must NOT have been called — the gate fires before it.
+    expect(h.provider.refundCalls).toHaveLength(0);
+    // Refund row stays approved (the operator can re-submit with the ack).
+    const refundAfter = await h.refundRepo.findById(KG, seeded.id);
+    expect(refundAfter?.status).toBe('approved');
+  });
+
+  it('rejects with code kaspi_refund_requires_history_ack', async () => {
+    const h = buildHarness();
+    h.paymentRepo.rows.set(PAYMENT, makePayment({ provider: 'kaspi_pay' }));
+    h.invoiceRepo.rows.set(INVOICE, makeInvoice({ status: 'paid' }));
+    const seeded = seedRefund(h.refundRepo, { status: 'approved' });
+
+    await expect(h.service.process(KG, seeded.id)).rejects.toMatchObject({
+      code: 'kaspi_refund_requires_history_ack',
+    });
+  });
+
+  it('processes a kaspi_pay refund when acknowledge flag is true', async () => {
+    const h = buildHarness();
+    h.paymentRepo.rows.set(
+      PAYMENT,
+      makePayment({ provider: 'kaspi_pay', providerTxnId: 'qr_op_kaspi' }),
+    );
+    h.invoiceRepo.rows.set(INVOICE, makeInvoice({ status: 'paid' }));
+    h.invoiceRepo.paidSums.set(INVOICE, 50000);
+    h.paymentAccountRepo.put(makeAccount(50000));
+    const seeded = seedRefund(h.refundRepo, { status: 'approved' });
+
+    const out = await h.service.process(KG, seeded.id, {
+      acknowledgeKaspiHistoryChecked: true,
+    });
+
+    expect(out.status).toBe('processed');
+    // Provider refund() was called against the Kaspi QrOperationId.
+    expect(h.provider.refundCalls).toHaveLength(1);
+    expect(h.provider.refundCalls[0].providerPaymentId).toBe('qr_op_kaspi');
+    expect(h.provider.refundCalls[0].idempotencyKey).toBe(
+      `refund:${seeded.id}`,
+    );
+
+    const paymentAfter = await h.paymentRepo.findById(KG, PAYMENT);
+    expect(paymentAfter?.status).toBe('refunded');
+  });
+
+  it('processes a mock refund without requiring acknowledgement', async () => {
+    const h = buildHarness();
+    // Default makePayment() provider is 'mock'.
+    h.paymentRepo.rows.set(PAYMENT, makePayment());
+    h.invoiceRepo.rows.set(INVOICE, makeInvoice({ status: 'paid' }));
+    h.invoiceRepo.paidSums.set(INVOICE, 50000);
+    h.paymentAccountRepo.put(makeAccount(50000));
+    const seeded = seedRefund(h.refundRepo, { status: 'approved' });
+
+    // No ack flag → must still succeed for a non-kaspi provider.
+    const out = await h.service.process(KG, seeded.id);
+
+    expect(out.status).toBe('processed');
+    expect(h.provider.refundCalls).toHaveLength(1);
   });
 });
