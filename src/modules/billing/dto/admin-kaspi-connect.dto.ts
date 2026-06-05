@@ -34,8 +34,10 @@ export class KaspiVerifyOtpDto {
   process_id!: string;
 
   @ApiProperty({
-    example: '123456',
-    description: 'The 6-digit SMS code the cashier received.',
+    example: '1234',
+    description:
+      'The SMS code the cashier received. Kaspi sends a 4-digit code; the ' +
+      'validator tolerates 4–6 digits defensively.',
   })
   @Matches(/^\d{4,6}$/, { message: 'invalid_otp_format' })
   otp!: string;
