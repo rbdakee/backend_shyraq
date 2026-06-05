@@ -10,6 +10,7 @@ import {
   KaspiAlreadyConnectedError,
   KaspiAppVersionOutdatedError,
   KaspiFinishFailedError,
+  KaspiInvalidPhoneError,
   KaspiNotConnectedError,
   KaspiOtpInvalidError,
   KaspiUnknownProcessError,
@@ -266,8 +267,60 @@ describe('KaspiConnectService', () => {
 
       expect(res.smsSent).toBe(true);
       const state = await store.get('PID-1');
-      expect(state?.phoneNumber).toBe('77011234567');
+      // Stored + sent as the 10-digit NATIONAL number (country code stripped).
+      expect(state?.phoneNumber).toBe('7011234567');
       expect(state?.userToken).toBe('UT2');
+      // The wire value to Kaspi is the normalized 10-digit national number —
+      // the 11-digit form is what Kaspi rejects as "not any operator".
+      const sendBody = http.calls[1].opts.body as {
+        data: { phoneNumber: string };
+      };
+      expect(sendBody.data.phoneNumber).toBe('7011234567');
+    });
+
+    it('normalizes assorted KZ phone shapes to the 10-digit national number', async () => {
+      for (const input of [
+        '7011234567', // bare 10-digit national
+        '77011234567', // 11-digit with country code
+        '87011234567', // 8-prefixed
+        '+77011234567', // E.164
+        '+7 (701) 123-45-67', // formatted
+      ]) {
+        const http = new MockHttp();
+        const { service } = buildService(http);
+        http.enqueue({
+          json: { meta: { pId: 'PID-1' } },
+          setCookie: ['user_token=UT1'],
+        });
+        await service.init(KG, USER);
+        http.enqueue({
+          json: { view: { code: 'EnterOtp' } },
+          setCookie: ['user_token=UT2'],
+        });
+
+        await service.sendPhone(KG, 'PID-1', input);
+
+        const body = http.calls[1].opts.body as {
+          data: { phoneNumber: string };
+        };
+        expect(body.data.phoneNumber).toBe('7011234567');
+      }
+    });
+
+    it('throws kaspi_invalid_phone when the number cannot reduce to 10 digits', async () => {
+      const http = new MockHttp();
+      const { service } = buildService(http);
+      http.enqueue({
+        json: { meta: { pId: 'PID-1' } },
+        setCookie: ['user_token=UT1'],
+      });
+      await service.init(KG, USER);
+
+      await expect(
+        service.sendPhone(KG, 'PID-1', '12345'),
+      ).rejects.toBeInstanceOf(KaspiInvalidPhoneError);
+      // No Kaspi entrance call for the phone step — rejected before the wire.
+      expect(http.calls).toHaveLength(1);
     });
 
     it('throws kaspi_app_version_outdated when Kaspi gates the build on send-phone', async () => {
@@ -384,7 +437,7 @@ describe('KaspiConnectService', () => {
 
       expect(result).toEqual({
         connected: true,
-        phone: '77011234567',
+        phone: '7011234567',
         orgName: 'ТОО Солнышко',
         profileId: '482931',
       });

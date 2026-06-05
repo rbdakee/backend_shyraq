@@ -104,8 +104,11 @@ export class KaspiPaymentProvider extends PaymentProviderPort {
 
     // Amount MUST be integer tenge — Kaspi rejects fractional tenge.
     const amount = Math.round(input.amountKzt);
-    // Comment: short, non-PII human label. The invoiceId is a UUID (no secret).
-    const comment = input.invoiceId;
+    // Comment: the payer-visible payment purpose in Kaspi. Prefer the
+    // human-readable label built by PaymentService (kindergarten name); fall
+    // back to the invoiceId UUID only when none was supplied (non-PII, no
+    // secret) so the customer never sees a blank purpose.
+    const comment = input.comment?.trim() || input.invoiceId;
 
     const { status, json } = await this.http.request('POST', url, {
       headers,

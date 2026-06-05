@@ -37,6 +37,13 @@ export interface CreatePaymentInput {
    * adapter also guards (throws `KaspiPhoneRequiredError` when absent).
    */
   phoneNumber?: string;
+  /**
+   * Human-readable payment purpose shown to the payer (Kaspi `remote/create`
+   * `Comment` — the line the customer sees in their Kaspi app). Non-PII. When
+   * absent the Kaspi adapter falls back to the invoiceId UUID. Ignored by
+   * Mock/Halyk.
+   */
+  comment?: string;
   idempotencyKey: string;
 }
 

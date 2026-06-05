@@ -75,6 +75,20 @@ export class KaspiFinishFailedError extends DomainError {
 }
 
 /**
+ * 400 — the supplied cashier phone could not be normalized to a 10-digit KZ
+ * national number (the form Kaspi's `EnterPhoneNumber` step expects, e.g.
+ * `7772270088`). Sending the 11-digit country-code form (`77772270088`) makes
+ * Kaspi reject it with `UserPhoneNumberDoesNotBelongToAnyOperator`, so the
+ * backend normalizes before the call — this guards a value that still can't be
+ * reduced to 10 digits.
+ */
+export class KaspiInvalidPhoneError extends DomainError {
+  constructor() {
+    super('kaspi_invalid_phone');
+  }
+}
+
+/**
  * 400 — `createPayment` was invoked for `provider=kaspi_pay` without a payer
  * phone number. Kaspi `remote/create` requires `PhoneNumber`; the DTO-level
  * guard lands in K7, but the adapter guards too (defence-in-depth).

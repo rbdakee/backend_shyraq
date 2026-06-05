@@ -1,5 +1,5 @@
 import * as crypto from 'node:crypto';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { CryptoCipherPort } from '@/shared-kernel/application/ports/crypto-cipher.port';
 import { KaspiGlobalConfig } from './domain/kaspi-global-config';
@@ -12,6 +12,7 @@ import {
   KaspiAlreadyConnectedError,
   KaspiAppVersionOutdatedError,
   KaspiFinishFailedError,
+  KaspiInvalidPhoneError,
   KaspiNotConnectedError,
   KaspiOtpInvalidError,
   KaspiUnknownProcessError,
@@ -80,6 +81,8 @@ interface DeviceIdentity {
  */
 @Injectable()
 export class KaspiConnectService {
+  private readonly logger = new Logger(KaspiConnectService.name);
+
   constructor(
     private readonly config: KaspiGlobalConfigService,
     private readonly http: KaspiHttpClient,
@@ -115,7 +118,7 @@ export class KaspiConnectService {
       `&deviceId=${device.deviceId}&installId=${device.installId}` +
       `&frontCameraAvailable=true&sf=registration&pc=KPEntrance&noPass=0`;
 
-    const { json, setCookie } = await this.http.request('POST', url, {
+    const { json, setCookie, status } = await this.http.request('POST', url, {
       headers: {
         ...this.entranceHeadersBase(cfg),
         Referer: referer,
@@ -144,6 +147,10 @@ export class KaspiConnectService {
 
     // Version gate fires BEFORE phone entry: view.onOpenAlarm.error.code.
     if (this.extractAlarmCode(json) === 'OldVersionToUpdate') {
+      this.logger.warn(
+        `init version gate (kg=${kindergartenId}, appBuild=${cfg.appBuild}): ` +
+          this.kaspiResponseSummary(json, status),
+      );
       throw new KaspiAppVersionOutdatedError();
     }
 
@@ -152,6 +159,10 @@ export class KaspiConnectService {
     const processId = meta?.['pId'] as string | undefined;
     if (!processId) {
       // No processId and no version alarm — treat as an upstream failure.
+      this.logger.error(
+        `init no processId (kg=${kindergartenId}): ` +
+          this.kaspiResponseSummary(json, status),
+      );
       throw new KaspiFinishFailedError('init_no_process_id');
     }
 
@@ -189,12 +200,18 @@ export class KaspiConnectService {
     const state = await this.requireState(kindergartenId, processId);
     const device = this.deviceFromState(state);
 
+    // Kaspi's `EnterPhoneNumber` step expects the 10-digit NATIONAL number
+    // (e.g. '7772270088'). The 11-digit country-code form ('77772270088') is
+    // rejected with `UserPhoneNumberDoesNotBelongToAnyOperator`. Normalize here
+    // so the frontend contract (which may send +7…/8…/11-digit) is untouched.
+    const nationalPhone = toKaspiNationalPhone(phoneNumber);
+
     const url = `${cfg.entranceUrl}/api/v1/entrance/step`;
     const referer =
       `${cfg.entranceUrl}/process/universal-enter-phone-number?pId=${processId}` +
       `&firstPage=KPUniversalEnterPhoneNumber`;
 
-    const { json, setCookie } = await this.http.request('POST', url, {
+    const { json, setCookie, status } = await this.http.request('POST', url, {
       headers: {
         ...this.entranceHeadersBase(cfg),
         Referer: referer,
@@ -202,13 +219,18 @@ export class KaspiConnectService {
       },
       body: {
         meta: { pId: processId, sn: 'EnterPhoneNumber' },
-        data: { phoneNumber },
+        data: { phoneNumber: nationalPhone },
         actType: 'Success',
       },
     });
 
     // Surface an upstream failure as an error — never a 200 with sms_sent:false.
     if (this.extractAlarmCode(json) === 'OldVersionToUpdate') {
+      this.logger.warn(
+        `send-phone version gate (kg=${kindergartenId}, pid=${processId}, ` +
+          `appBuild=${cfg.appBuild}): ` +
+          this.kaspiResponseSummary(json, status),
+      );
       throw new KaspiAppVersionOutdatedError();
     }
 
@@ -216,6 +238,13 @@ export class KaspiConnectService {
     const view = body?.['view'] as Record<string, unknown> | undefined;
     const smsSent = view?.['code'] === 'EnterOtp';
     if (!smsSent) {
+      // The catch-all that the frontend sees as kaspi_finish_failed (502). The
+      // ACTUAL Kaspi response shape lives ONLY here — without this line the
+      // failure is invisible (the HTTP client logs nothing on a 200 body).
+      this.logger.error(
+        `send-phone failed (kg=${kindergartenId}, pid=${processId}): ` +
+          this.kaspiResponseSummary(json, status),
+      );
       throw new KaspiFinishFailedError('send_phone_failed');
     }
 
@@ -223,7 +252,7 @@ export class KaspiConnectService {
     // only once we know the SMS was actually sent.
     await this.store.put({
       ...state,
-      phoneNumber,
+      phoneNumber: nationalPhone,
       userToken: this.extractUserToken(setCookie) ?? state.userToken,
     });
 
@@ -248,7 +277,7 @@ export class KaspiConnectService {
       `${cfg.entranceUrl}/process/universal-enter-phone-number?pId=${processId}` +
       `&firstPage=KPUniversalEnterPhoneNumber`;
 
-    const { json, setCookie } = await this.http.request('POST', url, {
+    const { json, setCookie, status } = await this.http.request('POST', url, {
       headers: {
         ...this.entranceHeadersBase(cfg),
         Referer: referer,
@@ -268,6 +297,12 @@ export class KaspiConnectService {
       data?.['type'] === 'kpDeviceRegistration' ||
       view?.['code'] === 'KPMobileCall';
     if (!otpOk) {
+      // Either a wrong OTP or an upstream shape change — the summary tells which
+      // (a genuine bad OTP usually surfaces a view.code / alarm, not 5xx).
+      this.logger.warn(
+        `verify-otp rejected (kg=${kindergartenId}, pid=${processId}): ` +
+          this.kaspiResponseSummary(json, status),
+      );
       throw new KaspiOtpInvalidError();
     }
 
@@ -338,17 +373,21 @@ export class KaspiConnectService {
       devicePrivateKey,
     );
 
-    const { json: finishJson } = await this.http.request('POST', finishUrl, {
-      headers: finishHeaders,
-      body: {
-        signed: {
-          sign: ecSign(signedDataB64, devicePrivateKey),
-          data: signedDataB64,
+    const { json: finishJson, status: finishStatus } = await this.http.request(
+      'POST',
+      finishUrl,
+      {
+        headers: finishHeaders,
+        body: {
+          signed: {
+            sign: ecSign(signedDataB64, devicePrivateKey),
+            data: signedDataB64,
+          },
+          guard: { pinHash: state.pinHash, x509: ecdh.publicSpkiB64 },
+          processId: state.processId,
         },
-        guard: { pinHash: state.pinHash, x509: ecdh.publicSpkiB64 },
-        processId: state.processId,
       },
-    });
+    );
 
     const finishBody = finishJson as Record<string, unknown> | null;
     const finishData = finishBody?.['data'] as
@@ -357,6 +396,13 @@ export class KaspiConnectService {
     const tokenSN = finishData?.['tokenSN'] as string | undefined;
     if (!finishBody?.['success'] || !tokenSN) {
       // No raw Kaspi body in the public message — only a stable internal tag.
+      // tokenSN itself is a secret, so log only its presence, never its value.
+      this.logger.error(
+        `finish no tokenSN (kg=${state.kindergartenId}): ` +
+          `status=${finishStatus} success=${String(finishBody?.['success'])} ` +
+          `hasTokenSN=${tokenSN != null} ` +
+          `topKeys=[${finishBody ? Object.keys(finishBody).join(',') : 'null'}]`,
+      );
       throw new KaspiFinishFailedError('finish_no_token_sn');
     }
 
@@ -382,6 +428,11 @@ export class KaspiConnectService {
     // session without it produces broken payments — refuse to activate when
     // org-context returned no Data.Current.ProfileId.
     if (orgContext.profileId == null) {
+      this.logger.error(
+        `finish no org-context profileId (kg=${state.kindergartenId}): ` +
+          `hasOrgId=${orgContext.organizationId != null} ` +
+          `hasOrgName=${orgContext.orgName != null}`,
+      );
       throw new KaspiFinishFailedError('finish_no_org_context');
     }
 
@@ -472,7 +523,7 @@ export class KaspiConnectService {
       null,
     );
 
-    const { json } = await this.http.request('POST', liteUrl, {
+    const { json, status } = await this.http.request('POST', liteUrl, {
       headers: liteHeaders,
       body: {
         OrganizationId: state.kaspiOrgId ? Number(state.kaspiOrgId) : 0,
@@ -484,6 +535,11 @@ export class KaspiConnectService {
     const statusCode = body?.['StatusCode'];
     const data = body?.['Data'] as Record<string, unknown> | undefined;
     if (statusCode !== 0 || !data) {
+      this.logger.warn(
+        `sign-in-lite failed (kg=${kindergartenId}): ` +
+          `httpStatus=${status} StatusCode=${String(statusCode)} ` +
+          `hasData=${data != null} — marking session expired`,
+      );
       // SignInLite failed — token likely fully expired; re-auth via SMS needed.
       const now = this.clock.now();
       session.markExpired(now);
@@ -862,6 +918,47 @@ export class KaspiConnectService {
     const error = alarm?.['error'] as Record<string, unknown> | undefined;
     return error?.['code'] as string | undefined;
   }
+
+  /**
+   * Secrets-safe one-line summary of a Kaspi entrance/step response, for the
+   * failure logs. Emits ONLY non-sensitive shape markers — `view.code`, the
+   * alarm code, whether `meta` is present, and the top-level key set. NEVER the
+   * body itself (which could carry tokens), the phone, or the OTP.
+   */
+  private kaspiResponseSummary(json: unknown, status: number): string {
+    const body = json as Record<string, unknown> | null;
+    const view = body?.['view'] as Record<string, unknown> | undefined;
+    const meta = body?.['meta'] as Record<string, unknown> | undefined;
+    const viewCode = view?.['code'];
+    const alarmCode = this.extractAlarmCode(json);
+    const topKeys = body ? Object.keys(body).join(',') : 'null';
+    // Kaspi's entrance error envelope carries the real reason at the TOP level
+    // (`type` / `error` / `actType`), NOT under `view`. These are error codes/
+    // messages — safe to log. `data` is deliberately NOT logged (it can echo
+    // back the phone number).
+    const type = body?.['type'];
+    const actType = body?.['actType'];
+    const isClosed = body?.['isClosed'];
+    const errField = this.safeStringify(body?.['error']);
+    return (
+      `status=${status} viewCode=${String(viewCode)} ` +
+      `alarmCode=${String(alarmCode)} hasMeta=${meta != null} ` +
+      `type=${String(type)} actType=${String(actType)} ` +
+      `isClosed=${String(isClosed)} error=${errField} ` +
+      `topKeys=[${topKeys}]`
+    );
+  }
+
+  /** JSON-stringify a value for logs, truncated to keep log lines bounded. */
+  private safeStringify(value: unknown): string {
+    if (value == null) return String(value);
+    try {
+      const s = typeof value === 'string' ? value : JSON.stringify(value);
+      return s.length > 400 ? `${s.slice(0, 400)}…` : s;
+    } catch {
+      return '[unserializable]';
+    }
+  }
 }
 
 // ─── Onboarding-flow constants ────────────────────────────────────────────
@@ -872,4 +969,29 @@ const KASPI_PLATFORM = 'iOS';
 
 function generateRequestId(): string {
   return crypto.randomUUID().toUpperCase();
+}
+
+/**
+ * Normalize a KZ phone to the 10-digit NATIONAL form Kaspi's entrance
+ * `EnterPhoneNumber` step expects (e.g. `7772270088`).
+ *
+ * Why this exists: Kaspi rejects the 11-digit country-code form
+ * (`77772270088`) with `UserPhoneNumberDoesNotBelongToAnyOperator` — the real
+ * Kaspi mobile/web client only sends the 10 national digits that follow the
+ * fixed `+7` prefix. We accept whatever the frontend sends (`+7…`, `8…`,
+ * 11-digit `7…`, or bare 10) and strip a single leading `7`/`8` trunk digit so
+ * the wire value to Kaspi is always the 10 national digits.
+ *
+ * @throws KaspiInvalidPhoneError when the input cannot reduce to 10 digits.
+ */
+export function toKaspiNationalPhone(raw: string): string {
+  const digits = (raw ?? '').replace(/\D/g, '');
+  const national =
+    digits.length === 11 && (digits.startsWith('7') || digits.startsWith('8'))
+      ? digits.slice(1)
+      : digits;
+  if (national.length !== 10) {
+    throw new KaspiInvalidPhoneError();
+  }
+  return national;
 }

@@ -70,6 +70,7 @@ import { PaymentProviderError } from '@/modules/billing/domain/errors/payment-pr
 import {
   KaspiAppVersionOutdatedError,
   KaspiFinishFailedError,
+  KaspiInvalidPhoneError,
   KaspiOtpInvalidError,
   KaspiPhoneRequiredError,
   KaspiUnknownProcessError,
@@ -215,6 +216,7 @@ export class DomainErrorFilter implements ExceptionFilter {
     // B24 Kaspi onboarding (§2.25). 409/404 fall through to the Conflict/
     // NotFound base branches below; these three need explicit mappings.
     if (err instanceof KaspiUnknownProcessError) return HttpStatus.BAD_REQUEST;
+    if (err instanceof KaspiInvalidPhoneError) return HttpStatus.BAD_REQUEST;
     if (err instanceof KaspiOtpInvalidError) return HttpStatus.UNAUTHORIZED;
     // K6 — Kaspi payment adapter errors.
     // kaspi_phone_required → 400 (clean path is the K7 DTO guard; this maps it

@@ -14,6 +14,7 @@ import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { TransactionRunnerPort } from '@/shared-kernel/application/ports/transaction-runner.port';
 import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import { ChildGuardianRepository } from '@/modules/child/infrastructure/persistence/child-guardian.repository';
+import { KindergartenRepository } from '@/modules/kindergarten/infrastructure/persistence/kindergarten.repository';
 import {
   Payment,
   PaymentProvider,
@@ -137,6 +138,11 @@ export class PaymentService {
     // the parent-side dependency) keeps working. `assertCanPay` fails
     // closed when missing.
     private readonly childGuardians?: ChildGuardianRepository,
+    // Optional: used only to build the human-readable Kaspi payment Comment
+    // (kindergarten name). When absent the Kaspi adapter falls back to the
+    // invoiceId UUID. Optional so existing PaymentService specs keep compiling.
+    @Optional()
+    private readonly kindergartens?: KindergartenRepository,
     // K8 — optional Kaspi status-poll queue. Mirrors MonthlyBillingScheduler's
     // optional-queue pattern so the api/tests boot without Redis and the many
     // existing PaymentService specs (which omit this trailing arg) keep
@@ -146,6 +152,24 @@ export class PaymentService {
     @InjectQueue(KASPI_PAYMENT_STATUS_QUEUE)
     private readonly kaspiPollQueue?: Queue,
   ) {}
+
+  /**
+   * Build the payer-visible payment purpose for the provider Comment. Only
+   * `kaspi_pay` shows a Comment to the customer, so the kindergarten lookup is
+   * skipped for every other provider. Returns undefined when the name can't be
+   * resolved — the Kaspi adapter then falls back to the invoiceId UUID.
+   */
+  private async buildPaymentComment(
+    kindergartenId: string,
+    provider: PaymentProvider,
+  ): Promise<string | undefined> {
+    if (provider !== 'kaspi_pay' || !this.kindergartens) {
+      return undefined;
+    }
+    const kg = await this.kindergartens.findById(kindergartenId);
+    const name = kg?.name?.trim();
+    return name ? `Оплата услуг детского сада «${name}»` : undefined;
+  }
 
   /**
    * Parent-side guardian re-check used by `ParentPaymentController` before
@@ -317,6 +341,7 @@ export class PaymentService {
         returnUrl: input.returnUrl,
         payerUserId: input.payerUserId ?? undefined,
         phoneNumber: input.kaspiPhoneNumber ?? undefined,
+        comment: await this.buildPaymentComment(kindergartenId, input.provider),
         idempotencyKey: input.idempotencyKey,
       });
     } catch (err) {

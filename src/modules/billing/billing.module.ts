@@ -4,6 +4,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { ChildModule } from '@/modules/child/child.module';
 import { LIFECYCLE_QUEUE } from '@/modules/child/lifecycle-queue.constants';
 import { StaffModule } from '@/modules/staff/staff.module';
+import { KindergartenModule } from '@/modules/kindergarten/kindergarten.module';
 import { CustomDiscountRepository } from './custom-discount.repository';
 import { CustomDiscountApplicationRepository } from './custom-discount-application.repository';
 import { KaspiGlobalConfigRepository } from './infrastructure/persistence/kaspi-global-config.repository';
@@ -214,6 +215,10 @@ function fiscalReceiptProvider(): Provider {
     // B24 K8 — StaffModule exports `StaffMemberRepository`; the Kaspi poller
     // resolves kg admin user_ids when the cashier session expires.
     StaffModule,
+    // B24 K7 — KindergartenModule exports `KindergartenRepository` so
+    // PaymentService can build the human-readable Kaspi payment Comment
+    // (kindergarten name) shown to the payer.
+    KindergartenModule,
   ],
   controllers: [
     // Admin-side surface (KindergartenScopeGuard + RolesGuard@admin).

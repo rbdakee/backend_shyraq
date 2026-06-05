@@ -211,6 +211,46 @@ describe('KaspiPaymentProvider', () => {
       });
     });
 
+    it('sends the supplied human-readable comment (and trims it), not the invoiceId', async () => {
+      const { adapter, repo, http, cipher } = buildAdapter();
+      repo.set(buildActiveSession(cipher));
+      http.nextResponse = { status: 200, json: { Data: { QrOperationId: 1 } } };
+
+      await adapter.createPayment({
+        kindergartenId: KG_ID,
+        invoiceId: INVOICE_ID,
+        amountKzt: 1000,
+        currency: 'KZT',
+        returnUrl: 'https://app.shyraq.local/return',
+        phoneNumber: '77001234567',
+        comment: '  Оплата услуг детского сада «Солнышко»  ',
+        idempotencyKey: 'idem-c',
+      });
+
+      const body = http.requests[0].body as { Comment: string };
+      expect(body.Comment).toBe('Оплата услуг детского сада «Солнышко»');
+    });
+
+    it('falls back to the invoiceId when the comment is blank/whitespace', async () => {
+      const { adapter, repo, http, cipher } = buildAdapter();
+      repo.set(buildActiveSession(cipher));
+      http.nextResponse = { status: 200, json: { Data: { QrOperationId: 1 } } };
+
+      await adapter.createPayment({
+        kindergartenId: KG_ID,
+        invoiceId: INVOICE_ID,
+        amountKzt: 1000,
+        currency: 'KZT',
+        returnUrl: 'https://app.shyraq.local/return',
+        phoneNumber: '77001234567',
+        comment: '   ',
+        idempotencyKey: 'idem-blank',
+      });
+
+      const body = http.requests[0].body as { Comment: string };
+      expect(body.Comment).toBe(INVOICE_ID);
+    });
+
     it('rounds fractional tenge to an integer Amount', async () => {
       const { adapter, repo, http, cipher } = buildAdapter();
       repo.set(buildActiveSession(cipher));
