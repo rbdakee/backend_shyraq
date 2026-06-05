@@ -433,7 +433,7 @@ describe('KaspiConnectService', () => {
         },
       });
 
-      const result = await service.verifyOtp(KG, 'PID-1', '123456');
+      const result = await service.verifyOtp(KG, 'PID-1', '1234');
 
       expect(result).toEqual({
         connected: true,
@@ -499,7 +499,7 @@ describe('KaspiConnectService', () => {
       });
 
       await expect(
-        service.verifyOtp(KG, 'PID-1', '123456'),
+        service.verifyOtp(KG, 'PID-1', '1234'),
       ).rejects.toBeInstanceOf(KaspiFinishFailedError);
 
       // No session row persisted (fake repo unchanged).
