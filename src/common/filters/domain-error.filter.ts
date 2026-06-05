@@ -75,6 +75,7 @@ import {
   KaspiUnknownProcessError,
   KaspiWebhookUnsupportedError,
 } from '@/modules/billing/domain/errors/kaspi-connect.errors';
+import { KaspiRefundHistoryAckRequiredError } from '@/modules/billing/domain/errors/kaspi-refund-history-ack-required.error';
 import {
   FileStorageMalformedKeyError,
   FileStorageNotFoundError,
@@ -219,6 +220,12 @@ export class DomainErrorFilter implements ExceptionFilter {
     // kaspi_phone_required → 400 (clean path is the K7 DTO guard; this maps it
     // for direct callers that bypass PaymentService's provider catch-all).
     if (err instanceof KaspiPhoneRequiredError) return HttpStatus.BAD_REQUEST;
+    // K9 — refusal to process a kaspi_pay refund without an explicit
+    // "I checked the Kaspi history" acknowledgement (Kaspi has no idempotency
+    // key, so a blind retry may double-refund). → 400, matching the K9
+    // parent-pay `payment_provider_mismatch` 400.
+    if (err instanceof KaspiRefundHistoryAckRequiredError)
+      return HttpStatus.BAD_REQUEST;
     // kaspi_webhook_unsupported → 501 (Kaspi has no inbound callback; settlement
     // is via the K8 poller). Matches docs/endpoints.md §4.5 error catalog.
     if (err instanceof KaspiWebhookUnsupportedError)

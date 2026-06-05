@@ -1,6 +1,7 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
+  IsBoolean,
   IsEnum,
   IsInt,
   IsNumber,
@@ -58,8 +59,21 @@ export class ApproveRefundDto {
 }
 
 export class ProcessRefundDto {
-  // Empty body — triggers PaymentProviderPort.refund via the service.
-  // Class kept for Swagger @Body() annotation consistency.
+  // Body is OPTIONAL — non-Kaspi refunds (mock/halyk) need no body. The single
+  // field gates kaspi_pay refunds only (K9): the Kaspi API has no idempotency
+  // key, so the operator must confirm they verified the Kaspi refund/return
+  // history before processing, else a blind retry may double-refund.
+  @ApiPropertyOptional({
+    example: true,
+    description:
+      'Required ONLY for kaspi_pay refunds. Set true to confirm you verified ' +
+      'the refund/return history in the Kaspi app before processing. Kaspi has ' +
+      'no idempotency key, so a blind retry may double-refund. Ignored for ' +
+      'mock/halyk_epay refunds.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  acknowledge_kaspi_history_checked?: boolean;
 }
 
 export class RejectRefundDto {

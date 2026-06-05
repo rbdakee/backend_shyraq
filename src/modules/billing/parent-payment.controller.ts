@@ -34,6 +34,7 @@ import {
   InitiatePrepaymentDto,
   InitiatePrepaymentResponseDto,
 } from './dto/payment.dto';
+import type { PaymentProvider } from './domain/entities/payment.entity';
 import { InvoicePresenter } from './invoice.presenter';
 import { InvoiceService } from './invoice.service';
 import { PaymentService } from './payment.service';
@@ -43,6 +44,20 @@ const TENANT_REQUIRED = 'tenant_required';
 function requireTenant(t: TenantContext): string {
   if (!t.kgId) throw new BadRequestException(TENANT_REQUIRED);
   return t.kgId;
+}
+
+/**
+ * K9 — map the deployment's active `PAYMENT_PROVIDER` env (mock|halyk|kaspi,
+ * default mock) onto the DTO/domain `PaymentProvider` enum so the parent-pay
+ * edge can reject a `provider` that doesn't match the single global provider
+ * (B13). Without this, a mismatched provider would reach the wrong adapter and
+ * fail late (502 + a failed-payment row). This is a cheap, early 400.
+ */
+function configuredDtoProvider(): PaymentProvider {
+  const p = (process.env.PAYMENT_PROVIDER ?? 'mock').toLowerCase();
+  if (p === 'kaspi' || p === 'kaspi_pay') return 'kaspi_pay';
+  if (p === 'halyk' || p === 'halyk_epay') return 'halyk_epay';
+  return 'mock';
 }
 
 /**
@@ -77,7 +92,10 @@ export class ParentPaymentController {
       'Initiate a payment against the invoice. `payment_mode=full` pays the remaining balance; `partial` requires `amount`. `idempotency_key` collapses retries.',
   })
   @ApiCreatedResponse({ type: InitiatePaymentResponseDto })
-  @ApiBadRequestResponse({ description: 'Validation error / amount mismatch.' })
+  @ApiBadRequestResponse({
+    description:
+      'Validation error / amount mismatch / payment_provider_mismatch (dto.provider is not the deployment active PAYMENT_PROVIDER).',
+  })
   @ApiUnauthorizedResponse({ description: 'Bearer missing/invalid/revoked.' })
   @ApiForbiddenResponse({
     description:
@@ -102,6 +120,10 @@ export class ParentPaymentController {
       if (dto.amount === undefined || dto.amount === null) {
         throw new BadRequestException('amount_required_for_partial');
       }
+    }
+
+    if (dto.provider !== configuredDtoProvider()) {
+      throw new BadRequestException('payment_provider_mismatch');
     }
 
     if (dto.provider === 'kaspi_pay' && !dto.kaspi_phone_number) {
@@ -140,7 +162,7 @@ export class ParentPaymentController {
   @ApiCreatedResponse({ type: InitiatePrepaymentResponseDto })
   @ApiBadRequestResponse({
     description:
-      'prepayment_horizon_not_configured / months_out_of_range / validation error.',
+      'prepayment_horizon_not_configured / months_out_of_range / payment_provider_mismatch (dto.provider is not the deployment active PAYMENT_PROVIDER) / validation error.',
   })
   @ApiUnauthorizedResponse({ description: 'Bearer missing/invalid/revoked.' })
   @ApiForbiddenResponse({
@@ -160,6 +182,10 @@ export class ParentPaymentController {
     const kgId = requireTenant(t);
     const original = await this.invoiceService.get(kgId, invoiceId);
     await this.paymentService.assertCanPay(kgId, user.sub, original.childId);
+
+    if (dto.provider !== configuredDtoProvider()) {
+      throw new BadRequestException('payment_provider_mismatch');
+    }
 
     if (dto.provider === 'kaspi_pay' && !dto.kaspi_phone_number) {
       throw new BadRequestException('kaspi_phone_required');

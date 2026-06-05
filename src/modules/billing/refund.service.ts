@@ -6,6 +6,7 @@ import { InvariantViolationError } from '@/shared-kernel/domain/errors';
 import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import { Refund, RefundState } from './domain/entities/refund.entity';
 import {
+  KaspiRefundHistoryAckRequiredError,
   PaymentNotFoundError,
   PaymentProviderError,
   PaymentStatusInvalidError,
@@ -34,6 +35,16 @@ export interface ApproveRefundInput {
 
 export interface RejectRefundInput {
   reason: string;
+}
+
+export interface ProcessRefundOpts {
+  /**
+   * K9 — operator acknowledgement that the Kaspi refund/return history was
+   * verified before this `process` call. REQUIRED for `kaspi_pay` refunds
+   * (Kaspi has no idempotency key, so a blind retry may double-refund);
+   * ignored for mock/halyk_epay.
+   */
+  acknowledgeKaspiHistoryChecked?: boolean;
 }
 
 /**
@@ -183,7 +194,11 @@ export class RefundService {
    * Caller is expected to be inside a TenantContext-managed TX (admin HTTP
    * controller wired in T7a).
    */
-  async process(kindergartenId: string, refundId: string): Promise<Refund> {
+  async process(
+    kindergartenId: string,
+    refundId: string,
+    opts?: ProcessRefundOpts,
+  ): Promise<Refund> {
     const refund = await this.refundRepo.findById(kindergartenId, refundId);
     if (!refund) {
       throw new RefundNotFoundError(refundId);
@@ -224,10 +239,25 @@ export class RefundService {
       throw new PaymentStatusInvalidError(payment.status, 'process_refund');
     }
 
+    // K9 — Kaspi has NO idempotency key, so a blind re-`process` after an
+    // ambiguous network failure may double-refund at Kaspi. For kaspi_pay
+    // refunds the operator must EXPLICITLY confirm they checked the Kaspi
+    // refund/return history first. mock/halyk_epay refunds are unaffected.
+    if (
+      payment.provider === 'kaspi_pay' &&
+      opts?.acknowledgeKaspiHistoryChecked !== true
+    ) {
+      throw new KaspiRefundHistoryAckRequiredError();
+    }
+
     // External side-effect FIRST. If it throws, the refund stays `approved`
-    // and the caller can retry. Sending a deterministic idempotency key
-    // makes provider-side retry safe (Mock + real adapters that honour the
-    // key return the same providerRefundId for repeated calls).
+    // and the caller can retry. The deterministic idempotency key
+    // (`refund:<id>`) makes provider-side retry safe ONLY for adapters that
+    // honour it — Mock + Halyk return the same providerRefundId for repeated
+    // calls. The Kaspi adapter IGNORES the key (its `history-pos-return` POST
+    // has no idempotency), so a kaspi_pay retry is NOT provider-safe — hence
+    // the explicit history-ack gate above (and the K9 follow-up to add a
+    // local provider-call ledger). See IMPLEMENTATION_PLAN.md §5.
     let providerResult;
     try {
       providerResult = await this.paymentProvider.refund({

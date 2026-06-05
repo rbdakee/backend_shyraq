@@ -41,6 +41,12 @@ export class PaymentAccountService {
     accountId: string,
     amount: MoneyKzt,
   ): Promise<PaymentAccount> {
+    // Serialise concurrent balance mutations on THIS account (per-child).
+    // The per-invoice settlement lock does not cover two settlements for
+    // DIFFERENT invoices of the same child landing at once — without this
+    // both would read the same balance and lost-update one credit. Released
+    // at the ambient TX commit; called BEFORE the read-modify-write.
+    await this.accounts.acquireBalanceAdvisoryLock(kindergartenId, accountId);
     const account = await this.accounts.findById(kindergartenId, accountId);
     if (!account) {
       throw new PaymentAccountNotFoundError(accountId);
@@ -54,6 +60,10 @@ export class PaymentAccountService {
     accountId: string,
     amount: MoneyKzt,
   ): Promise<PaymentAccount> {
+    // Same hazard as creditFromPayment — serialise concurrent mutations on
+    // THIS per-child account before the read-modify-write. Released at the
+    // ambient TX commit.
+    await this.accounts.acquireBalanceAdvisoryLock(kindergartenId, accountId);
     const account = await this.accounts.findById(kindergartenId, accountId);
     if (!account) {
       throw new PaymentAccountNotFoundError(accountId);

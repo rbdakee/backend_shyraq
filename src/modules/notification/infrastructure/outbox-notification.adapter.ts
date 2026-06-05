@@ -23,6 +23,7 @@ import {
   NotifyInvoiceCreatedInput,
   NotifyInvoiceOverdueInput,
   NotifyInvoicePaidInput,
+  NotifyKaspiSessionExpiredInput,
   NotifyPaymentCompletedInput,
   NotifyPaymentFailedInput,
   NotifyPaymentRefundedInput,
@@ -461,6 +462,19 @@ export class OutboxNotificationAdapter extends NotificationPort {
       childId: event.childId,
       reactivatedAt: event.reactivatedAt.toISOString(),
       reactivatedByStaffId: event.reactivatedByStaffId,
+    });
+  }
+
+  // ── B24 Kaspi Pay ──────────────────────────────────────────────────────
+
+  notifyKaspiSessionExpired(
+    event: NotifyKaspiSessionExpiredInput,
+  ): Promise<void> {
+    // Recipients resolved from the payload (admin user_ids) by the
+    // dispatcher's `resolveRecipientUserIdsFromPayload` — same pattern as
+    // `enrollment.first_invoice_skipped`. No PII / payment context carried.
+    return this.enqueue(event.kindergartenId, 'kaspi.session_expired', {
+      recipientUserIds: event.recipientUserIds,
     });
   }
 

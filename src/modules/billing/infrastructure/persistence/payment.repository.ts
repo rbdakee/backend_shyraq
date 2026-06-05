@@ -93,6 +93,18 @@ export abstract class PaymentRepository {
   ): Promise<Payment | null>;
 
   /**
+   * Cross-tenant lookup by `(kindergartenId, id)` — used by the K8 Kaspi
+   * status poller, which runs outside any HTTP/RLS context. The relational
+   * impl MUST open a fresh `dataSource.transaction()` and `SET LOCAL
+   * app.bypass_rls='true'` inside it so the GUC does not leak into any ambient
+   * TX (mirrors `findByProviderTxnIdCrossTenant`).
+   */
+  abstract findByIdCrossTenant(
+    kindergartenId: string,
+    id: string,
+  ): Promise<Payment | null>;
+
+  /**
    * Conditional UPDATE: `SET status='completed', provider_txn_id=$tx,
    * paid_at=$now, provider_payload=$payload, updated_at=$now WHERE id=$id
    * AND kindergarten_id=$kg AND status IN ('initiated','processing')

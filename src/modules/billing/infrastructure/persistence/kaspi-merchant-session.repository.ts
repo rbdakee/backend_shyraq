@@ -46,4 +46,18 @@ export abstract class KaspiMerchantSessionRepository {
   abstract saveBypassRls(
     session: KaspiMerchantSession,
   ): Promise<KaspiMerchantSession>;
+
+  /**
+   * Cheap `last_checked_at` touch under `bypass_rls=true`, in a fresh
+   * self-contained TX. Called by the K8 poller on every real `remote/details`
+   * hit so we can later debounce on-demand status refreshes. Does NOT rewrite
+   * the encrypted credential blobs, and deliberately leaves `updated_at`
+   * untouched so it never races/clobbers a concurrent real credential write —
+   * a targeted UPDATE of `last_checked_at` only (mirrors `saveBypassRls`'s
+   * TX/GUC handling).
+   */
+  abstract touchLastCheckedAtBypassRls(
+    kindergartenId: string,
+    now: Date,
+  ): Promise<void>;
 }

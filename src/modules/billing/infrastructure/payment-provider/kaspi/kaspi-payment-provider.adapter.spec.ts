@@ -65,6 +65,9 @@ class FakeSessionRepo extends KaspiMerchantSessionRepository {
     this.set(session);
     return Promise.resolve(session);
   }
+  touchLastCheckedAtBypassRls(): Promise<void> {
+    return Promise.resolve();
+  }
 }
 
 // ─── Mocked KaspiHttpClient (NEVER hits real Kaspi) ────────────────────────

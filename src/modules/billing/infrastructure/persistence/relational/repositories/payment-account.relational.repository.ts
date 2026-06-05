@@ -83,4 +83,24 @@ export class PaymentAccountRelationalRepository extends PaymentAccountRepository
       );
     return account;
   }
+
+  /**
+   * `pg_advisory_xact_lock(hashtext('billing:account:'||accountId)::bigint)`.
+   * Released on TX commit / rollback. Goes through `manager()` so it inherits
+   * the ambient settlement TX (parent-pay / webhook / refund path). Mirrors
+   * `PaymentRelationalRepository.acquirePaymentAdvisoryLock` — see that file's
+   * canonical M11 note for why the `::bigint` cast is present. Serialises
+   * concurrent credit/debit on the SAME per-child account; the per-invoice
+   * lock does not cover this.
+   */
+  async acquireBalanceAdvisoryLock(
+    _kindergartenId: string,
+    accountId: string,
+  ): Promise<void> {
+    const scope = `billing:account:${accountId}`;
+    await this.manager().query(
+      `SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`,
+      [scope],
+    );
+  }
 }

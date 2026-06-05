@@ -482,6 +482,28 @@ export interface NotifyEnrollmentFirstInvoiceSkippedInput {
   recipientUserIds: string[];
 }
 
+// ── B24 Kaspi Pay events ──────────────────────────────────────────────────
+
+/**
+ * B24 / K8 — emitted by the Kaspi status poller when a `session_expired`
+ * envelope is observed AND the silent SignInLite refresh
+ * (`KaspiConnectService.refreshSession`) fails. Recipients are the
+ * kindergarten's active admins (pre-resolved by the producer via
+ * `StaffMemberRepository`). The admin must re-onboard the Kaspi cashier
+ * session (SMS flow) for payments to keep settling. Admin-facing — no payment
+ * / child / parent context is carried.
+ */
+export interface NotifyKaspiSessionExpiredInput {
+  kindergartenId: string;
+  /**
+   * Pre-resolved admin user_ids (NOT staff_member ids — the dispatcher fans
+   * out by user_id). Producer reads these from
+   * `StaffMemberRepository.listByKindergarten({role:'admin', isActive:true})`
+   * before emitting (mirrors `enrollment.first_invoice_skipped`).
+   */
+  recipientUserIds: string[];
+}
+
 export abstract class NotificationPort {
   abstract notifyGuardianPendingApproval(
     event: GuardianPendingApprovalEvent,
@@ -689,6 +711,22 @@ export abstract class NotificationPort {
    * only — `child.reactivated` is NOT in NANNY_ALLOWED_EVENT_KEYS).
    */
   notifyChildReactivated(_event: ChildReactivatedEvent): Promise<void> {
+    return Promise.resolve();
+  }
+
+  // ── B24 Kaspi Pay ───────────────────────────────────────────────────
+  // Non-abstract default-no-op so older test FakeNotificationPort classes
+  // keep compiling. Production `OutboxNotificationAdapter` overrides;
+  // `InMemoryNotificationAdapter` records into its events array.
+
+  /**
+   * Fired by the K8 Kaspi status poller when a `session_expired` envelope is
+   * seen and the silent SignInLite refresh fails. Recipients: the kg's active
+   * admins (pre-resolved by the producer).
+   */
+  notifyKaspiSessionExpired(
+    _event: NotifyKaspiSessionExpiredInput,
+  ): Promise<void> {
     return Promise.resolve();
   }
 }

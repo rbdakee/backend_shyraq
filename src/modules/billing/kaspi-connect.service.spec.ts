@@ -99,6 +99,9 @@ class FakeSessionRepo extends KaspiMerchantSessionRepository {
     this.rows.set(session.kindergartenId, session);
     return Promise.resolve(session);
   }
+  touchLastCheckedAtBypassRls(): Promise<void> {
+    return Promise.resolve();
+  }
   current(kg: string): KaspiMerchantSession | undefined {
     return this.rows.get(kg);
   }

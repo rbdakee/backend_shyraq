@@ -22,6 +22,10 @@ import {
 } from '../payment-provider.port';
 import { KaspiHttpClient } from './kaspi-http.client';
 import {
+  ParsedRemoteDetails,
+  parseRemoteDetails,
+} from './kaspi-remote-details';
+import {
   KaspiAppConfig,
   KaspiDeviceIdentity,
   KaspiSession,
@@ -200,6 +204,57 @@ export class KaspiPaymentProvider extends PaymentProviderPort {
       `kaspi_refund_${input.providerPaymentId}`;
 
     return { providerRefundId, status: 'processed' };
+  }
+
+  // ── getPaymentStatus — qrpay remote/details (K8 poller) ──────────────────
+
+  /**
+   * Polls `remote/details?operationId=<QrOperationId>` for a single payment and
+   * returns the parsed status envelope. Kaspi-specific (NOT on the
+   * provider-agnostic `PaymentProviderPort`) — only the K8 poller calls it.
+   *
+   * The session is resolved CROSS-TENANT via `findByKindergartenIdBypassRls`
+   * because the poller runs outside any HTTP/RLS context (no ambient tenant
+   * EntityManager). No DB transaction is opened around the HTTP call.
+   *
+   * The same full URL string (including the query) is passed to BOTH
+   * `signedQrPayHeaders` and the GET — X-Sign signs over `url`, so a mismatch
+   * would break the signature. The URL is therefore built once.
+   *
+   * Secrets hygiene: tokenSN, vtoken secret, device key, phone, and the raw
+   * response body are NEVER logged here.
+   */
+  async getPaymentStatus(input: {
+    kindergartenId: string;
+    providerPaymentId: string;
+  }): Promise<ParsedRemoteDetails> {
+    const session = await this.sessions.findByKindergartenIdBypassRls(
+      input.kindergartenId,
+    );
+    if (!session || !session.isActive()) {
+      throw new KaspiNotConnectedError();
+    }
+    const cfg = await this.config.getConfig();
+    const device = this.deviceIdentity(session);
+    const kaspiSession = this.kaspiSession(session);
+
+    // Build the signed URL ONCE — X-Sign signs over this exact string, so the
+    // value handed to signedQrPayHeaders MUST equal the one passed to the GET.
+    const url =
+      `${cfg.qrpayUrl}/v01/remote/details` +
+      `?operationId=${encodeURIComponent(input.providerPaymentId)}`;
+    const headers = signedQrPayHeaders(
+      url,
+      kaspiSession,
+      device,
+      this.appConfig(cfg),
+    );
+
+    // GET — no body. KaspiHttpClient does not throw on non-2xx; the parser
+    // interprets 401/403 as session_expired.
+    const { status, json } = await this.http.request('GET', url, { headers });
+
+    return parseRemoteDetails(status, json);
   }
 
   // ── verifyWebhook — UNSUPPORTED (settlement is via the K8 poller) ─────────

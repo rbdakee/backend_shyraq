@@ -905,6 +905,25 @@ const TEMPLATES: Record<string, EventTemplate> = {
       reason: payload.reason,
     }),
   }),
+
+  // ── B24 Kaspi Pay ───────────────────────────────────────────────────
+  // Admin-facing signal that the Kaspi cashier session expired and the
+  // silent SignInLite refresh failed — the admin must re-onboard for
+  // payments to keep settling. Recipients are pre-resolved kg admins
+  // (resolveRecipientUserIdsFromPayload). No sensitive data carried.
+  'kaspi.session_expired': () => ({
+    titleI18n: {
+      ru: 'Kaspi: сессия кассы истекла',
+      kk: 'Kaspi: касса сеансы аяқталды',
+      en: 'Kaspi: cashier session expired',
+    },
+    bodyI18n: {
+      ru: 'Переподключите кассу Kaspi, чтобы продолжить приём оплат.',
+      kk: 'Төлемдерді қабылдауды жалғастыру үшін Kaspi кассасын қайта қосыңыз.',
+      en: 'Reconnect the Kaspi cashier to keep accepting payments.',
+    },
+    data: stringMap({}),
+  }),
 };
 
 const RECIPIENT_RESOLVERS: Record<string, RecipientResolver> = {
@@ -967,6 +986,9 @@ const RECIPIENT_RESOLVERS: Record<string, RecipientResolver> = {
   // T11 H6 — recipients are pre-resolved by the producer (kg admin
   // user_ids); the dispatcher reads the array verbatim from the payload.
   'enrollment.first_invoice_skipped': resolveRecipientUserIdsFromPayload,
+  // ── B24 Kaspi Pay — admin-facing; producer pre-resolves kg admin
+  // user_ids into the payload (same pattern as enrollment.* above).
+  'kaspi.session_expired': resolveRecipientUserIdsFromPayload,
   // ── B16 Custom Discount activation ─────────────────────────────────────
   // Producer pre-resolves the target child IDs via DiscountTargetResolver;
   // we fan out to the distinct set of approved-active guardian user_ids

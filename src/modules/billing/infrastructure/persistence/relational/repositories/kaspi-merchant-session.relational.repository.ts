@@ -70,6 +70,27 @@ export class KaspiMerchantSessionRelationalRepository extends KaspiMerchantSessi
     });
   }
 
+  async touchLastCheckedAtBypassRls(
+    kindergartenId: string,
+    now: Date,
+  ): Promise<void> {
+    // K8 poller path — no ambient tenant TX. Pin `app.bypass_rls='true'` to a
+    // fresh self-contained TX so the FORCE-RLS UPDATE is not filtered to 0
+    // rows, and the bypass GUC never leaks past this TX. Targeted UPDATE — the
+    // encrypted credential blobs are intentionally NOT rewritten, and
+    // `updated_at` is deliberately left untouched so this debounce hook never
+    // races/clobbers a concurrent real credential write (saveBypassRls).
+    await this.dataSource.transaction(async (m) => {
+      await m.query(`SET LOCAL app.bypass_rls = 'true'`);
+      await m.query(
+        `UPDATE kaspi_merchant_session
+            SET last_checked_at = $2
+          WHERE kindergarten_id = $1`,
+        [kindergartenId, now],
+      );
+    });
+  }
+
   /**
    * Shared upsert keyed on the UNIQUE kindergarten_id so re-onboarding
    * overwrites the existing row in place rather than violating the unique

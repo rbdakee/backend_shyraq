@@ -157,6 +157,14 @@ class FakePaymentRepo extends PaymentRepository {
     return Promise.resolve(null);
   }
 
+  findByIdCrossTenant(
+    kindergartenId: string,
+    id: string,
+  ): Promise<Payment | null> {
+    const p = this.rows.get(id);
+    return Promise.resolve(p && p.kindergartenId === kindergartenId ? p : null);
+  }
+
   markCompletedConditional(
     kindergartenId: string,
     id: string,

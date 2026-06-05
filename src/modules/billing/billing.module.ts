@@ -3,6 +3,7 @@ import { BullModule } from '@nestjs/bullmq';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ChildModule } from '@/modules/child/child.module';
 import { LIFECYCLE_QUEUE } from '@/modules/child/lifecycle-queue.constants';
+import { StaffModule } from '@/modules/staff/staff.module';
 import { CustomDiscountRepository } from './custom-discount.repository';
 import { CustomDiscountApplicationRepository } from './custom-discount-application.repository';
 import { KaspiGlobalConfigRepository } from './infrastructure/persistence/kaspi-global-config.repository';
@@ -10,6 +11,7 @@ import { KaspiGlobalConfigRelationalRepository } from './infrastructure/persiste
 import { KaspiGlobalConfigTypeOrmEntity } from './infrastructure/persistence/relational/entities/kaspi-global-config.typeorm.entity';
 import { KaspiGlobalConfigService } from './kaspi-global-config.service';
 import { KaspiVersionProbeService } from './kaspi-version-probe.service';
+import { KaspiVersionHealthService } from './kaspi-version-health.service';
 import { KaspiHttpClient } from './infrastructure/payment-provider/kaspi/kaspi-http.client';
 import { KaspiConnectService } from './kaspi-connect.service';
 import { KaspiMerchantSessionRepository } from './infrastructure/persistence/kaspi-merchant-session.repository';
@@ -34,7 +36,6 @@ import { HalykPaymentProvider } from './infrastructure/payment-provider/halyk-pa
 import { KaspiPaymentProvider } from './infrastructure/payment-provider/kaspi/kaspi-payment-provider.adapter';
 import { MockPaymentProvider } from './infrastructure/payment-provider/mock-payment-provider.adapter';
 import { PaymentProviderPort } from './infrastructure/payment-provider/payment-provider.port';
-import { CryptoCipherPort } from '@/shared-kernel/application/ports/crypto-cipher.port';
 import { InvoiceRepository } from './infrastructure/persistence/invoice.repository';
 import { InvoiceLineItemRepository } from './infrastructure/persistence/invoice-line-item.repository';
 import { KindergartenHolidayRepository } from './infrastructure/persistence/kindergarten-holiday.repository';
@@ -81,6 +82,9 @@ import {
   MonthlyBillingProcessor,
   MONTHLY_BILLING_QUEUE,
 } from './monthly-billing.processor';
+import { KaspiPaymentStatusPollerService } from './kaspi-payment-status-poller.service';
+import { KASPI_PAYMENT_STATUS_QUEUE } from './kaspi-payment-status.constants';
+import { KaspiPaymentStatusProcessor } from './kaspi-payment-status.processor';
 import {
   OverdueInvoiceProcessor,
   OverdueInvoiceScheduler,
@@ -100,31 +104,20 @@ import { TariffPlanService } from './tariff-plan.service';
  * call — running with `PAYMENT_PROVIDER=halyk` is intentionally loud so a
  * misconfigured deployment fails before silently dropping payments.
  *
- * `kaspi` (alias `kaspi_pay`, B24/K6) resolves the live Kaspi adapter. Its deps
- * are injected (singleton adapter, per-tenant creds resolved at call time):
- * the merchant-session repo, the at-rest cipher, the qrpay HTTP client, and the
- * global-config service. The `inject` array is ONLY evaluated for the Kaspi
- * branch — but NestJS resolves it eagerly, so it is always listed; the mock/
- * halyk branches simply ignore the injected args.
+ * `kaspi` (alias `kaspi_pay`, B24/K6) resolves the live Kaspi adapter. The
+ * concrete `KaspiPaymentProvider` is registered as its OWN singleton provider
+ * (K8 — the status poller injects it directly for `getPaymentStatus`), and this
+ * factory injects + RETURNS that same singleton for the kaspi branch so there
+ * is exactly ONE instance. The mock/halyk branches ignore the injected adapter.
  */
 function paymentProviderProvider(): Provider {
   return {
     provide: PaymentProviderPort,
-    inject: [
-      KaspiMerchantSessionRepository,
-      CryptoCipherPort,
-      KaspiHttpClient,
-      KaspiGlobalConfigService,
-    ],
-    useFactory: (
-      sessions: KaspiMerchantSessionRepository,
-      cipher: CryptoCipherPort,
-      http: KaspiHttpClient,
-      config: KaspiGlobalConfigService,
-    ) => {
+    inject: [KaspiPaymentProvider],
+    useFactory: (kaspi: KaspiPaymentProvider) => {
       const provider = (process.env.PAYMENT_PROVIDER ?? 'mock').toLowerCase();
       if (provider === 'kaspi' || provider === 'kaspi_pay') {
-        return new KaspiPaymentProvider(sessions, cipher, http, config);
+        return kaspi;
       }
       if (provider === 'halyk') {
         return new HalykPaymentProvider();
@@ -211,9 +204,16 @@ function fiscalReceiptProvider(): Provider {
     // up `lifecycle:pro-rata-refund` jobs and creates the pro-rata
     // refund row in the child's current billing period.
     BullModule.registerQueue({ name: LIFECYCLE_QUEUE }),
+    // B24 K8 — per-payment self-rescheduling Kaspi status-poll queue.
+    // `PaymentService.initiate` enqueues the first delayed job; the processor
+    // (hosted on the worker via BillingModule) re-enqueues each next tick.
+    BullModule.registerQueue({ name: KASPI_PAYMENT_STATUS_QUEUE }),
     // T7b: ChildModule re-exports `ChildGuardianRepository` so the parent
     // controllers can re-check guardian-of-child links + nanny role gate.
     ChildModule,
+    // B24 K8 — StaffModule exports `StaffMemberRepository`; the Kaspi poller
+    // resolves kg admin user_ids when the cashier session expires.
+    StaffModule,
   ],
   controllers: [
     // Admin-side surface (KindergartenScopeGuard + RolesGuard@admin).
@@ -239,6 +239,10 @@ function fiscalReceiptProvider(): Provider {
     PaymentWebhookController,
   ],
   providers: [
+    // B24 K8 — register the concrete Kaspi adapter as its OWN singleton so the
+    // status poller can inject it directly; `paymentProviderProvider()` then
+    // returns this same instance for the kaspi branch (one instance total).
+    KaspiPaymentProvider,
     paymentProviderProvider(),
     { provide: DiscountEnginePort, useClass: MockDiscountEngine },
     fiscalReceiptProvider(),
@@ -278,6 +282,10 @@ function fiscalReceiptProvider(): Provider {
     },
     KaspiGlobalConfigService,
     KaspiVersionProbeService,
+    // B24 K9 — SMS-free version-gate health cron (opt-in). Crons only in the
+    // API process (NestScheduleModule.forRoot is AppModule-only); harmless in
+    // the worker. Surfaced on `/health/ready` as `checks.kaspi`.
+    KaspiVersionHealthService,
     KaspiHttpClient,
     // B24 Kaspi Pay — merchant onboarding (K5).
     {
@@ -301,6 +309,9 @@ function fiscalReceiptProvider(): Provider {
     // B24 Kaspi Pay processors / schedulers wired in K5/K6
     MonthlyBillingProcessor,
     MonthlyBillingScheduler,
+    // B24 K8 — Kaspi status poller orchestration + self-rescheduling processor.
+    KaspiPaymentStatusPollerService,
+    KaspiPaymentStatusProcessor,
     DiscountExpireProcessor,
     DiscountExpireScheduler,
     OverdueInvoiceProcessor,
@@ -328,6 +339,8 @@ function fiscalReceiptProvider(): Provider {
     // K5 onboarding surface — consumed by the K8 poller.
     KaspiMerchantSessionRepository,
     KaspiConnectService,
+    // K8 — Kaspi status poller (worker pulls it via BillingModule import).
+    KaspiPaymentStatusPollerService,
     InvoiceService,
     TariffPlanService,
     TariffAssignmentService,
