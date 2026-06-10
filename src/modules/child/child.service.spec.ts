@@ -1635,6 +1635,151 @@ describe('ChildService — guardian state machine', () => {
     ).rejects.toBeInstanceOf(InvalidGuardianStatusTransitionError);
   });
 
+  // ── Admin-side approve (approveGuardianByAdmin) ──────────────────────────
+
+  const ADMIN_USER = '99999999-9999-9999-9999-999999999999';
+
+  it('admin approves a pending secondary without the primary acting', async () => {
+    const ctx = await bootChildWithPrimary();
+    const { service, notification } = ctx.setup;
+    const g = await service.inviteGuardian(KG, {
+      childId: ctx.childId,
+      userPhone: '+77011112222',
+      role: 'secondary',
+      invitedByUserId: ctx.primaryUserId,
+    });
+
+    const approved = await service.approveGuardianByAdmin(
+      KG,
+      ctx.childId,
+      g.id,
+      ADMIN_USER,
+    );
+
+    expect(approved.status.value).toBe('approved');
+    expect(approved.approvedBy).toBe(ADMIN_USER);
+    expect(approved.hasApprovalRights).toBe(false);
+    expect(
+      notification.events.find((e) => e.type === 'approved'),
+    ).toBeDefined();
+  });
+
+  it('admin force-approves a pending primary → approved with approval rights', async () => {
+    const ctx = setup();
+    const primaryUser = makeUser(randomUUID(), '+77011113333');
+    ctx.users.put(primaryUser);
+    const child = await ctx.service.createChild(KG, {
+      fullName: 'P',
+      dateOfBirth: new Date('2021-09-15'),
+    });
+    // Seed a PENDING primary (enrollment pre-seed whose OTP auto-approve
+    // never fired) directly.
+    const g = ChildGuardian.hydrate({
+      id: randomUUID(),
+      kindergartenId: KG,
+      childId: child.id,
+      userId: primaryUser.id,
+      role: 'primary',
+      status: 'pending_approval',
+      hasApprovalRights: false,
+      approvedBy: null,
+      approvedAt: null,
+      revokedBy: null,
+      revokedAt: null,
+      canPickup: true,
+      permissions: {},
+      permissionsUpdatedBy: null,
+      permissionsUpdatedAt: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    ctx.guardians.put(g);
+
+    // grantApprovalRights omitted → primary still gets rights (primary contract).
+    const approved = await ctx.service.approveGuardianByAdmin(
+      KG,
+      child.id,
+      g.id,
+      ADMIN_USER,
+    );
+
+    expect(approved.status.value).toBe('approved');
+    expect(approved.role.value).toBe('primary');
+    expect(approved.hasApprovalRights).toBe(true);
+    expect(approved.approvedBy).toBe(ADMIN_USER);
+  });
+
+  it('admin approve on an already-approved row throws status-transition', async () => {
+    const ctx = await bootChildWithPrimary();
+    const { service } = ctx.setup;
+    const g = await service.inviteGuardian(KG, {
+      childId: ctx.childId,
+      userPhone: '+77011112222',
+      role: 'secondary',
+      invitedByUserId: ctx.primaryUserId,
+    });
+    await service.approveGuardianByAdmin(KG, ctx.childId, g.id, ADMIN_USER);
+    await expect(
+      service.approveGuardianByAdmin(KG, ctx.childId, g.id, ADMIN_USER),
+    ).rejects.toBeInstanceOf(InvalidGuardianStatusTransitionError);
+  });
+
+  it('admin approve rejects a guardian id that belongs to another child', async () => {
+    const ctx = await bootChildWithPrimary();
+    const { service } = ctx.setup;
+    const g = await service.inviteGuardian(KG, {
+      childId: ctx.childId,
+      userPhone: '+77011112222',
+      role: 'secondary',
+      invitedByUserId: ctx.primaryUserId,
+    });
+    const otherChildId = randomUUID();
+    await expect(
+      service.approveGuardianByAdmin(KG, otherChildId, g.id, ADMIN_USER),
+    ).rejects.toBeInstanceOf(GuardianNotFoundError);
+  });
+
+  it('admin approve with grant honours the ≤2 approval-rights cap', async () => {
+    const ctx = await bootChildWithPrimary();
+    const { service } = ctx.setup;
+    // Two secondaries already granted approval rights → cap reached.
+    const g1 = await service.inviteGuardian(KG, {
+      childId: ctx.childId,
+      userPhone: '+77011112222',
+      role: 'secondary',
+      invitedByUserId: ctx.primaryUserId,
+    });
+    await service.approveGuardianByAdmin(
+      KG,
+      ctx.childId,
+      g1.id,
+      ADMIN_USER,
+      true,
+    );
+    const g2 = await service.inviteGuardian(KG, {
+      childId: ctx.childId,
+      userPhone: '+77011113333',
+      role: 'secondary',
+      invitedByUserId: ctx.primaryUserId,
+    });
+    await service.approveGuardianByAdmin(
+      KG,
+      ctx.childId,
+      g2.id,
+      ADMIN_USER,
+      true,
+    );
+    const g3 = await service.inviteGuardian(KG, {
+      childId: ctx.childId,
+      userPhone: '+77011114444',
+      role: 'secondary',
+      invitedByUserId: ctx.primaryUserId,
+    });
+    await expect(
+      service.approveGuardianByAdmin(KG, ctx.childId, g3.id, ADMIN_USER, true),
+    ).rejects.toBeInstanceOf(MaxApprovalRightsExceededError);
+  });
+
   it('updateWithExpectedStatus returns false when row status flipped between read and write (FINDINGS SM2)', async () => {
     // Repo-level contract test for SM2: conditional UPDATE WHERE
     // status = :expectedStatus must reject the write when a concurrent

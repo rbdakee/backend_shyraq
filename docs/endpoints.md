@@ -471,7 +471,8 @@ Email + password (не OTP). Access-токен — тот же JWT HS256 (`JWT_A
 | GET | `/admin/children/:id/status-history` | История изменений `children.status` (audit). Paginated `?limit=&offset=`. Response: `[{id, previous_status, new_status, previous_archive_reason, archive_reason, changed_by_user_id, changed_at}]` отсортирован `changed_at DESC`. См. §2.7.4. |
 | GET | `/admin/children/:id/guardians` | Все guardians ребёнка (+ статус одобрения, `has_approval_rights`). |
 | POST | `/admin/children/:id/guardians` | Добавить guardian вручную (админ может создать primary с самого начала). |
-| PATCH | `/admin/children/:id/guardians/:guardianId` | Изменить `role`, `can_pickup`. Изменение `has_approval_rights` — только через Primary Guardian's approval flow (см. Parent API). |
+| POST | `/admin/children/:id/guardians/:guardianId/approve` | **Одобрить заявку родителя из админки** (без участия primary-опекуна). `pending_approval → approved`, `approved_by = текущий админ`. Body опц. `{ grant_approval_rights?: boolean }`. Для `secondary`/`nanny` — грант под cap ≤2/ребёнка; `primary` всегда получает `has_approval_rights` (и пропускает cap, паритет с OTP auto-approve). Errors: 404 `guardian_not_found`, 409 `max_approval_rights_exceeded`, 422 `invalid_guardian_status_transition` (строка не в `pending_approval`). |
+| PATCH | `/admin/children/:id/guardians/:guardianId` | Изменить `role`, `can_pickup`. Изменение `has_approval_rights` — через approve выше (admin) или Primary Guardian's approval flow (см. Parent API). |
 | POST | `/admin/children/:id/guardians/:guardianId/revoke` | Отозвать доступ (`revoked_at`, `revoked_by`). |
 | GET | `/admin/children/:id/group-history` | История переводов. |
 | GET | `/admin/children/:id/timeline` | Вся timeline ребёнка. |

@@ -836,6 +836,71 @@ export class ChildService {
     return guardian;
   }
 
+  /**
+   * Admin approves a pending guardian for the child. Unlike the parent path
+   * (`approveGuardian`) there is no approved-primary check — the admin's role
+   * authorizes the action directly, so staff can clear the approval queue from
+   * the Admin panel: approve a secondary/nanny self-link when the primary
+   * parent is unreachable, or force-approve a `primary` whose OTP auto-approve
+   * never fired.
+   *
+   * `approved_by` is the calling admin's user id. A `primary` row always
+   * receives `has_approval_rights` (the primary contract — mirrors
+   * `ChildGuardian.autoApproveAsPrimary`) and skips the ≤2 cap; for
+   * secondary/nanny the optional grant is honoured under the per-child ≤2 cap,
+   * identical to the parent path.
+   */
+  async approveGuardianByAdmin(
+    kindergartenId: string,
+    childId: string,
+    guardianId: string,
+    approvedByUserId: string,
+    grantApprovalRights = false,
+  ): Promise<ChildGuardian> {
+    const kgId = KindergartenId.parse(kindergartenId);
+    const guardian = await this.guardians.findById(kindergartenId, guardianId);
+    if (!guardian || guardian.childId !== ChildId.parse(childId)) {
+      throw new GuardianNotFoundError(guardianId);
+    }
+    const by = UserId.parse(approvedByUserId);
+    const isPrimary = guardian.role.equals(GuardianRelation.PRIMARY);
+    const grant = isPrimary ? true : grantApprovalRights;
+
+    if (grant && !isPrimary) {
+      // Same race-free read+count+check as the parent path. The cap only
+      // governs secondary/nanny grants — a primary always carries rights.
+      await this.guardians.acquireApprovalRightsLock(
+        kindergartenId,
+        guardian.childId,
+      );
+      const current = await this.guardians.countApprovalRights(
+        kindergartenId,
+        guardian.childId,
+      );
+      if (current >= 2) {
+        throw new MaxApprovalRightsExceededError(guardian.childId);
+      }
+    }
+
+    const expectedStatus = guardian.status.value;
+    guardian.approve(by, this.clock.now(), grant);
+    const ok = await this.guardians.updateWithExpectedStatus(
+      guardian,
+      expectedStatus,
+    );
+    if (!ok) {
+      throw new ChildGuardianStatusConflictError(guardianId, expectedStatus);
+    }
+    await this.notification.notifyGuardianApproved({
+      kindergartenId: kgId,
+      childId: guardian.childId,
+      guardianUserId: guardian.userId,
+      approvedBy: approvedByUserId,
+      hasApprovalRights: guardian.hasApprovalRights,
+    });
+    return guardian;
+  }
+
   // ── Guardians: parent path ──────────────────────────────────────────────
 
   /**

@@ -40,6 +40,7 @@ import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
 import { ChildPresenter } from './child.presenter';
 import { ChildService } from './child.service';
 import {
+  ApproveGuardianDto,
   ArchiveChildDto,
   AssignGroupDto,
   ChildDto,
@@ -570,6 +571,49 @@ export class ChildController {
       id,
       guardianId,
       { role: dto.role, canPickup: dto.can_pickup },
+    );
+    return ChildPresenter.guardian(guardian);
+  }
+
+  @Post(':id/guardians/:guardianId/approve')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Admin-side approve of a pending guardian (parent) request.',
+    description:
+      'Approves a pending_approval guardian row without requiring the primary ' +
+      'parent to act — for clearing the approval queue from the Admin panel. ' +
+      'Works for secondary/nanny self-link requests and to force-approve a ' +
+      'primary whose OTP auto-approve never fired. Optionally grants ' +
+      'has_approval_rights (≤2/child) for secondary/nanny; a primary always ' +
+      'receives approval rights. Sets approved_by = the calling admin.',
+  })
+  @ApiBody({ type: ApproveGuardianDto, required: false })
+  @ApiOkResponse({ type: GuardianDto })
+  @ApiNotFoundResponse({ description: 'Guardian not found for this child.' })
+  @ApiConflictResponse({
+    description:
+      'max_approval_rights_exceeded — child already has 2 guardians with ' +
+      'approval rights; or child_guardian_status_conflict on a concurrent ' +
+      'transition.',
+  })
+  @ApiUnprocessableEntityResponse({
+    description:
+      'invalid_guardian_status_transition — row is not in pending_approval.',
+  })
+  async approveGuardian(
+    @Tenant() t: TenantContext,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Param('guardianId', new ParseUUIDPipe()) guardianId: string,
+    @Body() dto: ApproveGuardianDto,
+    @CurrentUser() user: JwtPayload,
+  ): Promise<GuardianDto> {
+    const kgId = requireTenant(t);
+    const guardian = await this.service.approveGuardianByAdmin(
+      kgId,
+      id,
+      guardianId,
+      user.sub,
+      dto.grant_approval_rights ?? false,
     );
     return ChildPresenter.guardian(guardian);
   }
