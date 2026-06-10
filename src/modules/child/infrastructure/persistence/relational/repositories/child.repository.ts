@@ -11,6 +11,7 @@ import { tenantStorage } from '@/database/tenant-storage';
 import { Child } from '../../../../domain/entities/child.entity';
 import { ChildIinAlreadyExistsError } from '../../../../domain/errors/child-iin-already-exists.error';
 import {
+  ChildActivateResult,
   ChildArchiveResult,
   ChildGroupHistoryRecord,
   ChildListFilters,
@@ -323,6 +324,39 @@ export class ChildRelationalRepository extends ChildRepository {
     });
     if (!existing) return { kind: 'not-found' };
     return { kind: 'not-archived' };
+  }
+
+  async activate(
+    kindergartenId: string,
+    childId: string,
+    activatedAt: Date,
+  ): Promise<ChildActivateResult> {
+    const m = this.manager().getRepository(ChildEntity);
+    const result = await m
+      .createQueryBuilder()
+      .update(ChildEntity)
+      .set({
+        status: 'active',
+        enrollment_date: activatedAt,
+        updated_at: activatedAt,
+      })
+      .where('id = :id', { id: childId })
+      .andWhere('kindergarten_id = :kg', { kg: kindergartenId })
+      .andWhere(`status = 'card_created'`)
+      .returning('*')
+      .execute();
+    if (result.raw?.length) {
+      // Single round-trip hydrate from RETURNING * (mirrors archive T8 H5).
+      return {
+        kind: 'activated',
+        child: ChildMapper.toDomain(this.hydrateRaw(m, result.raw[0])),
+      };
+    }
+    const existing = await m.findOne({
+      where: { id: childId, kindergarten_id: kindergartenId },
+    });
+    if (!existing) return { kind: 'not-found' };
+    return { kind: 'not-card-created' };
   }
 
   /**

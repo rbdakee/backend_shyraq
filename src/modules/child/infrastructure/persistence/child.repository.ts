@@ -26,6 +26,18 @@ export type ChildReactivateResult =
   | { kind: 'not-archived' }
   | { kind: 'not-found' };
 
+/**
+ * Result of the `card_created → active` conditional transition. Same
+ * discriminated-union shape as `archive`/`reactivate`:
+ *   - `'activated'`        → mutation committed, `child` is the post-mutation hydrate.
+ *   - `'not-card-created'` → row exists but status differs → service throws 422.
+ *   - `'not-found'`        → row not in this kg → service throws 404.
+ */
+export type ChildActivateResult =
+  | { kind: 'activated'; child: Child }
+  | { kind: 'not-card-created' }
+  | { kind: 'not-found' };
+
 export interface ChildListFilters {
   status?: ChildStatusFilter;
   currentGroupId?: string;
@@ -159,6 +171,25 @@ export abstract class ChildRepository {
     _childId: string,
     _reactivatedAt: Date,
   ): Promise<ChildReactivateResult> {
+    return Promise.resolve({ kind: 'not-found' });
+  }
+
+  /**
+   * Conditional UPDATE `card_created → active`. Sets `enrollment_date` and
+   * `updated_at` atomically when the row is currently in
+   * `status='card_created'`. Returns:
+   *   - `activated` (with hydrated Child) on success.
+   *   - `not-card-created` when the row exists but status differs.
+   *   - `not-found` when no row matches the (kg, id) tuple.
+   *
+   * Default impl: not-found. The relational impl overrides; pre-existing
+   * service-unit fakes that do not exercise activation inherit this stub.
+   */
+  activate(
+    _kindergartenId: string,
+    _childId: string,
+    _activatedAt: Date,
+  ): Promise<ChildActivateResult> {
     return Promise.resolve({ kind: 'not-found' });
   }
 

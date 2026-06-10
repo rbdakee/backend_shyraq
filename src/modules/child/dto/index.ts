@@ -8,6 +8,7 @@ export {
 export { UpdateChildPhotoDto } from './update-photo.dto';
 export { ArchiveChildDto } from './archive-child.dto';
 export { ReactivateChildDto } from './reactivate-child.dto';
+export { ActivateChildDto } from './activate-child.dto';
 export {
   InviteGuardianDto,
   UpdateGuardianRolePickupDto,

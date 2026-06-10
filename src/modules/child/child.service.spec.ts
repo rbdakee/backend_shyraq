@@ -31,6 +31,7 @@ import {
   PendingApplicantRequestView,
 } from './infrastructure/persistence/child-guardian.repository';
 import {
+  ChildActivateResult,
   ChildArchiveResult,
   ChildGroupHistoryRecord,
   ChildListFilters,
@@ -59,9 +60,11 @@ import { AlreadyLinkedToChildError } from './domain/errors/already-linked-to-chi
 import { AlreadyPendingForChildError } from './domain/errors/already-pending-for-child.error';
 import { ChildAccessDeniedError } from './domain/errors/child-access-denied.error';
 import { ArchiveReasonRequiredError } from './domain/errors/archive-reason-required.error';
+import { ChildActivationRequiresTariffError } from './domain/errors/child-activation-requires-tariff.error';
 import { ChildAlreadyArchivedError } from './domain/errors/child-already-archived.error';
 import { ChildIinAlreadyExistsError } from './domain/errors/child-iin-already-exists.error';
 import { ChildNotArchivedError } from './domain/errors/child-not-archived.error';
+import { InvalidChildStatusTransitionError } from './domain/errors/invalid-child-status-transition.error';
 import { ChildNotFoundError } from './domain/errors/child-not-found.error';
 import { ChildNotFoundForIinError } from './domain/errors/child-not-found-for-iin.error';
 import { DuplicateGuardianError } from './domain/errors/duplicate-guardian.error';
@@ -249,6 +252,22 @@ class FakeChildRepo extends ChildRepository {
     }
     child.reactivate(reactivatedAt, '');
     return Promise.resolve({ kind: 'reactivated', child });
+  }
+
+  override activate(
+    kindergartenId: string,
+    childId: string,
+    activatedAt: Date,
+  ): Promise<ChildActivateResult> {
+    const child = this.children.get(childId);
+    if (!child || child.kindergartenId !== kindergartenId) {
+      return Promise.resolve({ kind: 'not-found' });
+    }
+    if (child.status.value !== 'card_created') {
+      return Promise.resolve({ kind: 'not-card-created' });
+    }
+    child.activate(activatedAt);
+    return Promise.resolve({ kind: 'activated', child });
   }
 }
 
@@ -861,6 +880,10 @@ class FakeLifecycleQueue {
 class CountingBillingLifecycleAdapter extends NoopBillingLifecycleAdapter {
   calls: Array<{ kg: string; childId: string; validUntil: Date }> = [];
   closedCountToReturn = 1;
+  // Activation tariff-gate control. Defaults to true so the happy-path
+  // activate test passes without extra wiring; the no-tariff test flips it.
+  hasActiveTariffToReturn = true;
+  hasTariffCalls: Array<{ kg: string; childId: string; atDate: Date }> = [];
 
   override closeActiveTariffAssignmentsForChild(
     kindergartenId: string,
@@ -869,6 +892,15 @@ class CountingBillingLifecycleAdapter extends NoopBillingLifecycleAdapter {
   ): Promise<{ closedCount: number }> {
     this.calls.push({ kg: kindergartenId, childId, validUntil });
     return Promise.resolve({ closedCount: this.closedCountToReturn });
+  }
+
+  override hasActiveTariffAssignmentForChild(
+    kindergartenId: string,
+    childId: string,
+    atDate: Date,
+  ): Promise<boolean> {
+    this.hasTariffCalls.push({ kg: kindergartenId, childId, atDate });
+    return Promise.resolve(this.hasActiveTariffToReturn);
   }
 }
 
@@ -1269,6 +1301,134 @@ describe('ChildService — admin: createChild + updates', () => {
           'staff-1',
           LEGACY_ACTOR_USER_ID,
         ),
+      ).rejects.toBeInstanceOf(ChildNotFoundError);
+    });
+  });
+
+  describe('activateChild (card_created -> active)', () => {
+    const ACTOR_USER_ID = '33333333-3333-3333-3333-333333333333';
+
+    it('activates a card_created child with an active tariff and sets enrollment_date', async () => {
+      const { service, billingLifecycle } = setup();
+      const c = await service.createChild(KG, {
+        fullName: 'A',
+        dateOfBirth: new Date('2021-09-15'),
+      });
+      expect(c.status.value).toBe('card_created');
+
+      const activated = await service.activateChild(
+        KG,
+        c.id,
+        'staff-1',
+        ACTOR_USER_ID,
+      );
+
+      expect(activated.status.value).toBe('active');
+      expect(activated.enrollmentDate).toEqual(NOW);
+      // Tariff gate consulted exactly once for (kg, child).
+      expect(billingLifecycle.hasTariffCalls).toHaveLength(1);
+      expect(billingLifecycle.hasTariffCalls[0]).toMatchObject({
+        kg: KG,
+        childId: c.id,
+      });
+      const got = await service.getChild(KG, c.id);
+      expect(got.child.status.value).toBe('active');
+    });
+
+    it('records a card_created->active child_status_history row', async () => {
+      const { service, statusHistory } = setup();
+      const c = await service.createChild(KG, {
+        fullName: 'A',
+        dateOfBirth: new Date('2021-09-15'),
+      });
+
+      await service.activateChild(KG, c.id, 'staff-1', ACTOR_USER_ID);
+
+      expect(statusHistory.rows).toHaveLength(1);
+      const row = statusHistory.rows[0];
+      expect(row.kindergartenId).toBe(KG);
+      expect(row.childId).toBe(c.id);
+      expect(row.previousStatus).toBe('card_created');
+      expect(row.newStatus).toBe('active');
+      expect(row.archiveReason).toBeNull();
+      expect(row.previousArchiveReason).toBeNull();
+      expect(row.changedByUserId).toBe(ACTOR_USER_ID);
+      expect(row.changedAt).toEqual(NOW);
+    });
+
+    it('throws ChildActivationRequiresTariffError when no active tariff (and leaves status unchanged, no audit row)', async () => {
+      const { service, billingLifecycle, statusHistory } = setup();
+      const c = await service.createChild(KG, {
+        fullName: 'A',
+        dateOfBirth: new Date('2021-09-15'),
+      });
+      billingLifecycle.hasActiveTariffToReturn = false;
+
+      await expect(
+        service.activateChild(KG, c.id, 'staff-1', ACTOR_USER_ID),
+      ).rejects.toBeInstanceOf(ChildActivationRequiresTariffError);
+
+      const got = await service.getChild(KG, c.id);
+      expect(got.child.status.value).toBe('card_created');
+      expect(statusHistory.rows).toHaveLength(0);
+    });
+
+    it('throws InvalidChildStatusTransitionError when child is already active', async () => {
+      const { service } = setup();
+      const c = await service.createChild(KG, {
+        fullName: 'A',
+        dateOfBirth: new Date('2021-09-15'),
+      });
+      c.activate(NOW); // in-memory move to active
+
+      await expect(
+        service.activateChild(KG, c.id, 'staff-1', ACTOR_USER_ID),
+      ).rejects.toBeInstanceOf(InvalidChildStatusTransitionError);
+    });
+
+    it('throws InvalidChildStatusTransitionError (not requires-tariff) when child is archived', async () => {
+      const { service, billingLifecycle } = setup();
+      const c = await service.createChild(KG, {
+        fullName: 'A',
+        dateOfBirth: new Date('2021-09-15'),
+      });
+      c.activate(NOW);
+      await service.archiveChild(
+        KG,
+        c.id,
+        'parent withdrew',
+        'staff-1',
+        ACTOR_USER_ID,
+      );
+      // Even with no tariff, an archived child must surface the precise
+      // status-transition error — the status pre-check runs before the gate.
+      billingLifecycle.hasActiveTariffToReturn = false;
+
+      await expect(
+        service.activateChild(KG, c.id, 'staff-1', ACTOR_USER_ID),
+      ).rejects.toBeInstanceOf(InvalidChildStatusTransitionError);
+    });
+
+    it('throws ChildNotFoundError when child does not exist', async () => {
+      const { service } = setup();
+      await expect(
+        service.activateChild(
+          KG,
+          '00000000-0000-0000-0000-000000000099',
+          'staff-1',
+          ACTOR_USER_ID,
+        ),
+      ).rejects.toBeInstanceOf(ChildNotFoundError);
+    });
+
+    it('throws ChildNotFoundError when child belongs to another kg', async () => {
+      const { service } = setup();
+      const c = await service.createChild(KG, {
+        fullName: 'A',
+        dateOfBirth: new Date('2021-09-15'),
+      });
+      await expect(
+        service.activateChild(KG2, c.id, 'staff-1', ACTOR_USER_ID),
       ).rejects.toBeInstanceOf(ChildNotFoundError);
     });
   });

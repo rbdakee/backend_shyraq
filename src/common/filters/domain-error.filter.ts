@@ -38,6 +38,7 @@ import { AdminAlreadyExistsError } from '@/modules/staff/domain/errors/admin-alr
 import { StaffAlreadyExistsError } from '@/modules/staff/domain/errors/staff-already-exists.error';
 import { ArchiveReasonRequiredError } from '@/modules/child/domain/errors/archive-reason-required.error';
 import { ArchivedChildNotTransferableError } from '@/modules/child/domain/errors/archived-child-not-transferable.error';
+import { ChildActivationRequiresTariffError } from '@/modules/child/domain/errors/child-activation-requires-tariff.error';
 import { ChildAlreadyArchivedError } from '@/modules/child/domain/errors/child-already-archived.error';
 import { ChildNotArchivedError } from '@/modules/child/domain/errors/child-not-archived.error';
 import { ChildAccessDeniedError } from '@/modules/child/domain/errors/child-access-denied.error';
@@ -167,6 +168,8 @@ export class DomainErrorFilter implements ExceptionFilter {
     if (err instanceof ArchivedChildNotTransferableError)
       return HttpStatus.CONFLICT;
     if (err instanceof ChildNotArchivedError) return HttpStatus.CONFLICT;
+    if (err instanceof ChildActivationRequiresTariffError)
+      return HttpStatus.CONFLICT;
     if (err instanceof ArchiveReasonRequiredError)
       return HttpStatus.UNPROCESSABLE_ENTITY;
     if (err instanceof ChildAccessDeniedError) return HttpStatus.FORBIDDEN;

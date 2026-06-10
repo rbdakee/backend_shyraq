@@ -32,4 +32,23 @@ export class BillingLifecycleAdapter extends BillingLifecyclePort {
       validUntil,
     );
   }
+
+  /**
+   * Delegates to `findActiveForChild` — non-null means the child has a
+   * tariff_assignment covering `atDate`. Drives the
+   * `ChildService.activateChild` precondition (a child may only go
+   * `card_created → active` once it is billable).
+   */
+  async hasActiveTariffAssignmentForChild(
+    kindergartenId: string,
+    childId: string,
+    atDate: Date,
+  ): Promise<boolean> {
+    const assignment = await this.tariffAssignments.findActiveForChild(
+      kindergartenId,
+      childId,
+      atDate,
+    );
+    return assignment !== null;
+  }
 }

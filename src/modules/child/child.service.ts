@@ -22,8 +22,10 @@ import {
   ProRataRefundJobData,
 } from './lifecycle-queue.constants';
 import { ArchiveReasonRequiredError } from './domain/errors/archive-reason-required.error';
+import { ChildActivationRequiresTariffError } from './domain/errors/child-activation-requires-tariff.error';
 import { ChildAlreadyArchivedError } from './domain/errors/child-already-archived.error';
 import { ChildNotArchivedError } from './domain/errors/child-not-archived.error';
+import { InvalidChildStatusTransitionError } from './domain/errors/invalid-child-status-transition.error';
 import { ChildId } from '@/shared-kernel/domain/value-objects/child-id.vo';
 import { GuardianPermissions } from '@/shared-kernel/domain/value-objects/guardian-permissions.vo';
 import {
@@ -707,6 +709,118 @@ export class ChildService {
     });
 
     return { child: result.child, requires_new_tariff_assignment: true };
+  }
+
+  /**
+   * Manual `card_created → active` transition (admin enrollment action).
+   *
+   * The first forward transition of the child status state machine. The
+   * domain method `Child.activate()` already existed (reserved for the
+   * enrollment flow); this is the application entry-point that wires it to
+   * the REST edge so an admin can flip a freshly-created card to `active`.
+   *
+   * Precondition (locked decision): a child may only be activated once it is
+   * billable — there must be a `tariff_assignment` covering `now`. Without
+   * it the child would be `active` yet invisible to the monthly billing
+   * cron (which iterates `tariff_assignments`), i.e. a "free" active child.
+   * The check goes through `BillingLifecyclePort` so the child module stays
+   * ignorant of billing internals (no module cycle).
+   *
+   * Flow (mirrors `archiveChild`/`reactivateChild`):
+   *   1. `findById` → 404 when the child is missing in this kg.
+   *   2. Status pre-check → 422 `invalid_child_status_transition` when the
+   *      child is not in `card_created` (already active / archived). Done
+   *      before the tariff gate so an archived child gets the precise
+   *      "invalid transition" error rather than a misleading "requires
+   *      tariff".
+   *   3. Tariff gate → 409 `child_activation_requires_tariff`.
+   *   4. Atomic conditional UPDATE `WHERE status='card_created' RETURNING *`
+   *      — the race-safe source of truth (re-asserts 404 / 422 on a lost
+   *      race).
+   *   5. Append-only `child_status_history` row (`card_created → active`) in
+   *      the same ambient TX (atomic with the UPDATE).
+   *
+   * No notification is emitted — there is no `child.activated` event yet
+   * (archive/reactivate notify guardians because they gate access; a
+   * freshly-created card has no approved guardians to notify). `enrollment_date`
+   * is set to `now` by the conditional UPDATE (mirrors `Child.activate()`).
+   *
+   * `activatedByStaffId` (`staff_members.id`) is logged for audit;
+   * `changedByUserId` (`req.user.sub`, `users.id`) keys the
+   * `child_status_history` actor — same split rationale as `archiveChild`.
+   */
+  async activateChild(
+    kindergartenId: string,
+    childId: string,
+    activatedByStaffId: string,
+    changedByUserId: string,
+  ): Promise<Child> {
+    const now = this.clock.now();
+
+    const existing = await this.children.findById(kindergartenId, childId);
+    if (!existing) {
+      throw new ChildNotFoundError(childId);
+    }
+    if (existing.status.value !== 'card_created') {
+      throw new InvalidChildStatusTransitionError(
+        existing.status.value,
+        'active',
+      );
+    }
+
+    const hasTariff =
+      await this.billingLifecycle.hasActiveTariffAssignmentForChild(
+        kindergartenId,
+        childId,
+        now,
+      );
+    if (!hasTariff) {
+      throw new ChildActivationRequiresTariffError(childId);
+    }
+
+    const result = await this.children.activate(kindergartenId, childId, now);
+    if (result.kind === 'not-found') {
+      throw new ChildNotFoundError(childId);
+    }
+    if (result.kind === 'not-card-created') {
+      // Lost a race with a concurrent transition between the pre-check and
+      // the conditional UPDATE. `existing.status` may be stale; the (from,
+      // to) message is best-effort.
+      throw new InvalidChildStatusTransitionError(
+        existing.status.value,
+        'active',
+      );
+    }
+
+    // Append-only audit row (`card_created → active`). Inserted INSIDE the
+    // same ambient tenant TX as the conditional UPDATE (the relational repo
+    // resolves `tenantStorage.getStore()?.entityManager`); a failure here
+    // rolls the children UPDATE back, preserving ACID — same guarantee as
+    // archive/reactivate (B22a T9). The transition is whitelisted by both
+    // `ChildStatusHistory.record` and the DB CHECK.
+    if (this.statusHistory) {
+      const historyRecord = ChildStatusHistory.record({
+        id: randomUUID(),
+        kindergartenId,
+        childId,
+        previousStatus: 'card_created',
+        newStatus: 'active',
+        previousArchiveReason: null,
+        archiveReason: null,
+        changedByUserId,
+        changedAt: now,
+      });
+      await this.statusHistory.recordStatusChange(
+        kindergartenId,
+        historyRecord.toState(),
+      );
+    }
+
+    this.logger.log(
+      `child_activated kg=${kindergartenId} child=${childId} by=${activatedByStaffId}`,
+    );
+
+    return result.child;
   }
 
   // ── Guardians: admin path ───────────────────────────────────────────────

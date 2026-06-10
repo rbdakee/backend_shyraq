@@ -31,6 +31,26 @@ export abstract class BillingLifecyclePort {
     childId: string,
     validUntil: Date,
   ): Promise<{ closedCount: number }>;
+
+  /**
+   * Returns `true` iff `childId` has a tariff_assignment whose
+   * `[valid_from, valid_until]` window covers `atDate`. Used by
+   * `ChildService.activateChild` to gate the `card_created → active`
+   * transition: a child must be billable (an active assignment exists) at
+   * the activation moment, otherwise it would become `active` yet invisible
+   * to the monthly billing cron (which keys on tariff_assignments).
+   *
+   * Mirrors `TariffAssignmentRepository.findActiveForChild(...) !== null`.
+   * The production adapter delegates to billing; the Noop default returns
+   * `false` (fail-closed — when billing is not wired there is no tariff,
+   * so activation is blocked rather than silently creating a non-billable
+   * active child).
+   */
+  abstract hasActiveTariffAssignmentForChild(
+    kindergartenId: string,
+    childId: string,
+    atDate: Date,
+  ): Promise<boolean>;
 }
 
 /**
@@ -45,5 +65,14 @@ export class NoopBillingLifecycleAdapter extends BillingLifecyclePort {
     _validUntil: Date,
   ): Promise<{ closedCount: number }> {
     return Promise.resolve({ closedCount: 0 });
+  }
+
+  // Fail-closed: no billing wired → no tariff → activation must be blocked.
+  hasActiveTariffAssignmentForChild(
+    _kindergartenId: string,
+    _childId: string,
+    _atDate: Date,
+  ): Promise<boolean> {
+    return Promise.resolve(false);
   }
 }

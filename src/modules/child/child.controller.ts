@@ -40,6 +40,7 @@ import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
 import { ChildPresenter } from './child.presenter';
 import { ChildService } from './child.service';
 import {
+  ActivateChildDto,
   ApproveGuardianDto,
   ArchiveChildDto,
   AssignGroupDto,
@@ -363,6 +364,77 @@ export class ChildController {
       items: page.items.map((r) => ChildPresenter.statusHistory(r)),
       total: page.total,
     };
+  }
+
+  @Post(':id/activate')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Activate a child card (card_created → active).',
+    description:
+      'Manual enrollment action: flips a card_created child to active and ' +
+      'sets enrollment_date. Precondition: the child must have an active ' +
+      'tariff assignment covering now (assign one via ' +
+      'POST /admin/tariff-assignments first) — otherwise 409 ' +
+      'child_activation_requires_tariff. Writes a card_created→active ' +
+      'child_status_history audit row. Idempotent at the HTTP level — a ' +
+      'second call on an already-active child returns 422 ' +
+      'invalid_child_status_transition.',
+  })
+  @ApiOkResponse({ type: ChildDto })
+  @ApiUnauthorizedResponse({
+    description: 'Bearer missing / invalid / revoked.',
+  })
+  @ApiForbiddenResponse({ description: 'Caller is not admin.' })
+  @ApiNotFoundResponse({
+    description: 'Child not found.',
+    schema: {
+      example: {
+        statusCode: 404,
+        error: 'child_not_found',
+        message: 'child_not_found',
+      },
+    },
+  })
+  @ApiConflictResponse({
+    description:
+      'Child has no active tariff assignment — assign a tariff before activating.',
+    schema: {
+      example: {
+        statusCode: 409,
+        error: 'child_activation_requires_tariff',
+        message: 'child_activation_requires_tariff',
+      },
+    },
+  })
+  @ApiUnprocessableEntityResponse({
+    description: 'Child is not in card_created (already active or archived).',
+    schema: {
+      example: {
+        statusCode: 422,
+        error: 'invalid_child_status_transition',
+        message: 'cannot transition child status: archived -> active',
+      },
+    },
+  })
+  @ApiTooManyRequestsResponse({ description: 'Rate limited.' })
+  async activate(
+    @Tenant() t: TenantContext,
+    @CurrentUser() user: JwtPayload,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() _dto: ActivateChildDto,
+  ): Promise<ChildDto> {
+    const kgId = requireTenant(t);
+    const staffId = await this.service.resolveStaffMemberIdForUser(
+      kgId,
+      user!.sub,
+    );
+    const child = await this.service.activateChild(
+      kgId,
+      id,
+      staffId,
+      user!.sub,
+    );
+    return ChildPresenter.child(child);
   }
 
   @Post(':id/archive')

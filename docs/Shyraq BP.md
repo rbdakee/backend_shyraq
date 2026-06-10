@@ -1096,6 +1096,31 @@ Auto-publish at `schedule_pub` time is **silent by design** — no push/WS notif
 
 ---
 
+### 12.6.1 Активация ребёнка вручную (`card_created → active`)
+
+**Триггер:** `POST /admin/children/:id/activate`
+
+**Контекст:** ребёнок, созданный вручную (`POST /admin/children`, BP §1 manual creation), попадает в `card_created`. Это первый forward-переход стейт-машины. Без него ребёнок заморожен: `archive` требует `active`, `reactivate` требует `archived`. Доменный метод `Child.activate()` существовал зарезервированным под enrollment-flow; этот endpoint выводит его наружу для ручной активации.
+
+**Request body:** пустой (нет полей).
+
+**Precondition — активный тариф (зафиксировано):** у ребёнка обязан быть `tariff_assignment`, покрывающий текущую дату. Проверка идёт через `BillingLifecyclePort.hasActiveTariffAssignmentForChild` (= `TariffAssignmentRepository.findActiveForChild(...) != null`), чтобы child-модуль не зависел от внутренностей биллинга (нет цикла модулей). Нет тарифа → 409 `child_activation_requires_tariff`.
+
+*Зачем:* `active`-ребёнок обязан быть биллабелен. Месячный крон (`MonthlyBillingProcessor` → `InvoiceService.generateMonthly`) итерирует `tariff_assignments`; активный ребёнок без назначения = «бесплатный», которого крон молча пропускает. Дедлока нет: `TariffAssignmentService.assign` не смотрит на статус ребёнка, тариф можно назначить на `card_created`. Порядок: создать карточку → `POST /admin/tariff-assignments` → активировать.
+
+**Действия системы (в одной транзакции):**
+1. `findById` → 404 `child_not_found`, если ребёнка нет в kg.
+2. Pre-check статуса → 422 `invalid_child_status_transition`, если не `card_created` (уже `active`/`archived`). Идёт **до** tariff-gate, чтобы архивированный ребёнок получал точную ошибку перехода, а не «требуется тариф».
+3. Tariff-gate → 409 `child_activation_requires_tariff`.
+4. Conditional UPDATE `children SET status='active', enrollment_date=NOW(), updated_at=NOW() WHERE status='card_created'` (race-safe source of truth).
+5. INSERT `child_status_history (previous_status='card_created', new_status='active', changed_by_user_id=<req.user.sub>)` атомарно с UPDATE.
+
+**НЕ делается:** нотификация (события `child.activated` нет — активация внутренний admin-flip, у свежей карточки ещё нет approved-guardians); автоматическое создание тарифа/первого инвойса (enrollment-хук — отдельная будущая фаза; авто-активация по событию может быть добавлена слоем позже, ручной endpoint ей не мешает).
+
+**Success response 200:** `ChildDto` со `status='active'` и проставленным `enrollment_date`.
+
+---
+
 ### 12.7 Pro-rata refund flow (B21)
 
 **Триггер:** enqueue из `archive` action выше — BullMQ job `lifecycle:pro-rata-refund` в очереди `lifecycle`.
@@ -1124,7 +1149,7 @@ Auto-publish at `schedule_pub` time is **silent by design** — no push/WS notif
 
 ### 12.8 Status history (audit log) — B22a
 
-**Трекинг:** каждое изменение `children.status` (archive / reactivate / первый flip `card_created → active`) пишется в audit-таблицу `child_status_history` атомарно в той же ambient TX что и conditional UPDATE статуса.
+**Трекинг:** каждое изменение `children.status` (archive / reactivate / активация `card_created → active` через `POST /admin/children/:id/activate`, §12.6.1) пишется в audit-таблицу `child_status_history` атомарно в той же ambient TX что и conditional UPDATE статуса.
 
 **Поля:**
 - `previous_status`, `new_status` — `child_status` до и после транзакции.

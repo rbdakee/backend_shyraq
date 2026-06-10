@@ -466,9 +466,10 @@ Email + password (не OTP). Access-токен — тот же JWT HS256 (`JWT_A
 | GET | `/admin/children/:id` | Полная карточка: гардианы, группа, история групп, timeline (preview), платежи (preview), диагностики (preview). |
 | PATCH | `/admin/children/:id` | Обновить ФИО, ИИН, DOB, photo, `medical_notes`, `allergy_notes`. |
 | POST | `/admin/children/:id/transfer-group` | Перевод в другую группу. Создаёт запись в `child_group_history`. Emits `child.transferred` через outbox (менторы старой+новой группы + guardians). |
+| POST | `/admin/children/:id/activate` | Активировать карточку (`card_created → active`), ставит `enrollment_date`. **Требует активный `tariff_assignment`** на текущую дату — иначе 409 `child_activation_requires_tariff`. Пишет `card_created→active` в `child_status_history`. См. §2.7.2. |
 | POST | `/admin/children/:id/archive` | Архивировать ребёнка. Закрывает `tariff_assignments`, enqueue BullMQ `lifecycle:pro-rata-refund`. |
 | POST | `/admin/children/:id/reactivate` | Реактивировать ребёнка. Возврат в `status='active'`. |
-| GET | `/admin/children/:id/status-history` | История изменений `children.status` (audit). Paginated `?limit=&offset=`. Response: `[{id, previous_status, new_status, previous_archive_reason, archive_reason, changed_by_user_id, changed_at}]` отсортирован `changed_at DESC`. См. §2.7.4. |
+| GET | `/admin/children/:id/status-history` | История изменений `children.status` (audit). Paginated `?limit=&offset=`. Response: `[{id, previous_status, new_status, previous_archive_reason, archive_reason, changed_by_user_id, changed_at}]` отсортирован `changed_at DESC`. См. §2.7.5. |
 | GET | `/admin/children/:id/guardians` | Все guardians ребёнка (+ статус одобрения, `has_approval_rights`). Каждый `GuardianDto` несёт display-поля `user_full_name` / `user_phone` (nullable), резолвящиеся из связанной строки `users` по `child_guardians.user_id` — тот же приём, что в `/admin/staff` (`full_name`/`phone` из `users`). `null`, если у юзера, приглашённого по телефону, ещё не заполнен профиль. Поля присутствуют во всех ответах с `GuardianDto` (admin + parent approval/child эндпоинты). |
 | POST | `/admin/children/:id/guardians` | Добавить guardian вручную (админ может создать primary с самого начала). |
 | POST | `/admin/children/:id/guardians/:guardianId/approve` | **Одобрить заявку родителя из админки** (без участия primary-опекуна). `pending_approval → approved`, `approved_by = текущий админ`. Body опц. `{ grant_approval_rights?: boolean }`. Для `secondary`/`nanny` — грант под cap ≤2/ребёнка; `primary` всегда получает `has_approval_rights` (и пропускает cap, паритет с OTP auto-approve). Errors: 404 `guardian_not_found`, 409 `max_approval_rights_exceeded`, 422 `invalid_guardian_status_transition` (строка не в `pending_approval`). |
@@ -504,7 +505,44 @@ Email + password (не OTP). Access-токен — тот же JWT HS256 (`JWT_A
 
 ---
 
-#### 2.7.2 POST `/admin/children/:id/archive`
+#### 2.7.2 POST `/admin/children/:id/activate`
+
+Ручная активация карточки: первый forward-переход стейт-машины `card_created → active` (доменный метод `Child.activate()`). Выводит наружу единственный недостающий переход — без него вручную созданный ребёнок навсегда заморожен в `card_created` (archive требует `active`, reactivate требует `archived`).
+
+**Auth:** `admin` role + `KindergartenScopeGuard`.
+
+**Request body:** пустой `{}`.
+
+**Precondition (зафиксировано):** у ребёнка должен быть активный `tariff_assignment`, покрывающий текущую дату (`valid_from <= now AND (valid_until IS NULL OR valid_until >= now)`). Иначе — 409 `child_activation_requires_tariff`. Гарантия: `active`-ребёнок всегда биллабелен (месячный крон итерирует `tariff_assignments`); активный без тарифа = «бесплатный» ребёнок, которого крон молча игнорирует. Назначить тариф: `POST /admin/tariff-assignments` (тариф можно назначить и на `card_created`, статус не проверяется). Порядок: создать карточку → назначить тариф → активировать.
+
+**Success 200:** `ChildDto` со `status: "active"` и проставленным `enrollment_date` (= дата активации).
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440001",
+  "full_name": "Алишер Нурмагамбетов",
+  "status": "active",
+  "enrollment_date": "2026-06-10"
+}
+```
+
+**Errors:**
+| HTTP | Code | Условие |
+|---|---|---|
+| 401 | `unauthorized` | Нет/истёк токен |
+| 403 | `forbidden` | Нет роли admin |
+| 404 | `child_not_found` | `:id` не существует или не принадлежит kg |
+| 409 | `child_activation_requires_tariff` | Нет активного `tariff_assignment` на текущую дату |
+| 422 | `invalid_child_status_transition` | `status` не равен `card_created` (уже `active` или `archived`) |
+| 429 | `rate_limit_exceeded` | Слишком много запросов |
+
+**Side effects (в одной TX):**
+- `UPDATE children SET status='active', enrollment_date=NOW(), updated_at=NOW() WHERE status='card_created'` (conditional UPDATE — race-safe).
+- INSERT `child_status_history (previous_status='card_created', new_status='active', changed_by_user_id=<req.user.sub>)` атомарно с UPDATE.
+- Нотификация **не** эмитится (события `child.activated` пока нет; активация — внутренний admin-flip). Тариф/первый инвойс **не** создаются автоматически.
+
+---
+
+#### 2.7.3 POST `/admin/children/:id/archive`
 
 **Auth:** `admin` role + `KindergartenScopeGuard`.
 
@@ -544,7 +582,7 @@ Email + password (не OTP). Access-токен — тот же JWT HS256 (`JWT_A
 
 ---
 
-#### 2.7.3 POST `/admin/children/:id/reactivate`
+#### 2.7.4 POST `/admin/children/:id/reactivate`
 
 **Auth:** `admin` role + `KindergartenScopeGuard`.
 
@@ -577,7 +615,7 @@ Email + password (не OTP). Access-токен — тот же JWT HS256 (`JWT_A
 - INSERT `notification_outbox (event_key='child.reactivated')` — guardians (кроме nanny).
 - Новый `tariff_assignments` **не создаётся автоматически**.
 
-#### 2.7.4 GET `/admin/children/:id/status-history` (B22a)
+#### 2.7.5 GET `/admin/children/:id/status-history` (B22a)
 
 **Auth:** `admin` role + `KindergartenScopeGuard`.
 
