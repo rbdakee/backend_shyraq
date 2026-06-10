@@ -14,7 +14,6 @@ import {
   ListStaffFilters,
   StaffMemberRepository,
 } from './infrastructure/persistence/staff-member.repository';
-import { buildStaffWelcomeSms } from './staff-welcome-sms.templates';
 
 export interface CreateStaffInput {
   fullName: string;
@@ -271,12 +270,7 @@ export class StaffService {
     kindergartenName: string,
   ): Promise<void> {
     try {
-      const message = buildStaffWelcomeSms(
-        Locale.default().toString(),
-        kindergartenName,
-        phone,
-      );
-      await this.sms.send(phone, message);
+      await this.sms.sendStaffInvite(phone, kindergartenName);
     } catch (err) {
       this.logger.warn(
         `staff welcome SMS failed kg=${kindergartenId} staff=${staffId} phone=${phone}: ${

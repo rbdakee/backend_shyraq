@@ -20,6 +20,15 @@ export type WhatsAppConfig = {
   apiVersion: string;
   businessAccountId: string | null;
   otpTemplate: WhatsAppOtpTemplateConfig;
+  /** Named-parameter Utility templates (all language `templateLanguage`). */
+  templates: {
+    adminInvite: string;
+    staffInvite: string;
+    trustedPersonAssigned: string;
+    pickupOtp: string;
+  };
+  /** BCP-47 language code shared by the named-parameter templates above. */
+  templateLanguage: string;
   /**
    * Sandbox-only override (Meta dashboard bug workaround). When set AND
    * NODE_ENV !== 'production', every outgoing message is re-routed to this

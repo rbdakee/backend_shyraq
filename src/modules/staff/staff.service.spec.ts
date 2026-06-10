@@ -161,11 +161,56 @@ class FakeUserRepo extends UserRepository {
 }
 
 class FakeSmsPort extends SmsPort {
-  send(_phone: string, _message: string): Promise<SmsSendResult> {
+  sent: {
+    phone: string;
+    message?: string;
+    kindergartenName?: string;
+    childName?: string;
+    code?: string;
+    kind: 'text' | 'otp' | 'admin_invite' | 'staff_invite' | 'trusted_person';
+  }[] = [];
+  send(phone: string, message: string): Promise<SmsSendResult> {
+    this.sent.push({ phone, message, kind: 'text' });
     return Promise.resolve({ txnId: 'noop' });
   }
   sendOtp(_phone: string, _code: string): Promise<SmsSendResult> {
     return Promise.resolve({ txnId: 'noop-otp' });
+  }
+  sendAdminInvite(
+    phone: string,
+    kindergartenName: string,
+  ): Promise<SmsSendResult> {
+    this.sent.push({ phone, kindergartenName, kind: 'admin_invite' });
+    return Promise.resolve({ txnId: 'noop-admin-invite' });
+  }
+  sendStaffInvite(
+    phone: string,
+    kindergartenName: string,
+  ): Promise<SmsSendResult> {
+    this.sent.push({ phone, kindergartenName, kind: 'staff_invite' });
+    return Promise.resolve({ txnId: 'noop-staff-invite' });
+  }
+  sendTrustedPersonAssigned(
+    phone: string,
+    childName: string,
+    kindergartenName: string,
+  ): Promise<SmsSendResult> {
+    this.sent.push({
+      phone,
+      childName,
+      kindergartenName,
+      kind: 'trusted_person',
+    });
+    return Promise.resolve({ txnId: 'noop-trusted-person' });
+  }
+  sendPickupOtp(
+    phone: string,
+    childName: string,
+    kindergartenName: string,
+    code: string,
+  ): Promise<SmsSendResult> {
+    this.sent.push({ phone, childName, kindergartenName, code, kind: 'otp' });
+    return Promise.resolve({ txnId: 'noop-pickup-otp' });
   }
 }
 

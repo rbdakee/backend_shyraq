@@ -21,7 +21,6 @@ import {
   KindergartenListResult,
   KindergartenRepository,
 } from './infrastructure/persistence/kindergarten.repository';
-import { buildAdminInviteSms, buildWelcomeSms } from './welcome-sms.templates';
 
 export interface CreateKindergartenInput {
   name: string;
@@ -160,8 +159,7 @@ export class KindergartenService {
 
     // Best-effort welcome SMS — never rolls back, never throws.
     void this.sendBestEffortSms(
-      adminPhone.toString(),
-      buildWelcomeSms(locale.toString(), kg.name, adminPhone.toString()),
+      () => this.sms.sendAdminInvite(adminPhone.toString(), kg.name),
       `welcome kg=${kg.id}`,
     );
 
@@ -228,10 +226,8 @@ export class KindergartenService {
     if (kg.isArchived) throw new KindergartenArchivedError(kindergartenId);
 
     const phone = Phone.parse(rawPhone).toString();
-    const message = buildAdminInviteSms('ru', kg.name);
     const sent = await this.sendBestEffortSms(
-      phone,
-      message,
+      () => this.sms.sendAdminInvite(phone, kg.name),
       `admin-invite kg=${kg.id}`,
     );
     return { phone, kindergartenId: kg.id, sent };
@@ -346,8 +342,7 @@ export class KindergartenService {
     }
 
     const inviteSmsSent = await this.sendBestEffortSms(
-      adminPhone.toString(),
-      buildAdminInviteSms(locale.toString(), kg.name),
+      () => this.sms.sendAdminInvite(adminPhone.toString(), kg.name),
       `admin-add kg=${kg.id}`,
     );
 
@@ -400,16 +395,15 @@ export class KindergartenService {
   // ----------------------------------------------------------------- private
 
   private async sendBestEffortSms(
-    phone: string,
-    message: string,
+    send: () => Promise<unknown>,
     tag: string,
   ): Promise<boolean> {
     try {
-      await this.sms.send(phone, message);
+      await send();
       return true;
     } catch (err) {
       this.logger.warn(
-        `${tag}: SMS send failed phone=${phone} err=${
+        `${tag}: SMS send failed err=${
           err instanceof Error ? err.message : String(err)
         }`,
       );

@@ -62,6 +62,48 @@ export class TestSmsAdapter extends MockSmsAdapter {
     this.log.push({ phone, message });
     return super.sendOtp(phone, code);
   }
+
+  override sendAdminInvite(phone: string, kindergartenName: string) {
+    const message = `admin_invite_ru kg_name="${kindergartenName}"`;
+    this.lastSent = { phone, message };
+    this.log.push({ phone, message });
+    return super.sendAdminInvite(phone, kindergartenName);
+  }
+
+  override sendStaffInvite(phone: string, kindergartenName: string) {
+    const message = `staff_invite_ru kg_name="${kindergartenName}"`;
+    this.lastSent = { phone, message };
+    this.log.push({ phone, message });
+    return super.sendStaffInvite(phone, kindergartenName);
+  }
+
+  override sendTrustedPersonAssigned(
+    phone: string,
+    childName: string,
+    kindergartenName: string,
+  ) {
+    const message = `trusted_person_assigned_ru child_name="${childName}" kg_name="${kindergartenName}"`;
+    this.lastSent = { phone, message };
+    this.log.push({ phone, message });
+    return super.sendTrustedPersonAssigned(phone, childName, kindergartenName);
+  }
+
+  /**
+   * Template pickup OTP flows through the same capture as the auth OTP — we
+   * synthesize a `Shyraq: <code>` body so the pickup e2e tests that pull the
+   * code via a 6-digit regex on `lastSent.message` keep working unchanged.
+   */
+  override sendPickupOtp(
+    phone: string,
+    childName: string,
+    kindergartenName: string,
+    code: string,
+  ) {
+    const message = `Shyraq: ${code}`;
+    this.lastSent = { phone, message };
+    this.log.push({ phone, message });
+    return super.sendPickupOtp(phone, childName, kindergartenName, code);
+  }
 }
 
 export async function createTestApp(

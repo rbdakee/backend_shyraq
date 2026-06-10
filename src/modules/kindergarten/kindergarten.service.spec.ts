@@ -339,18 +339,71 @@ class FakeUserRepo extends UserRepository {
 }
 
 class FakeSms extends SmsPort {
-  sent: { phone: string; message: string }[] = [];
+  sent: {
+    phone: string;
+    message?: string;
+    kindergartenName?: string;
+    childName?: string;
+    code?: string;
+    kind: 'text' | 'otp' | 'admin_invite' | 'staff_invite' | 'trusted_person';
+  }[] = [];
   shouldThrow = false;
 
   send(phone: string, message: string): Promise<SmsSendResult> {
     if (this.shouldThrow) return Promise.reject(new Error('sms-down'));
-    this.sent.push({ phone, message });
+    this.sent.push({ phone, message, kind: 'text' });
     return Promise.resolve({ txnId: `txn-${this.sent.length}` });
   }
   sendOtp(_phone: string, _code: string): Promise<SmsSendResult> {
     return Promise.reject(
       new Error('sendOtp not used by KindergartenService — should not be hit'),
     );
+  }
+  sendAdminInvite(
+    phone: string,
+    kindergartenName: string,
+  ): Promise<SmsSendResult> {
+    if (this.shouldThrow) return Promise.reject(new Error('sms-down'));
+    this.sent.push({ phone, kindergartenName, kind: 'admin_invite' });
+    return Promise.resolve({ txnId: `txn-${this.sent.length}` });
+  }
+  sendStaffInvite(
+    phone: string,
+    kindergartenName: string,
+  ): Promise<SmsSendResult> {
+    if (this.shouldThrow) return Promise.reject(new Error('sms-down'));
+    this.sent.push({ phone, kindergartenName, kind: 'staff_invite' });
+    return Promise.resolve({ txnId: `txn-${this.sent.length}` });
+  }
+  sendTrustedPersonAssigned(
+    phone: string,
+    childName: string,
+    kindergartenName: string,
+  ): Promise<SmsSendResult> {
+    if (this.shouldThrow) return Promise.reject(new Error('sms-down'));
+    this.sent.push({
+      phone,
+      childName,
+      kindergartenName,
+      kind: 'trusted_person',
+    });
+    return Promise.resolve({ txnId: `txn-${this.sent.length}` });
+  }
+  sendPickupOtp(
+    phone: string,
+    childName: string,
+    kindergartenName: string,
+    code: string,
+  ): Promise<SmsSendResult> {
+    if (this.shouldThrow) return Promise.reject(new Error('sms-down'));
+    this.sent.push({
+      phone,
+      childName,
+      kindergartenName,
+      code,
+      kind: 'otp',
+    });
+    return Promise.resolve({ txnId: `txn-${this.sent.length}` });
   }
 }
 
@@ -420,6 +473,8 @@ describe('KindergartenService', () => {
       await new Promise(setImmediate);
       expect(sms.sent).toHaveLength(1);
       expect(sms.sent[0].phone).toBe('+77011112233');
+      expect(sms.sent[0].kind).toBe('admin_invite');
+      expect(sms.sent[0].kindergartenName).toBe('Солнышко');
       expect(kindergartens.insertCalls).toBe(1);
     });
 
@@ -598,6 +653,9 @@ describe('KindergartenService', () => {
       expect(res.sent).toBe(true);
       expect(res.phone).toBe('+77011110031');
       expect(sms.sent).toHaveLength(1);
+      expect(sms.sent[0].kind).toBe('admin_invite');
+      expect(sms.sent[0].phone).toBe('+77011110031');
+      expect(sms.sent[0].kindergartenName).toBe('Invitee Garden');
     });
 
     it('returns sent=false when SMS adapter throws (best-effort)', async () => {
@@ -822,7 +880,7 @@ describe('KindergartenService', () => {
     }
 
     it('creates a brand-new user and an admin staff row', async () => {
-      const { service, staff, users, kgId } = await gardenWithKg();
+      const { service, staff, users, sms, kgId } = await gardenWithKg();
       const res = await service.addAdmin(kgId, {
         fullName: 'Жанна Серикова',
         phone: '+77010000011',
@@ -835,6 +893,10 @@ describe('KindergartenService', () => {
       expect(res.staffMember.role).toBe<StaffRole>('admin');
       expect(res.staffMember.isActive).toBe(true);
       expect(res.inviteSmsSent).toBe(true);
+      expect(sms.sent).toHaveLength(1);
+      expect(sms.sent[0].kind).toBe('admin_invite');
+      expect(sms.sent[0].phone).toBe('+77010000011');
+      expect(sms.sent[0].kindergartenName).toBe('Add Garden');
       // 2 admin rows now: owner + new.
       const admins = staff.rows.filter(
         (r) => r.kindergartenId === kgId && r.role === 'admin',

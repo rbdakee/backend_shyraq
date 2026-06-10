@@ -106,6 +106,26 @@ class EnvironmentVariablesValidator {
   @IsString()
   @IsOptional()
   WHATSAPP_OTP_TEMPLATE_HAS_BUTTON: string;
+
+  @IsString()
+  @IsOptional()
+  WHATSAPP_ADMIN_INVITE_TEMPLATE_NAME: string;
+
+  @IsString()
+  @IsOptional()
+  WHATSAPP_STAFF_INVITE_TEMPLATE_NAME: string;
+
+  @IsString()
+  @IsOptional()
+  WHATSAPP_TRUSTED_PERSON_TEMPLATE_NAME: string;
+
+  @IsString()
+  @IsOptional()
+  WHATSAPP_PICKUP_OTP_TEMPLATE_NAME: string;
+
+  @IsString()
+  @IsOptional()
+  WHATSAPP_TEMPLATE_LANGUAGE: string;
 }
 
 function buildWhatsAppConfig(provider: SmsProvider): WhatsAppConfig | null {
@@ -154,6 +174,21 @@ function buildWhatsAppConfig(provider: SmsProvider): WhatsAppConfig | null {
       language: process.env.WHATSAPP_OTP_TEMPLATE_LANGUAGE?.trim() || 'ru',
       hasButton,
     },
+    templates: {
+      adminInvite:
+        process.env.WHATSAPP_ADMIN_INVITE_TEMPLATE_NAME?.trim() ||
+        'admin_invite_ru',
+      staffInvite:
+        process.env.WHATSAPP_STAFF_INVITE_TEMPLATE_NAME?.trim() ||
+        'staff_invite_ru',
+      trustedPersonAssigned:
+        process.env.WHATSAPP_TRUSTED_PERSON_TEMPLATE_NAME?.trim() ||
+        'trusted_person_assigned_ru',
+      pickupOtp:
+        process.env.WHATSAPP_PICKUP_OTP_TEMPLATE_NAME?.trim() ||
+        'pickup_otp_ru',
+    },
+    templateLanguage: process.env.WHATSAPP_TEMPLATE_LANGUAGE?.trim() || 'ru',
     devRecipientOverride,
   };
 }

@@ -551,17 +551,58 @@ class FakeAuthOtpStore extends OtpStorePort {
 }
 
 class FakeSmsPort extends SmsPort {
-  sent: { phone: string; message: string }[] = [];
+  sent: {
+    phone: string;
+    message?: string;
+    childName?: string;
+    kindergartenName?: string;
+    code?: string;
+    kind: 'text' | 'pickup_otp';
+  }[] = [];
   send(phone: string, message: string): Promise<{ txnId: string }> {
-    this.sent.push({ phone, message });
+    this.sent.push({ phone, message, kind: 'text' });
     return Promise.resolve({ txnId: `sms-${this.sent.length}` });
   }
   sendOtp(_phone: string, _code: string): Promise<{ txnId: string }> {
     return Promise.reject(
       new Error(
-        'sendOtp not used by PickupRequestService — pickup OTP carries extra context and stays on freeform send()',
+        'sendOtp not used by PickupRequestService — pickup OTP carries extra context via sendPickupOtp()',
       ),
     );
+  }
+  sendAdminInvite(_phone: string, _kg: string): Promise<{ txnId: string }> {
+    return Promise.reject(
+      new Error('sendAdminInvite not used by PickupRequestService'),
+    );
+  }
+  sendStaffInvite(_phone: string, _kg: string): Promise<{ txnId: string }> {
+    return Promise.reject(
+      new Error('sendStaffInvite not used by PickupRequestService'),
+    );
+  }
+  sendTrustedPersonAssigned(
+    _phone: string,
+    _child: string,
+    _kg: string,
+  ): Promise<{ txnId: string }> {
+    return Promise.reject(
+      new Error('sendTrustedPersonAssigned not used by PickupRequestService'),
+    );
+  }
+  sendPickupOtp(
+    phone: string,
+    childName: string,
+    kindergartenName: string,
+    code: string,
+  ): Promise<{ txnId: string }> {
+    this.sent.push({
+      phone,
+      childName,
+      kindergartenName,
+      code,
+      kind: 'pickup_otp',
+    });
+    return Promise.resolve({ txnId: `sms-${this.sent.length}` });
   }
 }
 
@@ -1023,7 +1064,8 @@ describe('PickupRequestService — service-unit', () => {
       expect(w.otpStore.storeCalls[0].code).toMatch(/^\d{6}$/);
       expect(w.sms.sent).toHaveLength(1);
       expect(w.sms.sent[0].phone).toBe(TRUSTED_PHONE);
-      expect(w.sms.sent[0].message).toContain(w.otpStore.storeCalls[0].code);
+      expect(w.sms.sent[0].kind).toBe('pickup_otp');
+      expect(w.sms.sent[0].code).toBe(w.otpStore.storeCalls[0].code);
       expect(w.notifications.pickupOtpSent).toHaveLength(1);
       // pickup_request.otp_ref is stamped post-storeCode.
       const after = await w.pickupRequests.findById(pr.id);
@@ -1068,8 +1110,9 @@ describe('PickupRequestService — service-unit', () => {
       const result = await w.service.sendOtp(KG, pr.id);
       expect(result.expiresIn).toBe(1800);
       expect(w.sms.sent).toHaveLength(1);
-      // SMS body falls back to literal placeholder when kg name is unknown.
-      expect(w.sms.sent[0].message).toContain('детский сад');
+      // kg_name param falls back to the literal placeholder when unknown.
+      expect(w.sms.sent[0].kind).toBe('pickup_otp');
+      expect(w.sms.sent[0].kindergartenName).toBe('детский сад');
     });
 
     it('continues to send OTP when the child lookup returns null (best-effort, T7 M2 — was throwing 404 silently)', async () => {
@@ -1079,6 +1122,9 @@ describe('PickupRequestService — service-unit', () => {
       const result = await w.service.sendOtp(KG, pr.id);
       expect(result.expiresIn).toBe(1800);
       expect(w.sms.sent).toHaveLength(1);
+      // child_name param falls back to the literal placeholder when unknown.
+      expect(w.sms.sent[0].kind).toBe('pickup_otp');
+      expect(w.sms.sent[0].childName).toBe('ребёнок');
     });
 
     it('throws PickupRequestNotFoundError for unknown id', async () => {

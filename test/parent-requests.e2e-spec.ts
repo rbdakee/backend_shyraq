@@ -458,7 +458,7 @@ describe('B12 Parent Requests (e2e)', () => {
     await request(server)
       .post('/api/v1/parent/requests/otp-request')
       .set('Authorization', `Bearer ${parentToken}`)
-      .send({ child_id: childId, phone: '+77011100033' })
+      .send({ child_id: childId })
       .expect(200);
 
     // 2 wrong codes → 400 invalid_otp
@@ -513,7 +513,7 @@ describe('B12 Parent Requests (e2e)', () => {
     await request(server)
       .post('/api/v1/parent/requests/otp-request')
       .set('Authorization', `Bearer ${parentToken}`)
-      .send({ child_id: childId, phone: '+77011100043' })
+      .send({ child_id: childId })
       .expect(200);
 
     const code = extractCode();
@@ -578,7 +578,7 @@ describe('B12 Parent Requests (e2e)', () => {
     await request(server)
       .post('/api/v1/parent/requests/otp-request')
       .set('Authorization', `Bearer ${parentToken}`)
-      .send({ child_id: childId, phone: '+77011100053' })
+      .send({ child_id: childId })
       .expect(200);
 
     const code = extractCode();

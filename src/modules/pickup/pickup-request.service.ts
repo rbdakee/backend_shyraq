@@ -29,7 +29,6 @@ import { TrustedPersonNotForChildError } from './domain/errors/trusted-person-no
 import { TrustedPersonNotFoundError } from './domain/errors/trusted-person-not-found.error';
 import { TrustedPersonRevokedError } from './domain/errors/trusted-person-revoked.error';
 import { PickupOtpStorePort } from './infrastructure/otp/pickup-otp-store.port';
-import { pickupOtpTemplate } from './infrastructure/sms/pickup-sms.templates';
 import {
   ListPickupFilters,
   PickupRequestRepository,
@@ -272,9 +271,11 @@ export class PickupRequestService {
       .catch(() => null);
     const kgName = kg?.name ?? 'детский сад';
 
-    await this.sms.send(
+    await this.sms.sendPickupOtp(
       pr.trustedPersonPhone,
-      pickupOtpTemplate(code, childName, kgName),
+      childName,
+      kgName,
+      code,
     );
 
     await this.notifications.notifyPickupOtpSent({

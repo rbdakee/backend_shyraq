@@ -175,6 +175,27 @@ class FakeSms extends SmsPort {
   sendOtp(_phone: string, _code: string): Promise<SmsSendResult> {
     return Promise.resolve({ txnId: 'fake-txn-otp' });
   }
+  sendAdminInvite(_phone: string, _kg: string): Promise<SmsSendResult> {
+    return Promise.resolve({ txnId: 'fake-txn-admin-invite' });
+  }
+  sendStaffInvite(_phone: string, _kg: string): Promise<SmsSendResult> {
+    return Promise.resolve({ txnId: 'fake-txn-staff-invite' });
+  }
+  sendTrustedPersonAssigned(
+    _phone: string,
+    _child: string,
+    _kg: string,
+  ): Promise<SmsSendResult> {
+    return Promise.resolve({ txnId: 'fake-txn-trusted-person' });
+  }
+  sendPickupOtp(
+    _phone: string,
+    _child: string,
+    _kg: string,
+    _code: string,
+  ): Promise<SmsSendResult> {
+    return Promise.resolve({ txnId: 'fake-txn-pickup-otp' });
+  }
 }
 
 class FakeNotifications extends NotificationPort {

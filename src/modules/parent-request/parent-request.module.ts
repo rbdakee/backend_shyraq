@@ -3,8 +3,10 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { BillingModule } from '@/modules/billing/billing.module';
 import { ChildModule } from '@/modules/child/child.module';
 import { GroupModule } from '@/modules/group/group.module';
+import { KindergartenModule } from '@/modules/kindergarten/kindergarten.module';
 import { PickupModule } from '@/modules/pickup/pickup.module';
 import { StaffModule } from '@/modules/staff/staff.module';
+import { UsersModule } from '@/modules/users/users.module';
 import { ParentRequestTypeOrmEntity } from './infrastructure/persistence/relational/entities/parent-request.typeorm.entity';
 import { ParentRequestMessageTypeOrmEntity } from './infrastructure/persistence/relational/entities/parent-request-message.typeorm.entity';
 import { ParentRequestRelationalRepository } from './infrastructure/persistence/relational/repositories/parent-request.relational-repository';
@@ -35,6 +37,10 @@ import { AdminParentRequestController } from './admin-parent-request.controller'
  *   - `PickupModule` — `TrustedPersonRepository.create` (accept(trusted_person))
  *                      + `PickupRequestRepository.create` (optional chained
  *                      pickup_request when details.create_pickup_request).
+ *   - `UsersModule`  — `UserRepository.findById` to resolve the requesting
+ *                      parent's own phone for the OTP send (re-auth).
+ *   - `KindergartenModule` — `KindergartenRepository.findById` to resolve the
+ *                      kindergarten name for the trusted-person assign-notice.
  *
  * `AuthModule` is `@Global()` and exports `SmsPort` + `OtpStorePort` (the
  * latter shared per-phone rate-limit window with auth login).
@@ -51,6 +57,8 @@ import { AdminParentRequestController } from './admin-parent-request.controller'
     GroupModule,
     StaffModule,
     PickupModule,
+    UsersModule,
+    KindergartenModule,
     // BillingModule exports `InvoiceService` for the B13 cross-module hook
     // that emits a `late_pickup_fee` invoice on accept(late_pickup) and links
     // it back via `parent_requests.invoice_id`.

@@ -1,13 +1,12 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsString, IsUUID, Matches } from 'class-validator';
-
-const PHONE_REGEX = /^\+[1-9]\d{10,14}$/;
+import { IsUUID } from 'class-validator';
 
 /**
  * Body shape for `POST /parent/requests/otp-request`. Generates a 6-digit code,
- * stores it under `otp:request:trusted-person:{userId}` (TTL 300s), and SMSes
- * to `phone`. Per-phone rate-limit shared with auth's `rate:otp:{phone}` so
- * abusing this endpoint cannot earn extra login OTP budget.
+ * stores it under `otp:request:trusted-person:{userId}` (TTL 1800s), and sends
+ * it to the REQUESTING PARENT's own registered phone (re-auth — confirms the
+ * parent themselves is creating the trusted-person request). Per-phone
+ * rate-limit shared with auth login (`rate:otp:{phone}`).
  */
 export class OtpRequestDto {
   @ApiProperty({
@@ -16,18 +15,6 @@ export class OtpRequestDto {
   })
   @IsUUID()
   child_id!: string;
-
-  @ApiProperty({
-    example: '+77071234567',
-    description:
-      'E.164 phone number — receives the verification SMS. Must match the trusted-person phone the parent will submit to /trusted-person endpoint.',
-  })
-  @IsString()
-  @Matches(PHONE_REGEX, {
-    message:
-      'phone must be in E.164 format (+ followed by 11–15 digits, no spaces)',
-  })
-  phone!: string;
 }
 
 export class OtpRequestResponseDto {
@@ -37,6 +24,6 @@ export class OtpRequestResponseDto {
   })
   otp_ref!: string;
 
-  @ApiProperty({ example: 300, description: 'TTL in seconds.' })
+  @ApiProperty({ example: 1800, description: 'TTL in seconds.' })
   expires_in!: number;
 }

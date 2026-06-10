@@ -293,7 +293,9 @@ class FakeSms extends SmsPort {
     phone: string;
     message?: string;
     code?: string;
-    kind: 'text' | 'otp';
+    childName?: string;
+    kindergartenName?: string;
+    kind: 'text' | 'otp' | 'admin_invite' | 'staff_invite' | 'trusted_person';
   }[] = [];
   send(phone: string, message: string): Promise<SmsSendResult> {
     this.sent.push({ phone, message, kind: 'text' });
@@ -301,6 +303,48 @@ class FakeSms extends SmsPort {
   }
   sendOtp(phone: string, code: string): Promise<SmsSendResult> {
     this.sent.push({ phone, code, kind: 'otp' });
+    return Promise.resolve({ txnId: `txn-${this.sent.length}` });
+  }
+  sendAdminInvite(
+    phone: string,
+    kindergartenName: string,
+  ): Promise<SmsSendResult> {
+    this.sent.push({ phone, kindergartenName, kind: 'admin_invite' });
+    return Promise.resolve({ txnId: `txn-${this.sent.length}` });
+  }
+  sendStaffInvite(
+    phone: string,
+    kindergartenName: string,
+  ): Promise<SmsSendResult> {
+    this.sent.push({ phone, kindergartenName, kind: 'staff_invite' });
+    return Promise.resolve({ txnId: `txn-${this.sent.length}` });
+  }
+  sendTrustedPersonAssigned(
+    phone: string,
+    childName: string,
+    kindergartenName: string,
+  ): Promise<SmsSendResult> {
+    this.sent.push({
+      phone,
+      childName,
+      kindergartenName,
+      kind: 'trusted_person',
+    });
+    return Promise.resolve({ txnId: `txn-${this.sent.length}` });
+  }
+  sendPickupOtp(
+    phone: string,
+    childName: string,
+    kindergartenName: string,
+    code: string,
+  ): Promise<SmsSendResult> {
+    this.sent.push({
+      phone,
+      childName,
+      kindergartenName,
+      code,
+      kind: 'otp',
+    });
     return Promise.resolve({ txnId: `txn-${this.sent.length}` });
   }
 }

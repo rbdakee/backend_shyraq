@@ -62,6 +62,8 @@ import { InvoiceService } from '@/modules/billing/invoice.service';
 import { ChildGuardianRepository } from '@/modules/child/infrastructure/persistence/child-guardian.repository';
 import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
 import { GroupRepository } from '@/modules/group/infrastructure/persistence/group.repository';
+import { KindergartenRepository } from '@/modules/kindergarten/infrastructure/persistence/kindergarten.repository';
+import { UserRepository } from '@/modules/users/infrastructure/persistence/user.repository';
 import { TrustedPersonRepository } from '@/modules/pickup/infrastructure/persistence/trusted-person.repository';
 import { PickupRequestRepository } from '@/modules/pickup/infrastructure/persistence/pickup-request.repository';
 import {
@@ -144,6 +146,27 @@ class FakeSms extends SmsPort {
   }
   sendOtp(_phone: string, _code: string): Promise<SmsSendResult> {
     return Promise.resolve({ txnId: 'fake-otp' });
+  }
+  sendAdminInvite(_phone: string, _kg: string): Promise<SmsSendResult> {
+    return Promise.resolve({ txnId: 'fake-admin-invite' });
+  }
+  sendStaffInvite(_phone: string, _kg: string): Promise<SmsSendResult> {
+    return Promise.resolve({ txnId: 'fake-staff-invite' });
+  }
+  sendTrustedPersonAssigned(
+    _phone: string,
+    _child: string,
+    _kg: string,
+  ): Promise<SmsSendResult> {
+    return Promise.resolve({ txnId: 'fake-trusted-person' });
+  }
+  sendPickupOtp(
+    _phone: string,
+    _child: string,
+    _kg: string,
+    _code: string,
+  ): Promise<SmsSendResult> {
+    return Promise.resolve({ txnId: 'fake-pickup-otp' });
   }
 }
 
@@ -425,6 +448,10 @@ describeIntegration(
         // so a null cast is safe here. Hitting it would surface a clear
         // TypeError rather than a silent no-op.
         null as unknown as InvoiceService,
+        // users + kindergartenRepo are only touched by the trusted-person
+        // OTP-send / assign-notice paths, which this race spec never hits.
+        null as unknown as UserRepository,
+        null as unknown as KindergartenRepository,
       );
     }
 

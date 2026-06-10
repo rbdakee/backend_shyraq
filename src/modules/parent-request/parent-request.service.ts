@@ -14,6 +14,8 @@ import { ChildNotFoundError } from '@/modules/child/domain/errors/child-not-foun
 import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
 import { ChildGuardianRepository } from '@/modules/child/infrastructure/persistence/child-guardian.repository';
 import { GroupRepository } from '@/modules/group/infrastructure/persistence/group.repository';
+import { KindergartenRepository } from '@/modules/kindergarten/infrastructure/persistence/kindergarten.repository';
+import { UserRepository } from '@/modules/users/infrastructure/persistence/user.repository';
 import { TrustedPersonRepository } from '@/modules/pickup/infrastructure/persistence/trusted-person.repository';
 import { PickupRequestRepository } from '@/modules/pickup/infrastructure/persistence/pickup-request.repository';
 import { StaffRole } from '@/modules/staff/domain/entities/staff-member.entity';
@@ -179,6 +181,8 @@ export class ParentRequestService {
     @Inject(ClockPort) private readonly clock: ClockPort,
     private readonly configService: ConfigService<AllConfigType>,
     private readonly invoiceService: InvoiceService,
+    private readonly users: UserRepository,
+    private readonly kindergartenRepo: KindergartenRepository,
   ) {}
 
   /**
@@ -215,7 +219,6 @@ export class ParentRequestService {
     kindergartenId: string,
     requesterUserId: string,
     childId: string,
-    phone: string,
   ): Promise<SendOtpResult> {
     await this.assertCreateRequestsAllowed(
       kindergartenId,
@@ -226,6 +229,16 @@ export class ParentRequestService {
     if (await this.parentRequestOtp.isLocked(requesterUserId)) {
       throw new OtpLockedError();
     }
+
+    // Security: the OTP is sent to the REQUESTING PARENT's own phone (re-auth —
+    // proves the parent themselves is filing this trusted-person request), not
+    // to the trusted person. The trusted person is notified separately when an
+    // admin accepts the request (see applyTrustedPersonAcceptSideEffects).
+    const parent = await this.users.findById(requesterUserId);
+    if (!parent) {
+      throw new NotFoundError('user', requesterUserId);
+    }
+    const phone = parent.phone;
 
     // Per-phone rate-limit shared with auth login (one phone = one budget).
     // T3 — order matters: lock check FIRST (Redis GET), then rate-limit
@@ -1148,6 +1161,27 @@ export class ParentRequestService {
         `parent_request.trusted_person_pickup_chained pr=${pr.id} tp=${tp.id} kg=${pr.kindergartenId} by_staff=${caller.staffMemberId}`,
       );
     }
+
+    // Best-effort notice to the trusted person that they've been appointed.
+    // Name lookups + send must never block accept — a missing child/kg row or
+    // a cold WhatsApp recipient (freeform send rejected with 131047 until the
+    // `trusted_person_assigned` template lands) should only log.
+    const child = await this.childRepo
+      .findById(pr.kindergartenId, pr.childId)
+      .catch(() => null);
+    const childName = child?.fullName ?? 'ребёнок';
+    const kg = await this.kindergartenRepo
+      .findById(pr.kindergartenId)
+      .catch(() => null);
+    const kgName = kg?.name ?? 'детский сад';
+    await this.sms
+      .sendTrustedPersonAssigned(phone, childName, kgName)
+      .catch((err: unknown) => {
+        const reason = err instanceof Error ? err.message : String(err);
+        this.logger.warn(
+          `trusted_person assign-notice send failed pr=${pr.id} tp=${tp.id}: ${reason}`,
+        );
+      });
   }
 
   /**

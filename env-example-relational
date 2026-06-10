@@ -123,6 +123,29 @@ SMS_PROVIDER=mock
 # WHATSAPP_OTP_TEMPLATE_LANGUAGE=ru
 # WHATSAPP_OTP_TEMPLATE_HAS_BUTTON=true
 #
+# Named-parameter Utility templates (all language WHATSAPP_TEMPLATE_LANGUAGE).
+# Carry the non-OTP business messages — admin/staff invites, the
+# trusted-person assignment notice and the pickup OTP. Each must be approved
+# in Meta Business Manager with the exact named body params noted below.
+# WHATSAPP_ADMIN_INVITE_TEMPLATE_NAME    — admin invite + new-kg welcome,
+#                                          body param `kg_name`. Default
+#                                          `admin_invite_ru`.
+# WHATSAPP_STAFF_INVITE_TEMPLATE_NAME    — staff invite, body param `kg_name`.
+#                                          Default `staff_invite_ru`.
+# WHATSAPP_TRUSTED_PERSON_TEMPLATE_NAME  — trusted-person assigned notice,
+#                                          body params `child_name`, `kg_name`.
+#                                          Default `trusted_person_assigned_ru`.
+# WHATSAPP_PICKUP_OTP_TEMPLATE_NAME      — pickup OTP to a trusted person, body
+#                                          params `child_name`, `kg_name`,
+#                                          `otp`. Default `pickup_otp_ru`.
+# WHATSAPP_TEMPLATE_LANGUAGE             — BCP-47 language shared by all four
+#                                          templates above, default `ru`.
+# WHATSAPP_ADMIN_INVITE_TEMPLATE_NAME=admin_invite_ru
+# WHATSAPP_STAFF_INVITE_TEMPLATE_NAME=staff_invite_ru
+# WHATSAPP_TRUSTED_PERSON_TEMPLATE_NAME=trusted_person_assigned_ru
+# WHATSAPP_PICKUP_OTP_TEMPLATE_NAME=pickup_otp_ru
+# WHATSAPP_TEMPLATE_LANGUAGE=ru
+#
 # Dev-only escape hatch: reroute every outgoing WhatsApp message to a single
 # wa_id. Useful **only** for Meta test-sandbox numbers (the +1 555 ... numbers
 # Meta gives out before a real WABA is wired up), where the recipient must be

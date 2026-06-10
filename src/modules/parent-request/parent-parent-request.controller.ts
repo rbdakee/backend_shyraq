@@ -134,7 +134,7 @@ export class ParentParentRequestController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
-      'Request an OTP code for the trusted-person sub-flow. Generates a 6-digit code, stores under `otp:request:trusted-person:{userId}` (TTL 300s), SMSes to `phone`. Per-phone rate-limit shared with auth login (`rate:otp:{phone}`).',
+      "Request an OTP code for the trusted-person sub-flow. Generates a 6-digit code, stores under `otp:request:trusted-person:{userId}` (TTL 1800s), and sends it to the requesting parent's own registered phone (re-auth). Per-phone rate-limit shared with auth login (`rate:otp:{phone}`).",
   })
   @ApiOkResponse({ type: OtpRequestResponseDto })
   @ApiBadRequestResponse({ description: 'Validation error.' })
@@ -157,7 +157,6 @@ export class ParentParentRequestController {
       kgId,
       user.sub,
       dto.child_id,
-      dto.phone,
     );
     return { otp_ref: result.otpRef, expires_in: result.expiresIn };
   }

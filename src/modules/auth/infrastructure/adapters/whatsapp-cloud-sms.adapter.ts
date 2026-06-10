@@ -107,6 +107,74 @@ export class WhatsAppCloudSmsAdapter extends SmsPort {
     return this.post(body, to, `template:${tpl.name}`);
   }
 
+  private async sendNamedTemplate(
+    phone: string,
+    templateName: string,
+    params: Record<string, string>,
+  ): Promise<SmsSendResult> {
+    const to = this.resolveRecipient(phone);
+    const parameters = Object.entries(params).map(([name, text]) => ({
+      type: 'text',
+      parameter_name: name,
+      text,
+    }));
+    const body = {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to,
+      type: 'template',
+      template: {
+        name: templateName,
+        language: { code: this.config.templateLanguage },
+        components: [{ type: 'body', parameters }],
+      },
+    };
+    return this.post(body, to, `template:${templateName}`);
+  }
+
+  async sendAdminInvite(
+    phone: string,
+    kindergartenName: string,
+  ): Promise<SmsSendResult> {
+    return this.sendNamedTemplate(phone, this.config.templates.adminInvite, {
+      kg_name: kindergartenName,
+    });
+  }
+
+  async sendStaffInvite(
+    phone: string,
+    kindergartenName: string,
+  ): Promise<SmsSendResult> {
+    return this.sendNamedTemplate(phone, this.config.templates.staffInvite, {
+      kg_name: kindergartenName,
+    });
+  }
+
+  async sendTrustedPersonAssigned(
+    phone: string,
+    childName: string,
+    kindergartenName: string,
+  ): Promise<SmsSendResult> {
+    return this.sendNamedTemplate(
+      phone,
+      this.config.templates.trustedPersonAssigned,
+      { child_name: childName, kg_name: kindergartenName },
+    );
+  }
+
+  async sendPickupOtp(
+    phone: string,
+    childName: string,
+    kindergartenName: string,
+    code: string,
+  ): Promise<SmsSendResult> {
+    return this.sendNamedTemplate(phone, this.config.templates.pickupOtp, {
+      child_name: childName,
+      kg_name: kindergartenName,
+      otp: code,
+    });
+  }
+
   private resolveRecipient(phone: string): string {
     const realRecipient = normalizeRecipient(phone);
     const to = this.config.devRecipientOverride ?? realRecipient;

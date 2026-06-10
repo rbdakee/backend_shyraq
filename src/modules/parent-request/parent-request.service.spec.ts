@@ -72,6 +72,15 @@ import {
   ListGroupsFilters,
   UpdateGroupInput,
 } from '@/modules/group/infrastructure/persistence/group.repository';
+import { Kindergarten } from '@/modules/kindergarten/domain/entities/kindergarten.entity';
+import {
+  KindergartenFilters,
+  KindergartenListResult,
+  KindergartenRepository,
+  KindergartenUpdateInput,
+} from '@/modules/kindergarten/infrastructure/persistence/kindergarten.repository';
+import { User } from '@/modules/users/domain/entities/user.entity';
+import { UserRepository } from '@/modules/users/infrastructure/persistence/user.repository';
 import { TrustedPerson } from '@/modules/pickup/domain/entities/trusted-person.entity';
 import {
   CreatePickupRequestRow,
@@ -138,6 +147,7 @@ const STAFF_SPECIALIST_ID = 'bbbbbbbb-2222-3333-4444-bbbbbbbbbbbb';
 const STAFF_ADMIN_ID = 'bbbbbbbb-3333-4444-5555-bbbbbbbbbbbb';
 const GROUP_ID = 'gggggggg-1111-2222-3333-gggggggggggg';
 const PHONE = '+77071234567';
+const PARENT_PHONE = '+77770000001';
 
 // Sat 2026-05-09 (UTC) — used as a base "today" so weekend dates are in future
 const NOW = new Date('2026-05-04T09:00:00.000Z'); // Monday
@@ -564,6 +574,55 @@ class FakeGroupRepo extends GroupRepository {
   }
 }
 
+class FakeUserRepo extends UserRepository {
+  byId = new Map<string, User>();
+  put(user: User): void {
+    this.byId.set(user.id, user);
+  }
+  findById(id: string): Promise<User | null> {
+    return Promise.resolve(this.byId.get(id) ?? null);
+  }
+  findByPhone(): Promise<User | null> {
+    return Promise.resolve(null);
+  }
+  upsertByPhone(): Promise<User> {
+    throw new Error('not used');
+  }
+  update(): Promise<User> {
+    throw new Error('not used');
+  }
+}
+
+class FakeKindergartenRepo extends KindergartenRepository {
+  byId = new Map<string, Kindergarten>();
+  put(k: Kindergarten): void {
+    this.byId.set(k.id, k);
+  }
+  create(): Promise<Kindergarten> {
+    throw new Error('not used');
+  }
+  findById(id: string): Promise<Kindergarten | null> {
+    return Promise.resolve(this.byId.get(id) ?? null);
+  }
+  findBySlug(): Promise<Kindergarten | null> {
+    return Promise.resolve(null);
+  }
+  findAll(_f: KindergartenFilters): Promise<KindergartenListResult> {
+    return Promise.resolve({
+      items: [...this.byId.values()],
+      total: 0,
+      limit: 0,
+      offset: 0,
+    });
+  }
+  listActive(): Promise<Kindergarten[]> {
+    return Promise.resolve([...this.byId.values()]);
+  }
+  update(_id: string, _u: KindergartenUpdateInput): Promise<Kindergarten> {
+    throw new Error('not used');
+  }
+}
+
 class FakeTrustedPersonRepo extends TrustedPersonRepository {
   rows: TrustedPerson[] = [];
   createCalls: CreateTrustedPersonRow[] = [];
@@ -717,7 +776,9 @@ class FakeSmsPort extends SmsPort {
     phone: string;
     message?: string;
     code?: string;
-    kind: 'text' | 'otp';
+    childName?: string;
+    kindergartenName?: string;
+    kind: 'text' | 'otp' | 'admin_invite' | 'staff_invite' | 'trusted_person';
   }[] = [];
   send(phone: string, message: string): Promise<{ txnId: string }> {
     this.sent.push({ phone, message, kind: 'text' });
@@ -725,6 +786,48 @@ class FakeSmsPort extends SmsPort {
   }
   sendOtp(phone: string, code: string): Promise<{ txnId: string }> {
     this.sent.push({ phone, code, kind: 'otp' });
+    return Promise.resolve({ txnId: `sms-${this.sent.length}` });
+  }
+  sendAdminInvite(
+    phone: string,
+    kindergartenName: string,
+  ): Promise<{ txnId: string }> {
+    this.sent.push({ phone, kindergartenName, kind: 'admin_invite' });
+    return Promise.resolve({ txnId: `sms-${this.sent.length}` });
+  }
+  sendStaffInvite(
+    phone: string,
+    kindergartenName: string,
+  ): Promise<{ txnId: string }> {
+    this.sent.push({ phone, kindergartenName, kind: 'staff_invite' });
+    return Promise.resolve({ txnId: `sms-${this.sent.length}` });
+  }
+  sendTrustedPersonAssigned(
+    phone: string,
+    childName: string,
+    kindergartenName: string,
+  ): Promise<{ txnId: string }> {
+    this.sent.push({
+      phone,
+      childName,
+      kindergartenName,
+      kind: 'trusted_person',
+    });
+    return Promise.resolve({ txnId: `sms-${this.sent.length}` });
+  }
+  sendPickupOtp(
+    phone: string,
+    childName: string,
+    kindergartenName: string,
+    code: string,
+  ): Promise<{ txnId: string }> {
+    this.sent.push({
+      phone,
+      childName,
+      kindergartenName,
+      code,
+      kind: 'otp',
+    });
     return Promise.resolve({ txnId: `sms-${this.sent.length}` });
   }
 }
@@ -1005,6 +1108,8 @@ function buildHarness() {
   const sms = new FakeSmsPort();
   const notify = new FakeNotificationPort();
   const invoiceService = new StubInvoiceService();
+  const userRepo = new FakeUserRepo();
+  const kgRepo = new FakeKindergartenRepo();
 
   // Default permission set (primary): create_requests=true.
   const PRIMARY_PERMS = {}; // empty — defaults for primary include create_requests=true.
@@ -1012,6 +1117,45 @@ function buildHarness() {
 
   guardianRepo.put(makeApprovedGuardian(PARENT_USER, CHILD, PRIMARY_PERMS));
   childRepo.put(makeChild());
+
+  // Seed user rows so sendOtpForTrustedPerson can resolve the requester's own
+  // phone (re-auth). Every user id exercised by the OTP-send tests must have a
+  // row so the lookup never returns null.
+  const makeUser = (id: string, phone: string): User =>
+    User.hydrate({
+      id,
+      phone,
+      fullName: 'Test Parent',
+      avatarUrl: null,
+      iin: null,
+      dateOfBirth: null,
+      locale: 'ru',
+    });
+  userRepo.put(makeUser(PARENT_USER, PARENT_PHONE));
+  userRepo.put(makeUser(OTHER_PARENT_USER, '+77770000003'));
+  userRepo.put(
+    makeUser('aaaaaaaa-7777-7777-7777-aaaaaaaaaaaa', '+77770000007'),
+  );
+  userRepo.put(
+    makeUser('aaaaaaaa-8888-8888-8888-aaaaaaaaaaaa', '+77770000008'),
+  );
+
+  // Seed the kindergarten so the trusted-person assign-notice resolves a name.
+  kgRepo.put(
+    Kindergarten.hydrate({
+      id: KG,
+      name: 'Балапан',
+      slug: 'balapan',
+      address: null,
+      phone: null,
+      plan: 'basic',
+      settings: {} as never,
+      isActive: true,
+      archivedAt: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    }),
+  );
 
   // Mirror relational repo's INNER JOIN children on current_group_id for
   // groupId filter (M2 from T7 codex review).
@@ -1071,6 +1215,8 @@ function buildHarness() {
     clock,
     config,
     invoiceService as unknown as InvoiceService,
+    userRepo,
+    kgRepo,
   );
 
   return {
@@ -1089,6 +1235,8 @@ function buildHarness() {
     sms,
     notify,
     invoiceService,
+    userRepo,
+    kgRepo,
     PRIMARY_PERMS,
     NANNY_PERMS,
   };
@@ -1104,12 +1252,11 @@ describe('ParentRequestService', () => {
         KG,
         PARENT_USER,
         CHILD,
-        PHONE,
       );
       expect(res.expiresIn).toBe(1800);
       expect(res.otpRef).toBe(`otp:request:trusted-person:${PARENT_USER}`);
       expect(h.sms.sent).toHaveLength(1);
-      expect(h.sms.sent[0].phone).toBe(PHONE);
+      expect(h.sms.sent[0].phone).toBe(PARENT_PHONE);
       expect(h.sms.sent[0].kind).toBe('otp');
       expect(h.sms.sent[0].code).toMatch(/^\d{6}$/);
       expect(h.otpStore.codes.get(PARENT_USER)?.code).toMatch(/^\d{6}$/);
@@ -1119,7 +1266,7 @@ describe('ParentRequestService', () => {
       const h = buildHarness();
       h.authOtpStore.rateLimitState = 'exceeded';
       await expect(
-        h.service.sendOtpForTrustedPerson(KG, PARENT_USER, CHILD, PHONE),
+        h.service.sendOtpForTrustedPerson(KG, PARENT_USER, CHILD),
       ).rejects.toBeInstanceOf(OtpRateLimitedError);
       expect(h.sms.sent).toHaveLength(0);
     });
@@ -1128,7 +1275,7 @@ describe('ParentRequestService', () => {
       const h = buildHarness();
       h.otpStore.locks.add(PARENT_USER);
       await expect(
-        h.service.sendOtpForTrustedPerson(KG, PARENT_USER, CHILD, PHONE),
+        h.service.sendOtpForTrustedPerson(KG, PARENT_USER, CHILD),
       ).rejects.toBeInstanceOf(OtpLockedError);
       expect(h.sms.sent).toHaveLength(0);
     });
@@ -1136,7 +1283,7 @@ describe('ParentRequestService', () => {
     it('throws ParentRequestForbiddenError when caller is not an approved guardian', async () => {
       const h = buildHarness();
       await expect(
-        h.service.sendOtpForTrustedPerson(KG, OTHER_PARENT_USER, CHILD, PHONE),
+        h.service.sendOtpForTrustedPerson(KG, OTHER_PARENT_USER, CHILD),
       ).rejects.toBeInstanceOf(ParentRequestForbiddenError);
     });
 
@@ -1145,7 +1292,7 @@ describe('ParentRequestService', () => {
       const nannyUser = 'aaaaaaaa-7777-7777-7777-aaaaaaaaaaaa';
       h.guardianRepo.put(makeApprovedGuardian(nannyUser, CHILD, {}, 'nanny'));
       await expect(
-        h.service.sendOtpForTrustedPerson(KG, nannyUser, CHILD, PHONE),
+        h.service.sendOtpForTrustedPerson(KG, nannyUser, CHILD),
       ).rejects.toBeInstanceOf(CreateRequestPermissionRequiredError);
     });
 
@@ -1166,7 +1313,7 @@ describe('ParentRequestService', () => {
         ),
       );
       await expect(
-        h.service.sendOtpForTrustedPerson(KG, nannyUser, CHILD, PHONE),
+        h.service.sendOtpForTrustedPerson(KG, nannyUser, CHILD),
       ).resolves.toMatchObject({ otpRef: expect.any(String) });
     });
   });
@@ -1752,6 +1899,39 @@ describe('ParentRequestService', () => {
       expect(h.tpRepo.createCalls).toHaveLength(1);
       expect(h.tpRepo.createCalls[0].fullName).toBe('Aigul');
       expect(h.pickupRepo.createCalls).toHaveLength(0);
+    });
+
+    it('on accept(trusted_person) sends a best-effort assign-notice SMS to the trusted person', async () => {
+      const h = buildHarness();
+      await h.otpStore.storeCode(PARENT_USER, '123456', 300);
+      const pr = await h.service.createTrustedPersonRequest(KG, PARENT_USER, {
+        code: '123456',
+        childId: CHILD,
+        fullName: 'Aigul',
+        phone: '+77079999999',
+        iin: null,
+        relation: 'aunt',
+        photoUrl: null,
+        isOneTime: false,
+        createPickupRequest: false,
+        comment: null,
+      });
+      await h.service.acceptRequest(
+        KG,
+        {
+          staffMemberId: STAFF_ADMIN_ID,
+          userId: 'aaaaaaaa-6666-6666-6666-aaaaaaaaaaaa',
+          role: 'admin',
+        },
+        pr.id,
+        null,
+      );
+      const notice = h.sms.sent.find(
+        (s) => s.kind === 'trusted_person' && s.phone === '+77079999999',
+      );
+      expect(notice).toBeDefined();
+      expect(notice?.childName).toBe('Test Child');
+      expect(notice?.kindergartenName).toBe('Балапан');
     });
 
     it('on accept(trusted_person, create_pickup_request=true) also creates pickup_request linked', async () => {
