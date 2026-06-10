@@ -1097,6 +1097,45 @@ describe('AuthService', () => {
         expect(res.pendingRoleSelect).toBe(false);
       });
 
+      it('issues an unscoped parent session for a staff/admin phone with no guardian link', async () => {
+        // Regression: a phone registered in the admin panel (active staff/admin
+        // row) with NO approved guardian link must still get into the Parent App
+        // so its owner can self-add a child by IIN and watch pending approvals.
+        // Parent App is open-registration — previously this threw 403
+        // no_role_for_app because the admin role was filtered out and the
+        // implicit parent fallback was suppressed by the staff row.
+        const { service, otpStore, users, staffRepo, refresh } = build();
+        users.put(
+          User.hydrate({
+            id: 'user-1',
+            phone: PHONE,
+            fullName: 'X',
+            avatarUrl: null,
+            iin: null,
+            dateOfBirth: null,
+            locale: 'ru',
+          }),
+        );
+        staffRepo.rows.push(activeStaff('user-1', KG_A, 'admin'));
+        await otpStore.storeCode(PHONE, '123456', 300);
+
+        const res = await service.verifyOtp({
+          phone: PHONE,
+          code: '123456',
+          app: 'parent',
+        });
+
+        // Admin role filtered out; an implicit unscoped parent role is issued.
+        expect(res.pendingRoleSelect).toBe(false);
+        expect(res.refreshToken).not.toBeNull();
+        expect(res.roles).toEqual([
+          { role: 'parent', kindergartenId: null, groupId: null },
+        ]);
+        expect(refresh.rows).toHaveLength(1);
+        expect(refresh.rows[0].kindergartenId).toBeNull();
+        expect(refresh.rows[0].audience).toBe('parent');
+      });
+
       it('issues directly for a parent who is a guardian in multiple kindergartens (never role-selects)', async () => {
         // Approved guardian in two different kgs → 2 parent rows. The parent app
         // must NOT role-select; it issues an UNSCOPED (kg=null) session so
@@ -1887,6 +1926,64 @@ describe('AuthService', () => {
       // New refresh row carries the same audience forward.
       const fresh = refresh.rows.find((r) => r.revokedAt === null);
       expect(fresh?.audience).toBe('admin');
+    });
+
+    it('rotates a parent-audience session to an unscoped parent role for a staff phone', async () => {
+      // Regression companion to the verify-side open-registration fix: a
+      // staff/admin phone that holds a parent-audience refresh row (issued via
+      // the Parent App fallback) must keep rotating into an unscoped parent
+      // session, never NoActiveRolesError — even though assembleRoles only
+      // surfaces the staff role for this user.
+      const { service, refresh, users, staffRepo, jwt } = build();
+      const userId = 'user-1';
+      users.put(
+        User.hydrate({
+          id: userId,
+          phone: '+77000000000',
+          fullName: 'X',
+          avatarUrl: null,
+          iin: null,
+          dateOfBirth: null,
+          locale: 'ru',
+        }),
+      );
+      staffRepo.rows.push(
+        StaffMember.hydrate({
+          id: 'staff-1',
+          kindergartenId: 'kg-A',
+          userId,
+          fullName: 'X',
+          phone: null,
+          role: 'admin',
+          specialistType: null,
+          isActive: true,
+          hiredAt: new Date('2025-01-01'),
+          firedAt: null,
+          archivedAt: null,
+          createdAt: new Date('2025-01-01'),
+          updatedAt: new Date('2025-01-01'),
+        }),
+      );
+      const raw = generateRefreshToken();
+      await refresh.create({
+        userId,
+        kindergartenId: null,
+        tokenHash: hashRefreshToken(raw),
+        deviceId: null,
+        ipAddress: null,
+        expiresAt: computeRefreshExpiresAt(new Date('2025-01-01'), 30),
+        audience: 'parent',
+      });
+
+      const issueSpy = jest.spyOn(jwt, 'issueAccessToken');
+      const res = await service.refreshToken({ rawRefreshToken: raw });
+
+      const claims = issueSpy.mock.calls[0][0];
+      expect(claims.role).toBe('parent');
+      expect(claims.kindergarten_id).toBeNull();
+      expect(claims.aud).toBe('parent');
+      // Admin role never leaks into the parent-audience session.
+      expect(res.roles.some((r) => r.role === 'admin')).toBe(false);
     });
 
     it('treats legacy null-audience refresh rows as unfiltered', async () => {

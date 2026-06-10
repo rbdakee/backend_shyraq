@@ -314,9 +314,7 @@ export class AuthService implements OnModuleInit {
     const roles =
       audience === null
         ? allRoles
-        : allRoles.filter((r) =>
-            APP_ALLOWED_ROLES[audience as AuthApp].has(r.role),
-          );
+        : this.filterRolesForApp(allRoles, audience as AuthApp);
     if (roles.length === 0) {
       throw new NoActiveRolesError();
     }
@@ -652,9 +650,9 @@ export class AuthService implements OnModuleInit {
     // Audience filter (STEP 4): keep only roles allowed for the requested app
     // BEFORE the role resolve. Closes cross-app escalation — a parent phone
     // that also holds an admin role in some kg can never get an admin-scoped
-    // token out of the Parent App and vice-versa.
-    const allowed = APP_ALLOWED_ROLES[app];
-    const roles = allRoles.filter((r) => allowed.has(r.role));
+    // token out of the Parent App and vice-versa. Parent App is
+    // open-registration: see `filterRolesForApp`.
+    const roles = this.filterRolesForApp(allRoles, app);
     if (roles.length === 0) {
       throw new NoRoleForAppError();
     }
@@ -796,6 +794,31 @@ export class AuthService implements OnModuleInit {
       }
     }
     return out;
+  }
+
+  /**
+   * Apply the per-app audience filter to a user's assembled roles.
+   *
+   * Staff/Admin apps are strict: only roles in `APP_ALLOWED_ROLES[app]` pass,
+   * and an empty result is a genuine "no role for this app" (closes cross-app
+   * escalation — a parent phone can never get a staff/admin token, and vice
+   * versa).
+   *
+   * Parent App is open-registration: ANY phone may hold a parent session, even
+   * one that is also staff/admin or has no guardian link yet. When the filter
+   * leaves no `parent` role we synthesize an unscoped `{role:'parent', kg:null}`
+   * row instead of failing, so a freshly-registered parent can self-add a child
+   * by IIN and watch its pending-approval status. Downgrading a staff/admin
+   * phone to a parent-scoped token carries no privilege escalation, so this is
+   * safe — the strictness that matters (parent → staff/admin) stays intact.
+   */
+  private filterRolesForApp(allRoles: RoleView[], app: AuthApp): RoleView[] {
+    const allowed = APP_ALLOWED_ROLES[app];
+    const roles = allRoles.filter((r) => allowed.has(r.role));
+    if (roles.length === 0 && app === 'parent') {
+      return [{ role: 'parent', kindergartenId: null, groupId: null }];
+    }
+    return roles;
   }
 
   /**

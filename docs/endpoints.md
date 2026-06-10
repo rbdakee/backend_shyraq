@@ -88,10 +88,10 @@
 
 **Ролевой резолв в `/auth/otp/verify` (после audience-фильтра):**
 
-1. `app=parent` → **Parent**. JWT `{sub, role:'parent', aud:'parent', jti}` без `kindergarten_id` (implicit-parent даже при 0 детей — токен выдаётся, гейт «нужен ≥1 ребёнок» обрабатывает клиент по `parent_context`). Refresh выдан.
+1. `app=parent` → **Parent**. JWT `{sub, role:'parent', aud:'parent', jti}` без `kindergarten_id` (implicit-parent даже при 0 детей — токен выдаётся, гейт «нужен ≥1 ребёнок» обрабатывает клиент по `parent_context`). Refresh выдан. **Parent App — open-registration:** авторизация проходит ВСЕГДА (логин или регистрация), даже если у телефона есть staff/admin-роль и/или нет ни одной guardian-связи. Audience-фильтр выкидывает staff/admin-роли, и при пустом результате подставляется неявная `{role:'parent', kg:null}` (понижение привилегий безопасно; защита parent→staff/admin при этом не ослабляется). Так родитель может зайти, добавить ребёнка по ИИН и увидеть pending-approval список.
 2. `app=staff`/`admin`, ровно одна активная запись → **Single-role**. JWT `{sub, role, kindergarten_id, aud, jti}`. Refresh выдан с `kindergarten_id` + `audience`.
 3. `app=staff`/`admin`, 2+ активных записи в разных садиках, `kindergarten_id` не передан → **Multi-kg select** (D2). JWT `{sub, role:'staff_multi_role', aud, pending_role_select:true, jti}`. **Refresh не выдаётся**. Клиент шлёт `kindergarten_id` в `/auth/role/select`. Если `kindergarten_id` передан сразу в verify и матчит активную запись — пропускаем select, выдаём полную пару.
-4. После фильтра ни одной роли под аппку → 403 `no_role_for_app` (например parent ломится в Staff App, или staff без активных записей).
+4. После фильтра ни одной роли под аппку → 403 `no_role_for_app` — **только для `app=staff`/`admin`** (например parent ломится в Staff App, или staff без активных записей). Для `app=parent` этот код не выбрасывается никогда (см. п.1).
 
 **Auto-approve primary guardian:** после успешной OTP-верификации, до ролевого резолва, бэкенд через bypass_rls cross-tenant ищет `child_guardians (user_id=self, role='primary', status='pending_approval')` и переводит каждую в `approved` (`approved_by=user_id`, `has_approval_rights=true`). Покрывает кейс «родитель регистрируется и одновременно был назначен primary при enrollment'е» — primary заводится только из админки и потому не требует внешнего approve.
 
@@ -106,7 +106,7 @@
 | 401 | `invalid_refresh` | `/auth/refresh`: токен отозван, истёк или не найден |
 | 401 | `invalid_token` | JwtAuthGuard: JWT битый или expired |
 | 401 | `token_revoked` | JwtAuthGuard: `jti` в blocklist |
-| 403 | `no_role_for_app` | `/auth/otp/verify`: после audience-фильтра у пользователя нет роли под запрошенную `app` |
+| 403 | `no_role_for_app` | `/auth/otp/verify` с `app=staff`/`admin`: после audience-фильтра у пользователя нет роли под запрошенную `app`. **Для `app=parent` не выбрасывается** — Parent App open-registration, всегда выдаётся parent-сессия |
 | 403 | `pending_role_select` | Доступ к endpoint'у (кроме `/auth/role/select`, `/auth/logout`) с JWT `pending_role_select:true` |
 | 403 | `role_not_available` | `/auth/role/select`: переданный `kindergarten_id` не соответствует ни одной активной `staff_members` записи пользователя |
 | 403 | `role_select_not_required` | `/auth/role/select` вызван с полноценным JWT (без `pending_role_select`) |
