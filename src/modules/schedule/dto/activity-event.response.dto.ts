@@ -3,6 +3,10 @@ import {
   ACTIVITY_EVENT_STATUS_VALUES,
   ActivityEventStatusValue,
 } from '../domain/value-objects/activity-event-status.vo';
+import {
+  SLOT_CATEGORY_VALUES,
+  SlotCategoryValue,
+} from '../domain/value-objects/slot-category.vo';
 
 export class ActivityEventResponseDto {
   @ApiProperty({ example: 'e1a2b3c4-0000-0000-0000-000000000001' })
@@ -23,6 +27,9 @@ export class ActivityEventResponseDto {
 
   @ApiProperty({ example: 'Утренний круг' })
   activityName!: string;
+
+  @ApiProperty({ enum: SLOT_CATEGORY_VALUES, example: 'activity' })
+  category!: SlotCategoryValue;
 
   @ApiPropertyOptional({
     example: 'b2a1c0d9-0000-0000-0000-000000000001',

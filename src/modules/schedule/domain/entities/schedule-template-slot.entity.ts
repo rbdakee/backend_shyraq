@@ -1,5 +1,10 @@
 import { InvalidSlotTimeError } from '../errors/invalid-slot-time.error';
 import {
+  DEFAULT_SLOT_CATEGORY,
+  isSlotCategory,
+  SlotCategoryValue,
+} from '../value-objects/slot-category.vo';
+import {
   DayOfWeekValue,
   isDayOfWeek,
 } from '@/shared-kernel/domain/value-objects/day-of-week.vo';
@@ -15,6 +20,8 @@ export interface ScheduleTemplateSlotState {
   startTime: string;
   endTime: string;
   activityName: string;
+  /** Slot type for week-grid colouring — 'lesson'|'activity'|'meal'|'sleep'. */
+  category: SlotCategoryValue;
   locationId: string | null;
   description: string | null;
 }
@@ -35,6 +42,23 @@ function compareTime(a: string, b: string): number {
 }
 
 /**
+ * Coerce an incoming category to a valid enum value. Undefined/null → server
+ * default ('activity'); a non-empty unknown string throws (the DTO layer
+ * normally rejects it as 400 first — this is defense-in-depth).
+ */
+function normalizeCategory(
+  value: string | null | undefined,
+): SlotCategoryValue {
+  if (value === undefined || value === null) {
+    return DEFAULT_SLOT_CATEGORY;
+  }
+  if (!isSlotCategory(value)) {
+    throw new Error(`invalid slot category: ${value}`);
+  }
+  return value;
+}
+
+/**
  * ScheduleTemplateSlot — lives inside a ScheduleTemplate aggregate. Methods
  * are deliberately small: factory + patch + state-export. Conflict detection
  * (two slots sharing day+start_time inside one template) lives on the parent
@@ -48,6 +72,7 @@ export class ScheduleTemplateSlot {
     private _startTime: string,
     private _endTime: string,
     private _activityName: string,
+    private _category: SlotCategoryValue,
     private _locationId: string | null,
     private _description: string | null,
   ) {}
@@ -59,6 +84,7 @@ export class ScheduleTemplateSlot {
     startTime: string;
     endTime: string;
     activityName: string;
+    category?: string | null;
     locationId?: string | null;
     description?: string | null;
   }): ScheduleTemplateSlot {
@@ -77,6 +103,7 @@ export class ScheduleTemplateSlot {
       start,
       end,
       input.activityName,
+      normalizeCategory(input.category),
       input.locationId ?? null,
       input.description ?? null,
     );
@@ -90,6 +117,7 @@ export class ScheduleTemplateSlot {
       state.startTime,
       state.endTime,
       state.activityName,
+      state.category,
       state.locationId,
       state.description,
     );
@@ -107,6 +135,9 @@ export class ScheduleTemplateSlot {
   get activityName(): string {
     return this._activityName;
   }
+  get category(): SlotCategoryValue {
+    return this._category;
+  }
   get locationId(): string | null {
     return this._locationId;
   }
@@ -123,6 +154,7 @@ export class ScheduleTemplateSlot {
     startTime?: string;
     endTime?: string;
     activityName?: string;
+    category?: string;
     locationId?: string | null;
     description?: string | null;
   }): void {
@@ -148,6 +180,9 @@ export class ScheduleTemplateSlot {
     if (patch.activityName !== undefined) {
       this._activityName = patch.activityName;
     }
+    if (patch.category !== undefined) {
+      this._category = normalizeCategory(patch.category);
+    }
     if (patch.locationId !== undefined) {
       this._locationId = patch.locationId;
     }
@@ -164,6 +199,7 @@ export class ScheduleTemplateSlot {
       startTime: this._startTime,
       endTime: this._endTime,
       activityName: this._activityName,
+      category: this._category,
       locationId: this._locationId,
       description: this._description,
     };

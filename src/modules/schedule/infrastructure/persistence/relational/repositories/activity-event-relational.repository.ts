@@ -32,6 +32,7 @@ export class ActivityEventRelationalRepository extends ActivityEventRepository {
       group_id: state.groupId,
       template_slot_id: state.templateSlotId,
       activity_name: state.activityName,
+      category: state.category,
       location_id: state.locationId,
       starts_at: state.startsAt,
       ends_at: state.endsAt,
@@ -66,6 +67,7 @@ export class ActivityEventRelationalRepository extends ActivityEventRepository {
         group_id: s.groupId,
         template_slot_id: s.templateSlotId,
         activity_name: s.activityName,
+        category: s.category,
         location_id: s.locationId,
         starts_at: s.startsAt,
         ends_at: s.endsAt,
@@ -102,6 +104,7 @@ export class ActivityEventRelationalRepository extends ActivityEventRepository {
       { id: state.id, kindergarten_id: kindergartenId },
       {
         activity_name: state.activityName,
+        category: state.category,
         location_id: state.locationId,
         starts_at: state.startsAt,
         ends_at: state.endsAt,

@@ -51,6 +51,7 @@ export interface AddSlotInput {
   startTime: string;
   endTime: string;
   activityName: string;
+  category?: string | null;
   locationId?: string | null;
   description?: string | null;
 }
@@ -60,6 +61,7 @@ export interface UpdateSlotPatch {
   startTime?: string;
   endTime?: string;
   activityName?: string;
+  category?: string;
   locationId?: string | null;
   description?: string | null;
 }
@@ -67,6 +69,7 @@ export interface UpdateSlotPatch {
 export interface CreateAdHocEventInput {
   groupId: string;
   activityName: string;
+  category?: string | null;
   locationId?: string | null;
   startsAt: Date;
   endsAt?: Date | null;
@@ -76,6 +79,7 @@ export interface CreateAdHocEventInput {
 
 export interface UpdateEventPatch {
   activityName?: string;
+  category?: string;
   locationId?: string | null;
   startsAt?: Date;
   endsAt?: Date | null;
@@ -210,6 +214,7 @@ export class ScheduleService {
       startTime: input.startTime,
       endTime: input.endTime,
       activityName: input.activityName,
+      category: input.category ?? null,
       locationId: input.locationId ?? null,
       description: input.description ?? null,
     });
@@ -252,6 +257,7 @@ export class ScheduleService {
         groupId: input.groupId,
         templateSlotId: null,
         activityName: input.activityName,
+        category: input.category ?? null,
         locationId: input.locationId ?? null,
         startsAt: input.startsAt,
         endsAt: input.endsAt ?? null,
@@ -475,6 +481,7 @@ export class ScheduleService {
                 groupId: group.id,
                 templateSlotId: slot.id,
                 activityName: slot.activityName,
+                category: slot.category,
                 locationId: slot.locationId,
                 startsAt,
                 endsAt,

@@ -32,6 +32,23 @@ describe('ActivityEvent domain entity', () => {
       expect(e.status.value).toBe('scheduled');
       expect(e.createdAt).toEqual(NOW);
       expect(e.updatedAt).toEqual(NOW);
+      // category omitted → server default 'activity'.
+      expect(e.category).toBe('activity');
+    });
+
+    it('keeps an explicit category', () => {
+      const e = ActivityEvent.createScheduled(
+        {
+          id: EVENT_ID,
+          kindergartenId: KG,
+          groupId: GROUP,
+          activityName: 'Обед',
+          category: 'meal',
+          startsAt: new Date('2026-05-04T12:00:00.000Z'),
+        },
+        fixedClock(NOW),
+      );
+      expect(e.category).toBe('meal');
     });
 
     it('throws InvariantViolationError when ends_at <= starts_at', () => {
@@ -138,10 +155,16 @@ describe('ActivityEvent domain entity', () => {
       const newStart = new Date('2026-05-04T10:00:00.000Z');
       const newEnd = new Date('2026-05-04T11:00:00.000Z');
       e.reschedule(
-        { activityName: 'New', startsAt: newStart, endsAt: newEnd },
+        {
+          activityName: 'New',
+          category: 'lesson',
+          startsAt: newStart,
+          endsAt: newEnd,
+        },
         fixedClock(LATER),
       );
       expect(e.activityName).toBe('New');
+      expect(e.category).toBe('lesson');
       expect(e.startsAt).toEqual(newStart);
       expect(e.endsAt).toEqual(newEnd);
     });

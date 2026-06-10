@@ -7,6 +7,10 @@ import {
   Matches,
   MaxLength,
 } from 'class-validator';
+import {
+  SLOT_CATEGORY_VALUES,
+  SlotCategoryValue,
+} from '../domain/value-objects/slot-category.vo';
 import { DAY_OF_WEEK_VALUES } from '@/shared-kernel/domain/value-objects/day-of-week.vo';
 
 const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/;
@@ -34,6 +38,11 @@ export class UpdateSlotDto {
   @IsString()
   @MaxLength(120)
   activityName?: string;
+
+  @ApiPropertyOptional({ enum: SLOT_CATEGORY_VALUES, example: 'meal' })
+  @IsOptional()
+  @IsIn(SLOT_CATEGORY_VALUES)
+  category?: SlotCategoryValue;
 
   @ApiPropertyOptional({
     example: 'b2a1c0d9-0000-0000-0000-000000000001',

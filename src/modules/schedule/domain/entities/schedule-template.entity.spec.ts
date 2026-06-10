@@ -52,6 +52,31 @@ describe('ScheduleTemplate domain entity', () => {
       expect(t.slots).toHaveLength(1);
       expect(t.slots[0].activityName).toBe('Morning Circle');
       expect(t.slots[0].startTime).toBe('09:00:00');
+      // category omitted → server default 'activity'.
+      expect(t.slots[0].category).toBe('activity');
+    });
+
+    it('keeps an explicit category and rejects an unknown one', () => {
+      const t = newTemplate();
+      t.addSlot({
+        id: SLOT_ID_1,
+        dayOfWeek: 'mon',
+        startTime: '13:00',
+        endTime: '15:00',
+        activityName: 'Тихий час',
+        category: 'sleep',
+      });
+      expect(t.slots[0].category).toBe('sleep');
+      expect(() =>
+        t.addSlot({
+          id: SLOT_ID_2,
+          dayOfWeek: 'tue',
+          startTime: '09:00',
+          endTime: '09:45',
+          activityName: 'Bad',
+          category: 'nonsense',
+        }),
+      ).toThrow(/invalid slot category/);
     });
 
     it('throws SlotConflictError when day+start_time is already used', () => {
@@ -148,6 +173,20 @@ describe('ScheduleTemplate domain entity', () => {
       t.updateSlot(SLOT_ID_1, { activityName: 'Renamed', endTime: '10:00' });
       expect(t.slots[0].activityName).toBe('Renamed');
       expect(t.slots[0].endTime).toBe('10:00:00');
+    });
+
+    it('patches the category without touching the time fields', () => {
+      const t = newTemplate();
+      t.addSlot({
+        id: SLOT_ID_1,
+        dayOfWeek: 'mon',
+        startTime: '09:00',
+        endTime: '09:45',
+        activityName: 'A',
+      });
+      t.updateSlot(SLOT_ID_1, { category: 'meal' });
+      expect(t.slots[0].category).toBe('meal');
+      expect(t.slots[0].startTime).toBe('09:00:00');
     });
   });
 

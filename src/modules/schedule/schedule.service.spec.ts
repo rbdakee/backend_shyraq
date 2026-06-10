@@ -490,6 +490,26 @@ describe('ScheduleService — service-unit', () => {
         activityName: 'Morning Circle',
       });
       expect(updated.slots).toHaveLength(1);
+      // category omitted → server default 'activity'.
+      expect(updated.slots[0].category).toBe('activity');
+    });
+
+    it('persists an explicit slot category', async () => {
+      const { service, groupRepo } = wire();
+      groupRepo.put(makeGroup(KG, GROUP_A));
+      const t = await service.createTemplate(KG, {
+        groupId: GROUP_A,
+        name: 'Std',
+        validFrom: new Date('2026-05-04'),
+      });
+      const updated = await service.addSlot(KG, t.id, {
+        dayOfWeek: 'mon',
+        startTime: '13:00',
+        endTime: '15:00',
+        activityName: 'Тихий час',
+        category: 'sleep',
+      });
+      expect(updated.slots[0].category).toBe('sleep');
     });
 
     it('throws SlotConflictError when (day, startTime) already exists', async () => {
@@ -714,6 +734,7 @@ describe('ScheduleService — service-unit', () => {
             startTime: '09:00:00',
             endTime: '09:45:00',
             activityName: 'Morning Circle',
+            category: 'lesson',
             locationId: null,
             description: null,
           },
@@ -724,6 +745,7 @@ describe('ScheduleService — service-unit', () => {
             startTime: '10:00:00',
             endTime: '11:00:00',
             activityName: 'IZO',
+            category: 'meal',
             locationId: null,
             description: null,
           },
@@ -775,6 +797,21 @@ describe('ScheduleService — service-unit', () => {
       const tueEvent = allEvents.find((e) => e.activityName === 'IZO')!;
       expect(monEvent.startsAt.toISOString()).toBe('2026-05-04T09:00:00.000Z');
       expect(tueEvent.startsAt.toISOString()).toBe('2026-05-05T10:00:00.000Z');
+    });
+
+    it('copies each slot category onto the projected activity_event', async () => {
+      const w = wire();
+      setupGroupAndTemplate(w);
+      const fromMonday = new Date('2026-04-27T00:00:00.000Z');
+      await w.service.copyWeekToNext(KG, fromMonday, 'manual');
+
+      const allEvents = await w.eventRepo.list(KG, {});
+      const monEvent = allEvents.find(
+        (e) => e.activityName === 'Morning Circle',
+      )!;
+      const tueEvent = allEvents.find((e) => e.activityName === 'IZO')!;
+      expect(monEvent.category).toBe('lesson');
+      expect(tueEvent.category).toBe('meal');
     });
 
     it('marks new snapshots with the source argument (manual vs cron)', async () => {

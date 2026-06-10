@@ -1,5 +1,9 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  SLOT_CATEGORY_VALUES,
+  SlotCategoryValue,
+} from '../domain/value-objects/slot-category.vo';
+import {
   DAY_OF_WEEK_VALUES,
   DayOfWeekValue,
 } from '@/shared-kernel/domain/value-objects/day-of-week.vo';
@@ -19,6 +23,9 @@ export class ScheduleTemplateSlotResponseDto {
 
   @ApiProperty({ example: 'Утренний круг' })
   activityName!: string;
+
+  @ApiProperty({ enum: SLOT_CATEGORY_VALUES, example: 'lesson' })
+  category!: SlotCategoryValue;
 
   @ApiPropertyOptional({
     example: 'b2a1c0d9-0000-0000-0000-000000000001',

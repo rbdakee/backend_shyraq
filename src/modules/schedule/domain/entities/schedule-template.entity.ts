@@ -45,6 +45,7 @@ export interface AddSlotInput {
   startTime: string;
   endTime: string;
   activityName: string;
+  category?: string | null;
   locationId?: string | null;
   description?: string | null;
 }
@@ -54,6 +55,7 @@ export interface UpdateSlotPatch {
   startTime?: string;
   endTime?: string;
   activityName?: string;
+  category?: string;
   locationId?: string | null;
   description?: string | null;
 }
@@ -195,6 +197,7 @@ export class ScheduleTemplate {
       startTime: input.startTime,
       endTime: input.endTime,
       activityName: input.activityName,
+      category: input.category ?? null,
       locationId: input.locationId ?? null,
       description: input.description ?? null,
     });

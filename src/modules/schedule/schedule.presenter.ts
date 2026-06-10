@@ -22,6 +22,7 @@ export class SchedulePresenter {
       startTime: state.startTime,
       endTime: state.endTime,
       activityName: state.activityName,
+      category: state.category,
       locationId: state.locationId,
       description: state.description,
     };
@@ -54,6 +55,7 @@ export class SchedulePresenter {
       groupId: s.groupId,
       templateSlotId: s.templateSlotId,
       activityName: s.activityName,
+      category: s.category,
       locationId: s.locationId,
       startsAt: s.startsAt.toISOString(),
       endsAt: s.endsAt === null ? null : s.endsAt.toISOString(),

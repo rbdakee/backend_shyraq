@@ -1,12 +1,17 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsDateString,
+  IsIn,
   IsNotEmpty,
   IsOptional,
   IsString,
   IsUUID,
   MaxLength,
 } from 'class-validator';
+import {
+  SLOT_CATEGORY_VALUES,
+  SlotCategoryValue,
+} from '../domain/value-objects/slot-category.vo';
 
 export class CreateActivityEventDto {
   @ApiProperty({ example: 'a1b2c3d4-0000-0000-0000-000000000001' })
@@ -18,6 +23,17 @@ export class CreateActivityEventDto {
   @IsNotEmpty()
   @MaxLength(120)
   activityName!: string;
+
+  @ApiPropertyOptional({
+    enum: SLOT_CATEGORY_VALUES,
+    example: 'activity',
+    default: 'activity',
+    description:
+      'Day-view colour bucket. Server default "activity" if omitted.',
+  })
+  @IsOptional()
+  @IsIn(SLOT_CATEGORY_VALUES)
+  category?: SlotCategoryValue;
 
   @ApiPropertyOptional({ example: 'b2a1c0d9-0000-0000-0000-000000000001' })
   @IsOptional()

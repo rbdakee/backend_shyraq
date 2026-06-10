@@ -1,11 +1,16 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsDateString,
+  IsIn,
   IsOptional,
   IsString,
   IsUUID,
   MaxLength,
 } from 'class-validator';
+import {
+  SLOT_CATEGORY_VALUES,
+  SlotCategoryValue,
+} from '../domain/value-objects/slot-category.vo';
 
 export class UpdateActivityEventDto {
   @ApiPropertyOptional({ example: 'Прогулка (изменено)' })
@@ -13,6 +18,11 @@ export class UpdateActivityEventDto {
   @IsString()
   @MaxLength(120)
   activityName?: string;
+
+  @ApiPropertyOptional({ enum: SLOT_CATEGORY_VALUES, example: 'activity' })
+  @IsOptional()
+  @IsIn(SLOT_CATEGORY_VALUES)
+  category?: SlotCategoryValue;
 
   @ApiPropertyOptional({ example: 'b2a1c0d9-0000-0000-0000-000000000001' })
   @IsOptional()

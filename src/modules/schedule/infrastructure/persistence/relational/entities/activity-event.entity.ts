@@ -16,6 +16,10 @@ import {
   ACTIVITY_EVENT_STATUS_VALUES,
   ActivityEventStatusValue,
 } from '../../../../domain/value-objects/activity-event-status.vo';
+import {
+  SLOT_CATEGORY_VALUES,
+  SlotCategoryValue,
+} from '../../../../domain/value-objects/slot-category.vo';
 import { ScheduleTemplateSlotEntity } from './schedule-template-slot.entity';
 
 /**
@@ -59,6 +63,14 @@ export class ActivityEventEntity {
 
   @Column({ type: 'varchar', length: 120 })
   activity_name!: string;
+
+  @Column({
+    type: 'enum',
+    enum: SLOT_CATEGORY_VALUES,
+    enumName: 'slot_category',
+    default: 'activity',
+  })
+  category!: SlotCategoryValue;
 
   @Column({ type: 'uuid', nullable: true })
   location_id!: string | null;

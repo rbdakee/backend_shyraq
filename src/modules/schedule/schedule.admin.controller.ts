@@ -209,6 +209,7 @@ export class ScheduleAdminController {
       startTime: dto.startTime,
       endTime: dto.endTime,
       activityName: dto.activityName,
+      category: dto.category ?? null,
       locationId: dto.locationId ?? null,
       description: dto.description ?? null,
     });
@@ -242,6 +243,7 @@ export class ScheduleAdminController {
       startTime: dto.startTime,
       endTime: dto.endTime,
       activityName: dto.activityName,
+      category: dto.category,
       locationId: dto.locationId ?? null,
       description: dto.description ?? null,
     });
@@ -307,6 +309,7 @@ export class ScheduleAdminController {
     const created = await this.service.createAdHocEvent(kgId, {
       groupId: dto.groupId,
       activityName: dto.activityName,
+      category: dto.category ?? null,
       locationId: dto.locationId ?? null,
       startsAt: new Date(dto.startsAt),
       endsAt: dto.endsAt ? new Date(dto.endsAt) : null,
@@ -333,6 +336,7 @@ export class ScheduleAdminController {
     const kgId = requireTenant(t);
     const updated = await this.service.updateEvent(kgId, id, {
       activityName: dto.activityName,
+      category: dto.category,
       locationId: dto.locationId ?? null,
       startsAt: dto.startsAt ? new Date(dto.startsAt) : undefined,
       endsAt: dto.endsAt ? new Date(dto.endsAt) : undefined,

@@ -7,6 +7,10 @@ import {
   PrimaryGeneratedColumn,
 } from 'typeorm';
 import { LocationEntity } from '@/modules/location/infrastructure/persistence/relational/entities/location.entity';
+import {
+  SLOT_CATEGORY_VALUES,
+  SlotCategoryValue,
+} from '../../../../domain/value-objects/slot-category.vo';
 import { ScheduleTemplateEntity } from './schedule-template.entity';
 
 /**
@@ -46,6 +50,14 @@ export class ScheduleTemplateSlotEntity {
 
   @Column({ type: 'varchar', length: 120 })
   activity_name!: string;
+
+  @Column({
+    type: 'enum',
+    enum: SLOT_CATEGORY_VALUES,
+    enumName: 'slot_category',
+    default: 'activity',
+  })
+  category!: SlotCategoryValue;
 
   @Column({ type: 'uuid', nullable: true })
   location_id!: string | null;

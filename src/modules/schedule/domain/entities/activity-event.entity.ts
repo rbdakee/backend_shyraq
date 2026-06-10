@@ -4,6 +4,11 @@ import {
   ActivityEventStatus,
   ActivityEventStatusValue,
 } from '../value-objects/activity-event-status.vo';
+import {
+  DEFAULT_SLOT_CATEGORY,
+  isSlotCategory,
+  SlotCategoryValue,
+} from '../value-objects/slot-category.vo';
 
 export interface Clock {
   now(): Date;
@@ -15,6 +20,8 @@ export interface ActivityEventState {
   groupId: string;
   templateSlotId: string | null;
   activityName: string;
+  /** Slot type for day-view colouring — copied from the slot at projection. */
+  category: SlotCategoryValue;
   locationId: string | null;
   startsAt: Date;
   endsAt: Date | null;
@@ -31,6 +38,7 @@ export interface CreateActivityEventInput {
   groupId: string;
   templateSlotId?: string | null;
   activityName: string;
+  category?: string | null;
   locationId?: string | null;
   startsAt: Date;
   endsAt?: Date | null;
@@ -40,10 +48,28 @@ export interface CreateActivityEventInput {
 
 export interface UpdateActivityEventPatch {
   activityName?: string;
+  category?: string;
   locationId?: string | null;
   startsAt?: Date;
   endsAt?: Date | null;
   notes?: string | null;
+}
+
+/**
+ * Coerce an incoming category to a valid enum value. Undefined/null → server
+ * default ('activity'); a non-empty unknown string throws (the DTO layer
+ * rejects it as 400 first — this is defense-in-depth).
+ */
+function normalizeCategory(
+  value: string | null | undefined,
+): SlotCategoryValue {
+  if (value === undefined || value === null) {
+    return DEFAULT_SLOT_CATEGORY;
+  }
+  if (!isSlotCategory(value)) {
+    throw new InvariantViolationError(`invalid slot category: ${value}`);
+  }
+  return value;
 }
 
 function validateRange(startsAt: Date, endsAt: Date | null): void {
@@ -76,6 +102,7 @@ export class ActivityEvent {
     readonly groupId: string,
     private _templateSlotId: string | null,
     private _activityName: string,
+    private _category: SlotCategoryValue,
     private _locationId: string | null,
     private _startsAt: Date,
     private _endsAt: Date | null,
@@ -98,6 +125,7 @@ export class ActivityEvent {
       input.groupId,
       input.templateSlotId ?? null,
       input.activityName,
+      normalizeCategory(input.category),
       input.locationId ?? null,
       input.startsAt,
       input.endsAt ?? null,
@@ -116,6 +144,7 @@ export class ActivityEvent {
       state.groupId,
       state.templateSlotId,
       state.activityName,
+      state.category,
       state.locationId,
       state.startsAt,
       state.endsAt,
@@ -134,6 +163,9 @@ export class ActivityEvent {
   }
   get activityName(): string {
     return this._activityName;
+  }
+  get category(): SlotCategoryValue {
+    return this._category;
   }
   get locationId(): string | null {
     return this._locationId;
@@ -204,6 +236,9 @@ export class ActivityEvent {
     if (patch.activityName !== undefined) {
       this._activityName = patch.activityName;
     }
+    if (patch.category !== undefined) {
+      this._category = normalizeCategory(patch.category);
+    }
     if (patch.locationId !== undefined) {
       this._locationId = patch.locationId;
     }
@@ -226,6 +261,7 @@ export class ActivityEvent {
       groupId: this.groupId,
       templateSlotId: this._templateSlotId,
       activityName: this._activityName,
+      category: this._category,
       locationId: this._locationId,
       startsAt: this._startsAt,
       endsAt: this._endsAt,

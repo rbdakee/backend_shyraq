@@ -216,6 +216,13 @@ Enum activity_event_status {
   cancelled
 }
 
+Enum slot_category {
+  lesson
+  activity
+  meal
+  sleep
+}
+
 Enum saas_user_role {
   super_admin
   support
@@ -565,6 +572,8 @@ Table schedule_template_slots {
   start_time    time    [not null]
   end_time      time    [not null]
   activity_name varchar [not null]
+  category      slot_category [not null, default: 'activity']
+  // тип слота для цветовой раскраски недельной сетки: 'lesson'|'activity'|'meal'|'sleep'
   location_id   uuid    [ref: > locations.id]
   description   text
 
@@ -581,6 +590,8 @@ Table activity_events {
   template_slot_id uuid                   [ref: > schedule_template_slots.id]
   // null = ad-hoc event created by staff outside template
   activity_name    varchar                [not null]
+  category         slot_category          [not null, default: 'activity']
+  // копируется из слота при проекции (week copy); ad-hoc события → 'activity' по умолчанию
   location_id      uuid                   [ref: > locations.id]
   starts_at        timestamptz            [not null]
   ends_at          timestamptz

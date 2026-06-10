@@ -21,6 +21,7 @@ export class ScheduleTemplateMapper {
       startTime: row.start_time,
       endTime: row.end_time,
       activityName: row.activity_name,
+      category: row.category,
       locationId: row.location_id,
       description: row.description,
     });

@@ -317,6 +317,8 @@ describeIntegration(
         expect(found!.id).toBe(templateA);
         expect(found!.slots).toHaveLength(1);
         expect(found!.slots[0].activityName).toBe('A-Slot');
+        // Raw insert omitted `category` → DB default 'activity' round-trips.
+        expect(found!.slots[0].category).toBe('activity');
       });
 
       it('findById: KG-B scope cannot see KG-A row', async () => {
