@@ -179,9 +179,14 @@ export class ChildController {
   ): Promise<{ child: ChildDto; guardians: GuardianDto[] }> {
     const kgId = requireTenant(t);
     const out = await this.service.getChild(kgId, id);
+    const identities = await this.service.resolveGuardianIdentities(
+      out.guardians,
+    );
     return {
       child: ChildPresenter.child(out.child),
-      guardians: out.guardians.map((g) => ChildPresenter.guardian(g)),
+      guardians: out.guardians.map((g) =>
+        ChildPresenter.guardian(g, identities.get(g.userId)),
+      ),
     };
   }
 
@@ -509,7 +514,12 @@ export class ChildController {
     const kgId = requireTenant(t);
     // Tenant scope guard: confirm child exists in this kg before exposing guardians.
     const exists = await this.service.getChild(kgId, id);
-    return exists.guardians.map((g) => ChildPresenter.guardian(g));
+    const identities = await this.service.resolveGuardianIdentities(
+      exists.guardians,
+    );
+    return exists.guardians.map((g) =>
+      ChildPresenter.guardian(g, identities.get(g.userId)),
+    );
   }
 
   @Post(':id/guardians')
@@ -546,7 +556,10 @@ export class ChildController {
       canPickup: dto.can_pickup,
       invitedByUserId: user.sub,
     });
-    return ChildPresenter.guardian(guardian);
+    return ChildPresenter.guardian(
+      guardian,
+      await this.service.resolveGuardianIdentity(guardian),
+    );
   }
 
   @Patch(':id/guardians/:guardianId')
@@ -572,7 +585,10 @@ export class ChildController {
       guardianId,
       { role: dto.role, canPickup: dto.can_pickup },
     );
-    return ChildPresenter.guardian(guardian);
+    return ChildPresenter.guardian(
+      guardian,
+      await this.service.resolveGuardianIdentity(guardian),
+    );
   }
 
   @Post(':id/guardians/:guardianId/approve')
@@ -615,7 +631,10 @@ export class ChildController {
       user.sub,
       dto.grant_approval_rights ?? false,
     );
-    return ChildPresenter.guardian(guardian);
+    return ChildPresenter.guardian(
+      guardian,
+      await this.service.resolveGuardianIdentity(guardian),
+    );
   }
 
   @Post(':id/guardians/:guardianId/reject')
@@ -646,7 +665,10 @@ export class ChildController {
       guardianId,
       user.sub,
     );
-    return ChildPresenter.guardian(guardian);
+    return ChildPresenter.guardian(
+      guardian,
+      await this.service.resolveGuardianIdentity(guardian),
+    );
   }
 
   @Post(':id/guardians/:guardianId/revoke')
@@ -670,6 +692,9 @@ export class ChildController {
       guardianId,
       user.sub,
     );
-    return ChildPresenter.guardian(guardian);
+    return ChildPresenter.guardian(
+      guardian,
+      await this.service.resolveGuardianIdentity(guardian),
+    );
   }
 }

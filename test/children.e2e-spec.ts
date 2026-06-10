@@ -337,6 +337,12 @@ describe('P5 children & guardians (e2e)', () => {
       .expect(201);
     expect(res.body.status).toBe('pending_approval');
     expect(res.body.role).toBe('secondary');
+    // GuardianDto carries display fields resolved from the linked users row.
+    // find-or-create seeds users.full_name = phone for a brand-new user, so
+    // both surface the phone here; user_phone is always the E.164 number.
+    expect(res.body).toHaveProperty('user_full_name');
+    expect(res.body).toHaveProperty('user_phone');
+    expect(res.body.user_phone).toBe('+77011119999');
   });
 
   it('POST /children/:id/guardians rejects when both user_phone and user_id are missing', async () => {
@@ -473,6 +479,15 @@ describe('P5 children & guardians (e2e)', () => {
       .expect(200);
     expect(res.body.child.id).toBe(child.body.id);
     expect(res.body.guardians).toBeDefined();
+    // N2 fix — guardians carry display fields resolved from `users`, not a
+    // bare UUID. The seeded user has an empty full_name → null fallback; the
+    // phone is always resolved.
+    const seededGuardian = res.body.guardians.find(
+      (g: { user_id: string }) => g.user_id === parentId,
+    );
+    expect(seededGuardian).toBeDefined();
+    expect(seededGuardian.user_full_name).toBeNull();
+    expect(seededGuardian.user_phone).toBe('+77011110071');
 
     // Stranger child id under same JWT → 403, not 400 — the guard's
     // unhappy-path still rejects with `child_access_denied`.

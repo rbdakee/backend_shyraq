@@ -103,6 +103,17 @@ export interface ChildWithGuardians {
   guardians: ChildGuardian[];
 }
 
+/**
+ * Display identity for a guardian row, resolved from the linked `users`
+ * record. `child_guardians` stores only `user_id`, so every guardian view
+ * needs this overlay to show a name/phone instead of a bare UUID — the same
+ * pattern the staff-list uses (`StaffService.resolveIdentity`).
+ */
+export interface GuardianIdentity {
+  fullName: string | null;
+  phone: string | null;
+}
+
 export interface LinkChildByIinInput {
   iin: string;
   role: 'secondary' | 'nanny';
@@ -116,6 +127,13 @@ export interface LinkChildByIinResult {
 
 const KG_UUID_RE =
   /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+/** Returns the trimmed value, or null when empty/whitespace-only/absent. */
+function nonBlankOrNull(value: string | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
 
 /**
  * ChildService — single entry point for the child + child_guardian aggregate.
@@ -774,6 +792,46 @@ export class ChildService {
     childId: string,
   ): Promise<ChildGuardian[]> {
     return this.guardians.findByChildId(kindergartenId, childId);
+  }
+
+  /**
+   * Resolves the display identity (full_name / phone) for a single guardian
+   * row from its linked `users` record. Empty/whitespace-only names collapse
+   * to null so the client can fall back cleanly (a phone-invited user whose
+   * profile is still blank carries `full_name = ''` in `users`). Mirrors
+   * `StaffService.resolveIdentity`. The lookup is NOT tenant-scoped — `users`
+   * is a global identity table.
+   */
+  async resolveGuardianIdentity(
+    guardian: ChildGuardian,
+  ): Promise<GuardianIdentity> {
+    const user = await this.users.findById(guardian.userId);
+    const u = user?.toState() ?? null;
+    return {
+      fullName: nonBlankOrNull(u?.fullName),
+      phone: nonBlankOrNull(u?.phone),
+    };
+  }
+
+  /**
+   * Batch variant for guardian lists — dedups `user_id`s so each distinct
+   * user is fetched once, then returns a map keyed by `user_id`. Used by the
+   * list endpoints (child detail, /guardians, parent approvals pending).
+   */
+  async resolveGuardianIdentities(
+    guardians: ChildGuardian[],
+  ): Promise<Map<string, GuardianIdentity>> {
+    const out = new Map<string, GuardianIdentity>();
+    const distinctUserIds = [...new Set(guardians.map((g) => g.userId))];
+    for (const userId of distinctUserIds) {
+      const user = await this.users.findById(userId);
+      const u = user?.toState() ?? null;
+      out.set(userId, {
+        fullName: nonBlankOrNull(u?.fullName),
+        phone: nonBlankOrNull(u?.phone),
+      });
+    }
+    return out;
   }
 
   /**

@@ -70,7 +70,10 @@ export class ParentApprovalController {
       t.kgId,
       user.sub,
     );
-    return rows.map((g) => ChildPresenter.guardian(g));
+    const identities = await this.service.resolveGuardianIdentities(rows);
+    return rows.map((g) =>
+      ChildPresenter.guardian(g, identities.get(g.userId)),
+    );
   }
 
   @Post(':guardianId/approve')
@@ -100,7 +103,10 @@ export class ParentApprovalController {
       guardianId,
       dto.grant_approval_rights ?? false,
     );
-    return ChildPresenter.guardian(guardian);
+    return ChildPresenter.guardian(
+      guardian,
+      await this.service.resolveGuardianIdentity(guardian),
+    );
   }
 
   @Post(':guardianId/reject')
@@ -119,7 +125,10 @@ export class ParentApprovalController {
       user.sub,
       guardianId,
     );
-    return ChildPresenter.guardian(guardian);
+    return ChildPresenter.guardian(
+      guardian,
+      await this.service.resolveGuardianIdentity(guardian),
+    );
   }
 
   @Post(':guardianId/revoke')
@@ -138,7 +147,10 @@ export class ParentApprovalController {
       user.sub,
       guardianId,
     );
-    return ChildPresenter.guardian(guardian);
+    return ChildPresenter.guardian(
+      guardian,
+      await this.service.resolveGuardianIdentity(guardian),
+    );
   }
 
   @Patch(':guardianId/rights')
@@ -162,7 +174,10 @@ export class ParentApprovalController {
       guardianId,
       dto.grant,
     );
-    return ChildPresenter.guardian(guardian);
+    return ChildPresenter.guardian(
+      guardian,
+      await this.service.resolveGuardianIdentity(guardian),
+    );
   }
 
   @Patch(':guardianId/permissions')

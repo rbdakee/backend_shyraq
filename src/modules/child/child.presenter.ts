@@ -66,13 +66,26 @@ export class ChildPresenter {
     };
   }
 
-  static guardian(g: ChildGuardian): GuardianDto {
+  /**
+   * Maps a guardian aggregate → response DTO. The optional `identity` overlay
+   * carries display fields (`full_name` / `phone`) resolved from the linked
+   * `users` row — `child_guardians` stores only `user_id`, so without it the
+   * admin/parent guardian views would surface a bare UUID. Mirrors the
+   * staff-list identity overlay (`StaffPresenter.staff`). Absent overlay →
+   * both fields fall back to null.
+   */
+  static guardian(
+    g: ChildGuardian,
+    identity?: { fullName: string | null; phone: string | null },
+  ): GuardianDto {
     const state = g.toState();
     return {
       id: state.id,
       kindergarten_id: state.kindergartenId,
       child_id: state.childId,
       user_id: state.userId,
+      user_full_name: identity?.fullName ?? null,
+      user_phone: identity?.phone ?? null,
       role: state.role,
       status: state.status,
       has_approval_rights: state.hasApprovalRights,

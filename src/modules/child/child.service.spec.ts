@@ -1579,6 +1579,47 @@ describe('ChildService — guardian state machine', () => {
     expect(notification.events.find((e) => e.type === 'pending')).toBeDefined();
   });
 
+  it('resolves guardian display identity (full_name + phone) from the users row', async () => {
+    const ctx = await bootChildWithPrimary();
+    const { service, users, guardians } = ctx.setup;
+
+    const namedUser = User.hydrate({
+      id: randomUUID(),
+      phone: '+77015550101',
+      fullName: 'Алия Бекова',
+      avatarUrl: null,
+      iin: null,
+      dateOfBirth: null,
+      locale: 'ru',
+    });
+    users.put(namedUser);
+    const secondary = await service.inviteGuardian(KG, {
+      childId: ctx.childId,
+      userId: namedUser.id,
+      role: 'secondary',
+      invitedByUserId: ctx.primaryUserId,
+    });
+
+    // single overlay — named user passes through verbatim
+    expect(await service.resolveGuardianIdentity(secondary)).toEqual({
+      fullName: 'Алия Бекова',
+      phone: '+77015550101',
+    });
+
+    // batch overlay — keyed by user_id; the primary's blank users.full_name
+    // collapses to null while its phone still resolves.
+    const roster = await guardians.findByChildId(KG, ctx.childId);
+    const map = await service.resolveGuardianIdentities(roster);
+    expect(map.get(namedUser.id)).toEqual({
+      fullName: 'Алия Бекова',
+      phone: '+77015550101',
+    });
+    expect(map.get(ctx.primaryUserId)).toEqual({
+      fullName: null,
+      phone: '+77011110000',
+    });
+  });
+
   it('rejects double-invite of the same user (DuplicateGuardianError)', async () => {
     const ctx = await bootChildWithPrimary();
     const { service } = ctx.setup;

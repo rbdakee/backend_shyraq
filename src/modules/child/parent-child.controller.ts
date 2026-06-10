@@ -127,9 +127,14 @@ export class ParentChildController {
   ): Promise<{ child: ChildDto; guardians: GuardianDto[] }> {
     if (!t.kgId) throw new BadRequestException('tenant_required');
     const out = await this.service.getChild(t.kgId, id);
+    const identities = await this.service.resolveGuardianIdentities(
+      out.guardians,
+    );
     return {
       child: ChildPresenter.child(out.child),
-      guardians: out.guardians.map((g) => ChildPresenter.guardian(g)),
+      guardians: out.guardians.map((g) =>
+        ChildPresenter.guardian(g, identities.get(g.userId)),
+      ),
     };
   }
 

@@ -13,6 +13,24 @@ export class GuardianDto {
   @ApiProperty({ example: 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee' })
   user_id!: string;
 
+  @ApiProperty({
+    example: 'Алия Бекова',
+    nullable: true,
+    description:
+      'Display name resolved from the linked `users` row (users.full_name). ' +
+      'null when the phone-invited user has not filled in their profile yet.',
+  })
+  user_full_name!: string | null;
+
+  @ApiProperty({
+    example: '+77011223344',
+    nullable: true,
+    description:
+      'Phone (E.164) resolved from the linked `users` row (users.phone). ' +
+      'null when unavailable.',
+  })
+  user_phone!: string | null;
+
   @ApiProperty({ enum: ['primary', 'secondary', 'nanny'] })
   role!: 'primary' | 'secondary' | 'nanny';
 
