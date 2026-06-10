@@ -1780,6 +1780,58 @@ describe('ChildService — guardian state machine', () => {
     ).rejects.toBeInstanceOf(MaxApprovalRightsExceededError);
   });
 
+  it('admin rejects a pending secondary', async () => {
+    const ctx = await bootChildWithPrimary();
+    const { service, notification } = ctx.setup;
+    const g = await service.inviteGuardian(KG, {
+      childId: ctx.childId,
+      userPhone: '+77011112222',
+      role: 'secondary',
+      invitedByUserId: ctx.primaryUserId,
+    });
+
+    const rejected = await service.rejectGuardianByAdmin(
+      KG,
+      ctx.childId,
+      g.id,
+      ADMIN_USER,
+    );
+
+    expect(rejected.status.value).toBe('rejected');
+    expect(
+      notification.events.find((e) => e.type === 'rejected'),
+    ).toBeDefined();
+  });
+
+  it('admin reject on a non-pending row throws status-transition', async () => {
+    const ctx = await bootChildWithPrimary();
+    const { service } = ctx.setup;
+    const g = await service.inviteGuardian(KG, {
+      childId: ctx.childId,
+      userPhone: '+77011112222',
+      role: 'secondary',
+      invitedByUserId: ctx.primaryUserId,
+    });
+    await service.approveGuardianByAdmin(KG, ctx.childId, g.id, ADMIN_USER);
+    await expect(
+      service.rejectGuardianByAdmin(KG, ctx.childId, g.id, ADMIN_USER),
+    ).rejects.toBeInstanceOf(InvalidGuardianStatusTransitionError);
+  });
+
+  it('admin reject rejects a guardian id that belongs to another child', async () => {
+    const ctx = await bootChildWithPrimary();
+    const { service } = ctx.setup;
+    const g = await service.inviteGuardian(KG, {
+      childId: ctx.childId,
+      userPhone: '+77011112222',
+      role: 'secondary',
+      invitedByUserId: ctx.primaryUserId,
+    });
+    await expect(
+      service.rejectGuardianByAdmin(KG, randomUUID(), g.id, ADMIN_USER),
+    ).rejects.toBeInstanceOf(GuardianNotFoundError);
+  });
+
   it('updateWithExpectedStatus returns false when row status flipped between read and write (FINDINGS SM2)', async () => {
     // Repo-level contract test for SM2: conditional UPDATE WHERE
     // status = :expectedStatus must reject the write when a concurrent

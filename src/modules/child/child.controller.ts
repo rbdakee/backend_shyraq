@@ -618,6 +618,37 @@ export class ChildController {
     return ChildPresenter.guardian(guardian);
   }
 
+  @Post(':id/guardians/:guardianId/reject')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Admin-side reject of a pending guardian (parent) request.',
+    description:
+      'Declines a pending_approval guardian row from the Admin panel — the ' +
+      'pair of the approve endpoint. Transitions pending_approval → rejected ' +
+      '(terminal). No body.',
+  })
+  @ApiOkResponse({ type: GuardianDto })
+  @ApiNotFoundResponse({ description: 'Guardian not found for this child.' })
+  @ApiUnprocessableEntityResponse({
+    description:
+      'invalid_guardian_status_transition — row is not in pending_approval.',
+  })
+  async rejectGuardian(
+    @Tenant() t: TenantContext,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Param('guardianId', new ParseUUIDPipe()) guardianId: string,
+    @CurrentUser() user: JwtPayload,
+  ): Promise<GuardianDto> {
+    const kgId = requireTenant(t);
+    const guardian = await this.service.rejectGuardianByAdmin(
+      kgId,
+      id,
+      guardianId,
+      user.sub,
+    );
+    return ChildPresenter.guardian(guardian);
+  }
+
   @Post(':id/guardians/:guardianId/revoke')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({

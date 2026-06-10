@@ -901,6 +901,40 @@ export class ChildService {
     return guardian;
   }
 
+  /**
+   * Admin rejects a pending guardian for the child — the admin-panel pair of
+   * `approveGuardianByAdmin`. Authorized by admin role (no approved-primary
+   * check). `pending_approval → rejected` (terminal). Notifies the applicant.
+   */
+  async rejectGuardianByAdmin(
+    kindergartenId: string,
+    childId: string,
+    guardianId: string,
+    rejectedByUserId: string,
+  ): Promise<ChildGuardian> {
+    const kgId = KindergartenId.parse(kindergartenId);
+    const guardian = await this.guardians.findById(kindergartenId, guardianId);
+    if (!guardian || guardian.childId !== ChildId.parse(childId)) {
+      throw new GuardianNotFoundError(guardianId);
+    }
+    const expectedStatus = guardian.status.value;
+    guardian.reject(this.clock.now());
+    const ok = await this.guardians.updateWithExpectedStatus(
+      guardian,
+      expectedStatus,
+    );
+    if (!ok) {
+      throw new ChildGuardianStatusConflictError(guardianId, expectedStatus);
+    }
+    await this.notification.notifyGuardianRejected({
+      kindergartenId: kgId,
+      childId: guardian.childId,
+      guardianUserId: guardian.userId,
+      rejectedBy: rejectedByUserId,
+    });
+    return guardian;
+  }
+
   // ── Guardians: parent path ──────────────────────────────────────────────
 
   /**
