@@ -125,6 +125,7 @@ import {
 } from './infrastructure/otp/parent-request-otp-store.port';
 import {
   CreateParentRequestInput,
+  ListParentRequestsCrossTenantFilter,
   ListParentRequestsFilter,
   ParentRequestRepository,
 } from './parent-request.repository';
@@ -250,6 +251,43 @@ class FakeParentRequestRepo extends ParentRequestRepository {
     // B22b T7 M16: mirror the relational repo's (created_at DESC, id DESC)
     // ordering + composite cursor predicate so the service-spec exercises
     // the same pagination contract.
+    all.sort((a, b) => {
+      const at = b.createdAt.getTime() - a.createdAt.getTime();
+      if (at !== 0) return at;
+      return b.id.localeCompare(a.id);
+    });
+    let scoped = all;
+    if (filter.cursor) {
+      const cursorAtTs = filter.cursor.createdAt.getTime();
+      const cursorId = filter.cursor.id;
+      scoped = all.filter((pr) => {
+        const atTs = pr.createdAt.getTime();
+        if (atTs < cursorAtTs) return true;
+        if (atTs === cursorAtTs && pr.id.localeCompare(cursorId) < 0)
+          return true;
+        return false;
+      });
+    }
+    if (filter.limit !== undefined) {
+      scoped = scoped.slice(0, filter.limit);
+    }
+    return Promise.resolve(scoped);
+  }
+
+  override listForRequesterCrossTenant(
+    filter: ListParentRequestsCrossTenantFilter,
+  ): Promise<ParentRequest[]> {
+    // Mirror the relational impl: bypass-RLS fan-out over EVERY kg, bounded to
+    // the caller's own rows by requesterUserId. Same (created_at DESC, id DESC)
+    // ordering + composite cursor as list().
+    const all = [...this.rows.values()].filter((pr) => {
+      if (pr.requesterUserId !== filter.requesterUserId) return false;
+      if (filter.status && pr.status !== filter.status) return false;
+      if (filter.requestType && pr.requestType !== filter.requestType)
+        return false;
+      if (filter.childId && pr.childId !== filter.childId) return false;
+      return true;
+    });
     all.sort((a, b) => {
       const at = b.createdAt.getTime() - a.createdAt.getTime();
       if (at !== 0) return at;
@@ -2289,6 +2327,58 @@ describe('ParentRequestService', () => {
       const result = await h.service.listForParent(KG, PARENT_USER, {});
       expect(result.items).toHaveLength(1);
       expect(result.items[0].requesterUserId).toBe(PARENT_USER);
+    });
+
+    it("listForParentCrossTenant fans out across kgs, bounded to the caller's own requests", async () => {
+      const h = buildHarness();
+      const KG_B = '99999999-9999-9999-9999-999999999999';
+      const CHILD_IN_B = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
+      // Caller has requests in KG (the harness kg) AND in KG_B — the unscoped
+      // (multi-kg) parent path must surface both. A request by OTHER_PARENT in
+      // KG_B must NOT leak (requester-ownership is the bound).
+      await h.parentRequestRepo.create({
+        kindergartenId: KG,
+        childId: CHILD,
+        requesterUserId: PARENT_USER,
+        requestType: 'open_request',
+        dateFrom: null,
+        dateTo: null,
+        details: {},
+        recipientType: 'admin',
+        recipientStaffId: null,
+      });
+      await h.parentRequestRepo.create({
+        kindergartenId: KG_B,
+        childId: CHILD_IN_B,
+        requesterUserId: PARENT_USER,
+        requestType: 'vacation',
+        dateFrom: null,
+        dateTo: null,
+        details: {},
+        recipientType: 'admin',
+        recipientStaffId: null,
+      });
+      await h.parentRequestRepo.create({
+        kindergartenId: KG_B,
+        childId: CHILD_IN_B,
+        requesterUserId: OTHER_PARENT_USER,
+        requestType: 'open_request',
+        dateFrom: null,
+        dateTo: null,
+        details: {},
+        recipientType: 'admin',
+        recipientStaffId: null,
+      });
+
+      const result = await h.service.listForParentCrossTenant(PARENT_USER, {});
+      expect(result.items).toHaveLength(2);
+      expect(
+        result.items.every((pr) => pr.requesterUserId === PARENT_USER),
+      ).toBe(true);
+      // Spans both kindergartens.
+      expect(new Set(result.items.map((pr) => pr.kindergartenId))).toEqual(
+        new Set([KG, KG_B]),
+      );
     });
 
     it('listForStaffInbox: admin sees all, mentor sees own queue', async () => {

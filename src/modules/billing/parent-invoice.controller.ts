@@ -20,6 +20,7 @@ import {
 import { CurrentUser } from '@/common/decorators/current-user.decorator';
 import { Roles } from '@/common/decorators/roles.decorator';
 import { ChildAccessGuard } from '@/common/guards/child-access.guard';
+import { InvoiceAccessGuard } from '@/common/guards/invoice-access.guard';
 import { JwtAuthGuard } from '@/common/guards/jwt-auth.guard';
 import { PendingRoleSelectGuard } from '@/common/guards/pending-role-select.guard';
 import { RolesGuard } from '@/common/guards/roles.guard';
@@ -44,14 +45,20 @@ function requireTenant(t: TenantContext): string {
 /**
  * Parent-side read endpoints for invoices + payment calendar.
  *
- * Guards:
- *   - Per-route under `:childId` → `ChildAccessGuard` (cross-tenant lookup;
- *     pins `req.tenant` to the guardian's kg, then checks approved-active).
- *   - Per-route under `:id` (invoice id) → tenant comes from `KindergartenScopeGuard`
- *     (parent JWT after role-select); we then revalidate guardian-of-child via
- *     `InvoiceService.assertNonNannyGuardianForRead` so an approved
- *     guardian on kg_A can never read invoice from kg_B even with a hand-crafted
- *     URL.
+ * Tenant is derived from the RESOURCE, never the JWT (the parent token carries
+ * no `kindergarten_id` for multi-kg parents). Guards are mounted PER-ROUTE
+ * because the two route shapes resolve the kg from different resources:
+ *   - `:childId` routes → `ChildAccessGuard` (cross-tenant lookup; pins
+ *     `req.tenant` to the guardian's kg, then checks approved-active).
+ *   - `:id` (invoice id) route → `InvoiceAccessGuard` (cross-tenant lookup of
+ *     the invoice; pins `req.tenant` to the invoice's kg). The service then
+ *     revalidates guardian-of-child via
+ *     `InvoiceService.assertNonNannyGuardianForRead`, so an approved guardian
+ *     on kg_A can never read an invoice from kg_B even with a hand-crafted URL.
+ *
+ * (A single controller-level `ChildAccessGuard` would mis-handle the `:id`
+ * route — it keys on `params['id']` and would treat the invoice id as a child
+ * id — hence the per-route mounting.)
  *
  * Permission gate (BP §4.13):
  *   - primary / secondary → allowed.
@@ -63,12 +70,13 @@ function requireTenant(t: TenantContext): string {
 @ApiTags('Parent / Billing — Invoices')
 @ApiBearerAuth()
 @Controller({ path: 'parent', version: '1' })
-@UseGuards(JwtAuthGuard, PendingRoleSelectGuard, ChildAccessGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, PendingRoleSelectGuard, RolesGuard)
 @Roles('parent')
 export class ParentInvoiceController {
   constructor(private readonly service: InvoiceService) {}
 
   @Get('children/:childId/invoices')
+  @UseGuards(ChildAccessGuard)
   @ApiOperation({
     summary:
       'List invoices for the child. Filters: status, invoice_type, due_date_from, due_date_to. Guardian-link role gate: nanny → 403.',
@@ -100,9 +108,10 @@ export class ParentInvoiceController {
   }
 
   @Get('invoices/:id')
+  @UseGuards(InvoiceAccessGuard)
   @ApiOperation({
     summary:
-      'Get a single invoice with its line items. Re-checks guardian-of-child access; nanny → 403.',
+      'Get a single invoice with its line items. Tenant resolved from the invoice (InvoiceAccessGuard); re-checks guardian-of-child access; nanny → 403.',
   })
   @ApiOkResponse({ type: InvoiceResponseDto })
   @ApiUnauthorizedResponse({ description: 'Bearer missing/invalid/revoked.' })
@@ -127,6 +136,7 @@ export class ParentInvoiceController {
   }
 
   @Get('children/:childId/payment-calendar')
+  @UseGuards(ChildAccessGuard)
   @ApiOperation({
     summary:
       'Kaspi-style payment calendar for the child. `months_ahead` ∈ [1, 24]. Returns one entry per month — real invoices where present, projected entries (status=projected) for unfilled months. Nanny → 403.',

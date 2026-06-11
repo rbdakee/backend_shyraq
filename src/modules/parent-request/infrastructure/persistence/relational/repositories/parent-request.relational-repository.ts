@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { EntityManager, Repository } from 'typeorm';
+import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
+import { DataSource, EntityManager, Repository } from 'typeorm';
 import { tenantStorage } from '@/database/tenant-storage';
 import {
   ParentRequest,
@@ -9,6 +9,7 @@ import {
 import { ParentRequestNotFoundError } from '../../../../domain/errors';
 import {
   CreateParentRequestInput,
+  ListParentRequestsCrossTenantFilter,
   ListParentRequestsFilter,
   ParentRequestRepository,
 } from '../../../../parent-request.repository';
@@ -20,6 +21,7 @@ export class ParentRequestRelationalRepository extends ParentRequestRepository {
   constructor(
     @InjectRepository(ParentRequestTypeOrmEntity)
     private readonly repo: Repository<ParentRequestTypeOrmEntity>,
+    @InjectDataSource() private readonly dataSource: DataSource,
   ) {
     super();
   }
@@ -60,6 +62,68 @@ export class ParentRequestRelationalRepository extends ParentRequestRepository {
       where: { id, kindergartenId },
     });
     return row ? ParentRequestMapper.toDomain(row) : null;
+  }
+
+  /**
+   * Cross-tenant lookup by id only. Short transaction with
+   * `app.bypass_rls=true` — mirrors the bypass pattern of the child-guardian
+   * cross-tenant methods. Used by `ParentRequestAccessGuard` to resolve the
+   * request's owning kg before the request's tenant scope is pinned.
+   */
+  override async findByIdCrossTenant(
+    id: string,
+  ): Promise<ParentRequest | null> {
+    return this.dataSource.transaction(async (manager) => {
+      await manager.query(`SET LOCAL app.bypass_rls = 'true'`);
+      const row = await manager.findOne(ParentRequestTypeOrmEntity, {
+        where: { id },
+      });
+      return row ? ParentRequestMapper.toDomain(row) : null;
+    });
+  }
+
+  /**
+   * Cross-tenant list of the caller's own requests across every kindergarten.
+   * Bypasses RLS via `app.bypass_rls=true`; the `requester_user_id` predicate
+   * bounds the result to the caller's own rows. Same `(created_at DESC,
+   * id DESC)` ordering + composite cursor as {@link list}.
+   */
+  override async listForRequesterCrossTenant(
+    filter: ListParentRequestsCrossTenantFilter,
+  ): Promise<ParentRequest[]> {
+    return this.dataSource.transaction(async (manager) => {
+      await manager.query(`SET LOCAL app.bypass_rls = 'true'`);
+      const qb = manager
+        .createQueryBuilder(ParentRequestTypeOrmEntity, 'pr')
+        .where('pr.requesterUserId = :uid', { uid: filter.requesterUserId });
+
+      if (filter.status) {
+        qb.andWhere('pr.status = :status', { status: filter.status });
+      }
+      if (filter.requestType) {
+        qb.andWhere('pr.requestType = :type', { type: filter.requestType });
+      }
+      if (filter.childId) {
+        qb.andWhere('pr.childId = :cid', { cid: filter.childId });
+      }
+      if (filter.cursor) {
+        qb.andWhere(
+          '(pr.createdAt < :cursorAt OR (pr.createdAt = :cursorAt AND pr.id < :cursorId))',
+          {
+            cursorAt: filter.cursor.createdAt,
+            cursorId: filter.cursor.id,
+          },
+        );
+      }
+
+      qb.orderBy('pr.createdAt', 'DESC').addOrderBy('pr.id', 'DESC');
+      if (filter.limit) {
+        qb.limit(filter.limit);
+      }
+
+      const rows = await qb.getMany();
+      return rows.map(ParentRequestMapper.toDomain);
+    });
   }
 
   async list(filter: ListParentRequestsFilter): Promise<ParentRequest[]> {

@@ -56,20 +56,21 @@ export class ParentApprovalController {
   @Get('pending')
   @ApiOperation({
     summary:
-      'List pending_approval guardian rows on children where I am an approved primary.',
+      'List pending_approval guardian rows on children where I am an approved primary. Tenant is resolved from the resource (the children I am primary of), not the token: a multi-kg parent (unscoped JWT) fans out across every kindergarten.',
   })
   @ApiOkResponse({ type: [GuardianDto] })
   @ApiUnauthorizedResponse({ description: 'Bearer missing/invalid/revoked.' })
-  @ApiForbiddenResponse({ description: 'tenant_required.' })
   async listPending(
     @Tenant() t: TenantContext,
     @CurrentUser() user: JwtPayload,
   ): Promise<GuardianDto[]> {
-    if (!t.kgId) throw new BadRequestException('tenant_required');
-    const rows = await this.service.listPendingApprovalsForPrimary(
-      t.kgId,
-      user.sub,
-    );
+    // Token-kg is only an optimisation slice. Single-kg parent → kg-scoped
+    // (RLS) lookup; multi-kg parent (no kg on JWT) → cross-tenant fan-out over
+    // the caller's own children. Guardian display identities resolve in both
+    // paths because `users` is a global (non-tenant-scoped) table.
+    const rows = t.kgId
+      ? await this.service.listPendingApprovalsForPrimary(t.kgId, user.sub)
+      : await this.service.listPendingApprovalsForPrimaryCrossTenant(user.sub);
     const identities = await this.service.resolveGuardianIdentities(rows);
     return rows.map((g) =>
       ChildPresenter.guardian(g, identities.get(g.userId)),

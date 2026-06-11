@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { ChildBodyAccessGuard } from '@/common/guards/child-body-access.guard';
+import { ParentRequestAccessGuard } from '@/common/guards/parent-request-access.guard';
 import { BillingModule } from '@/modules/billing/billing.module';
 import { ChildModule } from '@/modules/child/child.module';
 import { GroupModule } from '@/modules/group/group.module';
@@ -73,6 +75,9 @@ import { AdminParentRequestController } from './admin-parent-request.controller'
   ],
   providers: [
     ParentRequestService,
+    // Parent-side resource-resolving guards (tenant from resource, not token).
+    ChildBodyAccessGuard,
+    ParentRequestAccessGuard,
     {
       provide: ParentRequestRepository,
       useClass: ParentRequestRelationalRepository,

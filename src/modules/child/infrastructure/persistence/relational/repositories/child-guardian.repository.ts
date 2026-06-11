@@ -140,6 +140,42 @@ export class ChildGuardianRelationalRepository extends ChildGuardianRepository {
     return rows.map((r) => ChildGuardianMapper.toDomain(r));
   }
 
+  /**
+   * Cross-tenant variant of `findPendingForPrimary`: the same "pending rows on
+   * children where caller is an approved primary" query, but WITHOUT the kg
+   * filter and run inside a short `app.bypass_rls=true` transaction. Used by
+   * the parent-side `/parent/approvals/pending` endpoint for multi-kg parents
+   * whose JWT carries no `kindergarten_id`. The `child_id IN (…)` subquery
+   * bounds the result to the caller's own children across all kindergartens.
+   */
+  override async findPendingForPrimaryCrossTenant(
+    primaryUserId: string,
+  ): Promise<ChildGuardian[]> {
+    return this.dataSource.transaction(async (manager) => {
+      await manager.query(`SET LOCAL app.bypass_rls = 'true'`);
+      const rows = await manager
+        .getRepository(ChildGuardianEntity)
+        .createQueryBuilder('g')
+        .where("g.status = 'pending_approval'")
+        .andWhere(
+          // child_id is the globally-unique children PK, so matching on it
+          // alone pins each pending row to a child the caller is an approved
+          // primary of — no kg correlation needed (a child_id maps to exactly
+          // one kindergarten).
+          `g.child_id IN (
+            SELECT g2.child_id FROM "child_guardians" g2
+            WHERE g2.user_id = :uid
+              AND g2.role = 'primary'
+              AND g2.status = 'approved'
+          )`,
+          { uid: primaryUserId },
+        )
+        .orderBy('g.created_at', 'ASC')
+        .getMany();
+      return rows.map((r) => ChildGuardianMapper.toDomain(r));
+    });
+  }
+
   async update(guardian: ChildGuardian): Promise<void> {
     const repo = this.manager().getRepository(ChildGuardianEntity);
     const state = guardian.toState();

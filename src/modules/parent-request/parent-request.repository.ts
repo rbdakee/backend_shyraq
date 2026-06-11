@@ -31,6 +31,24 @@ export interface ParentRequestCursor {
   id: string;
 }
 
+/**
+ * Cross-tenant variant of {@link ListParentRequestsFilter}: keyed on the
+ * requesting parent's `requesterUserId` instead of `kindergartenId`. Used by
+ * the parent-side list endpoint when the JWT carries no `kindergarten_id`
+ * (multi-kg parent) — the lookup fans out over every kindergarten the parent
+ * filed a request in. Requester-ownership IS the authorisation: a row is only
+ * returned when `requester_user_id = requesterUserId`, so the cross-tenant
+ * read is bounded to the caller's own requests.
+ */
+export interface ListParentRequestsCrossTenantFilter {
+  requesterUserId: string;
+  status?: ParentRequestStatus;
+  requestType?: ParentRequestType;
+  childId?: string;
+  cursor?: ParentRequestCursor;
+  limit?: number;
+}
+
 export interface ListParentRequestsFilter {
   kindergartenId: string;
   status?: ParentRequestStatus;
@@ -63,6 +81,36 @@ export abstract class ParentRequestRepository {
     kindergartenId: string,
   ): Promise<ParentRequest | null>;
   abstract list(filter: ListParentRequestsFilter): Promise<ParentRequest[]>;
+
+  /**
+   * Cross-tenant lookup by id only — used by the parent-side
+   * `ParentRequestAccessGuard` to resolve the request's owning kindergarten
+   * before tenant scope is known. Bypasses RLS via `app.bypass_rls=true`
+   * inside its own transaction; the guard pins the resolved kg onto
+   * `req.tenant` and the service then re-checks requester-ownership in that
+   * kg, so the cross-tenant read never reaches the caller unguarded.
+   *
+   * Default no-op so older in-memory fakes compile; relational impl overrides.
+   */
+  findByIdCrossTenant(_id: string): Promise<ParentRequest | null> {
+    return Promise.resolve(null);
+  }
+
+  /**
+   * Cross-tenant list of the caller's OWN requests across every kindergarten,
+   * ordered `(created_at DESC, id DESC)` with the same cursor semantics as
+   * {@link list}. Bypasses RLS via `app.bypass_rls=true` inside its own
+   * transaction; requester-ownership (`requester_user_id = requesterUserId`)
+   * bounds the result to the caller's own rows. Used by the parent list
+   * endpoint when the JWT has no `kindergarten_id`.
+   *
+   * Default no-op so older in-memory fakes compile; relational impl overrides.
+   */
+  listForRequesterCrossTenant(
+    _filter: ListParentRequestsCrossTenantFilter,
+  ): Promise<ParentRequest[]> {
+    return Promise.resolve([]);
+  }
 
   /**
    * Conditional UPDATE: `SET … WHERE id=? AND kindergarten_id=? AND status=expectedStatus`.

@@ -97,6 +97,24 @@ export class InvoiceRelationalRepository extends InvoiceRepository {
     return row ? InvoiceMapper.toDomain(row) : null;
   }
 
+  /**
+   * Cross-tenant lookup by id only. Runs inside a short transaction with
+   * `app.bypass_rls=true` — mirrors `ChildGuardianRelationalRepository`'s
+   * cross-tenant methods. The caller (parent-side `InvoiceAccessGuard`) pins
+   * the resolved kg onto `req.tenant` and lets the service re-check
+   * guardian-of-child in that kg, so this read never leaks an invoice the
+   * caller is not authorised to see.
+   */
+  override async findByIdCrossTenant(id: string): Promise<Invoice | null> {
+    return this.dataSource.transaction(async (manager) => {
+      await manager.query(`SET LOCAL app.bypass_rls = 'true'`);
+      const row = await manager
+        .getRepository(InvoiceTypeOrmEntity)
+        .findOne({ where: { id } });
+      return row ? InvoiceMapper.toDomain(row) : null;
+    });
+  }
+
   async list(
     kindergartenId: string,
     filter: ListInvoicesFilter,

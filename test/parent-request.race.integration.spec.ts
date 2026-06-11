@@ -407,6 +407,7 @@ describeIntegration(
     function makeService(): ParentRequestService {
       const prRepo = new ParentRequestRelationalRepository(
         dataSource.getRepository(ParentRequestTypeOrmEntity),
+        dataSource,
       );
       const msgRepo = new ParentRequestMessageRelationalRepository(
         dataSource.getRepository(ParentRequestMessageTypeOrmEntity),

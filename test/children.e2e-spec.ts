@@ -408,6 +408,60 @@ describe('P5 children & guardians (e2e)', () => {
     expect(revoked.body.status).toBe('revoked');
   });
 
+  it('GET /parent/approvals/pending fans out across kgs for a multi-kg primary on an unscoped token', async () => {
+    // Same parent is an approved primary in TWO kindergartens; each has a
+    // pending secondary on the parent's child. With NO kindergarten_id on the
+    // token, the endpoint must surface BOTH kgs' pending rows (tenant resolved
+    // from the resource — the children the caller is primary of — not the JWT).
+    const a = await createKgWithAdmin('children-approvals-a', '+77011115301');
+    const b = await createKgWithAdmin('children-approvals-b', '+77011115302');
+    const primaryUserId = await seedUser('+77011110301');
+
+    const childA = await request(server)
+      .post('/api/v1/children')
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .send({ full_name: 'Child AP-A', date_of_birth: '2021-09-15' })
+      .expect(201);
+    const childB = await request(server)
+      .post('/api/v1/children')
+      .set('Authorization', `Bearer ${b.adminToken}`)
+      .send({ full_name: 'Child AP-B', date_of_birth: '2021-09-15' })
+      .expect(201);
+
+    await seedPrimaryGuardian({
+      kgId: a.kgId,
+      childId: childA.body.id,
+      userId: primaryUserId,
+    });
+    await seedPrimaryGuardian({
+      kgId: b.kgId,
+      childId: childB.body.id,
+      userId: primaryUserId,
+    });
+
+    // Admin invites a pending secondary on each child.
+    const inviteA = await request(server)
+      .post(`/api/v1/children/${childA.body.id}/guardians`)
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .send({ user_phone: '+77011110311', role: 'secondary' })
+      .expect(201);
+    const inviteB = await request(server)
+      .post(`/api/v1/children/${childB.body.id}/guardians`)
+      .set('Authorization', `Bearer ${b.adminToken}`)
+      .send({ user_phone: '+77011110312', role: 'secondary' })
+      .expect(201);
+
+    // Unscoped primary token → pending list spans both kindergartens.
+    const noKgToken = await mintParentAccessNoKg(primaryUserId);
+    const pending = await request(server)
+      .get('/api/v1/parent/approvals/pending')
+      .set('Authorization', `Bearer ${noKgToken}`)
+      .expect(200);
+    const ids = (pending.body as Array<{ id: string }>).map((g) => g.id);
+    expect(ids).toContain(inviteA.body.id);
+    expect(ids).toContain(inviteB.body.id);
+  });
+
   it('parent without approved guardian is forbidden by ChildAccessGuard', async () => {
     const a = await createKgWithAdmin('children-9', '+77011115009');
     const child = await request(server)

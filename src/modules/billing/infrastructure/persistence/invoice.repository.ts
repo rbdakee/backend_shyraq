@@ -58,6 +58,24 @@ export abstract class InvoiceRepository {
     id: string,
   ): Promise<Invoice | null>;
 
+  /**
+   * Cross-tenant lookup of a single invoice by id only — used by the
+   * parent-side `InvoiceAccessGuard` to resolve the invoice's owning
+   * kindergarten before the request's tenant scope is known (a parent JWT
+   * may carry no `kindergarten_id`, or the invoice may live in a different
+   * kg than the token's optimisation slice). Bypasses RLS via
+   * `app.bypass_rls=true` inside its own transaction — the guard pins the
+   * resolved kg onto `req.tenant`, after which every downstream query runs
+   * RLS-scoped and the service re-checks guardian-of-child in that kg, so
+   * the cross-tenant read here never reaches the caller unguarded.
+   *
+   * Default no-op so older in-memory fakes compile; the relational impl
+   * overrides with the real bypass query.
+   */
+  findByIdCrossTenant(_id: string): Promise<Invoice | null> {
+    return Promise.resolve(null);
+  }
+
   abstract list(
     kindergartenId: string,
     filter: ListInvoicesFilter,

@@ -1559,6 +1559,20 @@ export class ChildService {
   }
 
   /**
+   * Cross-tenant variant of {@link listPendingApprovalsForPrimary} for parents
+   * whose JWT carries no `kindergarten_id` (multi-kg parent). Fans out over
+   * every kindergarten where the caller is an approved primary — the repository
+   * bypasses RLS but bounds the result to pending rows on the caller's own
+   * children. Guardian display identities resolve fine across the result
+   * because `users` is a global (non-tenant-scoped) table.
+   */
+  listPendingApprovalsForPrimaryCrossTenant(
+    primaryUserId: string,
+  ): Promise<ChildGuardian[]> {
+    return this.guardians.findPendingForPrimaryCrossTenant(primaryUserId);
+  }
+
+  /**
    * APPLICANT-perspective: the caller's OWN `link` requests still in
    * `pending_approval`, across every kindergarten they applied to. Complements
    * `listPendingApprovalsForPrimary` (the primary's "who do I approve" view).

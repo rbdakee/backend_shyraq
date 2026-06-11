@@ -364,6 +364,30 @@ class FakeGuardianRepo extends ChildGuardianRepository {
     );
   }
 
+  override findPendingForPrimaryCrossTenant(
+    primaryUserId: string,
+  ): Promise<ChildGuardian[]> {
+    // Cross-tenant: same shape as findPendingForPrimary but WITHOUT the kg
+    // filter — pending rows on the caller's primary-approved children across
+    // every kindergarten.
+    const myChildIds = new Set(
+      [...this.guardians.values()]
+        .filter(
+          (g) =>
+            g.userId === primaryUserId &&
+            g.role.value === 'primary' &&
+            g.status.value === 'approved',
+        )
+        .map((g) => g.childId as string),
+    );
+    return Promise.resolve(
+      [...this.guardians.values()].filter(
+        (g) =>
+          myChildIds.has(g.childId) && g.status.value === 'pending_approval',
+      ),
+    );
+  }
+
   update(g: ChildGuardian): Promise<void> {
     this.put(g);
     return Promise.resolve();
@@ -2933,6 +2957,81 @@ describe('ChildService — listPendingApplicantRequests', () => {
     const { service } = setup();
     const result = await service.listPendingApplicantRequests(randomUUID());
     expect(result).toEqual([]);
+  });
+});
+
+describe('ChildService — listPendingApprovalsForPrimaryCrossTenant', () => {
+  const KG_B = '99999999-9999-9999-9999-999999999999';
+
+  function approvedPrimary(userId: string, childId: string, kg: string) {
+    return ChildGuardian.hydrate({
+      id: randomUUID(),
+      kindergartenId: kg,
+      childId,
+      userId,
+      role: 'primary',
+      status: 'approved',
+      hasApprovalRights: true,
+      approvedBy: userId,
+      approvedAt: NOW,
+      revokedBy: null,
+      revokedAt: null,
+      canPickup: true,
+      permissions: {},
+      permissionsUpdatedBy: null,
+      permissionsUpdatedAt: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+  }
+
+  function pendingSecondary(childId: string, kg: string) {
+    return ChildGuardian.hydrate({
+      id: randomUUID(),
+      kindergartenId: kg,
+      childId,
+      userId: randomUUID(),
+      role: 'secondary',
+      status: 'pending_approval',
+      hasApprovalRights: false,
+      approvedBy: null,
+      approvedAt: null,
+      revokedBy: null,
+      revokedAt: null,
+      canPickup: false,
+      permissions: {},
+      permissionsUpdatedBy: null,
+      permissionsUpdatedAt: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+  }
+
+  it("fans out pending rows across every kg the caller is an approved primary, bounded to the caller's children", async () => {
+    const { service, guardians } = setup();
+    const primaryUser = randomUUID();
+    const childA = randomUUID();
+    const childB = randomUUID();
+    // Caller is approved primary of childA (KG) and childB (KG_B).
+    guardians.put(approvedPrimary(primaryUser, childA, KG));
+    guardians.put(approvedPrimary(primaryUser, childB, KG_B));
+    // One pending secondary on each of the caller's children — both must show.
+    const pendingA = pendingSecondary(childA, KG);
+    const pendingB = pendingSecondary(childB, KG_B);
+    guardians.put(pendingA);
+    guardians.put(pendingB);
+    // A pending row on a DIFFERENT child the caller is not primary of → hidden.
+    guardians.put(pendingSecondary(randomUUID(), KG_B));
+
+    const rows =
+      await service.listPendingApprovalsForPrimaryCrossTenant(primaryUser);
+
+    expect(new Set(rows.map((g) => g.id))).toEqual(
+      new Set([pendingA.id, pendingB.id]),
+    );
+    expect(new Set(rows.map((g) => g.kindergartenId))).toEqual(
+      new Set([KG, KG_B]),
+    );
   });
 });
 

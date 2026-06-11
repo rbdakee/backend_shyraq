@@ -686,6 +686,162 @@ describe('B12 Parent Requests (e2e)', () => {
       .expect(404);
   });
 
+  // ── K. Tenant resolved from the RESOURCE, not the token ───────────────────
+  //
+  // A multi-kg parent's JWT carries `kindergarten_id: null` by design. These
+  // endpoints must work off an UNSCOPED token: the create routes resolve the
+  // kg from the body child (ChildBodyAccessGuard); the :id routes resolve it
+  // from the request (ParentRequestAccessGuard); list fans out cross-tenant.
+
+  async function mintUnscopedParent(sub: string): Promise<string> {
+    return jwtService.signAsync(
+      { sub, role: 'parent', kindergarten_id: null, jti: randomUUID() },
+      { secret: jwtSecret, expiresIn: '1h' },
+    );
+  }
+
+  it('lets an UNSCOPED parent token create/get/cancel a request — kg resolved from the resource (Scenario K1)', async () => {
+    const a = await createKgWithAdmin('pr-k1', '+77011100201');
+    const parentId = await seedUser('+77011100202');
+    const childId = await createChild(a.adminToken, {
+      full_name: 'Child K1',
+      date_of_birth: '2020-01-01',
+    });
+    await seedApprovedGuardian(a.kgId, childId, parentId);
+    // No kindergarten_id on the token at all.
+    const parentToken = await mintUnscopedParent(parentId);
+
+    const sat = futureSaturday();
+    const createRes = await request(server)
+      .post('/api/v1/parent/requests/day-off')
+      .set('Authorization', `Bearer ${parentToken}`)
+      .send({ child_id: childId, weekend_dates: [sat] })
+      .expect(201);
+    const prId = createRes.body.id as string;
+    expect(createRes.body.status).toBe('pending');
+
+    // GET by id — ParentRequestAccessGuard resolves the kg from the request.
+    const getRes = await request(server)
+      .get(`/api/v1/parent/requests/${prId}`)
+      .set('Authorization', `Bearer ${parentToken}`)
+      .expect(200);
+    expect(getRes.body.id).toBe(prId);
+
+    // List — cross-tenant fan-out path (no token kg).
+    const listRes = await request(server)
+      .get('/api/v1/parent/requests')
+      .set('Authorization', `Bearer ${parentToken}`)
+      .expect(200);
+    expect(listRes.body.items.map((r: { id: string }) => r.id)).toContain(prId);
+
+    // Cancel — still keyed off the resolved-from-resource kg.
+    const cancelRes = await request(server)
+      .post(`/api/v1/parent/requests/${prId}/cancel`)
+      .set('Authorization', `Bearer ${parentToken}`)
+      .expect(200);
+    expect(cancelRes.body.status).toBe('cancelled');
+  });
+
+  it('fans out the list across kgs for a multi-kg parent on an unscoped token (Scenario K2)', async () => {
+    const a = await createKgWithAdmin('pr-k2-a', '+77011100211');
+    const b = await createKgWithAdmin('pr-k2-b', '+77011100221');
+    const parentId = await seedUser('+77011100212');
+    const childA = await createChild(a.adminToken, {
+      full_name: 'Child K2-A',
+      date_of_birth: '2020-01-01',
+    });
+    const childB = await createChild(b.adminToken, {
+      full_name: 'Child K2-B',
+      date_of_birth: '2020-01-01',
+    });
+    // Same parent is an approved guardian in BOTH kindergartens.
+    await seedApprovedGuardian(a.kgId, childA, parentId);
+    await seedApprovedGuardian(b.kgId, childB, parentId);
+    const parentToken = await mintUnscopedParent(parentId);
+
+    const sat = futureSaturday();
+    const resA = await request(server)
+      .post('/api/v1/parent/requests/day-off')
+      .set('Authorization', `Bearer ${parentToken}`)
+      .send({ child_id: childA, weekend_dates: [sat] })
+      .expect(201);
+    const resB = await request(server)
+      .post('/api/v1/parent/requests/day-off')
+      .set('Authorization', `Bearer ${parentToken}`)
+      .send({ child_id: childB, weekend_dates: [sat] })
+      .expect(201);
+
+    const listRes = await request(server)
+      .get('/api/v1/parent/requests')
+      .set('Authorization', `Bearer ${parentToken}`)
+      .expect(200);
+    const ids = listRes.body.items.map((r: { id: string }) => r.id);
+    expect(ids).toContain(resA.body.id);
+    expect(ids).toContain(resB.body.id);
+  });
+
+  it('blocks creating a request for a child the caller is not a guardian of (Scenario K3)', async () => {
+    const a = await createKgWithAdmin('pr-k3', '+77011100231');
+    const parentId = await seedUser('+77011100232');
+    const strangerChild = await createChild(a.adminToken, {
+      full_name: 'Stranger Child',
+      date_of_birth: '2020-01-01',
+    });
+    // parentId is NOT linked to strangerChild.
+    const parentToken = await mintUnscopedParent(parentId);
+
+    await request(server)
+      .post('/api/v1/parent/requests/day-off')
+      .set('Authorization', `Bearer ${parentToken}`)
+      .send({ child_id: strangerChild, weekend_dates: [futureSaturday()] })
+      .expect(403);
+  });
+
+  it("forbids a parent from reaching another kindergarten's request by id — phantom isolation (Scenario K4)", async () => {
+    const a = await createKgWithAdmin('pr-k4-a', '+77011100241');
+    const b = await createKgWithAdmin('pr-k4-b', '+77011100251');
+    // Parent A — guardian only in kg_A.
+    const parentA = await seedUser('+77011100242');
+    const childA = await createChild(a.adminToken, {
+      full_name: 'Child K4-A',
+      date_of_birth: '2020-01-01',
+    });
+    await seedApprovedGuardian(a.kgId, childA, parentA);
+    const parentAToken = await mintUnscopedParent(parentA);
+
+    // Parent B — guardian in kg_B — files a request there.
+    const parentB = await seedUser('+77011100252');
+    const childB = await createChild(b.adminToken, {
+      full_name: 'Child K4-B',
+      date_of_birth: '2020-01-01',
+    });
+    await seedApprovedGuardian(b.kgId, childB, parentB);
+    const parentBToken = await mintUnscopedParent(parentB);
+    const createRes = await request(server)
+      .post('/api/v1/parent/requests/day-off')
+      .set('Authorization', `Bearer ${parentBToken}`)
+      .send({ child_id: childB, weekend_dates: [futureSaturday()] })
+      .expect(201);
+    const prIdB = createRes.body.id as string;
+
+    // Parent A tries to read + cancel kg_B's request → forbidden (the guard
+    // resolves kg_B, but the service's requester-ownership check rejects).
+    await request(server)
+      .get(`/api/v1/parent/requests/${prIdB}`)
+      .set('Authorization', `Bearer ${parentAToken}`)
+      .expect(403);
+    await request(server)
+      .post(`/api/v1/parent/requests/${prIdB}/cancel`)
+      .set('Authorization', `Bearer ${parentAToken}`)
+      .expect(403);
+
+    // A completely unknown id → 404.
+    await request(server)
+      .get(`/api/v1/parent/requests/${randomUUID()}`)
+      .set('Authorization', `Bearer ${parentAToken}`)
+      .expect(404);
+  });
+
   // ── G. Concurrent accept race ─────────────────────────────────────────────
 
   it('exactly one concurrent accept succeeds (200) and the other returns 409 parent_request_already_processed (Scenario G)', async () => {

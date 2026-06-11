@@ -1,6 +1,7 @@
 import { Module, Provider } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { InvoiceAccessGuard } from '@/common/guards/invoice-access.guard';
 import { ChildModule } from '@/modules/child/child.module';
 import { LIFECYCLE_QUEUE } from '@/modules/child/lifecycle-queue.constants';
 import { StaffModule } from '@/modules/staff/staff.module';
@@ -244,6 +245,10 @@ function fiscalReceiptProvider(): Provider {
     PaymentWebhookController,
   ],
   providers: [
+    // Parent-side invoice/payment resource guard — resolves the invoice's kg
+    // cross-tenant from the URL `:id` and pins `req.tenant` (tenant from
+    // resource, not token). Depends on InvoiceRepository (provided below).
+    InvoiceAccessGuard,
     // B24 K8 — register the concrete Kaspi adapter as its OWN singleton so the
     // status poller can inject it directly; `paymentProviderProvider()` then
     // returns this same instance for the kaspi branch (one instance total).

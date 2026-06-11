@@ -957,6 +957,109 @@ describe('B13 Billing & Invoices (e2e)', () => {
     });
   });
 
+  // ── Z. Tenant resolved from the RESOURCE (invoice), not the token ─────────
+  //
+  // A multi-kg parent's JWT has `kindergarten_id: null`. InvoiceAccessGuard
+  // resolves the invoice's kg from the URL `:id` and pins it; the service then
+  // re-checks guardian-of-child / canPay in that kg.
+
+  describe('Scenario Z: invoice read + pay work on an UNSCOPED parent token', () => {
+    async function mintUnscopedParent(sub: string): Promise<string> {
+      return jwtService.signAsync(
+        { sub, role: 'parent', kindergarten_id: null, jti: randomUUID() },
+        { secret: jwtSecret, expiresIn: '1h' },
+      );
+    }
+
+    it('reads + pays an invoice by id with no token kg (kg resolved from the invoice)', async () => {
+      const a = await createKgWithAdmin('bi-z1', '+77020100311');
+      const parentId = await seedUser('+77020100312');
+      const childId = await createChild(a.adminToken, {
+        full_name: 'Child Z1',
+        date_of_birth: '2021-02-14',
+      });
+      await seedApprovedGuardian(a.kgId, childId, parentId);
+      const parentToken = await mintUnscopedParent(parentId);
+      const { id: invoiceId } = await createOneOffInvoice(
+        a.adminToken,
+        childId,
+        25000,
+      );
+
+      // GET by id — InvoiceAccessGuard resolves the kg from the invoice.
+      const getRes = await request(server)
+        .get(`/api/v1/parent/invoices/${invoiceId}`)
+        .set('Authorization', `Bearer ${parentToken}`)
+        .expect(200);
+      expect(getRes.body.id).toBe(invoiceId);
+
+      // Pay — same resolved-from-resource kg.
+      await request(server)
+        .post(`/api/v1/parent/invoices/${invoiceId}/pay`)
+        .set('Authorization', `Bearer ${parentToken}`)
+        .send({
+          payment_mode: 'full',
+          provider: 'mock',
+          idempotency_key: randomUUID(),
+          return_url: 'https://app.shyraq.kz/payment/return',
+        })
+        .expect(201);
+
+      const invRes = await request(server)
+        .get(`/api/v1/admin/invoices/${invoiceId}`)
+        .set('Authorization', `Bearer ${a.adminToken}`)
+        .expect(200);
+      expect(invRes.body.status).toBe('paid');
+    });
+
+    it("forbids a parent from reading or paying another kindergarten's invoice — phantom isolation", async () => {
+      const a = await createKgWithAdmin('bi-z2-a', '+77020100321');
+      const b = await createKgWithAdmin('bi-z2-b', '+77020100331');
+      // Parent A — guardian only in kg_A.
+      const parentA = await seedUser('+77020100322');
+      const childA = await createChild(a.adminToken, {
+        full_name: 'Child Z2-A',
+        date_of_birth: '2021-02-14',
+      });
+      await seedApprovedGuardian(a.kgId, childA, parentA);
+      const parentAToken = await mintUnscopedParent(parentA);
+
+      // Invoice belongs to kg_B's child.
+      const childB = await createChild(b.adminToken, {
+        full_name: 'Child Z2-B',
+        date_of_birth: '2021-02-14',
+      });
+      const { id: invoiceB } = await createOneOffInvoice(
+        b.adminToken,
+        childB,
+        25000,
+      );
+
+      // Parent A cannot read or pay kg_B's invoice (guard resolves kg_B but the
+      // service's guardian/canPay check in kg_B rejects → 403).
+      await request(server)
+        .get(`/api/v1/parent/invoices/${invoiceB}`)
+        .set('Authorization', `Bearer ${parentAToken}`)
+        .expect(403);
+      await request(server)
+        .post(`/api/v1/parent/invoices/${invoiceB}/pay`)
+        .set('Authorization', `Bearer ${parentAToken}`)
+        .send({
+          payment_mode: 'full',
+          provider: 'mock',
+          idempotency_key: randomUUID(),
+          return_url: 'https://app.shyraq.kz/payment/return',
+        })
+        .expect(403);
+
+      // Unknown invoice id → 404.
+      await request(server)
+        .get(`/api/v1/parent/invoices/${randomUUID()}`)
+        .set('Authorization', `Bearer ${parentAToken}`)
+        .expect(404);
+    });
+  });
+
   // ── L. Parent pay partial ─────────────────────────────────────────────────
 
   describe('Scenario L: Parent pay partial then pay remainder', () => {

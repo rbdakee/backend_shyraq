@@ -66,6 +66,24 @@ export abstract class ChildGuardianRepository {
     primaryUserId: string,
   ): Promise<ChildGuardian[]>;
 
+  /**
+   * Cross-tenant variant of {@link findPendingForPrimary}: pending_approval
+   * guardian rows on children where the caller is an approved primary, across
+   * EVERY kindergarten (no kg filter). Used by the parent-side
+   * `/parent/approvals/pending` endpoint when the JWT carries no
+   * `kindergarten_id` (multi-kg parent). Bypasses RLS via `app.bypass_rls=true`
+   * inside its own transaction; the `child_id IN (… caller is approved primary
+   * …)` subquery bounds the result to the caller's own children, so the
+   * cross-tenant read never exposes another parent's pending rows.
+   *
+   * Default no-op so older in-memory fakes compile; relational impl overrides.
+   */
+  findPendingForPrimaryCrossTenant(
+    _primaryUserId: string,
+  ): Promise<ChildGuardian[]> {
+    return Promise.resolve([]);
+  }
+
   abstract update(guardian: ChildGuardian): Promise<void>;
 
   /**

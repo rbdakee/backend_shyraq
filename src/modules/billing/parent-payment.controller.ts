@@ -22,6 +22,7 @@ import {
 } from '@nestjs/swagger';
 import { CurrentUser } from '@/common/decorators/current-user.decorator';
 import { Roles } from '@/common/decorators/roles.decorator';
+import { InvoiceAccessGuard } from '@/common/guards/invoice-access.guard';
 import { JwtAuthGuard } from '@/common/guards/jwt-auth.guard';
 import { PendingRoleSelectGuard } from '@/common/guards/pending-role-select.guard';
 import { RolesGuard } from '@/common/guards/roles.guard';
@@ -63,10 +64,13 @@ function configuredDtoProvider(): PaymentProvider {
 /**
  * Parent-side payment initiation.
  *
- * Path prefix is `/parent/invoices/:id/...` — we cannot rely on
- * `ChildAccessGuard` (which keys on `:childId` / `:guardianId`) so the guard
- * mount stays JWT + Roles only and `PaymentService.assertCanPay` does the
- * explicit guardian re-check after the invoice is resolved.
+ * Path prefix is `/parent/invoices/:id/...`. Tenant is derived from the
+ * RESOURCE, not the JWT (the parent token carries no `kindergarten_id` for
+ * multi-kg parents): `InvoiceAccessGuard` resolves the invoice cross-tenant by
+ * `:id` and pins `req.tenant` to the invoice's kg. `PaymentService.assertCanPay`
+ * then does the explicit guardian re-check in that kg after the invoice is
+ * re-resolved RLS-scoped — so an approved guardian on kg_A can never pay an
+ * invoice from kg_B even with a hand-crafted URL.
  *
  * Permission gate (BP §4.13):
  *   - primary           → allowed.
@@ -77,7 +81,7 @@ function configuredDtoProvider(): PaymentProvider {
 @ApiTags('Parent / Billing — Payments')
 @ApiBearerAuth()
 @Controller({ path: 'parent/invoices', version: '1' })
-@UseGuards(JwtAuthGuard, PendingRoleSelectGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, PendingRoleSelectGuard, InvoiceAccessGuard, RolesGuard)
 @Roles('parent')
 export class ParentPaymentController {
   constructor(

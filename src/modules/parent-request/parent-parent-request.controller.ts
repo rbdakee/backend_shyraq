@@ -28,7 +28,9 @@ import {
 } from '@nestjs/swagger';
 import { CurrentUser } from '@/common/decorators/current-user.decorator';
 import { Roles } from '@/common/decorators/roles.decorator';
+import { ChildBodyAccessGuard } from '@/common/guards/child-body-access.guard';
 import { JwtAuthGuard } from '@/common/guards/jwt-auth.guard';
+import { ParentRequestAccessGuard } from '@/common/guards/parent-request-access.guard';
 import { PendingRoleSelectGuard } from '@/common/guards/pending-role-select.guard';
 import { RolesGuard } from '@/common/guards/roles.guard';
 import type { JwtPayload } from '@/common/types/jwt-payload';
@@ -65,11 +67,18 @@ function requireTenant(t: TenantContext): string {
  * Parent-side parent-requests endpoints (B12). All endpoints under
  * `/parent/requests/*`.
  *
- * Tenant resolution: parent JWT carries `kindergarten_id` (set by
- * KindergartenScopeGuard from the role-select claim). Body endpoints carry
- * `child_id` — service-level guardian-link check (`findApprovedActiveByUserAndChild`)
- * gates access. URL `/parent/requests/:id` relies on the
- * service-level requester-ownership check.
+ * Tenant resolution — derived from the RESOURCE, not the JWT (the parent token
+ * carries `kindergarten_id: null` by design for multi-kg parents, so token-kg
+ * is only an optimisation slice, never the source of truth):
+ *   - CREATE routes (`child_id` in body) → `ChildBodyAccessGuard` resolves the
+ *     child cross-tenant, admits an approved guardian, and pins `req.tenant` to
+ *     the child's kg. The service then re-checks the `create_requests`
+ *     permission in that kg.
+ *   - `:id` routes (get / cancel / messages) → `ParentRequestAccessGuard`
+ *     resolves the request cross-tenant by id and pins `req.tenant` to the
+ *     request's kg. The service then enforces requester-ownership in that kg.
+ *   - `list` → kg-scoped fast-path when the token carries a kg, else a
+ *     cross-tenant fan-out over the caller's own requests in every kg.
  *
  * Rate-limit: per-user `rate:parent_requests:create:{userId}` (30/hour) on
  * each create endpoint. The OTP-request endpoint piggybacks on auth's
@@ -99,26 +108,48 @@ export class ParentParentRequestController {
     @CurrentUser() user: JwtPayload,
     @Query() q: ListParentRequestsQueryDto,
   ): Promise<ParentRequestListResponseDto> {
-    const kgId = requireTenant(t);
-    const result = await this.service.listForParent(kgId, user.sub, {
+    // Two paths — token-kg is only an optimisation slice, never required:
+    //   - kg-scoped JWT (single-kg parent) → list inside that tenant (RLS) and
+    //     resolve staff display names (kg-scoped lookup works).
+    //   - unscoped JWT (multi-kg parent)   → cross-tenant fan-out over the
+    //     caller's own requests in every kg. Staff display names are left null
+    //     (a kg-scoped staff lookup under an unscoped transaction sees nothing)
+    //     — correctness over completeness, mirroring `ParentChildController`.
+    if (t.kgId) {
+      const result = await this.service.listForParent(t.kgId, user.sub, {
+        status: q.status,
+        type: q.type,
+        childId: q.child_id,
+        limit: q.limit,
+        cursor: q.cursor ?? null,
+      });
+      const staffNames = await this.service.resolveRequestStaffNames(
+        t.kgId,
+        result.items,
+      );
+      return ParentRequestPresenter.list(
+        result.items,
+        result.nextCursor,
+        staffNames,
+      );
+    }
+
+    const result = await this.service.listForParentCrossTenant(user.sub, {
       status: q.status,
       type: q.type,
       childId: q.child_id,
       limit: q.limit,
       cursor: q.cursor ?? null,
     });
-    const staffNames = await this.service.resolveRequestStaffNames(
-      kgId,
-      result.items,
-    );
     return ParentRequestPresenter.list(
       result.items,
       result.nextCursor,
-      staffNames,
+      new Map<string, string | null>(),
     );
   }
 
   @Get(':id')
+  @UseGuards(ParentRequestAccessGuard)
   @ApiOperation({
     summary: 'Get a parent_request by id. Requester-ownership enforced.',
   })
@@ -140,6 +171,7 @@ export class ParentParentRequestController {
   // ── OTP request (trusted-person flow) ─────────────────────────────────
 
   @Post('otp-request')
+  @UseGuards(ChildBodyAccessGuard)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
@@ -173,6 +205,7 @@ export class ParentParentRequestController {
   // ── Create per type ───────────────────────────────────────────────────
 
   @Post('trusted-person')
+  @UseGuards(ChildBodyAccessGuard)
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
     summary:
@@ -218,6 +251,7 @@ export class ParentParentRequestController {
   }
 
   @Post('day-off')
+  @UseGuards(ChildBodyAccessGuard)
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
     summary:
@@ -254,6 +288,7 @@ export class ParentParentRequestController {
   }
 
   @Post('vacation')
+  @UseGuards(ChildBodyAccessGuard)
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
     summary:
@@ -291,6 +326,7 @@ export class ParentParentRequestController {
   }
 
   @Post('late-pickup')
+  @UseGuards(ChildBodyAccessGuard)
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
     summary:
@@ -328,6 +364,7 @@ export class ParentParentRequestController {
   }
 
   @Post('open')
+  @UseGuards(ChildBodyAccessGuard)
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
     summary:
@@ -371,6 +408,7 @@ export class ParentParentRequestController {
   // ── Cancel ────────────────────────────────────────────────────────────
 
   @Post(':id/cancel')
+  @UseGuards(ParentRequestAccessGuard)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
@@ -395,6 +433,7 @@ export class ParentParentRequestController {
   // ── Thread ────────────────────────────────────────────────────────────
 
   @Post(':id/messages')
+  @UseGuards(ParentRequestAccessGuard)
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
     summary: 'Post a parent message to the request thread.',
@@ -420,6 +459,7 @@ export class ParentParentRequestController {
   }
 
   @Get(':id/messages')
+  @UseGuards(ParentRequestAccessGuard)
   @ApiOperation({
     summary:
       'List messages in the request thread. Cursor-based; `next_cursor` is an ISO timestamp.',

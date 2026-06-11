@@ -969,6 +969,41 @@ export class ParentRequestService {
     return shapePage(items, limit);
   }
 
+  /**
+   * Cross-tenant variant of {@link listForParent} for parents whose JWT has no
+   * `kindergarten_id` (multi-kg parent). Fans out over every kindergarten the
+   * caller filed a request in — the repository bypasses RLS but bounds the
+   * result to the caller's own rows via `requester_user_id`. Same cursor /
+   * page semantics as the kg-scoped path. Identity overlays (staff display
+   * names) are resolved by the caller only on the kg-scoped path: the rows here
+   * may span kindergartens and a kg-scoped staff lookup under an unscoped
+   * transaction would return nothing, so the controller passes an empty map
+   * (display names null) — correctness over completeness, mirroring
+   * `ParentChildController.listMine`.
+   */
+  async listForParentCrossTenant(
+    requesterUserId: string,
+    filter: {
+      status?: ParentRequestStatus;
+      type?: ParentRequestType;
+      childId?: string;
+      limit?: number;
+      cursor?: string | null;
+    },
+  ): Promise<ListParentRequestsResult> {
+    const limit = clampLimit(filter.limit, 50, 100);
+    const decodedCursor = decodeParentRequestCursor(filter.cursor);
+    const items = await this.parentRequests.listForRequesterCrossTenant({
+      requesterUserId,
+      status: filter.status,
+      requestType: filter.type,
+      childId: filter.childId,
+      limit: limit + 1,
+      cursor: decodedCursor,
+    });
+    return shapePage(items, limit);
+  }
+
   async listForStaffInbox(
     kindergartenId: string,
     caller: CallerStaffContext,
