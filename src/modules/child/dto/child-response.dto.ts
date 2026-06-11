@@ -34,6 +34,17 @@ export class ChildDto {
   })
   current_group_id!: string | null;
 
+  @ApiProperty({
+    example: 'Подготовительная «А»',
+    nullable: true,
+    description:
+      'Display name of the current group, resolved from `groups` (identity ' +
+      'overlay). Null when the child has no group, the group name is blank, ' +
+      'or the overlay was not built for this response (e.g. cross-tenant ' +
+      'parent listing).',
+  })
+  current_group_name!: string | null;
+
   @ApiProperty({ example: null, nullable: true })
   enrollment_date!: string | null;
 

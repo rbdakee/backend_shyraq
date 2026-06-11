@@ -26,6 +26,14 @@ export class ParentRequestMessageResponseDto {
   })
   author_staff_id!: string | null;
 
+  @ApiProperty({
+    example: 'Алия Серикова',
+    nullable: true,
+    description:
+      'Display name of the message author — overlay resolved from whichever id is populated: `author_user_id` → `users.full_name`, else `author_staff_id` (`staff_members.id`) → `users.full_name` (staff identity fallback). Null when neither id is set, the underlying row is missing, or the resolved name is blank.',
+  })
+  author_full_name!: string | null;
+
   @ApiProperty({ example: 'Спасибо, можно ли подтвердить?' })
   body!: string;
 

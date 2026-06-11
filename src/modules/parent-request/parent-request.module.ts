@@ -33,7 +33,9 @@ import { AdminParentRequestController } from './admin-parent-request.controller'
  *                      mentor recipient on day_off / vacation / late_pickup.
  *   - `StaffModule`  — `StaffMemberRepository.findById` for open_request
  *                      recipient validation + `findActiveByUserAndKindergarten`
- *                      for staff controller's caller resolution.
+ *                      for staff controller's caller resolution +
+ *                      `StaffService.resolveIdentity` for the identity-overlay
+ *                      display-name resolvers (recipient/reviewer/message-author).
  *   - `PickupModule` — `TrustedPersonRepository.create` (accept(trusted_person))
  *                      + `PickupRequestRepository.create` (optional chained
  *                      pickup_request when details.create_pickup_request).

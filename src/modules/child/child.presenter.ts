@@ -41,7 +41,14 @@ export function maskName(name: string): string {
 }
 
 export class ChildPresenter {
-  static child(c: Child): ChildDto {
+  /**
+   * Maps a child aggregate → response DTO. The optional `groupName` overlay
+   * carries the display name resolved from the `groups` table — `children`
+   * stores only `current_group_id`, so without it the card would surface a
+   * bare UUID. Mirrors the guardian identity overlay (`ChildPresenter.guardian`).
+   * Absent overlay → `current_group_name` falls back to null.
+   */
+  static child(c: Child, groupName: string | null = null): ChildDto {
     const state = c.toState();
     return {
       id: state.id,
@@ -54,6 +61,7 @@ export class ChildPresenter {
       photo_url: state.photoUrl,
       status: state.status,
       current_group_id: state.currentGroupId,
+      current_group_name: groupName,
       enrollment_date:
         state.enrollmentDate === null ? null : toIsoDate(state.enrollmentDate),
       archived_at:

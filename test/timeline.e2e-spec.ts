@@ -309,6 +309,11 @@ describe('B8 timeline (e2e)', () => {
     expect(createRes.body.childId).toBe(childId);
     expect(createRes.body.entryType).toBe('note');
     expect(createRes.body.title).toBe('Утренний осмотр');
+    // Identity overlay: author is the seeded admin user. staff_members.full_name
+    // is null for the kg-admin seed row, so resolveIdentity falls back to
+    // users.full_name ('Admin').
+    expect(createRes.body).toHaveProperty('recorded_by_full_name');
+    expect(createRes.body.recorded_by_full_name).toBe('Admin');
 
     // PATCH → 200 (author edits own entry)
     const patchRes = await request(server)
@@ -325,9 +330,16 @@ describe('B8 timeline (e2e)', () => {
       .set('Authorization', `Bearer ${a.staffToken}`)
       .expect(200);
     expect(Array.isArray(listRes.body.items)).toBe(true);
-    expect(
-      (listRes.body.items as { id: string }[]).some((e) => e.id === entryId),
-    ).toBe(true);
+    const listed = (
+      listRes.body.items as {
+        id: string;
+        recorded_by_full_name: string | null;
+      }[]
+    ).find((e) => e.id === entryId);
+    expect(listed).toBeDefined();
+    // Identity overlay present on each listed entry.
+    expect(listed).toHaveProperty('recorded_by_full_name');
+    expect(listed?.recorded_by_full_name).toBe('Admin');
 
     // DELETE → 204
     await request(server)
@@ -558,6 +570,9 @@ describe('B8 timeline (e2e)', () => {
       .expect(200);
     expect(Array.isArray(okRes.body.items)).toBe(true);
     expect(okRes.body.items.length).toBeGreaterThanOrEqual(1);
+    // Identity overlay present on parent-visible timeline entries.
+    expect(okRes.body.items[0]).toHaveProperty('recorded_by_full_name');
+    expect(okRes.body.items[0].recorded_by_full_name).toBe('Admin');
 
     // Non-guardian parent → 403
     const otherUserId = await seedUser('+77011140062');

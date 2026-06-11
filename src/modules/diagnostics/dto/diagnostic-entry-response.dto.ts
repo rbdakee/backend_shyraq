@@ -30,6 +30,16 @@ export class DiagnosticEntryResponseDto {
   specialist_id!: string;
 
   @ApiProperty({
+    example: 'Айгерим Нурланкызы',
+    nullable: true,
+    description:
+      'Specialist display name resolved from staff_members.id → staff identity ' +
+      'fallback (staff_members.full_name ?? users.full_name). Null when the ' +
+      'staff row is missing or the resolved name is empty/whitespace-only.',
+  })
+  specialist_full_name!: string | null;
+
+  @ApiProperty({
     example: '2026-05-01',
     description: 'Assessment date (ISO date YYYY-MM-DD).',
   })

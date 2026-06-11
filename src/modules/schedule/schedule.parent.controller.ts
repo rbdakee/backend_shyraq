@@ -66,6 +66,9 @@ export class ScheduleParentController {
         to: new Date(q.dateTo),
       },
     );
-    return events.map((e) => SchedulePresenter.event(e));
+    // Parent path is kg-scoped (single pinned t.kgId) — safe to resolve the
+    // location_name overlay without opening an RLS hole.
+    const names = await this.service.resolveLocationNames(t.kgId, events);
+    return SchedulePresenter.events(events, names);
   }
 }

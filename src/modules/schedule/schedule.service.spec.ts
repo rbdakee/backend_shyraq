@@ -22,6 +22,13 @@ import {
   ListGroupsFilters,
   UpdateGroupInput,
 } from '@/modules/group/infrastructure/persistence/group.repository';
+import { Location } from '@/modules/location/domain/entities/location.entity';
+import {
+  CreateLocationInput,
+  ListLocationsFilters,
+  LocationRepository,
+  UpdateLocationInput,
+} from '@/modules/location/infrastructure/persistence/location.repository';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { ActivityEvent } from './domain/entities/activity-event.entity';
 import { ActivityEventStatusValue } from './domain/value-objects/activity-event-status.vo';
@@ -54,6 +61,8 @@ const KG_OTHER = '99999999-9999-9999-9999-999999999999';
 const GROUP_A = '22222222-2222-2222-2222-222222222222';
 const GROUP_B = '33333333-3333-3333-3333-333333333333';
 const CHILD_A = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
+const LOCATION_A = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+const LOCATION_B = 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff';
 const NOW = new Date('2026-04-30T10:00:00.000Z');
 
 class FixedClock extends ClockPort {
@@ -360,7 +369,73 @@ class FakeChildRepo extends ChildRepository {
   }
 }
 
+class FakeLocationRepo extends LocationRepository {
+  byId = new Map<string, Location>();
+
+  put(l: Location): void {
+    this.byId.set(l.id, l);
+  }
+  create(_kg: string, _input: CreateLocationInput): Promise<Location> {
+    throw new Error('not used');
+  }
+  findById(kg: string, id: string): Promise<Location | null> {
+    const l = this.byId.get(id);
+    if (!l || l.kindergartenId !== kg) return Promise.resolve(null);
+    return Promise.resolve(l);
+  }
+  list(_kg: string, _filters?: ListLocationsFilters): Promise<Location[]> {
+    throw new Error('not used');
+  }
+  update(
+    _kg: string,
+    _id: string,
+    _patch: UpdateLocationInput,
+  ): Promise<Location | null> {
+    throw new Error('not used');
+  }
+  save(l: Location): Promise<Location> {
+    this.byId.set(l.id, l);
+    return Promise.resolve(l);
+  }
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────
+
+function makeLocation(kg: string, id: string, name: string): Location {
+  return Location.hydrate({
+    id,
+    kindergartenId: kg,
+    name,
+    description: null,
+    archivedAt: null,
+    createdAt: NOW,
+    updatedAt: NOW,
+  });
+}
+
+function makeEvent(
+  kg: string,
+  id: string,
+  groupId: string,
+  locationId: string | null,
+): ActivityEvent {
+  return ActivityEvent.hydrate({
+    id,
+    kindergartenId: kg,
+    groupId,
+    templateSlotId: null,
+    activityName: 'Test Activity',
+    category: 'activity',
+    locationId,
+    startsAt: NOW,
+    endsAt: null,
+    status: 'scheduled',
+    createdBy: null,
+    notes: null,
+    createdAt: NOW,
+    updatedAt: NOW,
+  });
+}
 
 function makeGroup(kg: string, id: string): Group {
   return Group.hydrate({
@@ -409,14 +484,22 @@ interface Wired {
   snapshotRepo: FakeWeekSnapshotRepo;
   groupRepo: FakeGroupRepo;
   childRepo: FakeChildRepo;
+  locationRepo: FakeLocationRepo;
 }
 
-function wire(): Wired {
+/**
+ * @param withLocationRepo when false, the optional LocationRepository is left
+ *   undefined so the fail-closed branch of `resolveLocationName(s)` can be
+ *   asserted. The returned `locationRepo` fake is still constructed for the
+ *   caller's convenience but is NOT injected.
+ */
+function wire(withLocationRepo = true): Wired {
   const templateRepo = new FakeScheduleTemplateRepo();
   const eventRepo = new FakeActivityEventRepo();
   const snapshotRepo = new FakeWeekSnapshotRepo();
   const groupRepo = new FakeGroupRepo();
   const childRepo = new FakeChildRepo();
+  const locationRepo = new FakeLocationRepo();
   const clock = new FixedClock(NOW);
   const service = new ScheduleService(
     templateRepo,
@@ -425,6 +508,7 @@ function wire(): Wired {
     groupRepo,
     childRepo,
     clock,
+    withLocationRepo ? locationRepo : undefined,
   );
   return {
     service,
@@ -433,6 +517,7 @@ function wire(): Wired {
     snapshotRepo,
     groupRepo,
     childRepo,
+    locationRepo,
   };
 }
 
@@ -874,4 +959,108 @@ describe('ScheduleService — service-unit', () => {
       ).rejects.toBeInstanceOf(ChildNotFoundError);
     });
   });
+
+  describe('resolveLocationNames (identity overlay)', () => {
+    const EV_1 = 'e1111111-1111-1111-1111-111111111111';
+    const EV_2 = 'e2222222-2222-2222-2222-222222222222';
+
+    it('resolves the location name for events with a locationId', async () => {
+      const w = wire();
+      w.locationRepo.put(makeLocation(KG, LOCATION_A, 'Музыкальный зал'));
+      const events = [makeEvent(KG, EV_1, GROUP_A, LOCATION_A)];
+      const names = await w.service.resolveLocationNames(KG, events);
+      expect(names.get(LOCATION_A)).toBe('Музыкальный зал');
+    });
+
+    it('skips events with a null locationId (no map entry)', async () => {
+      const w = wire();
+      const events = [makeEvent(KG, EV_1, GROUP_A, null)];
+      const names = await w.service.resolveLocationNames(KG, events);
+      expect(names.size).toBe(0);
+    });
+
+    it('maps to null when the location is not found', async () => {
+      const w = wire();
+      // No location seeded for LOCATION_A.
+      const events = [makeEvent(KG, EV_1, GROUP_A, LOCATION_A)];
+      const names = await w.service.resolveLocationNames(KG, events);
+      expect(names.get(LOCATION_A)).toBeNull();
+    });
+
+    it('maps to null when the location name is blank/whitespace', async () => {
+      const w = wire();
+      w.locationRepo.put(makeLocation(KG, LOCATION_A, '   '));
+      const events = [makeEvent(KG, EV_1, GROUP_A, LOCATION_A)];
+      const names = await w.service.resolveLocationNames(KG, events);
+      expect(names.get(LOCATION_A)).toBeNull();
+    });
+
+    it('maps to null for a cross-tenant location (tenant-scoped lookup)', async () => {
+      const w = wire();
+      // Location belongs to a different KG.
+      w.locationRepo.put(makeLocation(KG_OTHER, LOCATION_A, 'Чужой зал'));
+      const events = [makeEvent(KG, EV_1, GROUP_A, LOCATION_A)];
+      const names = await w.service.resolveLocationNames(KG, events);
+      expect(names.get(LOCATION_A)).toBeNull();
+    });
+
+    it('dedups distinct locationIds across multiple events', async () => {
+      const w = wire();
+      w.locationRepo.put(makeLocation(KG, LOCATION_A, 'Зал А'));
+      w.locationRepo.put(makeLocation(KG, LOCATION_B, 'Зал Б'));
+      const events = [
+        makeEvent(KG, EV_1, GROUP_A, LOCATION_A),
+        makeEvent(KG, EV_2, GROUP_A, LOCATION_A),
+        makeEvent(KG, randomUuidLike('e3'), GROUP_A, LOCATION_B),
+      ];
+      const names = await w.service.resolveLocationNames(KG, events);
+      expect(names.size).toBe(2);
+      expect(names.get(LOCATION_A)).toBe('Зал А');
+      expect(names.get(LOCATION_B)).toBe('Зал Б');
+    });
+
+    it('returns an empty map when the LocationRepository is not wired (fail-closed)', async () => {
+      const w = wire(false);
+      w.locationRepo.put(makeLocation(KG, LOCATION_A, 'Зал А'));
+      const events = [makeEvent(KG, EV_1, GROUP_A, LOCATION_A)];
+      const names = await w.service.resolveLocationNames(KG, events);
+      expect(names.size).toBe(0);
+    });
+  });
+
+  describe('resolveLocationName (single event overlay)', () => {
+    const EV_1 = 'e1111111-1111-1111-1111-111111111111';
+
+    it('resolves the name for an event with a locationId', async () => {
+      const w = wire();
+      w.locationRepo.put(makeLocation(KG, LOCATION_A, 'Спортзал'));
+      const event = makeEvent(KG, EV_1, GROUP_A, LOCATION_A);
+      expect(await w.service.resolveLocationName(KG, event)).toBe('Спортзал');
+    });
+
+    it('returns null when the event has no locationId', async () => {
+      const w = wire();
+      const event = makeEvent(KG, EV_1, GROUP_A, null);
+      expect(await w.service.resolveLocationName(KG, event)).toBeNull();
+    });
+
+    it('returns null when the location is not found', async () => {
+      const w = wire();
+      const event = makeEvent(KG, EV_1, GROUP_A, LOCATION_A);
+      expect(await w.service.resolveLocationName(KG, event)).toBeNull();
+    });
+
+    it('returns null when the LocationRepository is not wired (fail-closed)', async () => {
+      const w = wire(false);
+      w.locationRepo.put(makeLocation(KG, LOCATION_A, 'Спортзал'));
+      const event = makeEvent(KG, EV_1, GROUP_A, LOCATION_A);
+      expect(await w.service.resolveLocationName(KG, event)).toBeNull();
+    });
+  });
 });
+
+/** Deterministic UUID-shaped id from a short prefix (test convenience). */
+function randomUuidLike(prefix: string): string {
+  const base = prefix.padEnd(8, '0').slice(0, 8);
+  return `${base}-0000-0000-0000-000000000000`;
+}

@@ -1,9 +1,10 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { ChildNotFoundError } from '@/modules/child/domain/errors/child-not-found.error';
 import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
 import { GroupNotFoundError } from '@/modules/group/domain/errors/group-not-found.error';
 import { GroupRepository } from '@/modules/group/infrastructure/persistence/group.repository';
+import { LocationRepository } from '@/modules/location/infrastructure/persistence/location.repository';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { InvariantViolationError } from '@/shared-kernel/domain/errors';
 import { ActivityEvent } from './domain/entities/activity-event.entity';
@@ -95,6 +96,13 @@ export interface CopyWeekResult {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/** Returns the trimmed value, or null when empty/whitespace-only/absent. */
+function nonBlankOrNull(value: string | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 /**
  * ScheduleService — single entry point for the B7 schedule aggregate.
  *
@@ -128,6 +136,13 @@ export class ScheduleService {
     private readonly groupRepo: GroupRepository,
     private readonly childRepo: ChildRepository,
     @Inject(ClockPort) private readonly clock: ClockPort,
+    // Optional so the existing service-unit wiring (which constructs
+    // ScheduleService positionally without a location repo) keeps compiling.
+    // `resolveLocationName(s)` fails closed → `location_name = null` when the
+    // dep is undefined. Production wiring (`ScheduleModule.imports →
+    // LocationModule`) always supplies the real adapter.
+    @Optional()
+    private readonly locationRepo?: LocationRepository,
   ) {}
 
   // ── Templates ────────────────────────────────────────────────────────────
@@ -526,6 +541,59 @@ export class ScheduleService {
     }
 
     return { copiedGroups, skippedGroups, totalEvents, snapshots };
+  }
+
+  // ── identity overlay: location display name ─────────────────────────────
+
+  /**
+   * Resolves the display name of a single event's `location_id`. Returns null
+   * when the event has no location, the location row is missing, or its name is
+   * blank/whitespace-only (so the client can fall back cleanly). The lookup is
+   * tenant-scoped via `LocationRepository.findById`. Fails closed — when the
+   * optional `LocationRepository` is not wired, returns null.
+   */
+  async resolveLocationName(
+    kindergartenId: string,
+    event: ActivityEvent,
+  ): Promise<string | null> {
+    const locationId = event.locationId;
+    if (locationId === null || !this.locationRepo) return null;
+    const location = await this.locationRepo.findById(
+      kindergartenId,
+      locationId,
+    );
+    return nonBlankOrNull(location?.name);
+  }
+
+  /**
+   * Batch variant for event lists — dedups `location_id`s (skipping the null
+   * ones) so each distinct location is fetched once, then returns a map keyed
+   * by `location_id`. Mirrors `ChildService.resolveGroupNames`. Events without
+   * a location simply have no entry; the presenter falls back to null. Fails
+   * closed: when the optional `LocationRepository` is not wired, returns an
+   * empty map.
+   */
+  async resolveLocationNames(
+    kindergartenId: string,
+    events: ActivityEvent[],
+  ): Promise<Map<string, string | null>> {
+    const out = new Map<string, string | null>();
+    if (!this.locationRepo) return out;
+    const distinctLocationIds = [
+      ...new Set(
+        events
+          .map((e) => e.locationId)
+          .filter((id): id is string => id !== null && id !== undefined),
+      ),
+    ];
+    for (const locationId of distinctLocationIds) {
+      const location = await this.locationRepo.findById(
+        kindergartenId,
+        locationId,
+      );
+      out.set(locationId, nonBlankOrNull(location?.name));
+    }
+    return out;
   }
 
   // ── helpers ─────────────────────────────────────────────────────────────

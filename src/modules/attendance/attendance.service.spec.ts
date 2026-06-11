@@ -50,6 +50,9 @@ import {
   StaffMemberRepository,
   UpdateStaffMemberInput,
 } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
+import { StaffService } from '@/modules/staff/staff.service';
+import { User } from '@/modules/users/domain/entities/user.entity';
+import { UserRepository } from '@/modules/users/infrastructure/persistence/user.repository';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { AttendanceService } from './attendance.service';
 import { AttendanceEvent } from './domain/entities/attendance-event.entity';
@@ -1116,6 +1119,215 @@ describe('AttendanceService — service-unit', () => {
           { isAdmin: true },
         ),
       ).rejects.toBeInstanceOf(InvalidAttendanceTimestampError);
+    });
+  });
+
+  // ── Identity overlays ──────────────────────────────────────────────────────
+
+  describe('resolvePickupUserNames', () => {
+    function makeCheckOutEvent(pickupUserId: string | null): AttendanceEvent {
+      return AttendanceEvent.createCheckOut(
+        {
+          id: randomUUID(),
+          kindergartenId: KG,
+          childId: CHILD,
+          method: AttendanceMethod.MANUAL,
+          recordedBy: STAFF_ID,
+          pickupUserId,
+          notes: null,
+          recordedAt: NOW,
+        },
+        { now: () => NOW },
+      );
+    }
+    function makeUser(id: string, fullName: string): User {
+      return User.hydrate({
+        id,
+        phone: '+77770000000',
+        fullName,
+        avatarUrl: null,
+        iin: null,
+        dateOfBirth: null,
+        locale: 'ru',
+      });
+    }
+    class FakeUserRepo {
+      rows = new Map<string, User>();
+      put(u: User): void {
+        this.rows.set(u.id, u);
+      }
+      findById(id: string): Promise<User | null> {
+        return Promise.resolve(this.rows.get(id) ?? null);
+      }
+    }
+
+    function wireWithUsers(userRepo: FakeUserRepo): AttendanceService {
+      return new AttendanceService(
+        new FakeAttendanceEventRepo(),
+        new FakeChildDailyStatusRepo(),
+        new FakeTimelineRepo(),
+        new FakeChildRepo(),
+        new FakeGuardianRepo(),
+        new FakeStaffRepo(),
+        new FixedClock(NOW),
+        new FakeNotificationPort(),
+        userRepo as unknown as UserRepository,
+      );
+    }
+
+    it('resolves pickup_user_full_name from users.full_name (deduped)', async () => {
+      const userRepo = new FakeUserRepo();
+      userRepo.put(makeUser(PICKUP_USER, 'Бахыт Нурланова'));
+      const service = wireWithUsers(userRepo);
+      // Two check-out events for the same pickup user → single lookup.
+      const map = await service.resolvePickupUserNames([
+        makeCheckOutEvent(PICKUP_USER),
+        makeCheckOutEvent(PICKUP_USER),
+      ]);
+      expect(map.size).toBe(1);
+      expect(map.get(PICKUP_USER)).toBe('Бахыт Нурланова');
+    });
+
+    it('returns null when the user row is missing', async () => {
+      const service = wireWithUsers(new FakeUserRepo());
+      const map = await service.resolvePickupUserNames([
+        makeCheckOutEvent(PICKUP_USER),
+      ]);
+      expect(map.get(PICKUP_USER)).toBeNull();
+    });
+
+    it('collapses a blank/whitespace-only user name to null', async () => {
+      const userRepo = new FakeUserRepo();
+      userRepo.put(makeUser(PICKUP_USER, '   '));
+      const service = wireWithUsers(userRepo);
+      const map = await service.resolvePickupUserNames([
+        makeCheckOutEvent(PICKUP_USER),
+      ]);
+      expect(map.get(PICKUP_USER)).toBeNull();
+    });
+
+    it('skips events with a null pickupUserId (check-in rows)', async () => {
+      const service = wireWithUsers(new FakeUserRepo());
+      const map = await service.resolvePickupUserNames([
+        makeCheckOutEvent(null),
+      ]);
+      expect(map.size).toBe(0);
+    });
+
+    it('fails closed with an empty map when the users port is not wired', async () => {
+      const w = wire();
+      const map = await w.service.resolvePickupUserNames([
+        makeCheckOutEvent(PICKUP_USER),
+      ]);
+      expect(map.size).toBe(0);
+    });
+  });
+
+  describe('resolveRecordedByNames / resolveSetByNames', () => {
+    // Thin stand-in for StaffService.resolveIdentity — the real staff/users
+    // fallback is exercised in staff.service.spec; here we only assert the
+    // batching / fail-closed orchestration.
+    class FakeStaffService {
+      resolveIdentity(
+        member: StaffMember,
+      ): Promise<{ fullName: string | null; phone: string | null }> {
+        const s = member.toState();
+        return Promise.resolve({ fullName: s.fullName, phone: s.phone });
+      }
+    }
+    class FakeStaffByIdRepo extends FakeStaffRepo {
+      byId = new Map<string, StaffMember>();
+      putById(s: StaffMember): void {
+        this.byId.set(`${s.kindergartenId}|${s.id}`, s);
+      }
+      override findById(kg: string, id: string): Promise<StaffMember | null> {
+        return Promise.resolve(this.byId.get(`${kg}|${id}`) ?? null);
+      }
+    }
+    function makeStaffMember(id: string, fullName: string | null): StaffMember {
+      return StaffMember.hydrate({
+        id,
+        kindergartenId: KG,
+        userId: randomUUID(),
+        fullName,
+        phone: null,
+        role: 'mentor',
+        specialistType: null,
+        isActive: true,
+        hiredAt: NOW,
+        firedAt: null,
+        archivedAt: null,
+        createdAt: NOW,
+        updatedAt: NOW,
+      });
+    }
+    function wireWithStaff(staffRepo: FakeStaffByIdRepo): AttendanceService {
+      return new AttendanceService(
+        new FakeAttendanceEventRepo(),
+        new FakeChildDailyStatusRepo(),
+        new FakeTimelineRepo(),
+        new FakeChildRepo(),
+        new FakeGuardianRepo(),
+        staffRepo,
+        new FixedClock(NOW),
+        new FakeNotificationPort(),
+        undefined,
+        new FakeStaffService() as unknown as StaffService,
+      );
+    }
+
+    it('resolveRecordedByNames resolves the staff display name (deduped)', async () => {
+      const staffRepo = new FakeStaffByIdRepo();
+      staffRepo.putById(makeStaffMember(STAFF_ID, 'Айгуль Сатпаева'));
+      const service = wireWithStaff(staffRepo);
+      const map = await service.resolveRecordedByNames(KG, [
+        { recordedBy: STAFF_ID },
+        { recordedBy: STAFF_ID },
+      ]);
+      expect(map.size).toBe(1);
+      expect(map.get(STAFF_ID)).toBe('Айгуль Сатпаева');
+    });
+
+    it('resolveSetByNames resolves the staff display name', async () => {
+      const staffRepo = new FakeStaffByIdRepo();
+      staffRepo.putById(makeStaffMember(STAFF_ID, 'Айгуль Сатпаева'));
+      const service = wireWithStaff(staffRepo);
+      const map = await service.resolveSetByNames(KG, [{ setBy: STAFF_ID }]);
+      expect(map.get(STAFF_ID)).toBe('Айгуль Сатпаева');
+    });
+
+    it('returns null when the staff row is missing', async () => {
+      const service = wireWithStaff(new FakeStaffByIdRepo());
+      const map = await service.resolveRecordedByNames(KG, [
+        { recordedBy: STAFF_ID },
+      ]);
+      expect(map.get(STAFF_ID)).toBeNull();
+    });
+
+    it('collapses a blank/whitespace-only staff name to null', async () => {
+      const staffRepo = new FakeStaffByIdRepo();
+      staffRepo.putById(makeStaffMember(STAFF_ID, '   '));
+      const service = wireWithStaff(staffRepo);
+      const map = await service.resolveRecordedByNames(KG, [
+        { recordedBy: STAFF_ID },
+      ]);
+      expect(map.get(STAFF_ID)).toBeNull();
+    });
+
+    it('skips rows with a null source id', async () => {
+      const service = wireWithStaff(new FakeStaffByIdRepo());
+      const map = await service.resolveRecordedByNames(KG, [
+        { recordedBy: null },
+      ]);
+      expect(map.size).toBe(0);
+    });
+
+    it('fails closed with an empty map when the staff service is not wired', async () => {
+      const w = wire();
+      const map = await w.service.resolveRecordedByNames(KG, [
+        { recordedBy: STAFF_ID },
+      ]);
+      expect(map.size).toBe(0);
     });
   });
 });

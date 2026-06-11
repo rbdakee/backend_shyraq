@@ -3,6 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { ChildModule } from '@/modules/child/child.module';
 import { GroupModule } from '@/modules/group/group.module';
 import { StaffModule } from '@/modules/staff/staff.module';
+import { UsersModule } from '@/modules/users/users.module';
 import { AdminAttendanceController } from './admin-attendance.controller';
 import { AttendanceService } from './attendance.service';
 import { ParentAttendanceController } from './parent-attendance.controller';
@@ -26,7 +27,11 @@ import { TimelineEntryRelationalRepository } from './infrastructure/persistence/
  *
  *   - ChildModule exports ChildRepository + ChildGuardianRepository (used for
  *     child existence + pickup-permission validation).
- *   - StaffModule exports StaffMemberRepository (caller resolution).
+ *   - StaffModule exports StaffMemberRepository (caller resolution) +
+ *     StaffService (identity overlay: staff_members.id → users.full_name for
+ *     the `recorded_by` / `set_by` display-name fields).
+ *   - UsersModule exports UserRepository (identity overlay: pickup_user_id =
+ *     users.id → users.full_name for the `pickup_user_full_name` field).
  *   - SharedKernelModule (global) provides ClockPort + NotificationPort.
  *
  * AttendanceService and TimelineService are exported so they can be consumed
@@ -42,6 +47,7 @@ import { TimelineEntryRelationalRepository } from './infrastructure/persistence/
     ChildModule,
     GroupModule,
     StaffModule,
+    UsersModule,
   ],
   controllers: [
     StaffAttendanceController,

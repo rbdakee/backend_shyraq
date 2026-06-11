@@ -85,7 +85,15 @@ export class ParentAttendanceController {
       from: q.from ? new Date(q.from) : undefined,
       to: q.to ? new Date(q.to) : undefined,
     });
-    return TimelinePresenter.paged(result.items, result.nextCursor);
+    const recordedByNames = await this.timelineService.resolveRecordedByNames(
+      kgId,
+      result.items,
+    );
+    return TimelinePresenter.paged(
+      result.items,
+      result.nextCursor,
+      recordedByNames,
+    );
   }
 
   @Get(':childId/attendance')
@@ -116,7 +124,17 @@ export class ParentAttendanceController {
         offset: q.offset,
       },
     );
-    return events.map((e) => AttendancePresenter.event(e));
+    const [recordedByNames, pickupNames] = await Promise.all([
+      this.attendanceService.resolveRecordedByNames(kgId, events),
+      this.attendanceService.resolvePickupUserNames(events),
+    ]);
+    return events.map((e) =>
+      AttendancePresenter.event(
+        e,
+        e.recordedBy ? (recordedByNames.get(e.recordedBy) ?? null) : null,
+        e.pickupUserId ? (pickupNames.get(e.pickupUserId) ?? null) : null,
+      ),
+    );
   }
 
   @Get(':childId/daily-status')
@@ -154,6 +172,13 @@ export class ParentAttendanceController {
       childId,
       isoDate,
     );
-    return status ? AttendancePresenter.dailyStatus(status) : null;
+    if (!status) return null;
+    const setByNames = await this.attendanceService.resolveSetByNames(kgId, [
+      status,
+    ]);
+    return AttendancePresenter.dailyStatus(
+      status,
+      status.setBy ? (setByNames.get(status.setBy) ?? null) : null,
+    );
   }
 }

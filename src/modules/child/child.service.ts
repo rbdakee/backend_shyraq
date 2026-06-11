@@ -949,6 +949,48 @@ export class ChildService {
   }
 
   /**
+   * Resolves the display name of a single child's current group. Returns null
+   * when the child has no group, the group is missing, or its name is
+   * blank/whitespace-only (so the client can fall back cleanly). The lookup is
+   * tenant-scoped via `GroupRepository.findById` — callers on the cross-tenant
+   * parent path (no pinned `kindergarten_id`) must therefore skip resolution.
+   */
+  async resolveGroupName(
+    kindergartenId: string,
+    child: Child,
+  ): Promise<string | null> {
+    const groupId = child.toState().currentGroupId;
+    if (!groupId) return null;
+    const group = await this.groups.findById(kindergartenId, groupId);
+    return nonBlankOrNull(group?.name);
+  }
+
+  /**
+   * Batch variant for child lists — dedups `current_group_id`s (skipping the
+   * null ones) so each distinct group is fetched once, then returns a map
+   * keyed by `current_group_id`. Mirrors `resolveGuardianIdentities`. Children
+   * without a group simply have no entry; the presenter falls back to null.
+   */
+  async resolveGroupNames(
+    kindergartenId: string,
+    children: Child[],
+  ): Promise<Map<string, string | null>> {
+    const out = new Map<string, string | null>();
+    const distinctGroupIds = [
+      ...new Set(
+        children
+          .map((c) => c.toState().currentGroupId)
+          .filter((id): id is string => id !== null && id !== undefined),
+      ),
+    ];
+    for (const groupId of distinctGroupIds) {
+      const group = await this.groups.findById(kindergartenId, groupId);
+      out.set(groupId, nonBlankOrNull(group?.name));
+    }
+    return out;
+  }
+
+  /**
    * Admin updates role and/or can_pickup. Disallowed on revoked rows. Cross-id
    * defense: if the guardian record points to a different child than the URL
    * suggests, the call resolves to GuardianNotFoundError.

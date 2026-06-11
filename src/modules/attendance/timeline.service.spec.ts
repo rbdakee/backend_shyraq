@@ -15,6 +15,7 @@
  * Test names use `it('returns ...')` / `it('throws ...')` / `it('rejects ...')`
  * per CLAUDE.md §7. NO `it('should ...')`.
  */
+import { randomUUID } from 'node:crypto';
 import {
   NotificationPort,
   GuardianApprovedEvent,
@@ -53,6 +54,7 @@ import {
   StaffMemberRepository,
   UpdateStaffMemberInput,
 } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
+import { StaffService } from '@/modules/staff/staff.service';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { TimelineEntry } from './domain/entities/timeline-entry.entity';
 import { InvalidAttendanceTimestampError } from './domain/errors/invalid-attendance-timestamp.error';
@@ -752,6 +754,108 @@ describe('TimelineService — service-unit', () => {
         }),
       ).rejects.toBeInstanceOf(MentorScopeViolatedError);
       expect(w.timelineRepo.rows.size).toBe(1);
+    });
+  });
+
+  // ── Identity overlay (recorded_by_full_name) ───────────────────────────────
+
+  describe('resolveRecordedByNames', () => {
+    // Thin stand-in for StaffService.resolveIdentity — the real staff/users
+    // fallback is exercised in staff.service.spec; here we only assert the
+    // batching / fail-closed orchestration.
+    class FakeStaffService {
+      resolveIdentity(
+        member: StaffMember,
+      ): Promise<{ fullName: string | null; phone: string | null }> {
+        const s = member.toState();
+        return Promise.resolve({ fullName: s.fullName, phone: s.phone });
+      }
+    }
+    class FakeStaffByIdRepo extends FakeStaffRepo {
+      byId = new Map<string, StaffMember>();
+      putById(s: StaffMember): void {
+        this.byId.set(`${s.kindergartenId}|${s.id}`, s);
+      }
+      override findById(kg: string, id: string): Promise<StaffMember | null> {
+        return Promise.resolve(this.byId.get(`${kg}|${id}`) ?? null);
+      }
+    }
+    function makeStaffMemberWithName(
+      id: string,
+      fullName: string | null,
+    ): StaffMember {
+      return StaffMember.hydrate({
+        id,
+        kindergartenId: KG,
+        userId: randomUUID(),
+        fullName,
+        phone: null,
+        role: 'mentor',
+        specialistType: null,
+        isActive: true,
+        hiredAt: NOW,
+        firedAt: null,
+        archivedAt: null,
+        createdAt: NOW,
+        updatedAt: NOW,
+      });
+    }
+    function wireWithStaff(staffRepo: FakeStaffByIdRepo): TimelineService {
+      return new TimelineService(
+        new FakeTimelineRepo(),
+        new FakeChildRepo(),
+        staffRepo,
+        new FakeGroupRepo(),
+        new FixedClock(NOW),
+        new FakeNotificationPort(),
+        new FakeStaffService() as unknown as StaffService,
+      );
+    }
+
+    it('resolves recorded_by_full_name from the staff identity overlay (deduped)', async () => {
+      const staffRepo = new FakeStaffByIdRepo();
+      staffRepo.putById(makeStaffMemberWithName(STAFF_ID, 'Айгуль Сатпаева'));
+      const service = wireWithStaff(staffRepo);
+      const map = await service.resolveRecordedByNames(KG, [
+        { recordedBy: STAFF_ID },
+        { recordedBy: STAFF_ID },
+      ]);
+      expect(map.size).toBe(1);
+      expect(map.get(STAFF_ID)).toBe('Айгуль Сатпаева');
+    });
+
+    it('returns null when the staff row is missing', async () => {
+      const service = wireWithStaff(new FakeStaffByIdRepo());
+      const map = await service.resolveRecordedByNames(KG, [
+        { recordedBy: STAFF_ID },
+      ]);
+      expect(map.get(STAFF_ID)).toBeNull();
+    });
+
+    it('collapses a blank/whitespace-only staff name to null', async () => {
+      const staffRepo = new FakeStaffByIdRepo();
+      staffRepo.putById(makeStaffMemberWithName(STAFF_ID, '   '));
+      const service = wireWithStaff(staffRepo);
+      const map = await service.resolveRecordedByNames(KG, [
+        { recordedBy: STAFF_ID },
+      ]);
+      expect(map.get(STAFF_ID)).toBeNull();
+    });
+
+    it('skips entries with a null recordedBy', async () => {
+      const service = wireWithStaff(new FakeStaffByIdRepo());
+      const map = await service.resolveRecordedByNames(KG, [
+        { recordedBy: null },
+      ]);
+      expect(map.size).toBe(0);
+    });
+
+    it('fails closed with an empty map when the staff service is not wired', async () => {
+      const w = wire();
+      const map = await w.service.resolveRecordedByNames(KG, [
+        { recordedBy: STAFF_ID },
+      ]);
+      expect(map.size).toBe(0);
     });
   });
 });

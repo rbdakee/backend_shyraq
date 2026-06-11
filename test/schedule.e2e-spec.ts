@@ -165,6 +165,18 @@ describe('B7 schedule (e2e)', () => {
     return res.body.id as string;
   }
 
+  async function createLocation(
+    adminToken: string,
+    name = 'Музыкальный зал',
+  ): Promise<string> {
+    const res = await request(server)
+      .post('/api/v1/locations')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ name })
+      .expect(201);
+    return res.body.id as string;
+  }
+
   async function seedUser(phone: string): Promise<string> {
     const id = randomUUID();
     await ctx.dataSource.transaction(async (m) => {
@@ -433,14 +445,17 @@ describe('B7 schedule (e2e)', () => {
   it('returns 200 for approved parent and 403 for non-guardian parent (Scenario D)', async () => {
     const a = await createKgWithAdmin('sch-d', '+77011120104');
     const grpId = await createGroup(a.adminToken);
+    const locationId = await createLocation(a.adminToken, 'Музыкальный зал');
 
-    // Create an event in the group so the schedule is non-empty
+    // Create an event in the group (with a location) so the schedule is
+    // non-empty and the location_name overlay has something to resolve.
     await request(server)
       .post('/api/v1/admin/schedule/activity-events')
       .set('Authorization', `Bearer ${a.adminToken}`)
       .send({
         groupId: grpId,
         activityName: 'Утро',
+        locationId,
         startsAt: '2026-05-05T07:00:00.000Z',
         endsAt: '2026-05-05T07:30:00.000Z',
       })
@@ -468,6 +483,10 @@ describe('B7 schedule (e2e)', () => {
       .query({ dateFrom: '2026-05-05', dateTo: '2026-05-06' })
       .expect(200);
     expect(Array.isArray(schedRes.body)).toBe(true);
+    expect(schedRes.body).toHaveLength(1);
+    // location_name identity overlay resolved from locationId → locations.name.
+    expect(schedRes.body[0]).toHaveProperty('location_name');
+    expect(schedRes.body[0].location_name).toBe('Музыкальный зал');
 
     // Parent B (different user, no guardian row) → 403
     const userBId = await seedUser('+77011110202');

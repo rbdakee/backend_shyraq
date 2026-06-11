@@ -77,7 +77,8 @@ export class ScheduleStaffController {
   ): Promise<ActivityEventResponseDto[]> {
     const kgId = requireTenant(t);
     const events = await this.service.getGroupToday(kgId, q.groupId);
-    return events.map((e) => SchedulePresenter.event(e));
+    const names = await this.service.resolveLocationNames(kgId, events);
+    return SchedulePresenter.events(events, names);
   }
 
   @Get('week')
@@ -96,9 +97,10 @@ export class ScheduleStaffController {
     const kgId = requireTenant(t);
     const start = q.weekStart ? new Date(q.weekStart) : this.clock.now();
     const view = await this.service.getGroupWeek(kgId, q.groupId, start);
+    const names = await this.service.resolveLocationNames(kgId, view.events);
     return groupEventsByDay(
       view.weekStart,
-      view.events.map((e) => SchedulePresenter.event(e)),
+      SchedulePresenter.events(view.events, names),
     );
   }
 
@@ -123,7 +125,8 @@ export class ScheduleStaffController {
   ): Promise<ActivityEventResponseDto> {
     const kgId = requireTenant(t);
     const updated = await this.service.startEvent(kgId, id);
-    return SchedulePresenter.event(updated);
+    const name = await this.service.resolveLocationName(kgId, updated);
+    return SchedulePresenter.event(updated, name);
   }
 
   @Post('activity-events/:id/complete')
@@ -143,7 +146,8 @@ export class ScheduleStaffController {
   ): Promise<ActivityEventResponseDto> {
     const kgId = requireTenant(t);
     const updated = await this.service.completeEvent(kgId, id);
-    return SchedulePresenter.event(updated);
+    const name = await this.service.resolveLocationName(kgId, updated);
+    return SchedulePresenter.event(updated, name);
   }
 
   @Post('activity-events/:id/cancel')
@@ -162,7 +166,8 @@ export class ScheduleStaffController {
   ): Promise<ActivityEventResponseDto> {
     const kgId = requireTenant(t);
     const updated = await this.service.cancelEvent(kgId, id, dto.reason);
-    return SchedulePresenter.event(updated);
+    const name = await this.service.resolveLocationName(kgId, updated);
+    return SchedulePresenter.event(updated, name);
   }
 }
 

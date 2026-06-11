@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { NotificationPort } from '@/common/notifications/notification.port';
 import { ChildNotFoundError } from '@/modules/child/domain/errors/child-not-found.error';
@@ -6,6 +6,8 @@ import { ChildGuardianRepository } from '@/modules/child/infrastructure/persiste
 import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
 import { StaffNotFoundError } from '@/modules/staff/domain/errors/staff-not-found.error';
 import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
+import { StaffService } from '@/modules/staff/staff.service';
+import { UserRepository } from '@/modules/users/infrastructure/persistence/user.repository';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { AttendanceEvent } from './domain/entities/attendance-event.entity';
 import { ChildDailyStatus } from './domain/entities/child-daily-status.entity';
@@ -30,6 +32,13 @@ import {
 import { TimelineEntryRepository } from './infrastructure/persistence/timeline-entry.repository';
 
 const KG_TZ = 'Asia/Almaty';
+
+/** Returns the trimmed value, or null when empty/whitespace-only/absent. */
+function nonBlankOrNull(value: string | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
 
 export interface CheckInOpts {
   recordedAt?: Date;
@@ -123,6 +132,17 @@ export class AttendanceService {
     @Inject(ClockPort) private readonly clock: ClockPort,
     @Inject(NotificationPort)
     private readonly notifications: NotificationPort,
+    // Identity-overlay deps. Optional + appended last so the existing
+    // service-unit wiring (positional `new AttendanceService(...)`) keeps
+    // compiling. Resolvers fail closed (empty map / null) when undefined.
+    //   - `users` resolves the pickup user (`users.id → users.full_name`).
+    //   - `staffService` reuses the staff identity fallback
+    //     (`staff_members.full_name ?? users.full_name`) for `recorded_by`
+    //     / `set_by` (both `staff_members.id`).
+    @Optional()
+    private readonly users?: UserRepository,
+    @Optional()
+    private readonly staffService?: StaffService,
   ) {}
 
   // ── Check-in / Check-out ───────────────────────────────────────────────
@@ -550,6 +570,104 @@ export class AttendanceService {
       kindergartenId,
       childId,
       date,
+    );
+  }
+
+  // ── identity overlays ──────────────────────────────────────────────────
+
+  /**
+   * Identity overlay for check-out events — resolves each event's
+   * `pickup_user_id` (a `users.id`) to a display name via
+   * `users.full_name`. Mirrors `ProgressNoteService.resolveMentorNames`:
+   * distinct ids are looked up once and returned as a map keyed by
+   * `pickup_user_id`.
+   *
+   * Only check_out events carry a `pickup_user_id`; check_in rows have null
+   * and are skipped. Blank/whitespace-only names collapse to null so the
+   * client can fall back cleanly. Fails closed: if the `users` port is not
+   * wired (legacy spec construction) or a user row is missing, that entry
+   * resolves to null.
+   */
+  async resolvePickupUserNames(
+    events: AttendanceEvent[],
+  ): Promise<Map<string, string | null>> {
+    const out = new Map<string, string | null>();
+    if (!this.users) {
+      return out;
+    }
+    const distinctUserIds = [
+      ...new Set(
+        events
+          .map((e) => e.pickupUserId)
+          .filter((id): id is string => id !== null && id !== undefined),
+      ),
+    ];
+    for (const userId of distinctUserIds) {
+      const user = await this.users.findById(userId);
+      out.set(userId, nonBlankOrNull(user?.toState()?.fullName));
+    }
+    return out;
+  }
+
+  /**
+   * Identity overlay keyed by `staff_members.id` — resolves each id to a
+   * display name via the staff identity fallback
+   * (`staff_members.full_name ?? users.full_name`, reusing
+   * `StaffService.resolveIdentity`). Shared by the `recorded_by` overlay on
+   * attendance events and the `set_by` overlay on daily-status rows.
+   *
+   * Fails closed: when the staff ports are not wired (legacy spec
+   * construction) or a staff row is missing, that entry resolves to null.
+   */
+  async resolveStaffMemberNames(
+    kindergartenId: string,
+    staffMemberIds: (string | null)[],
+  ): Promise<Map<string, string | null>> {
+    const out = new Map<string, string | null>();
+    if (!this.staffService) {
+      return out;
+    }
+    const distinctIds = [
+      ...new Set(
+        staffMemberIds.filter(
+          (id): id is string => id !== null && id !== undefined,
+        ),
+      ),
+    ];
+    for (const staffMemberId of distinctIds) {
+      const member = await this.staffRepo.findById(
+        kindergartenId,
+        staffMemberId,
+      );
+      if (!member) {
+        out.set(staffMemberId, null);
+        continue;
+      }
+      const identity = await this.staffService.resolveIdentity(member);
+      out.set(staffMemberId, nonBlankOrNull(identity.fullName));
+    }
+    return out;
+  }
+
+  /** `recorded_by` overlay for attendance events / timeline (staff names). */
+  async resolveRecordedByNames(
+    kindergartenId: string,
+    events: { recordedBy: string | null }[],
+  ): Promise<Map<string, string | null>> {
+    return this.resolveStaffMemberNames(
+      kindergartenId,
+      events.map((e) => e.recordedBy),
+    );
+  }
+
+  /** `set_by` overlay for daily-status rows (staff names). */
+  async resolveSetByNames(
+    kindergartenId: string,
+    rows: { setBy: string | null }[],
+  ): Promise<Map<string, string | null>> {
+    return this.resolveStaffMemberNames(
+      kindergartenId,
+      rows.map((r) => r.setBy),
     );
   }
 

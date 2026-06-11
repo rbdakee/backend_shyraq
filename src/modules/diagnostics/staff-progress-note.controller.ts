@@ -98,7 +98,15 @@ export class StaffProgressNoteController {
       cursor: query.cursor,
       limit: query.limit ?? 20,
     });
-    return ProgressNotePresenter.list(result.items, result.nextCursor);
+    const mentorNames = await this.service.resolveMentorNames(
+      kgId,
+      result.items,
+    );
+    return ProgressNotePresenter.list(
+      result.items,
+      result.nextCursor,
+      mentorNames,
+    );
   }
 
   @Post()
@@ -128,7 +136,11 @@ export class StaffProgressNoteController {
       mediaUrls: dto.media_urls ?? [],
       notedAt: dto.noted_at ? new Date(dto.noted_at) : undefined,
     });
-    return ProgressNotePresenter.one(note);
+    const mentorNames = await this.service.resolveMentorNames(kgId, [note]);
+    return ProgressNotePresenter.one(
+      note,
+      mentorNames.get(note.mentorId) ?? null,
+    );
   }
 
   @Patch(':id')
@@ -175,7 +187,11 @@ export class StaffProgressNoteController {
         mediaUrls: dto.media_urls,
       },
     );
-    return ProgressNotePresenter.one(note);
+    const mentorNames = await this.service.resolveMentorNames(kgId, [note]);
+    return ProgressNotePresenter.one(
+      note,
+      mentorNames.get(note.mentorId) ?? null,
+    );
   }
 
   @Delete(':id')

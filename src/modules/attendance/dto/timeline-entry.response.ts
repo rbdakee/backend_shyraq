@@ -43,6 +43,16 @@ export class TimelineEntryResponseDto {
   })
   recordedBy!: string | null;
 
+  @ApiPropertyOptional({
+    example: 'Айгуль Сатпаева',
+    nullable: true,
+    description:
+      'Display name of the author (identity overlay: staff_members.id → ' +
+      'users.full_name via the staff identity fallback). null when ' +
+      'recordedBy is absent or the name is empty/whitespace.',
+  })
+  recorded_by_full_name!: string | null;
+
   @ApiProperty({ example: '2026-05-01T09:30:00.000Z' })
   entryTime!: string;
 

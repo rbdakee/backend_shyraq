@@ -33,6 +33,7 @@ import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-co
 import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
 import { AttendanceService } from './attendance.service';
 import { AttendancePresenter } from './attendance.presenter';
+import { AttendanceEvent } from './domain/entities/attendance-event.entity';
 import { AttendanceEventResponseDto } from './dto/attendance-event.response';
 import { CheckInDto } from './dto/check-in.dto';
 import { CheckOutDto } from './dto/check-out.dto';
@@ -89,7 +90,7 @@ export class StaffAttendanceController {
       recordedAt: dto.recordedAt ? new Date(dto.recordedAt) : undefined,
       notes: dto.notes ?? null,
     });
-    return AttendancePresenter.event(result.event);
+    return this.presentEvent(kgId, result.event);
   }
 
   @Post('check-out')
@@ -128,7 +129,7 @@ export class StaffAttendanceController {
         notes: dto.notes ?? null,
       },
     );
-    return AttendancePresenter.event(result.event);
+    return this.presentEvent(kgId, result.event);
   }
 
   @Patch(':eventId')
@@ -166,6 +167,27 @@ export class StaffAttendanceController {
       },
       { isAdmin: false },
     );
-    return AttendancePresenter.event(updated);
+    return this.presentEvent(kgId, updated);
+  }
+
+  /**
+   * Resolve the identity overlays for a single attendance event and hand them
+   * to the presenter. `recorded_by_full_name` (staff_members.id) +
+   * `pickup_user_full_name` (users.id) are both batched through the service
+   * resolvers; for a single row each map has at most one entry.
+   */
+  private async presentEvent(
+    kgId: string,
+    event: AttendanceEvent,
+  ): Promise<AttendanceEventResponseDto> {
+    const [recordedByNames, pickupNames] = await Promise.all([
+      this.service.resolveRecordedByNames(kgId, [event]),
+      this.service.resolvePickupUserNames([event]),
+    ]);
+    return AttendancePresenter.event(
+      event,
+      event.recordedBy ? (recordedByNames.get(event.recordedBy) ?? null) : null,
+      event.pickupUserId ? (pickupNames.get(event.pickupUserId) ?? null) : null,
+    );
   }
 }

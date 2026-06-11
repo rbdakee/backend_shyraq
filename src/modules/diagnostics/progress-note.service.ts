@@ -5,6 +5,7 @@ import { ChildRepository } from '@/modules/child/infrastructure/persistence/chil
 import { ChildNotFoundError } from '@/modules/child/domain/errors/child-not-found.error';
 import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
 import { StaffMember } from '@/modules/staff/domain/entities/staff-member.entity';
+import { StaffService } from '@/modules/staff/staff.service';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import {
   ListProgressNotesFilter,
@@ -26,6 +27,13 @@ export interface CreateProgressNoteInput {
   notedAt?: Date;
 }
 
+/** Returns the trimmed value, or null when empty/whitespace-only/absent. */
+function nonBlankOrNull(value: string | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 @Injectable()
 export class ProgressNoteService {
   constructor(
@@ -36,7 +44,43 @@ export class ProgressNoteService {
     // Optional so older spec wiring keeps compiling. Used by
     // `findStaffMemberByUserIdOrThrow` — fails closed when missing.
     private readonly staffMembers?: StaffMemberRepository,
+    // Optional for the same reason. Used by `resolveMentorNames` to reuse
+    // the staff identity fallback (`staff.full_name ?? users.full_name`).
+    // When missing, name resolution fails closed → `mentor_full_name = null`.
+    private readonly staffService?: StaffService,
   ) {}
+
+  /**
+   * Identity overlay for progress-note lists — resolves each note's
+   * `mentor_id` (a `staff_members.id`) to a display name via the staff
+   * identity fallback (`staff_members.full_name ?? users.full_name`).
+   * Mirrors `ChildService.resolveGuardianIdentities`: distinct `mentor_id`s
+   * are looked up once and returned as a map keyed by `mentor_id`.
+   *
+   * Blank/whitespace-only names collapse to null so the client can fall back
+   * cleanly. Fails closed: if the staff ports are not wired (legacy spec
+   * construction) or a mentor row is missing, that entry resolves to null.
+   */
+  async resolveMentorNames(
+    kgId: string,
+    notes: ProgressNote[],
+  ): Promise<Map<string, string | null>> {
+    const out = new Map<string, string | null>();
+    if (!this.staffMembers || !this.staffService) {
+      return out;
+    }
+    const distinctMentorIds = [...new Set(notes.map((n) => n.mentorId))];
+    for (const mentorId of distinctMentorIds) {
+      const member = await this.staffMembers.findById(kgId, mentorId);
+      if (!member) {
+        out.set(mentorId, null);
+        continue;
+      }
+      const identity = await this.staffService.resolveIdentity(member);
+      out.set(mentorId, nonBlankOrNull(identity.fullName));
+    }
+    return out;
+  }
 
   /**
    * Resolve a user → their active staff_members row in this kindergarten.

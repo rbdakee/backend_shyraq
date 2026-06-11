@@ -137,10 +137,15 @@ export class ParentDiagnosticController {
       result.items,
       this.templateService,
     );
+    const specialistNames = await this.entryService.resolveSpecialistNames(
+      kgId,
+      result.items,
+    );
     return DiagnosticEntryPresenter.list(
       result.items,
       result.nextCursor,
       lookup,
+      specialistNames,
     );
   }
 
@@ -182,7 +187,15 @@ export class ParentDiagnosticController {
     const lookup = new Map<string, TemplateLookup>([
       [entry.templateId, { name: template.name, version: template.version }],
     ]);
-    return DiagnosticEntryPresenter.one(entry, lookup);
+    const specialistNames = await this.entryService.resolveSpecialistNames(
+      kgId,
+      [entry],
+    );
+    return DiagnosticEntryPresenter.one(
+      entry,
+      lookup,
+      specialistNames.get(entry.specialistId) ?? null,
+    );
   }
 
   // ── Progress notes ────────────────────────────────────────────────────────
@@ -215,6 +228,14 @@ export class ParentDiagnosticController {
       cursor: query.cursor,
       limit: query.limit ?? 20,
     });
-    return ProgressNotePresenter.list(result.items, result.nextCursor);
+    const mentorNames = await this.progressNoteService.resolveMentorNames(
+      kgId,
+      result.items,
+    );
+    return ProgressNotePresenter.list(
+      result.items,
+      result.nextCursor,
+      mentorNames,
+    );
   }
 }

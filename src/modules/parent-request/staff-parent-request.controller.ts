@@ -106,7 +106,15 @@ export class StaffParentRequestController {
       limit: q.limit,
       cursor: q.cursor ?? null,
     });
-    return ParentRequestPresenter.list(result.items, result.nextCursor);
+    const staffNames = await this.service.resolveRequestStaffNames(
+      kgId,
+      result.items,
+    );
+    return ParentRequestPresenter.list(
+      result.items,
+      result.nextCursor,
+      staffNames,
+    );
   }
 
   @Get(':id')
@@ -126,7 +134,8 @@ export class StaffParentRequestController {
       user.sub,
     );
     const pr = await this.service.getByIdForStaff(kgId, caller, id);
-    return ParentRequestPresenter.request(pr);
+    const staffNames = await this.service.resolveRequestStaffNames(kgId, [pr]);
+    return ParentRequestPresenter.requestWithStaffNames(pr, staffNames);
   }
 
   // ── Accept / Reject ───────────────────────────────────────────────────
@@ -164,7 +173,8 @@ export class StaffParentRequestController {
       id,
       dto.review_note ?? null,
     );
-    return ParentRequestPresenter.request(pr);
+    const staffNames = await this.service.resolveRequestStaffNames(kgId, [pr]);
+    return ParentRequestPresenter.requestWithStaffNames(pr, staffNames);
   }
 
   @Post(':id/reject')
@@ -196,7 +206,8 @@ export class StaffParentRequestController {
       id,
       dto.review_note ?? null,
     );
-    return ParentRequestPresenter.request(pr);
+    const staffNames = await this.service.resolveRequestStaffNames(kgId, [pr]);
+    return ParentRequestPresenter.requestWithStaffNames(pr, staffNames);
   }
 
   // ── Thread ────────────────────────────────────────────────────────────
@@ -224,7 +235,8 @@ export class StaffParentRequestController {
       body: dto.body,
       attachments: dto.attachments ?? null,
     });
-    return ParentRequestPresenter.message(m);
+    const authorNames = await this.service.resolveMessageAuthorNames(kgId, [m]);
+    return ParentRequestPresenter.message(m, authorNames.get(m.id) ?? null);
   }
 
   @Get(':id/messages')
@@ -253,6 +265,14 @@ export class StaffParentRequestController {
       q.limit ?? 50,
       q.cursor ?? null,
     );
-    return ParentRequestPresenter.messageList(result.items, result.nextCursor);
+    const authorNames = await this.service.resolveMessageAuthorNames(
+      kgId,
+      result.items,
+    );
+    return ParentRequestPresenter.messageList(
+      result.items,
+      result.nextCursor,
+      authorNames,
+    );
   }
 }

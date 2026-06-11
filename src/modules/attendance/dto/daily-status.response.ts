@@ -29,6 +29,16 @@ export class DailyStatusResponseDto {
   })
   setBy!: string | null;
 
+  @ApiPropertyOptional({
+    example: 'Айгуль Сатпаева',
+    nullable: true,
+    description:
+      'Display name of the staff member who set the status (identity ' +
+      'overlay: staff_members.id → users.full_name via the staff identity ' +
+      'fallback). null when setBy is absent or the name is empty/whitespace.',
+  })
+  set_by_full_name!: string | null;
+
   @ApiProperty({ example: '2026-05-01T09:00:00.000Z' })
   updatedAt!: string;
 }

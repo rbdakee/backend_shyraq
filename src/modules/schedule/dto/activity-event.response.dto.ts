@@ -37,6 +37,14 @@ export class ActivityEventResponseDto {
   })
   locationId!: string | null;
 
+  @ApiProperty({
+    example: 'Музыкальный зал',
+    nullable: true,
+    description:
+      'Display name resolved from locationId → locations.name. null when locationId is null, the location is not found, or its name is blank/whitespace.',
+  })
+  location_name!: string | null;
+
   @ApiProperty({ example: '2026-05-04T09:00:00.000Z' })
   startsAt!: string;
 

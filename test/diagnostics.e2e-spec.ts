@@ -196,13 +196,13 @@ describe('B18 Diagnostics & Progress (e2e)', () => {
   }
 
   /** Seed a new user row and return their id. */
-  async function seedUser(phone: string): Promise<string> {
+  async function seedUser(phone: string, fullName = ''): Promise<string> {
     const id = randomUUID();
     await ctx.dataSource.transaction(async (m) => {
       await m.query(`SET LOCAL app.bypass_rls = 'true'`);
       await m.query(
-        `INSERT INTO users (id, phone, full_name) VALUES ($1, $2, '')`,
-        [id, phone],
+        `INSERT INTO users (id, phone, full_name) VALUES ($1, $2, $3)`,
+        [id, phone, fullName],
       );
     });
     return id;
@@ -545,8 +545,11 @@ describe('B18 Diagnostics & Progress (e2e)', () => {
           specialist_type: 'psychologist',
         });
 
-        // Seed a specialist staff_member (different user, same kg)
-        const specUserId = await seedUser('+77010100022');
+        // Seed a specialist staff_member (different user, same kg). The
+        // users row carries the full_name; seedStaffMember leaves
+        // staff_members.full_name null so `specialist_full_name` resolves
+        // from the linked users row via StaffService.resolveIdentity.
+        const specUserId = await seedUser('+77010100022', 'Айгерим Нурланкызы');
         await seedStaffMember(kgId, specUserId, 'specialist', 'psychologist');
         const specToken = await mintToken({
           sub: specUserId,
@@ -572,6 +575,11 @@ describe('B18 Diagnostics & Progress (e2e)', () => {
         expect(entryId).toBeDefined();
         expect(entryRes.body.template_name).toBeTruthy();
         expect(entryRes.body.template_version).toBe(1);
+        // Identity overlay: staff_members.full_name is null here, so the
+        // specialist name resolves from the linked users row via
+        // StaffService.resolveIdentity.
+        expect(entryRes.body).toHaveProperty('specialist_full_name');
+        expect(entryRes.body.specialist_full_name).toBe('Айгерим Нурланкызы');
 
         // GET entry
         const getRes = await request(server)
@@ -582,6 +590,8 @@ describe('B18 Diagnostics & Progress (e2e)', () => {
         expect(getRes.body.id).toBe(entryId);
         expect(getRes.body.template_name).toBeTruthy();
         expect(getRes.body.template_version).toBe(1);
+        expect(getRes.body).toHaveProperty('specialist_full_name');
+        expect(getRes.body.specialist_full_name).toBe('Айгерим Нурланкызы');
 
         void userId;
         void staffMemberId;
@@ -1157,7 +1167,7 @@ describe('B18 Diagnostics & Progress (e2e)', () => {
       const entryId = entryRes.body.id as string;
 
       // Seed mentor, create progress note
-      const mentorUserId = await seedUser('+77010100083');
+      const mentorUserId = await seedUser('+77010100083', 'Айгерим Нурланкызы');
       await seedStaffMember(kgId, mentorUserId, 'mentor');
       const mentorToken = await mintToken({
         sub: mentorUserId,
@@ -1170,6 +1180,10 @@ describe('B18 Diagnostics & Progress (e2e)', () => {
         .send({ child_id: childId, body: 'Parent-facing note' })
         .expect(201);
       const noteId = noteRes.body.id as string;
+      // Identity overlay: staff_members.full_name is null here, so the name
+      // resolves from the linked users row via StaffService.resolveIdentity.
+      expect(noteRes.body).toHaveProperty('mentor_full_name');
+      expect(noteRes.body.mentor_full_name).toBe('Айгерим Нурланкызы');
 
       // Seed primary guardian
       const parentUserId = await seedUser('+77010100084');
@@ -1203,11 +1217,16 @@ describe('B18 Diagnostics & Progress (e2e)', () => {
         .get(`/api/v1/parent/children/${childId}/progress-notes`)
         .set('Authorization', `Bearer ${parentToken}`)
         .expect(200);
-      expect(
-        (notesListRes.body.items as Array<{ id: string }>).some(
-          (n) => n.id === noteId,
-        ),
-      ).toBe(true);
+      const parentNote = (
+        notesListRes.body.items as Array<{
+          id: string;
+          mentor_full_name: string | null;
+        }>
+      ).find((n) => n.id === noteId);
+      expect(parentNote).toBeDefined();
+      // mentor_full_name overlay is present and resolved for the parent view.
+      expect(parentNote).toHaveProperty('mentor_full_name');
+      expect(parentNote?.mentor_full_name).toBe('Айгерим Нурланкызы');
     });
 
     it('parent DTO whitelists query params — staff filters (specialist_id, template_id) silently dropped (B22b T5 L3)', async () => {

@@ -35,6 +35,7 @@ import { RolesGuard } from '@/common/guards/roles.guard';
 import type { JwtPayload } from '@/common/types/jwt-payload';
 import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-context';
 import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
+import { TimelineEntry } from './domain/entities/timeline-entry.entity';
 import { CreateTimelineEntryDto } from './dto/create-timeline-entry.dto';
 import { ListTimelineQuery } from './dto/list-timeline.query';
 import { PatchTimelineEntryDto } from './dto/patch-timeline-entry.dto';
@@ -105,7 +106,7 @@ export class StaffTimelineController {
       },
       { isAdmin: false, callerRole: user.role },
     );
-    return TimelinePresenter.entry(entry);
+    return this.presentEntry(kgId, entry);
   }
 
   @Patch('timeline-entries/:entryId')
@@ -141,7 +142,7 @@ export class StaffTimelineController {
       },
       { isAdmin: false, callerRole: user.role },
     );
-    return TimelinePresenter.entry(updated);
+    return this.presentEntry(kgId, updated);
   }
 
   @Delete('timeline-entries/:entryId')
@@ -190,6 +191,33 @@ export class StaffTimelineController {
       from: q.from ? new Date(q.from) : undefined,
       to: q.to ? new Date(q.to) : undefined,
     });
-    return TimelinePresenter.paged(result.items, result.nextCursor);
+    const recordedByNames = await this.service.resolveRecordedByNames(
+      kgId,
+      result.items,
+    );
+    return TimelinePresenter.paged(
+      result.items,
+      result.nextCursor,
+      recordedByNames,
+    );
+  }
+
+  /**
+   * Resolve the `recorded_by` identity overlay (staff_members.id →
+   * users.full_name) for a single timeline entry and hand it to the
+   * presenter. Batched through the service resolver; for one row the map has
+   * at most one entry.
+   */
+  private async presentEntry(
+    kgId: string,
+    entry: TimelineEntry,
+  ): Promise<TimelineEntryResponseDto> {
+    const recordedByNames = await this.service.resolveRecordedByNames(kgId, [
+      entry,
+    ]);
+    return TimelinePresenter.entry(
+      entry,
+      entry.recordedBy ? (recordedByNames.get(entry.recordedBy) ?? null) : null,
+    );
   }
 }

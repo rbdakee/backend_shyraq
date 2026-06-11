@@ -32,11 +32,31 @@ export class AttendanceEventResponseDto {
   recordedBy!: string | null;
 
   @ApiPropertyOptional({
+    example: 'Айгуль Сатпаева',
+    nullable: true,
+    description:
+      'Display name of the recorder (identity overlay: staff_members.id ' +
+      '→ users.full_name). null when recordedBy is absent or the name ' +
+      'is empty/whitespace.',
+  })
+  recorded_by_full_name!: string | null;
+
+  @ApiPropertyOptional({
     example: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
     nullable: true,
     description: 'users.id picking up the child (check_out only).',
   })
   pickupUserId!: string | null;
+
+  @ApiPropertyOptional({
+    example: 'Бахыт Нурланова',
+    nullable: true,
+    description:
+      'Display name of the pickup user (identity overlay: users.id → ' +
+      'users.full_name). null when pickupUserId is absent (non check_out ' +
+      'events) or the name is empty/whitespace.',
+  })
+  pickup_user_full_name!: string | null;
 
   @ApiPropertyOptional({
     nullable: true,

@@ -2,6 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { InMemoryNotificationAdapter } from '@/common/notifications/in-memory-notification.adapter';
 import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
 import { ChildNotFoundError } from '@/modules/child/domain/errors/child-not-found.error';
+import { StaffMember } from '@/modules/staff/domain/entities/staff-member.entity';
+import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
+import { StaffService } from '@/modules/staff/staff.service';
 import { OptimisticLockError } from '@/shared-kernel/domain/errors';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { ProgressNoteService } from './progress-note.service';
@@ -310,6 +313,105 @@ describe('ProgressNoteService', () => {
       await expect(
         service.delete(KG, randomUUID(), MENTOR_A, false),
       ).rejects.toBeInstanceOf(ProgressNoteNotFoundError);
+    });
+  });
+
+  describe('resolveMentorNames', () => {
+    class FakeStaffMemberRepo {
+      rows = new Map<string, StaffMember>();
+      put(s: StaffMember): void {
+        this.rows.set(`${s.kindergartenId}:${s.id}`, s);
+      }
+      findById(kgId: string, id: string): Promise<StaffMember | null> {
+        return Promise.resolve(this.rows.get(`${kgId}:${id}`) ?? null);
+      }
+    }
+    // Thin stand-in for StaffService.resolveIdentity — the real
+    // staff/users fallback is exercised in staff.service.spec; here we only
+    // assert ProgressNoteService's batching/fail-closed orchestration.
+    class FakeStaffService {
+      resolveIdentity(
+        member: StaffMember,
+      ): Promise<{ fullName: string | null; phone: string | null }> {
+        const s = member.toState();
+        return Promise.resolve({ fullName: s.fullName, phone: s.phone });
+      }
+    }
+    function makeStaffMember(id: string, fullName: string | null): StaffMember {
+      return StaffMember.hydrate({
+        id,
+        kindergartenId: KG,
+        userId: randomUUID(),
+        fullName,
+        phone: null,
+        role: 'mentor',
+        specialistType: null,
+        isActive: true,
+        hiredAt: null,
+        firedAt: null,
+        archivedAt: null,
+        createdAt: NOW,
+        updatedAt: NOW,
+      });
+    }
+
+    let staffRepo: FakeStaffMemberRepo;
+    let resolvingService: ProgressNoteService;
+
+    beforeEach(() => {
+      staffRepo = new FakeStaffMemberRepo();
+      resolvingService = new ProgressNoteService(
+        repo,
+        children as unknown as ChildRepository,
+        notification,
+        new FakeClock(),
+        staffRepo as unknown as StaffMemberRepository,
+        new FakeStaffService() as unknown as StaffService,
+      );
+    });
+
+    it('resolves mentor_full_name from the staff identity overlay (deduped)', async () => {
+      staffRepo.put(makeStaffMember(MENTOR_A, 'Айгерим Нурланкызы'));
+      // Two notes by the same mentor → a single lookup, one map entry.
+      const notes = [
+        buildNote({ mentorId: MENTOR_A }),
+        buildNote({ mentorId: MENTOR_A }),
+      ];
+      const map = await resolvingService.resolveMentorNames(KG, notes);
+      expect(map.size).toBe(1);
+      expect(map.get(MENTOR_A)).toBe('Айгерим Нурланкызы');
+    });
+
+    it('returns null for a mentor whose staff row has no resolvable name', async () => {
+      staffRepo.put(makeStaffMember(MENTOR_A, null));
+      const map = await resolvingService.resolveMentorNames(KG, [
+        buildNote({ mentorId: MENTOR_A }),
+      ]);
+      expect(map.get(MENTOR_A)).toBeNull();
+    });
+
+    it('returns null for a mentor whose staff row is missing', async () => {
+      const map = await resolvingService.resolveMentorNames(KG, [
+        buildNote({ mentorId: MENTOR_B }),
+      ]);
+      expect(map.get(MENTOR_B)).toBeNull();
+    });
+
+    it('collapses a blank/whitespace-only mentor name to null', async () => {
+      staffRepo.put(makeStaffMember(MENTOR_A, '   '));
+      const map = await resolvingService.resolveMentorNames(KG, [
+        buildNote({ mentorId: MENTOR_A }),
+      ]);
+      expect(map.get(MENTOR_A)).toBeNull();
+    });
+
+    it('fails closed with an empty map when the staff ports are not wired', async () => {
+      // `service` (the top-level instance) is constructed without the staff
+      // ports — name resolution must degrade to null, never throw.
+      const map = await service.resolveMentorNames(KG, [
+        buildNote({ mentorId: MENTOR_A }),
+      ]);
+      expect(map.size).toBe(0);
     });
   });
 

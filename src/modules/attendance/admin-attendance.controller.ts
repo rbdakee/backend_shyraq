@@ -30,6 +30,7 @@ import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-co
 import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
 import { AttendancePresenter } from './attendance.presenter';
 import { AttendanceService } from './attendance.service';
+import { AttendanceEvent } from './domain/entities/attendance-event.entity';
 import { AttendanceEventResponseDto } from './dto/attendance-event.response';
 import { DailyStatusResponseDto } from './dto/daily-status.response';
 import { ListAttendanceEventsQuery } from './dto/list-attendance-events.query';
@@ -89,7 +90,7 @@ export class AdminAttendanceController {
       limit: q.limit,
       offset: q.offset,
     });
-    return events.map((e) => AttendancePresenter.event(e));
+    return this.presentEvents(kgId, events);
   }
 
   @Get('attendance-events/:eventId')
@@ -104,7 +105,7 @@ export class AdminAttendanceController {
   ): Promise<AttendanceEventResponseDto> {
     const kgId = requireTenant(t);
     const event = await this.attendanceService.getEventById(kgId, eventId);
-    return AttendancePresenter.event(event);
+    return (await this.presentEvents(kgId, [event]))[0];
   }
 
   @Patch('attendance-events/:eventId')
@@ -135,7 +136,7 @@ export class AdminAttendanceController {
       },
       { isAdmin: true },
     );
-    return AttendancePresenter.event(updated);
+    return (await this.presentEvents(kgId, [updated]))[0];
   }
 
   // ── Daily status list ────────────────────────────────────────────────────
@@ -161,7 +162,16 @@ export class AdminAttendanceController {
       limit: q.limit,
       offset: q.offset,
     });
-    return statuses.map((s) => AttendancePresenter.dailyStatus(s));
+    const setByNames = await this.attendanceService.resolveSetByNames(
+      kgId,
+      statuses,
+    );
+    return statuses.map((s) =>
+      AttendancePresenter.dailyStatus(
+        s,
+        s.setBy ? (setByNames.get(s.setBy) ?? null) : null,
+      ),
+    );
   }
 
   // ── Child timeline ────────────────────────────────────────────────────────
@@ -188,6 +198,37 @@ export class AdminAttendanceController {
       from: q.from ? new Date(q.from) : undefined,
       to: q.to ? new Date(q.to) : undefined,
     });
-    return TimelinePresenter.paged(result.items, result.nextCursor);
+    const recordedByNames = await this.timelineService.resolveRecordedByNames(
+      kgId,
+      result.items,
+    );
+    return TimelinePresenter.paged(
+      result.items,
+      result.nextCursor,
+      recordedByNames,
+    );
+  }
+
+  /**
+   * Resolve identity overlays for a batch of attendance events and present
+   * them. `recorded_by_full_name` (staff_members.id) and
+   * `pickup_user_full_name` (users.id) are each resolved once per distinct id
+   * — no N+1.
+   */
+  private async presentEvents(
+    kgId: string,
+    events: AttendanceEvent[],
+  ): Promise<AttendanceEventResponseDto[]> {
+    const [recordedByNames, pickupNames] = await Promise.all([
+      this.attendanceService.resolveRecordedByNames(kgId, events),
+      this.attendanceService.resolvePickupUserNames(events),
+    ]);
+    return events.map((e) =>
+      AttendancePresenter.event(
+        e,
+        e.recordedBy ? (recordedByNames.get(e.recordedBy) ?? null) : null,
+        e.pickupUserId ? (pickupNames.get(e.pickupUserId) ?? null) : null,
+      ),
+    );
   }
 }

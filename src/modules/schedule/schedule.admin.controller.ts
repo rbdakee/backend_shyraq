@@ -287,7 +287,8 @@ export class ScheduleAdminController {
       to: q.to ? new Date(q.to) : undefined,
       status: q.status,
     });
-    return events.map((e) => SchedulePresenter.event(e));
+    const names = await this.service.resolveLocationNames(kgId, events);
+    return SchedulePresenter.events(events, names);
   }
 
   @Post('activity-events')
@@ -315,7 +316,8 @@ export class ScheduleAdminController {
       endsAt: dto.endsAt ? new Date(dto.endsAt) : null,
       notes: dto.notes ?? null,
     });
-    return SchedulePresenter.event(created);
+    const name = await this.service.resolveLocationName(kgId, created);
+    return SchedulePresenter.event(created, name);
   }
 
   @Patch('activity-events/:id')
@@ -342,7 +344,8 @@ export class ScheduleAdminController {
       endsAt: dto.endsAt ? new Date(dto.endsAt) : undefined,
       notes: dto.notes ?? null,
     });
-    return SchedulePresenter.event(updated);
+    const name = await this.service.resolveLocationName(kgId, updated);
+    return SchedulePresenter.event(updated, name);
   }
 
   @Delete('activity-events/:id')

@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ChildModule } from '@/modules/child/child.module';
 import { GroupModule } from '@/modules/group/group.module';
+import { LocationModule } from '@/modules/location/location.module';
 import { ActivityEventRepository } from './infrastructure/persistence/activity-event.repository';
 import { ScheduleTemplateRepository } from './infrastructure/persistence/schedule-template.repository';
 import { ScheduleWeekSnapshotRepository } from './infrastructure/persistence/schedule-week-snapshot.repository';
@@ -24,6 +25,8 @@ import { ScheduleStaffController } from './schedule.staff.controller';
  *   - GroupModule exports `GroupRepository` for tenant-scoped group lookups.
  *   - ChildModule exports `ChildRepository` so the parent endpoint can
  *     resolve the child's `current_group_id`.
+ *   - LocationModule exports `LocationRepository` for the `location_name`
+ *     identity overlay on activity-event responses.
  *
  * Exports `ScheduleService` for B8/B17 cron task wiring (T5: schedule
  * `auto-copy` cron will reuse `copyWeekToNext`).
@@ -38,6 +41,7 @@ import { ScheduleStaffController } from './schedule.staff.controller';
     ]),
     GroupModule,
     ChildModule,
+    LocationModule,
   ],
   controllers: [
     ScheduleAdminController,

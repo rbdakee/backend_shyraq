@@ -82,12 +82,28 @@ export class ParentRequestResponseDto {
   recipient_staff_id!: string | null;
 
   @ApiProperty({
+    example: 'Алия Серикова',
+    nullable: true,
+    description:
+      'Display name of the recipient staff member — overlay resolved from `staff_members.id` → `users.full_name` (staff identity fallback). Null when `recipient_staff_id` is null, the staff row is missing, or the resolved name is blank.',
+  })
+  recipient_staff_full_name!: string | null;
+
+  @ApiProperty({
     example: null,
     nullable: true,
     description:
       'staff_member id of the reviewer (set when status is accepted/rejected).',
   })
   reviewed_by!: string | null;
+
+  @ApiProperty({
+    example: 'Алия Серикова',
+    nullable: true,
+    description:
+      'Display name of the reviewer staff member — overlay resolved from `reviewed_by` (`staff_members.id`) → `users.full_name` (staff identity fallback). Null when `reviewed_by` is null, the staff row is missing, or the resolved name is blank.',
+  })
+  reviewed_by_full_name!: string | null;
 
   @ApiProperty({ example: null, nullable: true })
   reviewed_at!: string | null;

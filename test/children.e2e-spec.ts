@@ -308,6 +308,8 @@ describe('P5 children & guardians (e2e)', () => {
       .send({ to_group_id: grp.body.id, reason: 'promotion' })
       .expect(200);
     expect(out.body.current_group_id).toBe(grp.body.id);
+    // Identity overlay: the child card carries the resolved group name.
+    expect(out.body.current_group_name).toBe('Bears');
     const history = await request(server)
       .get(`/api/v1/children/${child.body.id}/group-history`)
       .set('Authorization', `Bearer ${a.adminToken}`)
@@ -437,6 +439,18 @@ describe('P5 children & guardians (e2e)', () => {
       .set('Authorization', `Bearer ${a.adminToken}`)
       .send({ full_name: 'B', date_of_birth: '2021-09-15' })
       .expect(201);
+    // Assign c1 to a group so the kg-scoped parent listing carries the
+    // resolved current_group_name overlay.
+    const grp = await request(server)
+      .post('/api/v1/groups')
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .send({ name: 'Sunflowers', capacity: 15 })
+      .expect(201);
+    await request(server)
+      .post(`/api/v1/children/${c1.body.id}/group`)
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .send({ group_id: grp.body.id })
+      .expect(200);
     const parentId = await seedUser('+77011110011');
     await seedPrimaryGuardian({
       kgId: a.kgId,
@@ -453,6 +467,7 @@ describe('P5 children & guardians (e2e)', () => {
       .expect(200);
     expect(res.body.length).toBe(1);
     expect(res.body[0].id).toBe(c1.body.id);
+    expect(res.body[0].current_group_name).toBe('Sunflowers');
   });
 
   it('GET /parent/children/:id returns 200 even when JWT carries no kindergarten_id (F7)', async () => {

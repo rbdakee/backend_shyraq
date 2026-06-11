@@ -14,6 +14,16 @@ export class ProgressNoteResponseDto {
   mentor_id!: string;
 
   @ApiProperty({
+    example: 'Айгерим Нурланкызы',
+    nullable: true,
+    description:
+      "Display name of the note's mentor, resolved from staff_members → " +
+      'users (identity overlay). Null when the mentor has no resolvable ' +
+      'profile name, or when the overlay was not built for this response.',
+  })
+  mentor_full_name!: string | null;
+
+  @ApiProperty({
     example:
       'Ребёнок активно участвовал в занятиях, демонстрирует интерес к рисованию.',
   })

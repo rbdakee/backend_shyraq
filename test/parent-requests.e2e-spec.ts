@@ -269,6 +269,14 @@ describe('B12 Parent Requests (e2e)', () => {
     expect(acceptRes.body.status).toBe('accepted');
     expect(acceptRes.body.reviewed_by).toBeTruthy();
     expect(acceptRes.body.reviewed_at).toBeTruthy();
+    // Identity-overlay: reviewer name resolves via staff identity fallback
+    // (staff_members.full_name ?? users.full_name = 'Admin' seed name).
+    expect(acceptRes.body).toHaveProperty('reviewed_by_full_name');
+    expect(acceptRes.body.reviewed_by_full_name).toBe('Admin');
+    // recipient_staff_id is null (child has no group → admin fallback), so the
+    // overlay field is present and null.
+    expect(acceptRes.body).toHaveProperty('recipient_staff_full_name');
+    expect(acceptRes.body.recipient_staff_full_name).toBeNull();
 
     const getRes = await request(server)
       .get(`/api/v1/parent/requests/${prId}`)
@@ -276,6 +284,10 @@ describe('B12 Parent Requests (e2e)', () => {
       .expect(200);
 
     expect(getRes.body.status).toBe('accepted');
+    // Overlay fields surface on the parent GET-by-id too.
+    expect(getRes.body).toHaveProperty('recipient_staff_full_name');
+    expect(getRes.body).toHaveProperty('reviewed_by_full_name');
+    expect(getRes.body.reviewed_by_full_name).toBe('Admin');
   });
 
   // ── B. open_request → bidirectional thread ────────────────────────────────
@@ -361,6 +373,19 @@ describe('B12 Parent Requests (e2e)', () => {
     expect(staffMsg.author_user_id).toBeNull();
     expect(parentMsg).toBeDefined();
     expect(parentMsg.author_staff_id).toBeNull();
+
+    // Identity-overlay: every message carries an `author_full_name` field.
+    // Both the parent (seedUser inserts full_name='') and the specialist
+    // (staff_members.full_name null → users.full_name='') resolve to blank,
+    // which `nonBlankOrNull` collapses to null.
+    expect(staffMsg).toHaveProperty('author_full_name');
+    expect(staffMsg.author_full_name).toBeNull();
+    expect(parentMsg).toHaveProperty('author_full_name');
+    expect(parentMsg.author_full_name).toBeNull();
+
+    // The single-message POST response also carries the overlay field.
+    expect(staffMsgRes.body).toHaveProperty('author_full_name');
+    expect(parentMsgRes.body).toHaveProperty('author_full_name');
   });
 
   // ── C. late_pickup → accepted → invoice_id linkage (B13 T4c hook) ─────────

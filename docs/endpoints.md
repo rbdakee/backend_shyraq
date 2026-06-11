@@ -459,9 +459,11 @@ Email + password (не OTP). Access-токен — тот же JWT HS256 (`JWT_A
 
 ### 2.7 Children
 
+**`ChildDto` display-overlay (B-N2):** наряду с `current_group_id` карточка ребёнка несёт computed `current_group_name` (`currentGroupId → groups.name`; `null`, если группа не назначена / не найдена / имя пустое). Резолвится батчем в `ChildService` (без N+1), отдаётся всеми эндпоинтами, возвращающими `ChildDto` (admin CRUD + `GET /parent/children`, `GET /parent/children/:id`). На cross-tenant fan-out родителя (`GET /parent/children` без `kindergarten_id` в JWT) поле = `null` — резолв пропущен, чтобы не открывать RLS-дыру (корректность > полнота).
+
 | Метод | Путь | Назначение |
 |---|---|---|
-| GET | `/admin/children` | Список (фильтр по `status`, `current_group_id`, поиск по ФИО/ИИН). |
+| GET | `/admin/children` | Список (фильтр по `status`, `current_group_id`, поиск по ФИО/ИИН). Каждый `ChildDto` несёт `current_group_name` (см. выше). |
 | POST | `/admin/children` | Создать карточку вручную (вне enrollment flow). |
 | GET | `/admin/children/:id` | Полная карточка: гардианы, группа, история групп, timeline (preview), платежи (preview), диагностики (preview). |
 | PATCH | `/admin/children/:id` | Обновить ФИО, ИИН, DOB, photo, `medical_notes`, `allergy_notes`. |
@@ -676,7 +678,7 @@ Email + password (не OTP). Access-токен — тот же JWT HS256 (`JWT_A
 | DELETE | `/admin/schedule/templates/:id/slots/:slotId` | Удалить слот. Errors: 404 `schedule_template_not_found`, 404 `slot_not_found`. |
 | GET | `/admin/schedule/week-snapshots` | Флаги наличия расписания по неделям. Query: `group_id?`, `week_start_date_from?`, `week_start_date_to?`. Response: `[{id, group_id, week_start_date, source, copied_from?}]`. |
 | POST | `/admin/schedule/week-snapshots/copy` | Ручной запуск копирования расписания с указанной недели на следующую (то что делает cron `schedule:auto-copy`). Body: `{group_id, source_week_start_date}`. Идемпотентен: если снапшот уже существует — возвращает 200 с существующим. Response: `{snapshot, activity_events_created: N}`. Errors: 404 `group_not_found`, 404 `source_week_snapshot_not_found`. |
-| GET | `/admin/schedule/activity-events` | Список `activity_events`. Query: `group_id?`, `date_from`, `date_to`, `status?`. Response: `[{id, group_id, template_slot_id?, activity_name, category, location_id?, starts_at, ends_at?, status, created_by?, notes?}]`. `category` — enum `lesson|activity|meal|sleep` (копируется из слота при проекции; ad-hoc → серверный default `'activity'`, принимается опционально в POST/PATCH `activity-events`). |
+| GET | `/admin/schedule/activity-events` | Список `activity_events`. Query: `group_id?`, `date_from`, `date_to`, `status?`. Response: `[{id, group_id, template_slot_id?, activity_name, category, location_id?, location_name?, starts_at, ends_at?, status, created_by?, notes?}]`. `category` — enum `lesson|activity|meal|sleep` (копируется из слота при проекции; ad-hoc → серверный default `'activity'`, принимается опционально в POST/PATCH `activity-events`). `location_name` — computed display-overlay (`locationId → locations.name`); `null`, если `location_id` пуст / локация не найдена / имя пустое. |
 
 **Error codes (§2.8):** `schedule_template_not_found`(404), `slot_not_found`(404), `slot_time_conflict`(409), `source_week_snapshot_not_found`(404), `invalid_date_range`(400), `group_not_found`(404), `location_not_found`(404).
 
@@ -921,6 +923,8 @@ Qundylyq реализуется как `content_posts` с `content_type='qundyly
 
 **Auth:** `KindergartenScopeGuard` + `@Roles('admin')`. Видит все заявки kg (без role-фильтра).
 
+**Display-overlays (B-N2):** `parent_request` несёт computed `recipient_staff_full_name` (`recipientStaffId → staff_members.full_name ?? users.full_name`) и `reviewed_by_full_name` (`reviewedBy → …`); `parent_request_message` несёт `author_full_name`, резолвящее того из (`author_user_id` | `author_staff_id`), что заполнен (`users.full_name` / staff-fallback). Все — `null` при пустом источнике / не найдено / имя пустое. Резолв батчем (без N+1). Те же поля — в staff (§3.9) и parent (§4.7) проекциях.
+
 | Метод | Путь | Назначение |
 |---|---|---|
 | GET | `/admin/parent-requests` | Все заявки kg (фильтр: `status`, `request_type`, `child_id`, `group_id`, `recipient_type`). Без ограничения по recipient. **B22b T7 M16:** cursor-paged по `(created_at DESC, id DESC)`; `next_cursor` — base64 JSON `{createdAt,id}`, передаётся `?cursor=` для следующей страницы; невалидный cursor → 400 `parent_request_cursor_invalid`. |
@@ -960,9 +964,11 @@ Qundylyq реализуется как `content_posts` с `content_type='qundyly
 
 ### 2.21 Attendance (admin view / corrections)
 
+**Display-overlays (B-N2):** `attendance_event` несёт computed `recorded_by_full_name` (`recordedBy → staff_members.full_name ?? users.full_name`) и `pickup_user_full_name` (`pickupUserId → users.full_name`, `null` на check-in / без pickup); `child_daily_status` несёт `set_by_full_name` (`setBy → staff_members.full_name ?? users.full_name`). Все — `null` при пустом источнике / не найдено / имя пустое. Резолв батчем в сервисе (без N+1).
+
 | Метод | Путь | Назначение |
 |---|---|---|
-| GET | `/admin/attendance-events` | Лог check-in/out (фильтр: `child_id`, `method`, диапазон дат). |
+| GET | `/admin/attendance-events` | Лог check-in/out (фильтр: `child_id`, `method`, диапазон дат). Каждое событие несёт `recorded_by_full_name` + `pickup_user_full_name` (см. выше). |
 | PATCH | `/admin/attendance-events/:id` | Корректировка: `recorded_at`, `notes`, `pickup_user_id`. |
 | GET | `/admin/daily-status` | Сводка `child_daily_status` на дату по садику. |
 | GET | `/admin/daily-status/summary` | Агрегированная сводка отсутствий (для заявок vacation/day_off). |
@@ -1048,7 +1054,7 @@ Qundylyq реализуется как `content_posts` с `content_type='qundyly
 | Метод | Путь | Назначение |
 |---|---|---|
 | POST | `/staff/attendance/check-in` | Ручной check-in: `child_id`, опц. `recorded_at`, `notes`. `method='manual'`. |
-| POST | `/staff/attendance/check-out` | Ручной check-out: `child_id`, `pickup_user_id` (guardian/trusted), `pickup_request_id` (если был OTP flow), `notes`. |
+| POST | `/staff/attendance/check-out` | Ручной check-out: `child_id`, `pickup_user_id` (guardian/trusted), `pickup_request_id` (если был OTP flow), `notes`. Ответ-событие несёт `recorded_by_full_name` + `pickup_user_full_name` (display-overlay). |
 | PATCH | `/staff/attendance/:eventId` | Корректировка ранее сделанной записи (в окне той же смены). |
 | GET | `/staff/attendance/today` | События сегодня по моим группам. |
 
@@ -1138,9 +1144,11 @@ Qundylyq реализуется как `content_posts` с `content_type='qundyly
 
 ### 3.7 Timeline & Intraday Status
 
+**Display-overlays (B-N2):** `timeline_entry` несёт computed `recorded_by_full_name` (`recordedBy → staff_members.full_name ?? users.full_name`); `child_daily_status` несёт `set_by_full_name` (`setBy → …`). `null` при пустом источнике / не найдено / имя пустое. Резолв батчем (без N+1). Те же поля — в parent-проекциях (§4.3).
+
 | Метод | Путь | Назначение |
 |---|---|---|
-| POST | `/staff/timeline-entries` | Создать запись: `child_id`, `entry_type` (activity/meal/nap/note/photo/mood/medication), `title`, `body`, `media_urls[]`, `metadata`, `entry_time`. |
+| POST | `/staff/timeline-entries` | Создать запись: `child_id`, `entry_type` (activity/meal/nap/note/photo/mood/medication), `title`, `body`, `media_urls[]`, `metadata`, `entry_time`. Ответ несёт `recorded_by_full_name`. |
 | PATCH | `/staff/timeline-entries/:id` | Редактировать (только автор или admin). |
 | DELETE | `/staff/timeline-entries/:id` | Удалить. |
 | GET | `/staff/timeline/child/:id` | Timeline ребёнка (пагинация). |
@@ -1152,7 +1160,7 @@ Qundylyq реализуется как `content_posts` с `content_type='qundyly
 |---|---|---|
 | GET | `/staff/activity-events/today` | Сегодняшние события моей группы. |
 | GET | `/staff/activity-events/suggested-next` | Предлагаемое "Следующее событие" из шаблона расписания. |
-| POST | `/staff/activity-events` | Создать событие: `group_id`, `activity_name`, `location_id`, `starts_at`, `ends_at`, `notes`. При создании — обновляется `groups.current_location_id` → WS broadcast `group:{id}:location_changed` (триггер перезапроса CCTV у родителей). |
+| POST | `/staff/activity-events` | Создать событие: `group_id`, `activity_name`, `location_id`, `starts_at`, `ends_at`, `notes`. При создании — обновляется `groups.current_location_id` → WS broadcast `group:{id}:location_changed` (триггер перезапроса CCTV у родителей). Ответ-событие несёт computed `location_name` (`locationId → locations.name`; `null` при пустом / не найдено). |
 | POST | `/staff/activity-events/:id/start` | `status='in_progress'`. Обновляет текущую локацию группы. |
 | POST | `/staff/activity-events/:id/complete` | `status='completed'`. |
 | POST | `/staff/activity-events/:id/cancel` | `status='cancelled'`. |
@@ -1181,9 +1189,9 @@ Templates create/update/deactivate — `/admin/diagnostic-templates` (admin role
 |---|---|---|
 | GET | `/staff/diagnostic-templates` | Шаблоны (read-only). Query: `specialist_type` — staff defaults to caller's type; admin may pass `?all=true` to bypass. `is_active?` filter (default: all). Response: paginated list. |
 | GET | `/staff/diagnostic-templates/:id` | Схема для заполнения. |
-| GET | `/staff/diagnostic-entries` | Диагностики kg. Query: `child_id?: uuid`, `specialist_id?: uuid` (admin only — staff defaults to caller), `template_id?: uuid`, `from?: date`, `to?: date`, `cursor?`, `limit?` (default 20, max 100). Response: cursor-paged. |
+| GET | `/staff/diagnostic-entries` | Диагностики kg. Query: `child_id?: uuid`, `specialist_id?: uuid` (admin only — staff defaults to caller), `template_id?: uuid`, `from?: date`, `to?: date`, `cursor?`, `limit?` (default 20, max 100). Response: cursor-paged; каждая запись несёт `specialist_full_name` (display-overlay, см. `/staff/diagnostic-entries/:id`). |
 | POST | `/staff/diagnostic-entries` | Создать. Body: `{child_id, template_id, assessment_date (date ≤ today), data (jsonb), summary?, recommendations?, attachments?: string[]}`. Response 201 full entry. |
-| GET | `/staff/diagnostic-entries/:id` | Детали — включает computed `template_name`, `template_version`, `specialist_name`. |
+| GET | `/staff/diagnostic-entries/:id` | Детали — включает computed `template_name`, `template_version`, `specialist_full_name` (display-overlay: `specialist_id → staff_members.full_name ?? users.full_name`; `null`, если staff-row отсутствует / имя пустое). |
 | PATCH | `/staff/diagnostic-entries/:id` | Обновить. Body: subset of `{data, summary, recommendations, attachments}`. Author-only (`specialist_id` = caller's `staff_member_id`). Re-validates `data` against original `template.schema` if `data` provided. |
 | GET | `/staff/my-todos` | Задачи specialist'а: дети, которым нужна новая диагностика. Query: `specialist_type?` (admin override; staff without specialist_type → 403). Algorithm: all active children in kg × latest entry where `template.specialist_type = caller.specialist_type` — child included if no prior entry OR `latest_assessment_date + 6 months < CURRENT_DATE` (Asia/Almaty). Response: `{children_needing_diagnostic: [{child_id, child_name, last_assessment_date?: date\|null, days_since_last: number\|null}]}`. |
 
@@ -1218,7 +1226,7 @@ Templates create/update/deactivate — `/admin/diagnostic-templates` (admin role
 
 | Метод | Путь | Назначение |
 |---|---|---|
-| GET | `/staff/progress-notes` | Заметки прогресса. Query: `child_id?: uuid`, `mentor_id?: uuid` (admin only — staff defaults to caller), `from?: date`, `to?: date`, `cursor?`, `limit?` (default 20, max 100). Response: cursor-paged. |
+| GET | `/staff/progress-notes` | Заметки прогресса. Query: `child_id?: uuid`, `mentor_id?: uuid` (admin only — staff defaults to caller), `from?: date`, `to?: date`, `cursor?`, `limit?` (default 20, max 100). Response: cursor-paged. Каждая заметка несёт computed `mentor_full_name` (display-overlay: `mentor_id → staff_members.full_name ?? users.full_name`; `null`, если staff-row отсутствует / имя пустое). Также возвращается на POST/PATCH. |
 | POST | `/staff/progress-notes` | Создать. Body: `{child_id, body (non-empty trimmed), media_urls?: string[], noted_at?: timestamptz (default now, ≤ now + 5 min skew)}`. Response 201 full note. |
 | PATCH | `/staff/progress-notes/:id` | Обновить. Body: subset of `{body, media_urls}`. Author-only (`mentor_id` = caller's `staff_member_id`). |
 | DELETE | `/staff/progress-notes/:id` | Удалить. Author OR admin role. |
@@ -1281,7 +1289,7 @@ Templates create/update/deactivate — `/admin/diagnostic-templates` (admin role
 
 | Метод | Путь | Назначение |
 |---|---|---|
-| GET | `/staff/schedule/week` | Расписание моей группы на неделю. Query: `week_start_date?` (default: текущая неделя). Response: `[{day_of_week, events: [{id, activity_name, starts_at, ends_at, status, location_id?}]}]`. |
+| GET | `/staff/schedule/week` | Расписание моей группы на неделю. Query: `week_start_date?` (default: текущая неделя). Response: `[{day_of_week, events: [{id, activity_name, starts_at, ends_at, status, location_id?, location_name?}]}]`. `location_name` — computed (`locationId → locations.name`), `null` при пустом / не найденном. |
 | GET | `/staff/meal-plans` | Меню на период. Query: `date_from`, `date_to`, `group_id?`. Response: `[{date, group_id?, items: [{meal_type, dish_name, allergens?, calories?}]}]`. |
 | GET | `/staff/content/news` | Новости садика. |
 
@@ -1340,9 +1348,9 @@ Reception может работать с заявками — см. Admin API `/
 
 | Метод | Путь | Назначение |
 |---|---|---|
-| GET | `/parent/children/:id/timeline` | Timeline ребёнка (пагинация по дате). |
-| GET | `/parent/children/:id/attendance` | История check-in/out. |
-| GET | `/parent/children/:id/daily-status` | Текущий статус (`present`/`absent`/`sick`/...) + события дня. |
+| GET | `/parent/children/:id/timeline` | Timeline ребёнка (пагинация по дате). Каждая запись несёт `recorded_by_full_name` (display-overlay). |
+| GET | `/parent/children/:id/attendance` | История check-in/out. Каждое событие несёт `recorded_by_full_name` + `pickup_user_full_name` (display-overlay). |
+| GET | `/parent/children/:id/daily-status` | Текущий статус (`present`/`absent`/`sick`/...) + события дня. `child_daily_status` несёт `set_by_full_name` (display-overlay). |
 
 ### 4.4 Invoices & Payments
 
@@ -1439,10 +1447,12 @@ Reception может работать с заявками — см. Admin API `/
 
 **Auth:** `KindergartenScopeGuard` + `@Roles('parent')`. Для `:id` путей — `ChildAccessGuard` проверяет принадлежность заявки. Wire-keys — snake_case (`child_id`, `weekend_dates`, `expected_time`, `is_one_time`, `create_pickup_request`, `recipient_type`, `recipient_staff_id`, `review_note`).
 
+**Display-overlays (B-N2):** заявка несёт `recipient_staff_full_name` + `reviewed_by_full_name`; каждое message несёт `author_full_name` (см. §2.18). `null` при пустом источнике / не найдено / имя пустое.
+
 | Метод | Путь | Назначение |
 |---|---|---|
-| GET | `/parent/requests` | Мои заявки (фильтр: `status`, `type`, `child_id`). **B22b T7 M16:** cursor-paged по `(created_at DESC, id DESC)`; `next_cursor` = base64-JSON `{createdAt,id}` или `null`. |
-| GET | `/parent/requests/:id` | Детали + messages. |
+| GET | `/parent/requests` | Мои заявки (фильтр: `status`, `type`, `child_id`). **B22b T7 M16:** cursor-paged по `(created_at DESC, id DESC)`; `next_cursor` = base64-JSON `{createdAt,id}` или `null`. Каждая заявка несёт `recipient_staff_full_name` + `reviewed_by_full_name`. |
+| GET | `/parent/requests/:id` | Детали + messages (`author_full_name` на каждом message). |
 | POST | `/parent/requests/otp-request` | Запрос OTP для trusted_person заявки. Body: `{child_id}`. Rate-limit `rate:otp:{phone}` (5/hour, shared с auth). Redis `otp:request:trusted-person:{userId}` TTL 1800с. SMS уходит на **собственный** зарегистрированный телефон запрашивающего родителя (`users.phone`, re-auth — подтверждает, что заявку подаёт сам родитель), **не** на телефон доверенного лица. |
 | POST | `/parent/requests/trusted-person` | Заявка на доверенное лицо — **одностадийно** (код + заявка в одной TX). Body (snake_case): `{code, child_id, full_name, phone, iin?, relation, photo_url?, is_one_time?, create_pickup_request?}`. Валидирует OTP в ambient TX; создаёт заявку `trusted_person`. Если `create_pickup_request=true` — также создаёт `pickup_requests` row атомарно с `parent_request_id` FK. При **accept** админом доверенному лицу уходит best-effort SMS-уведомление о назначении (на его `phone`). Доступен только `primary`. |
 | POST | `/parent/requests/day-off` | Заявка на выходные — ребёнок **ОСТАЁТСЯ В САДУ**. Body: `{child_id, weekend_dates: ["YYYY-MM-DD", ...], comment?}`. 1-2 даты, каждая суббота или воскресенье; обе в одной календарной неделе. |
@@ -1487,7 +1497,7 @@ Reception может работать с заявками — см. Admin API `/
 | GET | `/parent/content/news` | Только новости садика (все kg ребёнка). |
 | GET | `/parent/content/qundylyq/current` | Текущий Qundylyq (тема месяца, `status='published'`, последний по `published_at`). |
 | GET | `/parent/children/:id/menu` | Меню на период. Query: `date_from`, `date_to` (ISO date, обязательны). Возвращает `meal_plans` группы ребёнка (приоритет) или общего садика за период с вложенными `meal_items`. Response: `[{date, items: [{meal_type, dish_name: {ru,kz}, description?, allergens?, calories?, photo_url?}]}]`. Errors: 404 `child_not_found`, 403 `access_denied`. |
-| GET | `/parent/children/:id/schedule` | Расписание группы ребёнка. Query: `date_from`, `date_to` (ISO date, обязательны). Возвращает `activity_events` группы за период. Response: `[{id, activity_name, starts_at, ends_at, status, location_id?, notes?}]`. Errors: 404 `child_not_found`, 403 `access_denied`. |
+| GET | `/parent/children/:id/schedule` | Расписание группы ребёнка. Query: `date_from`, `date_to` (ISO date, обязательны). Возвращает `activity_events` группы за период. Response: `[{id, activity_name, starts_at, ends_at, status, location_id?, location_name?, notes?}]`. `location_name` — computed display-overlay (`locationId → locations.name`), `null` при пустом / не найденном. Errors: 404 `child_not_found`, 403 `access_denied`. |
 
 **Error map (§4.9):**
 
@@ -1506,8 +1516,8 @@ Reception может работать с заявками — см. Admin API `/
 | Метод | Путь | Назначение |
 |---|---|---|
 | GET | `/parent/children/:id/diagnostics` | Диагностики ребёнка (все специалисты). Query: `cursor?`, `limit?` (default 20, max 100), `from?: date`, `to?: date`. Пагинация по `assessment_date DESC`. |
-| GET | `/parent/children/:id/diagnostics/:entryId` | Детали: `data`, `summary`, `recommendations`, `attachments`, `template_name`, `template_version`. Errors: 404 `diagnostic_entry_not_found`. |
-| GET | `/parent/children/:id/progress-notes` | Заметки прогресса от mentor. Query: `cursor?`, `limit?` (default 20, max 100), `from?: date`, `to?: date`. Пагинация по `noted_at DESC`. |
+| GET | `/parent/children/:id/diagnostics/:entryId` | Детали: `data`, `summary`, `recommendations`, `attachments`, `template_name`, `template_version`, `specialist_full_name` (display-overlay: `specialist_id → staff_members.full_name ?? users.full_name`; `null`, если staff-row отсутствует / имя пустое). Errors: 404 `diagnostic_entry_not_found`. |
+| GET | `/parent/children/:id/progress-notes` | Заметки прогресса от mentor. Query: `cursor?`, `limit?` (default 20, max 100), `from?: date`, `to?: date`. Пагинация по `noted_at DESC`. Каждая заметка несёт `mentor_full_name` (display-overlay: `mentor_id → staff_members.full_name ?? users.full_name`; `null`, если staff-row отсутствует / имя пустое). |
 
 **Parent DTO contract (B22b T5 — B18 L3):** parent-side эндпоинты используют **dedicated query DTO** (`ParentListDiagnosticEntriesQueryDto`, `ParentListProgressNotesQueryDto`) которые принимают только `from?`, `to?`, `cursor?`, `limit?`. Staff-only фильтры (`child_id` — уже в URL, `specialist_id`, `template_id`, `mentor_id`) НЕ exposed в parent-Swagger — `whitelist: true` глобального `ValidationPipe` отбрасывает посторонние ключи. Это страхует от тривиального enumeration over staff ids и подгоняет OpenAPI-контракт под реальное поведение handler'а.
 

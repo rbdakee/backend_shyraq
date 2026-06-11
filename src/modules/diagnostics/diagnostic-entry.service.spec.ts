@@ -3,6 +3,9 @@ import { Logger } from '@nestjs/common';
 import { InMemoryNotificationAdapter } from '@/common/notifications/in-memory-notification.adapter';
 import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
 import { ChildNotFoundError } from '@/modules/child/domain/errors/child-not-found.error';
+import { StaffMember } from '@/modules/staff/domain/entities/staff-member.entity';
+import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
+import { StaffService } from '@/modules/staff/staff.service';
 import { OptimisticLockError } from '@/shared-kernel/domain/errors';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { DiagnosticEntryService } from './diagnostic-entry.service';
@@ -648,6 +651,108 @@ describe('DiagnosticEntryService', () => {
         limit: 10,
       });
       expect(result.items).toHaveLength(1);
+    });
+  });
+
+  describe('resolveSpecialistNames', () => {
+    class FakeStaffMemberRepo {
+      rows = new Map<string, StaffMember>();
+      put(s: StaffMember): void {
+        this.rows.set(`${s.kindergartenId}:${s.id}`, s);
+      }
+      findById(kgId: string, id: string): Promise<StaffMember | null> {
+        return Promise.resolve(this.rows.get(`${kgId}:${id}`) ?? null);
+      }
+    }
+    // Thin stand-in for StaffService.resolveIdentity — the real
+    // staff/users fallback is exercised in staff.service.spec; here we only
+    // assert DiagnosticEntryService's batching/fail-closed orchestration.
+    class FakeStaffService {
+      resolveIdentity(
+        member: StaffMember,
+      ): Promise<{ fullName: string | null; phone: string | null }> {
+        const s = member.toState();
+        return Promise.resolve({ fullName: s.fullName, phone: s.phone });
+      }
+    }
+    function makeStaffMember(id: string, fullName: string | null): StaffMember {
+      return StaffMember.hydrate({
+        id,
+        kindergartenId: KG,
+        userId: randomUUID(),
+        fullName,
+        phone: null,
+        role: 'specialist',
+        specialistType: 'psychologist',
+        isActive: true,
+        hiredAt: null,
+        firedAt: null,
+        archivedAt: null,
+        createdAt: NOW,
+        updatedAt: NOW,
+      });
+    }
+
+    let staffRepo: FakeStaffMemberRepo;
+    let resolvingService: DiagnosticEntryService;
+
+    beforeEach(() => {
+      staffRepo = new FakeStaffMemberRepo();
+      resolvingService = new DiagnosticEntryService(
+        templates,
+        entries,
+        children as unknown as ChildRepository,
+        notification,
+        clock,
+        staffRepo as unknown as StaffMemberRepository,
+        undefined, // childGuardians — unused by this overlay
+        new FakeStaffService() as unknown as StaffService,
+      );
+    });
+
+    it('resolves specialist_full_name from the staff identity overlay (deduped)', async () => {
+      staffRepo.put(makeStaffMember(STAFF_A, 'Айгерим Нурланкызы'));
+      const tmpl = buildTemplate();
+      // Two entries by the same specialist → a single lookup, one map entry.
+      const entryList = [buildEntry(tmpl), buildEntry(tmpl)];
+      const map = await resolvingService.resolveSpecialistNames(KG, entryList);
+      expect(map.size).toBe(1);
+      expect(map.get(STAFF_A)).toBe('Айгерим Нурланкызы');
+    });
+
+    it('returns null for a specialist whose staff row has a null name', async () => {
+      staffRepo.put(makeStaffMember(STAFF_A, null));
+      const tmpl = buildTemplate();
+      const map = await resolvingService.resolveSpecialistNames(KG, [
+        buildEntry(tmpl),
+      ]);
+      expect(map.get(STAFF_A)).toBeNull();
+    });
+
+    it('collapses a blank/whitespace-only specialist name to null', async () => {
+      staffRepo.put(makeStaffMember(STAFF_A, '   '));
+      const tmpl = buildTemplate();
+      const map = await resolvingService.resolveSpecialistNames(KG, [
+        buildEntry(tmpl),
+      ]);
+      expect(map.get(STAFF_A)).toBeNull();
+    });
+
+    it('returns null for a specialist whose staff row is missing', async () => {
+      const tmpl = buildTemplate();
+      // No staff row seeded for STAFF_A → fails closed to null.
+      const map = await resolvingService.resolveSpecialistNames(KG, [
+        buildEntry(tmpl),
+      ]);
+      expect(map.get(STAFF_A)).toBeNull();
+    });
+
+    it('fails closed with an empty map when the staff ports are not wired', async () => {
+      // `service` (the top-level instance) is constructed without the staff
+      // ports — name resolution must degrade to null, never throw.
+      const tmpl = buildTemplate();
+      const map = await service.resolveSpecialistNames(KG, [buildEntry(tmpl)]);
+      expect(map.size).toBe(0);
     });
   });
 });

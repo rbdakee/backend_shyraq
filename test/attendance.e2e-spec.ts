@@ -241,6 +241,12 @@ describe('B8 attendance (e2e)', () => {
     expect(checkInRes.body.eventType).toBe('check_in');
     expect(checkInRes.body.id).toBeDefined();
     expect(checkInRes.body.recordedAt).toBeDefined();
+    // Identity overlay: the recorder is the seeded admin user (full_name
+    // 'Admin'); check-in carries no pickup user.
+    expect(checkInRes.body).toHaveProperty('recorded_by_full_name');
+    expect(checkInRes.body.recorded_by_full_name).toBe('Admin');
+    expect(checkInRes.body).toHaveProperty('pickup_user_full_name');
+    expect(checkInRes.body.pickup_user_full_name).toBeNull();
 
     // Admin reads today's daily-status list → child daily status is present.
     // (The dashboard/attendance-today route was reworked into an aggregate
@@ -285,6 +291,12 @@ describe('B8 attendance (e2e)', () => {
       .expect(201);
     expect(checkOutRes.body.eventType).toBe('check_out');
     expect(checkOutRes.body.pickupUserId).toBe(pickupUserId);
+    // Identity-overlay fields are present. The pickup user was seeded with an
+    // empty full_name, which the overlay collapses to null.
+    expect(checkOutRes.body).toHaveProperty('pickup_user_full_name');
+    expect(checkOutRes.body.pickup_user_full_name).toBeNull();
+    expect(checkOutRes.body).toHaveProperty('recorded_by_full_name');
+    expect(checkOutRes.body.recorded_by_full_name).toBe('Admin');
 
     // Check out with unknown user → 403 pickup_user_not_allowed
     const badPickupId = randomUUID();
@@ -320,9 +332,18 @@ describe('B8 attendance (e2e)', () => {
 
     expect(Array.isArray(listRes.body)).toBe(true);
     expect(listRes.body.length).toBeGreaterThanOrEqual(1);
-    const ev = listRes.body[0] as { childId: string; eventType: string };
+    const ev = listRes.body[0] as {
+      childId: string;
+      eventType: string;
+      recorded_by_full_name: string | null;
+      pickup_user_full_name: string | null;
+    };
     expect(ev.childId).toBe(childId);
     expect(ev.eventType).toBe('check_in');
+    // Identity-overlay fields present on every listed event.
+    expect(ev).toHaveProperty('recorded_by_full_name');
+    expect(ev).toHaveProperty('pickup_user_full_name');
+    expect(ev.recorded_by_full_name).toBe('Admin');
   });
 
   // ── D. Admin GET attendance-events/:eventId ───────────────────────────────
@@ -448,6 +469,9 @@ describe('B8 attendance (e2e)', () => {
       .expect(200);
     expect(parentReadRes.body.status).toBe('sick');
     expect(parentReadRes.body.childId).toBe(childId);
+    // Identity overlay: the status was set by the seeded admin user.
+    expect(parentReadRes.body).toHaveProperty('set_by_full_name');
+    expect(parentReadRes.body.set_by_full_name).toBe('Admin');
   });
 
   // ── H. Cross-tenant RLS isolation ────────────────────────────────────────
@@ -505,6 +529,10 @@ describe('B8 attendance (e2e)', () => {
       .expect(200);
     expect(Array.isArray(okRes.body)).toBe(true);
     expect(okRes.body.length).toBeGreaterThanOrEqual(1);
+    // Identity-overlay fields present on parent-visible events.
+    expect(okRes.body[0]).toHaveProperty('recorded_by_full_name');
+    expect(okRes.body[0]).toHaveProperty('pickup_user_full_name');
+    expect(okRes.body[0].recorded_by_full_name).toBe('Admin');
 
     // Non-guardian parent → 403
     const otherUserId = await seedUser('+77011130102');
@@ -652,9 +680,17 @@ describe('B8 attendance (e2e)', () => {
 
     expect(Array.isArray(listRes.body)).toBe(true);
     const record = (
-      listRes.body as { childId: string; status: string; date: string }[]
+      listRes.body as {
+        childId: string;
+        status: string;
+        date: string;
+        set_by_full_name: string | null;
+      }[]
     ).find((r) => r.childId === childId);
     expect(record).toBeDefined();
     expect(record?.status).toBe('present');
+    // Identity overlay present on each daily-status row.
+    expect(record).toHaveProperty('set_by_full_name');
+    expect(record?.set_by_full_name).toBe('Admin');
   });
 });

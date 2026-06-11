@@ -39,6 +39,7 @@ import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-co
 import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
 import { ChildPresenter } from './child.presenter';
 import { ChildService } from './child.service';
+import { Child } from './domain/entities/child.entity';
 import {
   ActivateChildDto,
   ApproveGuardianDto,
@@ -96,6 +97,16 @@ class ReactivateChildResponseDto {
 export class ChildController {
   constructor(private readonly service: ChildService) {}
 
+  /**
+   * Presents a single child with its `current_group_name` overlay resolved
+   * (identity overlay — see `ChildService.resolveGroupName`). Thin glue over
+   * service + presenter; keeps every single-child handler one line.
+   */
+  private async presentChild(kgId: string, child: Child): Promise<ChildDto> {
+    const groupName = await this.service.resolveGroupName(kgId, child);
+    return ChildPresenter.child(child, groupName);
+  }
+
   // ── Children CRUD ──────────────────────────────────────────────────────
 
   @Post()
@@ -130,7 +141,7 @@ export class ChildController {
       medicalNotes: dto.medical_notes,
       allergyNotes: dto.allergy_notes,
     });
-    return ChildPresenter.child(child);
+    return this.presentChild(kgId, child);
   }
 
   @Get()
@@ -152,8 +163,15 @@ export class ChildController {
       },
       { limit, offset },
     );
+    const groupNames = await this.service.resolveGroupNames(kgId, result.items);
     return {
-      data: result.items.map((c) => ChildPresenter.child(c)),
+      data: result.items.map((c) => {
+        const gid = c.toState().currentGroupId;
+        return ChildPresenter.child(
+          c,
+          gid ? (groupNames.get(gid) ?? null) : null,
+        );
+      }),
       meta: { total: result.total, limit, offset },
     };
   }
@@ -183,8 +201,9 @@ export class ChildController {
     const identities = await this.service.resolveGuardianIdentities(
       out.guardians,
     );
+    const groupName = await this.service.resolveGroupName(kgId, out.child);
     return {
-      child: ChildPresenter.child(out.child),
+      child: ChildPresenter.child(out.child, groupName),
       guardians: out.guardians.map((g) =>
         ChildPresenter.guardian(g, identities.get(g.userId)),
       ),
@@ -213,7 +232,7 @@ export class ChildController {
       medicalNotes: dto.medical_notes,
       allergyNotes: dto.allergy_notes,
     });
-    return ChildPresenter.child(child);
+    return this.presentChild(kgId, child);
   }
 
   @Post(':id/photo')
@@ -228,7 +247,7 @@ export class ChildController {
   ): Promise<ChildDto> {
     const kgId = requireTenant(t);
     const child = await this.service.updateChildPhoto(kgId, id, dto.photo_url);
-    return ChildPresenter.child(child);
+    return this.presentChild(kgId, child);
   }
 
   @Post(':id/group')
@@ -243,7 +262,7 @@ export class ChildController {
   ): Promise<ChildDto> {
     const kgId = requireTenant(t);
     const child = await this.service.assignChildToGroup(kgId, id, dto.group_id);
-    return ChildPresenter.child(child);
+    return this.presentChild(kgId, child);
   }
 
   @Delete(':id/group')
@@ -256,7 +275,7 @@ export class ChildController {
   ): Promise<ChildDto> {
     const kgId = requireTenant(t);
     const child = await this.service.unassignChildFromGroup(kgId, id);
-    return ChildPresenter.child(child);
+    return this.presentChild(kgId, child);
   }
 
   @Post(':id/transfer')
@@ -306,7 +325,7 @@ export class ChildController {
       staffId,
       dto.reason ?? null,
     );
-    return ChildPresenter.child(child);
+    return this.presentChild(kgId, child);
   }
 
   @Get(':id/group-history')
@@ -434,7 +453,7 @@ export class ChildController {
       staffId,
       user!.sub,
     );
-    return ChildPresenter.child(child);
+    return this.presentChild(kgId, child);
   }
 
   @Post(':id/archive')
@@ -503,7 +522,7 @@ export class ChildController {
       staffId,
       user!.sub,
     );
-    return ChildPresenter.child(child);
+    return this.presentChild(kgId, child);
   }
 
   @Post(':id/reactivate')
@@ -562,8 +581,9 @@ export class ChildController {
       staffId,
       user!.sub,
     );
+    const groupName = await this.service.resolveGroupName(kgId, result.child);
     return {
-      child: ChildPresenter.child(result.child),
+      child: ChildPresenter.child(result.child, groupName),
       requires_new_tariff_assignment: true,
     };
   }

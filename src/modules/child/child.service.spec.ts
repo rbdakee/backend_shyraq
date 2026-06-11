@@ -814,11 +814,11 @@ const NOW = new Date('2026-04-28T12:00:00.000Z');
 // without each test having to invent a fresh user id.
 const LEGACY_ACTOR_USER_ID = '99999999-9999-9999-9999-999999999999';
 
-function makeGroup(id: string, kg = KG): Group {
+function makeGroup(id: string, kg = KG, name = 'g'): Group {
   return Group.hydrate({
     id,
     kindergartenId: kg,
-    name: 'g',
+    name,
     capacity: 10,
     ageRangeMin: null,
     ageRangeMax: null,
@@ -1679,6 +1679,83 @@ describe('ChildService — group transfer', () => {
     await expect(
       service.transferChildToGroup(KG, c.id, g.id, stf.id),
     ).rejects.toBeInstanceOf(GroupTransferToSelfError);
+  });
+});
+
+describe('ChildService — group name overlay', () => {
+  it('resolveGroupNames maps distinct group ids to names (deduped)', async () => {
+    const { service, groups } = setup();
+    const g1 = makeGroup(randomUUID(), KG, 'Подготовительная «А»');
+    const g2 = makeGroup(randomUUID(), KG, 'Младшая «Б»');
+    groups.put(g1);
+    groups.put(g2);
+    const c1 = await service.createChild(KG, {
+      fullName: 'A',
+      dateOfBirth: new Date('2021-09-15'),
+      currentGroupId: g1.id,
+    });
+    const c2 = await service.createChild(KG, {
+      fullName: 'B',
+      dateOfBirth: new Date('2021-09-15'),
+      currentGroupId: g2.id,
+    });
+    // Same group as c1 — must NOT trigger a second lookup / second entry.
+    const c3 = await service.createChild(KG, {
+      fullName: 'C',
+      dateOfBirth: new Date('2021-09-15'),
+      currentGroupId: g1.id,
+    });
+    const map = await service.resolveGroupNames(KG, [c1, c2, c3]);
+    expect(map.size).toBe(2);
+    expect(map.get(g1.id)).toBe('Подготовительная «А»');
+    expect(map.get(g2.id)).toBe('Младшая «Б»');
+  });
+
+  it('resolveGroupName returns the group name for a grouped child', async () => {
+    const { service, groups } = setup();
+    const g = makeGroup(randomUUID(), KG, 'Старшая «В»');
+    groups.put(g);
+    const c = await service.createChild(KG, {
+      fullName: 'A',
+      dateOfBirth: new Date('2021-09-15'),
+      currentGroupId: g.id,
+    });
+    expect(await service.resolveGroupName(KG, c)).toBe('Старшая «В»');
+  });
+
+  it('resolveGroupName returns null when the child has no group', async () => {
+    const { service } = setup();
+    const c = await service.createChild(KG, {
+      fullName: 'A',
+      dateOfBirth: new Date('2021-09-15'),
+    });
+    expect(await service.resolveGroupName(KG, c)).toBeNull();
+  });
+
+  it('resolveGroupName returns null when the group is missing', async () => {
+    const { service, groups } = setup();
+    const g = makeGroup(randomUUID(), KG, 'Будет удалена');
+    groups.put(g);
+    const c = await service.createChild(KG, {
+      fullName: 'A',
+      dateOfBirth: new Date('2021-09-15'),
+      currentGroupId: g.id,
+    });
+    // Group vanished after assignment (e.g. archived/hard-deleted elsewhere).
+    groups.groups.delete(g.id);
+    expect(await service.resolveGroupName(KG, c)).toBeNull();
+  });
+
+  it('resolveGroupName collapses a blank/whitespace-only group name to null', async () => {
+    const { service, groups } = setup();
+    const g = makeGroup(randomUUID(), KG, '   ');
+    groups.put(g);
+    const c = await service.createChild(KG, {
+      fullName: 'A',
+      dateOfBirth: new Date('2021-09-15'),
+      currentGroupId: g.id,
+    });
+    expect(await service.resolveGroupName(KG, c)).toBeNull();
   });
 });
 

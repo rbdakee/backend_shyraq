@@ -65,9 +65,26 @@ export class ParentChildController {
     //     using the bypass-RLS service path. This is the same lookup
     //     `assembleRoles` uses to decide which kgs a parent has roles in, so
     //     scope leakage is bounded by the user's own approved-guardian rows.
-    const rows = t.kgId
-      ? await this.service.listMyChildren(t.kgId, user.sub)
-      : await this.service.listMyChildrenCrossTenant(user.sub);
+    if (t.kgId) {
+      const rows = await this.service.listMyChildren(t.kgId, user.sub);
+      const groupNames = await this.service.resolveGroupNames(t.kgId, rows);
+      return rows.map((c) => {
+        const gid = c.toState().currentGroupId;
+        return ChildPresenter.child(
+          c,
+          gid ? (groupNames.get(gid) ?? null) : null,
+        );
+      });
+    }
+    // Cross-tenant fan-out (unscoped JWT): no `kindergarten_id` is pinned, so
+    // `GroupRepository.findById` — scoped by the RLS GUC — cannot see another
+    // tenant's groups. Resolving names here would mean a bypass-RLS lookup
+    // keyed by each child's own kindergarten_id; we leave `current_group_name`
+    // null rather than open an RLS hole just to fill a display field
+    // (correctness > completeness).
+    // TODO: resolve cross-tenant group names via a per-child bypass-RLS path
+    //       mirroring `listMyChildrenCrossTenant` if the parent UI needs them.
+    const rows = await this.service.listMyChildrenCrossTenant(user.sub);
     return rows.map((c) => ChildPresenter.child(c));
   }
 
@@ -130,8 +147,9 @@ export class ParentChildController {
     const identities = await this.service.resolveGuardianIdentities(
       out.guardians,
     );
+    const groupName = await this.service.resolveGroupName(t.kgId, out.child);
     return {
-      child: ChildPresenter.child(out.child),
+      child: ChildPresenter.child(out.child, groupName),
       guardians: out.guardians.map((g) =>
         ChildPresenter.guardian(g, identities.get(g.userId)),
       ),

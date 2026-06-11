@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { NotificationPort } from '@/common/notifications/notification.port';
 import { ChildNotFoundError } from '@/modules/child/domain/errors/child-not-found.error';
@@ -6,6 +6,7 @@ import { ChildRepository } from '@/modules/child/infrastructure/persistence/chil
 import { GroupRepository } from '@/modules/group/infrastructure/persistence/group.repository';
 import { StaffNotFoundError } from '@/modules/staff/domain/errors/staff-not-found.error';
 import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
+import { StaffService } from '@/modules/staff/staff.service';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { TimelineEntry } from './domain/entities/timeline-entry.entity';
 import { InvalidAttendanceTimestampError } from './domain/errors/invalid-attendance-timestamp.error';
@@ -21,6 +22,13 @@ import {
 
 /** Entry types that are reserved for the automatic attendance flow. */
 const RESERVED_ENTRY_TYPES = new Set(['check_in', 'check_out']);
+
+/** Returns the trimmed value, or null when empty/whitespace-only/absent. */
+function nonBlankOrNull(value: string | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
 
 export interface CreateTimelineEntryInput {
   entryType: string;
@@ -84,7 +92,58 @@ export class TimelineService {
     @Inject(ClockPort) private readonly clock: ClockPort,
     @Inject(NotificationPort)
     private readonly notifications: NotificationPort,
+    // Identity-overlay dep. Optional + appended last so the existing
+    // service-unit wiring (positional `new TimelineService(...)`) keeps
+    // compiling. `resolveRecordedByNames` reuses the staff identity fallback
+    // (`staff_members.full_name ?? users.full_name`); fails closed → null
+    // when undefined.
+    @Optional()
+    private readonly staffService?: StaffService,
   ) {}
+
+  // ── identity overlay ──────────────────────────────────────────────────────
+
+  /**
+   * Identity overlay for timeline lists — resolves each entry's
+   * `recorded_by` (a `staff_members.id`) to a display name via the staff
+   * identity fallback (`staff_members.full_name ?? users.full_name`, reusing
+   * `StaffService.resolveIdentity`). Mirrors
+   * `ProgressNoteService.resolveMentorNames`: distinct ids are looked up once
+   * and returned as a map keyed by `recorded_by`.
+   *
+   * Blank/whitespace-only names collapse to null. Fails closed: if the staff
+   * service is not wired (legacy spec construction) or a staff row is
+   * missing, that entry resolves to null.
+   */
+  async resolveRecordedByNames(
+    kindergartenId: string,
+    entries: { recordedBy: string | null }[],
+  ): Promise<Map<string, string | null>> {
+    const out = new Map<string, string | null>();
+    if (!this.staffService) {
+      return out;
+    }
+    const distinctIds = [
+      ...new Set(
+        entries
+          .map((e) => e.recordedBy)
+          .filter((id): id is string => id !== null && id !== undefined),
+      ),
+    ];
+    for (const staffMemberId of distinctIds) {
+      const member = await this.staffRepo.findById(
+        kindergartenId,
+        staffMemberId,
+      );
+      if (!member) {
+        out.set(staffMemberId, null);
+        continue;
+      }
+      const identity = await this.staffService.resolveIdentity(member);
+      out.set(staffMemberId, nonBlankOrNull(identity.fullName));
+    }
+    return out;
+  }
 
   // ── createEntry ─────────────────────────────────────────────────────────
 

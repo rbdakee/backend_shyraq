@@ -102,6 +102,10 @@ import {
   StaffMemberRepository,
   UpdateStaffMemberInput,
 } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
+import {
+  StaffIdentityOverlay,
+  StaffService,
+} from '@/modules/staff/staff.service';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import {
   ParentRequest,
@@ -1004,6 +1008,31 @@ class StubInvoiceService {
   };
 }
 
+/**
+ * In-memory stub of StaffService — only `resolveIdentity` is exercised by
+ * ParentRequestService's identity-overlay resolvers. Mirrors the real
+ * service's staff identity fallback: if the staff row carries its own
+ * `full_name`/`phone` we use those; otherwise we fall back to the linked
+ * `users` row (the kg-admin seed row case). Backed by the same Fake repos
+ * the harness wires into the service so name resolution is consistent.
+ */
+class StubStaffService {
+  constructor(private readonly users: FakeUserRepo) {}
+
+  resolveIdentity = (member: StaffMember): Promise<StaffIdentityOverlay> => {
+    const s = member.toState();
+    if (s.fullName !== null && s.phone !== null) {
+      return Promise.resolve({ fullName: s.fullName, phone: s.phone });
+    }
+    const user = this.users.byId.get(s.userId);
+    const u = user?.toState() ?? null;
+    return Promise.resolve({
+      fullName: s.fullName ?? u?.fullName ?? null,
+      phone: s.phone ?? u?.phone ?? null,
+    });
+  };
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────
 
 function makeChild(opts: { id?: string; groupId?: string | null } = {}): Child {
@@ -1110,6 +1139,7 @@ function buildHarness() {
   const invoiceService = new StubInvoiceService();
   const userRepo = new FakeUserRepo();
   const kgRepo = new FakeKindergartenRepo();
+  const staffService = new StubStaffService(userRepo);
 
   // Default permission set (primary): create_requests=true.
   const PRIMARY_PERMS = {}; // empty — defaults for primary include create_requests=true.
@@ -1217,6 +1247,7 @@ function buildHarness() {
     invoiceService as unknown as InvoiceService,
     userRepo,
     kgRepo,
+    staffService as unknown as StaffService,
   );
 
   return {
@@ -1237,6 +1268,7 @@ function buildHarness() {
     invoiceService,
     userRepo,
     kgRepo,
+    staffService,
     PRIMARY_PERMS,
     NANNY_PERMS,
   };
@@ -2544,6 +2576,202 @@ describe('ParentRequestService', () => {
       expect(h.authOtpStore.rateLimitGenericCalls[0]).toBe(
         `rate:parent_requests:create:${PARENT_USER}`,
       );
+    });
+  });
+
+  // ── Identity overlays (display names) ─────────────────────────────────
+  describe('resolveRequestStaffNames', () => {
+    function makeRequest(opts: {
+      recipientStaffId?: string | null;
+      reviewedBy?: string | null;
+    }): ParentRequest {
+      return ParentRequest.fromState({
+        id: `pr-overlay-${Math.random()}`,
+        kindergartenId: KG,
+        childId: CHILD,
+        requesterUserId: PARENT_USER,
+        requestType: 'open_request',
+        status: 'pending',
+        dateFrom: null,
+        dateTo: null,
+        details: {},
+        recipientType: 'mentor',
+        recipientStaffId: opts.recipientStaffId ?? null,
+        reviewedBy: opts.reviewedBy ?? null,
+        reviewedAt: null,
+        reviewNote: null,
+        invoiceId: null,
+        createdAt: NOW,
+        updatedAt: NOW,
+      });
+    }
+
+    it('resolves recipient + reviewer names via the staff identity fallback', async () => {
+      const h = buildHarness();
+      const pr = makeRequest({
+        recipientStaffId: STAFF_MENTOR_ID,
+        reviewedBy: STAFF_ADMIN_ID,
+      });
+      const names = await h.service.resolveRequestStaffNames(KG, [pr]);
+      // makeStaff seeds full_name='Test Staff' on the staff row, so the
+      // staff identity fallback returns it without touching the user repo.
+      expect(names.get(STAFF_MENTOR_ID)).toBe('Test Staff');
+      expect(names.get(STAFF_ADMIN_ID)).toBe('Test Staff');
+    });
+
+    it('dedupes a staff id shared across recipient + reviewer into one entry', async () => {
+      const h = buildHarness();
+      const pr = makeRequest({
+        recipientStaffId: STAFF_MENTOR_ID,
+        reviewedBy: STAFF_MENTOR_ID,
+      });
+      const findSpy = jest.spyOn(h.staffRepo, 'findById');
+      const names = await h.service.resolveRequestStaffNames(KG, [pr]);
+      expect(names.get(STAFF_MENTOR_ID)).toBe('Test Staff');
+      // One distinct id across both fields → exactly one repo lookup (no N+1).
+      expect(findSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('omits null id fields (recipient/reviewer null → no map entry)', async () => {
+      const h = buildHarness();
+      const pr = makeRequest({ recipientStaffId: null, reviewedBy: null });
+      const names = await h.service.resolveRequestStaffNames(KG, [pr]);
+      expect(names.size).toBe(0);
+    });
+
+    it('resolves to null when the staff row is not found', async () => {
+      const h = buildHarness();
+      const MISSING_STAFF = 'bbbbbbbb-0000-0000-0000-bbbbbbbbbbbb';
+      const pr = makeRequest({ recipientStaffId: MISSING_STAFF });
+      const names = await h.service.resolveRequestStaffNames(KG, [pr]);
+      expect(names.get(MISSING_STAFF)).toBeNull();
+    });
+
+    it('collapses a blank/whitespace staff name to null', async () => {
+      const h = buildHarness();
+      const BLANK_STAFF = 'bbbbbbbb-0001-0001-0001-bbbbbbbbbbbb';
+      const BLANK_USER = 'aaaaaaaa-0001-0001-0001-aaaaaaaaaaaa';
+      // Staff row with null full_name/phone → falls through to the user row,
+      // whose full_name is whitespace-only → resolver returns null.
+      h.staffRepo.put(
+        StaffMember.hydrate({
+          id: BLANK_STAFF,
+          kindergartenId: KG,
+          userId: BLANK_USER,
+          fullName: null,
+          phone: null,
+          role: 'mentor',
+          specialistType: null,
+          isActive: true,
+          hiredAt: NOW,
+          firedAt: null,
+          archivedAt: null,
+          createdAt: NOW,
+          updatedAt: NOW,
+        }),
+      );
+      h.userRepo.put(
+        User.hydrate({
+          id: BLANK_USER,
+          phone: '+77770000099',
+          fullName: '   ',
+          avatarUrl: null,
+          iin: null,
+          dateOfBirth: null,
+          locale: 'ru',
+        }),
+      );
+      const pr = makeRequest({ recipientStaffId: BLANK_STAFF });
+      const names = await h.service.resolveRequestStaffNames(KG, [pr]);
+      expect(names.get(BLANK_STAFF)).toBeNull();
+    });
+  });
+
+  describe('resolveMessageAuthorNames', () => {
+    function makeMessage(opts: {
+      id?: string;
+      authorUserId?: string | null;
+      authorStaffId?: string | null;
+    }): ParentRequestMessage {
+      return ParentRequestMessage.fromState({
+        id: opts.id ?? `m-overlay-${Math.random()}`,
+        kindergartenId: KG,
+        parentRequestId: 'pr-1',
+        authorUserId: opts.authorUserId ?? null,
+        authorStaffId: opts.authorStaffId ?? null,
+        body: 'hi',
+        attachments: null,
+        createdAt: NOW,
+      });
+    }
+
+    it('resolves a parent-authored message via the user branch (users.full_name)', async () => {
+      const h = buildHarness();
+      // PARENT_USER is seeded with full_name='Test Parent' in the harness.
+      const m = makeMessage({ id: 'msg-user', authorUserId: PARENT_USER });
+      const names = await h.service.resolveMessageAuthorNames(KG, [m]);
+      expect(names.get('msg-user')).toBe('Test Parent');
+    });
+
+    it('resolves a staff-authored message via the staff branch (staff identity fallback)', async () => {
+      const h = buildHarness();
+      const m = makeMessage({
+        id: 'msg-staff',
+        authorStaffId: STAFF_MENTOR_ID,
+      });
+      const names = await h.service.resolveMessageAuthorNames(KG, [m]);
+      expect(names.get('msg-staff')).toBe('Test Staff');
+    });
+
+    it('resolves to null when the staff-authored row is not found', async () => {
+      const h = buildHarness();
+      const MISSING_STAFF = 'bbbbbbbb-0000-0000-0000-bbbbbbbbbbbb';
+      const m = makeMessage({
+        id: 'msg-missing-staff',
+        authorStaffId: MISSING_STAFF,
+      });
+      const names = await h.service.resolveMessageAuthorNames(KG, [m]);
+      expect(names.get('msg-missing-staff')).toBeNull();
+    });
+
+    it('resolves to null when the user-authored row is not found', async () => {
+      const h = buildHarness();
+      const MISSING_USER = 'aaaaaaaa-0000-0000-0000-aaaaaaaaaaaa';
+      const m = makeMessage({
+        id: 'msg-missing-user',
+        authorUserId: MISSING_USER,
+      });
+      const names = await h.service.resolveMessageAuthorNames(KG, [m]);
+      expect(names.get('msg-missing-user')).toBeNull();
+    });
+
+    it('keys every message even with a mix of user + staff authors (no N+1 within a namespace)', async () => {
+      const h = buildHarness();
+      const m1 = makeMessage({ id: 'm-u', authorUserId: PARENT_USER });
+      const m2 = makeMessage({ id: 'm-s', authorStaffId: STAFF_MENTOR_ID });
+      const names = await h.service.resolveMessageAuthorNames(KG, [m1, m2]);
+      expect(names.get('m-u')).toBe('Test Parent');
+      expect(names.get('m-s')).toBe('Test Staff');
+      expect(names.size).toBe(2);
+    });
+
+    it('collapses a blank user full_name to null', async () => {
+      const h = buildHarness();
+      const BLANK_USER = 'aaaaaaaa-0002-0002-0002-aaaaaaaaaaaa';
+      h.userRepo.put(
+        User.hydrate({
+          id: BLANK_USER,
+          phone: '+77770000098',
+          fullName: '',
+          avatarUrl: null,
+          iin: null,
+          dateOfBirth: null,
+          locale: 'ru',
+        }),
+      );
+      const m = makeMessage({ id: 'm-blank', authorUserId: BLANK_USER });
+      const names = await h.service.resolveMessageAuthorNames(KG, [m]);
+      expect(names.get('m-blank')).toBeNull();
     });
   });
 });

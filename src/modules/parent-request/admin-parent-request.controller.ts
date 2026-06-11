@@ -67,6 +67,14 @@ export class AdminParentRequestController {
       limit: q.limit,
       cursor: q.cursor ?? null,
     });
-    return ParentRequestPresenter.list(result.items, result.nextCursor);
+    const staffNames = await this.service.resolveRequestStaffNames(
+      kgId,
+      result.items,
+    );
+    return ParentRequestPresenter.list(
+      result.items,
+      result.nextCursor,
+      staffNames,
+    );
   }
 }

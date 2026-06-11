@@ -107,7 +107,15 @@ export class ParentParentRequestController {
       limit: q.limit,
       cursor: q.cursor ?? null,
     });
-    return ParentRequestPresenter.list(result.items, result.nextCursor);
+    const staffNames = await this.service.resolveRequestStaffNames(
+      kgId,
+      result.items,
+    );
+    return ParentRequestPresenter.list(
+      result.items,
+      result.nextCursor,
+      staffNames,
+    );
   }
 
   @Get(':id')
@@ -125,7 +133,8 @@ export class ParentParentRequestController {
   ): Promise<ParentRequestResponseDto> {
     const kgId = requireTenant(t);
     const pr = await this.service.getByIdForParent(kgId, user.sub, id);
-    return ParentRequestPresenter.request(pr);
+    const staffNames = await this.service.resolveRequestStaffNames(kgId, [pr]);
+    return ParentRequestPresenter.requestWithStaffNames(pr, staffNames);
   }
 
   // ── OTP request (trusted-person flow) ─────────────────────────────────
@@ -204,7 +213,8 @@ export class ParentParentRequestController {
       createPickupRequest: dto.create_pickup_request ?? false,
       comment: dto.comment ?? null,
     });
-    return ParentRequestPresenter.request(pr);
+    const staffNames = await this.service.resolveRequestStaffNames(kgId, [pr]);
+    return ParentRequestPresenter.requestWithStaffNames(pr, staffNames);
   }
 
   @Post('day-off')
@@ -239,7 +249,8 @@ export class ParentParentRequestController {
       weekendDates: dto.weekend_dates,
       comment: dto.comment ?? null,
     });
-    return ParentRequestPresenter.request(pr);
+    const staffNames = await this.service.resolveRequestStaffNames(kgId, [pr]);
+    return ParentRequestPresenter.requestWithStaffNames(pr, staffNames);
   }
 
   @Post('vacation')
@@ -275,7 +286,8 @@ export class ParentParentRequestController {
       dateTo: dto.date_to,
       comment: dto.comment ?? null,
     });
-    return ParentRequestPresenter.request(pr);
+    const staffNames = await this.service.resolveRequestStaffNames(kgId, [pr]);
+    return ParentRequestPresenter.requestWithStaffNames(pr, staffNames);
   }
 
   @Post('late-pickup')
@@ -311,7 +323,8 @@ export class ParentParentRequestController {
       expectedTime: dto.expected_time,
       comment: dto.comment ?? null,
     });
-    return ParentRequestPresenter.request(pr);
+    const staffNames = await this.service.resolveRequestStaffNames(kgId, [pr]);
+    return ParentRequestPresenter.requestWithStaffNames(pr, staffNames);
   }
 
   @Post('open')
@@ -351,7 +364,8 @@ export class ParentParentRequestController {
       message: dto.message,
       attachments: dto.attachments ?? null,
     });
-    return ParentRequestPresenter.request(pr);
+    const staffNames = await this.service.resolveRequestStaffNames(kgId, [pr]);
+    return ParentRequestPresenter.requestWithStaffNames(pr, staffNames);
   }
 
   // ── Cancel ────────────────────────────────────────────────────────────
@@ -374,7 +388,8 @@ export class ParentParentRequestController {
   ): Promise<ParentRequestResponseDto> {
     const kgId = requireTenant(t);
     const pr = await this.service.cancelRequest(kgId, user.sub, id);
-    return ParentRequestPresenter.request(pr);
+    const staffNames = await this.service.resolveRequestStaffNames(kgId, [pr]);
+    return ParentRequestPresenter.requestWithStaffNames(pr, staffNames);
   }
 
   // ── Thread ────────────────────────────────────────────────────────────
@@ -400,7 +415,8 @@ export class ParentParentRequestController {
       body: dto.body,
       attachments: dto.attachments ?? null,
     });
-    return ParentRequestPresenter.message(m);
+    const authorNames = await this.service.resolveMessageAuthorNames(kgId, [m]);
+    return ParentRequestPresenter.message(m, authorNames.get(m.id) ?? null);
   }
 
   @Get(':id/messages')
@@ -426,6 +442,14 @@ export class ParentParentRequestController {
       q.limit ?? 50,
       q.cursor ?? null,
     );
-    return ParentRequestPresenter.messageList(result.items, result.nextCursor);
+    const authorNames = await this.service.resolveMessageAuthorNames(
+      kgId,
+      result.items,
+    );
+    return ParentRequestPresenter.messageList(
+      result.items,
+      result.nextCursor,
+      authorNames,
+    );
   }
 }

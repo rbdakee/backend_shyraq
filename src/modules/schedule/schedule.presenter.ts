@@ -47,7 +47,15 @@ export class SchedulePresenter {
     };
   }
 
-  static event(e: ActivityEvent): ActivityEventResponseDto {
+  /**
+   * @param locationName Display-name overlay resolved from `locationId →
+   *   locations.name` by the service. Defaults to null so callers that have
+   *   not resolved an overlay (or the cross-tenant case) render cleanly.
+   */
+  static event(
+    e: ActivityEvent,
+    locationName: string | null = null,
+  ): ActivityEventResponseDto {
     const s = e.toState();
     return {
       id: s.id,
@@ -57,6 +65,7 @@ export class SchedulePresenter {
       activityName: s.activityName,
       category: s.category,
       locationId: s.locationId,
+      location_name: locationName,
       startsAt: s.startsAt.toISOString(),
       endsAt: s.endsAt === null ? null : s.endsAt.toISOString(),
       status: s.status,
@@ -65,6 +74,23 @@ export class SchedulePresenter {
       createdAt: s.createdAt.toISOString(),
       updatedAt: s.updatedAt.toISOString(),
     };
+  }
+
+  /**
+   * List variant — maps each event, threading a `location_name` overlay from
+   * the supplied `names` map (keyed by `locationId`). Events without a
+   * location, or whose id has no map entry, render `location_name = null`.
+   */
+  static events(
+    items: ActivityEvent[],
+    names?: Map<string, string | null>,
+  ): ActivityEventResponseDto[] {
+    return items.map((e) =>
+      SchedulePresenter.event(
+        e,
+        e.locationId !== null ? (names?.get(e.locationId) ?? null) : null,
+      ),
+    );
   }
 
   static weekSnapshot(

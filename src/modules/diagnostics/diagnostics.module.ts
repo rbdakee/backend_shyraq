@@ -28,7 +28,12 @@ import { ProgressNoteRelationalRepository } from './infrastructure/persistence/r
  * (`MyTodosService` consumes the child catalogue through the owning
  * module's service surface — B22b T4) and `StaffModule` for
  * `StaffMemberRepository` (used by all staff controllers to resolve
- * caller → staff_member_id).
+ * caller → staff_member_id) plus `StaffService` (used by
+ * `ProgressNoteService.resolveMentorNames` to overlay each note's
+ * `mentor_full_name` and by `DiagnosticEntryService.resolveSpecialistNames`
+ * to overlay each entry's `specialist_full_name`, both via the staff
+ * identity fallback). Both are exported by `StaffModule`, so no extra
+ * provider wiring is needed here.
  *
  * Module boundary discipline (CLAUDE.md §4):
  *   - `exports` lists ONLY the four service classes. The 3 repository

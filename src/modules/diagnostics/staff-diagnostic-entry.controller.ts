@@ -144,10 +144,15 @@ export class StaffDiagnosticEntryController {
       result.items,
       this.templateService,
     );
+    const specialistNames = await this.service.resolveSpecialistNames(
+      kgId,
+      result.items,
+    );
     return DiagnosticEntryPresenter.list(
       result.items,
       result.nextCursor,
       lookup,
+      specialistNames,
     );
   }
 
@@ -189,7 +194,14 @@ export class StaffDiagnosticEntryController {
     const lookup = new Map<string, TemplateLookup>([
       [entry.templateId, { name: template.name, version: template.version }],
     ]);
-    return DiagnosticEntryPresenter.one(entry, lookup);
+    const specialistNames = await this.service.resolveSpecialistNames(kgId, [
+      entry,
+    ]);
+    return DiagnosticEntryPresenter.one(
+      entry,
+      lookup,
+      specialistNames.get(entry.specialistId) ?? null,
+    );
   }
 
   @Get(':id')
@@ -208,7 +220,14 @@ export class StaffDiagnosticEntryController {
     const lookup = new Map<string, TemplateLookup>([
       [entry.templateId, { name: template.name, version: template.version }],
     ]);
-    return DiagnosticEntryPresenter.one(entry, lookup);
+    const specialistNames = await this.service.resolveSpecialistNames(kgId, [
+      entry,
+    ]);
+    return DiagnosticEntryPresenter.one(
+      entry,
+      lookup,
+      specialistNames.get(entry.specialistId) ?? null,
+    );
   }
 
   @Patch(':id')
@@ -268,6 +287,13 @@ export class StaffDiagnosticEntryController {
     const lookup = new Map<string, TemplateLookup>([
       [entry.templateId, { name: template.name, version: template.version }],
     ]);
-    return DiagnosticEntryPresenter.one(entry, lookup);
+    const specialistNames = await this.service.resolveSpecialistNames(kgId, [
+      entry,
+    ]);
+    return DiagnosticEntryPresenter.one(
+      entry,
+      lookup,
+      specialistNames.get(entry.specialistId) ?? null,
+    );
   }
 }

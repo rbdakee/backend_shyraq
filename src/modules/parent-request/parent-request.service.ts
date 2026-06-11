@@ -1,4 +1,10 @@
-import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  Logger,
+  NotFoundException,
+  Optional,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomInt } from 'node:crypto';
 import { AllConfigType } from '@/config/config.type';
@@ -20,6 +26,7 @@ import { TrustedPersonRepository } from '@/modules/pickup/infrastructure/persist
 import { PickupRequestRepository } from '@/modules/pickup/infrastructure/persistence/pickup-request.repository';
 import { StaffRole } from '@/modules/staff/domain/entities/staff-member.entity';
 import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
+import { StaffService } from '@/modules/staff/staff.service';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import {
   isWeekendDay,
@@ -183,6 +190,14 @@ export class ParentRequestService {
     private readonly invoiceService: InvoiceService,
     private readonly users: UserRepository,
     private readonly kindergartenRepo: KindergartenRepository,
+    // Optional so existing service-unit spec wiring (which constructs the
+    // service positionally without this dep) keeps compiling. Used by the
+    // identity-overlay resolvers (`resolveRequestStaffNames` /
+    // `resolveMessageAuthorNames`) to reuse the staff identity fallback
+    // (`staff_members.full_name ?? users.full_name`). When undefined the
+    // staff-name branch fails closed → the display field resolves to null.
+    @Optional()
+    private readonly staffService?: StaffService,
   ) {}
 
   /**
@@ -211,6 +226,123 @@ export class ParentRequestService {
       userId: staff.userId,
       role: staff.role as StaffRole,
     };
+  }
+
+  // ── Identity overlays (display names) ─────────────────────────────────
+
+  /**
+   * Identity overlay for parent_request lists/singletons — resolves the
+   * staff_member display names for BOTH `recipientStaffId` and `reviewedBy`
+   * in one batched, deduped pass. Both ids point at `staff_members.id`, so
+   * the resolution path is identical: load the staff row, then reuse
+   * `StaffService.resolveIdentity` (staff identity fallback
+   * `staff_members.full_name ?? users.full_name`).
+   *
+   * Returns a `Map<staffMemberId, string|null>` covering every distinct id
+   * across both fields; the presenter looks up each id independently. Mirrors
+   * `ProgressNoteService.resolveMentorNames` — distinct ids are looked up
+   * once. Fails closed: when the staff ports are not wired (legacy spec
+   * construction) or a staff row is missing, that entry resolves to null.
+   * Blank/whitespace-only names collapse to null.
+   */
+  async resolveRequestStaffNames(
+    kindergartenId: string,
+    requests: ParentRequest[],
+  ): Promise<Map<string, string | null>> {
+    const out = new Map<string, string | null>();
+    if (!this.staffService) {
+      return out;
+    }
+    const distinctStaffIds = [
+      ...new Set(
+        requests.flatMap((pr) =>
+          [pr.recipientStaffId, pr.reviewedBy].filter(
+            (id): id is string => id !== null,
+          ),
+        ),
+      ),
+    ];
+    for (const staffId of distinctStaffIds) {
+      const member = await this.staffRepo.findById(kindergartenId, staffId);
+      if (!member) {
+        out.set(staffId, null);
+        continue;
+      }
+      const identity = await this.staffService.resolveIdentity(member);
+      out.set(staffId, nonBlankOrNull(identity.fullName));
+    }
+    return out;
+  }
+
+  /**
+   * Identity overlay for parent_request_messages lists/singletons — resolves
+   * each message's author display name, keyed by messageId (a message's
+   * author can be EITHER a user OR a staff member, so messageId is the
+   * cleanest key). Resolution per message:
+   *   - `authorUserId` set → `users.id` → `users.full_name`;
+   *   - else `authorStaffId` set → `staff_members.id` → `users.full_name`
+   *     (staff identity fallback via `StaffService.resolveIdentity`);
+   *   - else → null.
+   * User ids and staff ids are deduped internally (one lookup each).
+   * Fails closed: missing rows / unwired staff port → null. Blank names → null.
+   */
+  async resolveMessageAuthorNames(
+    kindergartenId: string,
+    messages: ParentRequestMessage[],
+  ): Promise<Map<string, string | null>> {
+    const out = new Map<string, string | null>();
+
+    // Dedupe the two id namespaces, resolve each distinct id once, then map
+    // back per message. user names first (no staff port needed), staff names
+    // only when the staff port is wired.
+    const distinctUserIds = [
+      ...new Set(
+        messages
+          .map((m) => m.authorUserId)
+          .filter((id): id is string => id !== null),
+      ),
+    ];
+    const userNames = new Map<string, string | null>();
+    for (const userId of distinctUserIds) {
+      const user = await this.users.findById(userId);
+      userNames.set(userId, nonBlankOrNull(user?.toState().fullName));
+    }
+
+    const distinctStaffIds = [
+      ...new Set(
+        messages
+          .map((m) => m.authorStaffId)
+          .filter((id): id is string => id !== null),
+      ),
+    ];
+    const staffNames = new Map<string, string | null>();
+    if (this.staffService) {
+      for (const staffId of distinctStaffIds) {
+        const member = await this.staffRepo.findById(kindergartenId, staffId);
+        if (!member) {
+          staffNames.set(staffId, null);
+          continue;
+        }
+        const identity = await this.staffService.resolveIdentity(member);
+        staffNames.set(staffId, nonBlankOrNull(identity.fullName));
+      }
+    } else {
+      // Staff port unwired — fail closed for every staff-authored message.
+      for (const staffId of distinctStaffIds) {
+        staffNames.set(staffId, null);
+      }
+    }
+
+    for (const m of messages) {
+      if (m.authorUserId) {
+        out.set(m.id, userNames.get(m.authorUserId) ?? null);
+      } else if (m.authorStaffId) {
+        out.set(m.id, staffNames.get(m.authorStaffId) ?? null);
+      } else {
+        out.set(m.id, null);
+      }
+    }
+    return out;
   }
 
   // ── OTP for trusted-person flow ───────────────────────────────────────
@@ -1254,6 +1386,13 @@ export class ParentRequestService {
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────
+
+/** Returns the trimmed value, or null when empty/whitespace-only/absent. */
+function nonBlankOrNull(value: string | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
 
 function generateSixDigitCode(): string {
   return String(randomInt(0, 1_000_000)).padStart(6, '0');

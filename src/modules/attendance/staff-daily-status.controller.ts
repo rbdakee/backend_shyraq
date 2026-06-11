@@ -78,6 +78,10 @@ export class StaffDailyStatusController {
       status: dto.status,
       note: dto.note ?? null,
     });
-    return AttendancePresenter.dailyStatus(result);
+    const setByNames = await this.service.resolveSetByNames(kgId, [result]);
+    return AttendancePresenter.dailyStatus(
+      result,
+      result.setBy ? (setByNames.get(result.setBy) ?? null) : null,
+    );
   }
 }
