@@ -4,6 +4,7 @@ import { AttendanceModule } from '@/modules/attendance/attendance.module';
 import { ChildModule } from '@/modules/child/child.module';
 import { KindergartenModule } from '@/modules/kindergarten/kindergarten.module';
 import { StaffModule } from '@/modules/staff/staff.module';
+import { TrustedPersonAccessGuard } from '@/common/guards/trusted-person-access.guard';
 import { ParentPickupRequestController } from './parent-pickup-request.controller';
 import { ParentTrustedPersonController } from './parent-trusted-person.controller';
 import { PickupRequestService } from './pickup-request.service';
@@ -54,6 +55,11 @@ import { TrustedPersonRepository } from './infrastructure/persistence/trusted-pe
   providers: [
     PickupRequestService,
     TrustedPersonService,
+    // Пакет C — resolves the kg of a `trusted_people` row from the URL so the
+    // PATCH/revoke routes work for multi-kg parents (tenant from resource).
+    // ChildAccessGuard (for the childId routes) is auto-instantiated from
+    // ChildModule's exported ChildGuardianRepository, so it needs no entry.
+    TrustedPersonAccessGuard,
     {
       provide: TrustedPersonRepository,
       useClass: TrustedPersonRelationalRepository,

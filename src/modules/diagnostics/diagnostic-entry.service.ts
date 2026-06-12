@@ -11,6 +11,7 @@ import { ChildRepository } from '@/modules/child/infrastructure/persistence/chil
 import { ChildNotFoundError } from '@/modules/child/domain/errors/child-not-found.error';
 import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
 import { StaffMember } from '@/modules/staff/domain/entities/staff-member.entity';
+import { SpecialistType } from '@/modules/staff/domain/value-objects/specialist-type.vo';
 import { StaffService } from '@/modules/staff/staff.service';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { NannyNoDiagnosticsAccessError } from './domain/errors/nanny-no-diagnostics-access.error';
@@ -49,6 +50,18 @@ function nonBlankOrNull(value: string | null | undefined): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+/**
+ * Identity overlay for a diagnostic-entry specialist — `specialist_id`
+ * resolved to a display name (staff identity fallback
+ * `staff_members.full_name ?? users.full_name`) plus the staff member's
+ * `specialist_type` (D4 whitelist). Both null when the staff row is missing
+ * or the staff ports are not wired (legacy spec construction).
+ */
+export interface SpecialistOverlay {
+  fullName: string | null;
+  specialistType: SpecialistType | null;
+}
+
 @Injectable()
 export class DiagnosticEntryService {
   /**
@@ -68,13 +81,13 @@ export class DiagnosticEntryService {
     private readonly clock: ClockPort,
     // Optional so older spec wiring (which builds the service standalone
     // without StaffModule wired in) keeps working. Used by
-    // `findStaffMemberByUserIdOrThrow` and `resolveSpecialistNames` — fails
+    // `findStaffMemberByUserIdOrThrow` and `resolveSpecialists` — fails
     // closed when missing.
     private readonly staffMembers?: StaffMemberRepository,
     // Optional for the same reason — the parent-side permission gate
     // is the only consumer.
     private readonly childGuardians?: ChildGuardianRepository,
-    // Optional for the same reason. Used by `resolveSpecialistNames` to
+    // Optional for the same reason. Used by `resolveSpecialists` to
     // reuse the staff identity fallback (`staff_members.full_name ??
     // users.full_name`). When missing, name resolution fails closed →
     // `specialist_full_name = null`.
@@ -84,21 +97,21 @@ export class DiagnosticEntryService {
   /**
    * Identity overlay for diagnostic-entry lists — resolves each entry's
    * `specialist_id` (a `staff_members.id`) to a display name via the staff
-   * identity fallback (`staff_members.full_name ?? users.full_name`).
-   * Mirrors `ProgressNoteService.resolveMentorNames`: distinct
-   * `specialist_id`s are looked up once and returned as a map keyed by
-   * `specialist_id`.
+   * identity fallback (`staff_members.full_name ?? users.full_name`) plus the
+   * staff member's `specialist_type`. Mirrors
+   * `ProgressNoteService.resolveMentorNames`: distinct `specialist_id`s are
+   * looked up once and returned as a map keyed by `specialist_id`.
    *
    * Blank/whitespace-only names collapse to null so the client can fall back
    * cleanly. Fails closed: if the staff ports are not wired (legacy spec
    * construction) or a specialist row is missing, that entry resolves to
-   * null.
+   * `{ fullName: null, specialistType: null }`.
    */
-  async resolveSpecialistNames(
+  async resolveSpecialists(
     kgId: string,
     entries: DiagnosticEntry[],
-  ): Promise<Map<string, string | null>> {
-    const out = new Map<string, string | null>();
+  ): Promise<Map<string, SpecialistOverlay>> {
+    const out = new Map<string, SpecialistOverlay>();
     if (!this.staffMembers || !this.staffService) {
       return out;
     }
@@ -108,11 +121,14 @@ export class DiagnosticEntryService {
     for (const specialistId of distinctSpecialistIds) {
       const member = await this.staffMembers.findById(kgId, specialistId);
       if (!member) {
-        out.set(specialistId, null);
+        out.set(specialistId, { fullName: null, specialistType: null });
         continue;
       }
       const identity = await this.staffService.resolveIdentity(member);
-      out.set(specialistId, nonBlankOrNull(identity.fullName));
+      out.set(specialistId, {
+        fullName: nonBlankOrNull(identity.fullName),
+        specialistType: member.toState().specialistType,
+      });
     }
     return out;
   }

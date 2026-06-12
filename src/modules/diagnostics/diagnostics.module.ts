@@ -30,9 +30,10 @@ import { ProgressNoteRelationalRepository } from './infrastructure/persistence/r
  * `StaffMemberRepository` (used by all staff controllers to resolve
  * caller → staff_member_id) plus `StaffService` (used by
  * `ProgressNoteService.resolveMentorNames` to overlay each note's
- * `mentor_full_name` and by `DiagnosticEntryService.resolveSpecialistNames`
- * to overlay each entry's `specialist_full_name`, both via the staff
- * identity fallback). Both are exported by `StaffModule`, so no extra
+ * `mentor_full_name` and by `DiagnosticEntryService.resolveSpecialists`
+ * to overlay each entry's `specialist_full_name` + `specialist_type`, both
+ * via the staff identity fallback). Both are exported by `StaffModule`, so
+ * no extra
  * provider wiring is needed here.
  *
  * Module boundary discipline (CLAUDE.md §4):

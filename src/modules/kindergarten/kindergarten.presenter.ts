@@ -15,6 +15,7 @@ import {
   KindergartenDto,
   KindergartenListResponseDto,
 } from './dto/kindergarten-response.dto';
+import { ParentKindergartenDto } from './dto/parent-kindergarten-response.dto';
 
 export const KindergartenPresenter = {
   kindergarten(kg: Kindergarten): KindergartenDto {
@@ -31,6 +32,21 @@ export const KindergartenPresenter = {
       archived_at: s.archivedAt !== null ? s.archivedAt.toISOString() : null,
       created_at: s.createdAt.toISOString(),
       updated_at: s.updatedAt.toISOString(),
+    };
+  },
+
+  /**
+   * Parent-facing projection — only the public identity fields. Keeps the
+   * internal `settings` / `plan` / `slug` / lifecycle flags out of the parent
+   * app response. See `ParentKindergartenDto`.
+   */
+  parent(kg: Kindergarten): ParentKindergartenDto {
+    const s = kg.toState();
+    return {
+      id: s.id,
+      name: s.name,
+      address: s.address,
+      phone: s.phone,
     };
   },
 

@@ -148,8 +148,9 @@ export class ParentChildController {
       out.guardians,
     );
     const groupName = await this.service.resolveGroupName(t.kgId, out.child);
+    const mentor = await this.service.resolveCurrentMentor(t.kgId, out.child);
     return {
-      child: ChildPresenter.child(out.child, groupName),
+      child: ChildPresenter.child(out.child, groupName, mentor),
       guardians: out.guardians.map((g) =>
         ChildPresenter.guardian(g, identities.get(g.userId)),
       ),

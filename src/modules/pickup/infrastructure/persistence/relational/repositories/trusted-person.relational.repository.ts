@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { EntityManager, Repository } from 'typeorm';
+import { DataSource, EntityManager, Repository } from 'typeorm';
 import { tenantStorage } from '@/database/tenant-storage';
 import { TrustedPerson } from '../../../../domain/entities/trusted-person.entity';
 import {
@@ -14,6 +14,7 @@ import { TrustedPersonMapper } from '../mappers/trusted-person.mapper';
 @Injectable()
 export class TrustedPersonRelationalRepository extends TrustedPersonRepository {
   constructor(
+    private readonly dataSource: DataSource,
     @InjectRepository(TrustedPersonTypeOrmEntity)
     private readonly repo: Repository<TrustedPersonTypeOrmEntity>,
   ) {
@@ -57,6 +58,26 @@ export class TrustedPersonRelationalRepository extends TrustedPersonRepository {
       .getRepository(TrustedPersonTypeOrmEntity)
       .findOne({ where: { id } });
     return row ? TrustedPersonMapper.toDomain(row) : null;
+  }
+
+  /**
+   * Cross-tenant lookup by id only. Runs inside a short transaction with
+   * `app.bypass_rls=true` — mirrors `InvoiceRelationalRepository`'s
+   * cross-tenant method. The caller (`TrustedPersonAccessGuard`) pins the
+   * resolved kg onto `req.tenant` and lets the `update`/`revoke` services
+   * re-check ownership in that kg, so this read never leaks a row the caller
+   * is not authorised to manage.
+   */
+  override async findByIdCrossTenant(
+    id: string,
+  ): Promise<TrustedPerson | null> {
+    return this.dataSource.transaction(async (manager) => {
+      await manager.query(`SET LOCAL app.bypass_rls = 'true'`);
+      const row = await manager
+        .getRepository(TrustedPersonTypeOrmEntity)
+        .findOne({ where: { id } });
+      return row ? TrustedPersonMapper.toDomain(row) : null;
+    });
   }
 
   async listByChild(

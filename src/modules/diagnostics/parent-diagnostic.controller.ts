@@ -137,7 +137,7 @@ export class ParentDiagnosticController {
       result.items,
       this.templateService,
     );
-    const specialistNames = await this.entryService.resolveSpecialistNames(
+    const specialists = await this.entryService.resolveSpecialists(
       kgId,
       result.items,
     );
@@ -145,7 +145,7 @@ export class ParentDiagnosticController {
       result.items,
       result.nextCursor,
       lookup,
-      specialistNames,
+      specialists,
     );
   }
 
@@ -187,14 +187,13 @@ export class ParentDiagnosticController {
     const lookup = new Map<string, TemplateLookup>([
       [entry.templateId, { name: template.name, version: template.version }],
     ]);
-    const specialistNames = await this.entryService.resolveSpecialistNames(
-      kgId,
-      [entry],
-    );
+    const specialists = await this.entryService.resolveSpecialists(kgId, [
+      entry,
+    ]);
     return DiagnosticEntryPresenter.one(
       entry,
       lookup,
-      specialistNames.get(entry.specialistId) ?? null,
+      specialists.get(entry.specialistId) ?? null,
     );
   }
 

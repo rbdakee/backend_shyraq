@@ -4,6 +4,7 @@ import { InMemoryNotificationAdapter } from '@/common/notifications/in-memory-no
 import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
 import { ChildNotFoundError } from '@/modules/child/domain/errors/child-not-found.error';
 import { StaffMember } from '@/modules/staff/domain/entities/staff-member.entity';
+import { SpecialistType } from '@/modules/staff/domain/value-objects/specialist-type.vo';
 import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
 import { StaffService } from '@/modules/staff/staff.service';
 import { OptimisticLockError } from '@/shared-kernel/domain/errors';
@@ -654,7 +655,7 @@ describe('DiagnosticEntryService', () => {
     });
   });
 
-  describe('resolveSpecialistNames', () => {
+  describe('resolveSpecialists', () => {
     class FakeStaffMemberRepo {
       rows = new Map<string, StaffMember>();
       put(s: StaffMember): void {
@@ -675,15 +676,19 @@ describe('DiagnosticEntryService', () => {
         return Promise.resolve({ fullName: s.fullName, phone: s.phone });
       }
     }
-    function makeStaffMember(id: string, fullName: string | null): StaffMember {
+    function makeStaffMember(
+      id: string,
+      fullName: string | null,
+      specialistType: SpecialistType | null = 'psychologist',
+    ): StaffMember {
       return StaffMember.hydrate({
         id,
         kindergartenId: KG,
         userId: randomUUID(),
         fullName,
         phone: null,
-        role: 'specialist',
-        specialistType: 'psychologist',
+        role: specialistType === null ? 'mentor' : 'specialist',
+        specialistType,
         isActive: true,
         hiredAt: null,
         firedAt: null,
@@ -710,48 +715,75 @@ describe('DiagnosticEntryService', () => {
       );
     });
 
-    it('resolves specialist_full_name from the staff identity overlay (deduped)', async () => {
-      staffRepo.put(makeStaffMember(STAFF_A, 'Айгерим Нурланкызы'));
+    it('resolves specialist_full_name + specialist_type from the staff overlay (deduped)', async () => {
+      staffRepo.put(
+        makeStaffMember(STAFF_A, 'Айгерим Нурланкызы', 'speech_therapist'),
+      );
       const tmpl = buildTemplate();
       // Two entries by the same specialist → a single lookup, one map entry.
       const entryList = [buildEntry(tmpl), buildEntry(tmpl)];
-      const map = await resolvingService.resolveSpecialistNames(KG, entryList);
+      const map = await resolvingService.resolveSpecialists(KG, entryList);
       expect(map.size).toBe(1);
-      expect(map.get(STAFF_A)).toBe('Айгерим Нурланкызы');
+      expect(map.get(STAFF_A)).toEqual({
+        fullName: 'Айгерим Нурланкызы',
+        specialistType: 'speech_therapist',
+      });
     });
 
-    it('returns null for a specialist whose staff row has a null name', async () => {
-      staffRepo.put(makeStaffMember(STAFF_A, null));
+    it('keeps specialist_type even when the staff row has a null name', async () => {
+      staffRepo.put(makeStaffMember(STAFF_A, null, 'psychologist'));
       const tmpl = buildTemplate();
-      const map = await resolvingService.resolveSpecialistNames(KG, [
+      const map = await resolvingService.resolveSpecialists(KG, [
         buildEntry(tmpl),
       ]);
-      expect(map.get(STAFF_A)).toBeNull();
+      expect(map.get(STAFF_A)).toEqual({
+        fullName: null,
+        specialistType: 'psychologist',
+      });
     });
 
     it('collapses a blank/whitespace-only specialist name to null', async () => {
-      staffRepo.put(makeStaffMember(STAFF_A, '   '));
+      staffRepo.put(makeStaffMember(STAFF_A, '   ', 'music_teacher'));
       const tmpl = buildTemplate();
-      const map = await resolvingService.resolveSpecialistNames(KG, [
+      const map = await resolvingService.resolveSpecialists(KG, [
         buildEntry(tmpl),
       ]);
-      expect(map.get(STAFF_A)).toBeNull();
+      expect(map.get(STAFF_A)).toEqual({
+        fullName: null,
+        specialistType: 'music_teacher',
+      });
     });
 
-    it('returns null for a specialist whose staff row is missing', async () => {
+    it('yields a null specialist_type for a non-specialist staff member', async () => {
+      // role=mentor → specialist_type is null on the staff row.
+      staffRepo.put(makeStaffMember(STAFF_A, 'Мерей Ескендир', null));
       const tmpl = buildTemplate();
-      // No staff row seeded for STAFF_A → fails closed to null.
-      const map = await resolvingService.resolveSpecialistNames(KG, [
+      const map = await resolvingService.resolveSpecialists(KG, [
         buildEntry(tmpl),
       ]);
-      expect(map.get(STAFF_A)).toBeNull();
+      expect(map.get(STAFF_A)).toEqual({
+        fullName: 'Мерей Ескендир',
+        specialistType: null,
+      });
+    });
+
+    it('returns a null overlay for a specialist whose staff row is missing', async () => {
+      const tmpl = buildTemplate();
+      // No staff row seeded for STAFF_A → fails closed to a null overlay.
+      const map = await resolvingService.resolveSpecialists(KG, [
+        buildEntry(tmpl),
+      ]);
+      expect(map.get(STAFF_A)).toEqual({
+        fullName: null,
+        specialistType: null,
+      });
     });
 
     it('fails closed with an empty map when the staff ports are not wired', async () => {
       // `service` (the top-level instance) is constructed without the staff
-      // ports — name resolution must degrade to null, never throw.
+      // ports — overlay resolution must degrade to an empty map, never throw.
       const tmpl = buildTemplate();
-      const map = await service.resolveSpecialistNames(KG, [buildEntry(tmpl)]);
+      const map = await service.resolveSpecialists(KG, [buildEntry(tmpl)]);
       expect(map.size).toBe(0);
     });
   });

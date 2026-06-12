@@ -2,6 +2,7 @@ import {
   DiagnosticEntryListResponseDto,
   DiagnosticEntryResponseDto,
 } from './dto/diagnostic-entry-response.dto';
+import type { SpecialistOverlay } from './diagnostic-entry.service';
 import { DiagnosticEntry } from './domain/entities/diagnostic-entry.entity';
 
 /** Minimal template info used to populate computed fields on the response. */
@@ -17,15 +18,16 @@ export class DiagnosticEntryPresenter {
    * without triggering N+1 queries — the service fetches a single batch and
    * passes it here.
    *
-   * `specialistFullName` is the identity overlay for `specialist_id` —
-   * resolved by `DiagnosticEntryService.resolveSpecialistNames` via the
-   * staff identity fallback. Defaults to null so existing callers that
-   * don't thread the overlay still compile and render `null`.
+   * `specialist` is the identity overlay for `specialist_id` — resolved by
+   * `DiagnosticEntryService.resolveSpecialists` (display name via the staff
+   * identity fallback + `specialist_type`). Defaults to null so existing
+   * callers that don't thread the overlay still compile and render `null`
+   * for both fields.
    */
   static one(
     entry: DiagnosticEntry,
     templateLookup?: Map<string, TemplateLookup>,
-    specialistFullName: string | null = null,
+    specialist: SpecialistOverlay | null = null,
   ): DiagnosticEntryResponseDto {
     const lookup = templateLookup?.get(entry.templateId);
     const dto = new DiagnosticEntryResponseDto();
@@ -36,7 +38,8 @@ export class DiagnosticEntryPresenter {
     dto.template_name = lookup?.name ?? '';
     dto.template_version = lookup?.version ?? 0;
     dto.specialist_id = entry.specialistId;
-    dto.specialist_full_name = specialistFullName;
+    dto.specialist_full_name = specialist?.fullName ?? null;
+    dto.specialist_type = specialist?.specialistType ?? null;
     // assessmentDate is a PG `date` column — slice to YYYY-MM-DD.
     dto.assessment_date = entry.assessmentDate.toISOString().slice(0, 10);
     dto.data = entry.data;
@@ -49,22 +52,23 @@ export class DiagnosticEntryPresenter {
   }
 
   /**
-   * `names` is the per-entry `specialist_full_name` overlay keyed by
-   * `specialist_id` (see `DiagnosticEntryService.resolveSpecialistNames`).
-   * Optional so callers that don't thread the overlay still render `null`.
+   * `specialists` is the per-entry overlay (display name + `specialist_type`)
+   * keyed by `specialist_id` (see
+   * `DiagnosticEntryService.resolveSpecialists`). Optional so callers that
+   * don't thread the overlay still render `null` for both fields.
    */
   static list(
     items: DiagnosticEntry[],
     nextCursor: string | null,
     templateLookup?: Map<string, TemplateLookup>,
-    names?: Map<string, string | null>,
+    specialists?: Map<string, SpecialistOverlay>,
   ): DiagnosticEntryListResponseDto {
     const dto = new DiagnosticEntryListResponseDto();
     dto.items = items.map((e) =>
       DiagnosticEntryPresenter.one(
         e,
         templateLookup,
-        names?.get(e.specialistId) ?? null,
+        specialists?.get(e.specialistId) ?? null,
       ),
     );
     dto.next_cursor = nextCursor;

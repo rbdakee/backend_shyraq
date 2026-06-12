@@ -47,8 +47,17 @@ export class ChildPresenter {
    * stores only `current_group_id`, so without it the card would surface a
    * bare UUID. Mirrors the guardian identity overlay (`ChildPresenter.guardian`).
    * Absent overlay → `current_group_name` falls back to null.
+   *
+   * The optional `mentor` overlay carries the active mentor of the child's
+   * current group (`{ id, fullName }`, resolved via the staff identity
+   * fallback). Only the parent child-card endpoint threads it; absent overlay
+   * → both `current_mentor_id` / `current_mentor_name` fall back to null.
    */
-  static child(c: Child, groupName: string | null = null): ChildDto {
+  static child(
+    c: Child,
+    groupName: string | null = null,
+    mentor: { id: string; fullName: string | null } | null = null,
+  ): ChildDto {
     const state = c.toState();
     return {
       id: state.id,
@@ -62,6 +71,8 @@ export class ChildPresenter {
       status: state.status,
       current_group_id: state.currentGroupId,
       current_group_name: groupName,
+      current_mentor_id: mentor?.id ?? null,
+      current_mentor_name: mentor?.fullName ?? null,
       enrollment_date:
         state.enrollmentDate === null ? null : toIsoDate(state.enrollmentDate),
       archived_at:

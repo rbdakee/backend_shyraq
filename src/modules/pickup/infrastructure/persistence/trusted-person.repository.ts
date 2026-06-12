@@ -48,6 +48,25 @@ export abstract class TrustedPersonRepository {
   abstract findById(id: string): Promise<TrustedPerson | null>;
 
   /**
+   * Cross-tenant lookup by id, bypassing RLS inside its own short
+   * transaction. Used by `TrustedPersonAccessGuard` (Пакет C) to resolve the
+   * OWNING kindergarten of a `trusted_people` row BEFORE the tenant
+   * transaction is set up — the multi-kg parent JWT carries
+   * `kindergarten_id: null`, so the kg must come from the resource.
+   *
+   * Resolves the kg ONLY — no authorisation. The `update` / `revoke` services
+   * re-check ownership (original adder OR approved-active guardian of the same
+   * child) in the resolved kg, so a guardian on kg_A can never mutate a
+   * trusted_people row from kg_B even with a hand-crafted URL.
+   *
+   * Non-abstract default returns null so in-memory fakes (which never exercise
+   * the guard path) need not implement it; the relational adapter overrides.
+   */
+  findByIdCrossTenant(_id: string): Promise<TrustedPerson | null> {
+    return Promise.resolve(null);
+  }
+
+  /**
    * Lists active trusted_people rows for a given child within the tenant.
    * "Active" means `is_active=true AND revoked_at IS NULL` — revoked rows
    * are filtered out at the SQL layer to match docs/endpoints.md §4.6

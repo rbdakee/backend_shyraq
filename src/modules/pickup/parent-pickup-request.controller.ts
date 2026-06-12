@@ -23,6 +23,7 @@ import {
 } from '@nestjs/swagger';
 import { CurrentUser } from '@/common/decorators/current-user.decorator';
 import { Roles } from '@/common/decorators/roles.decorator';
+import { ChildAccessGuard } from '@/common/guards/child-access.guard';
 import { JwtAuthGuard } from '@/common/guards/jwt-auth.guard';
 import { PendingRoleSelectGuard } from '@/common/guards/pending-role-select.guard';
 import { RolesGuard } from '@/common/guards/roles.guard';
@@ -60,6 +61,7 @@ export class ParentPickupRequestController {
   constructor(private readonly service: PickupRequestService) {}
 
   @Post(':id/pickup-requests')
+  @UseGuards(ChildAccessGuard)
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
     summary:

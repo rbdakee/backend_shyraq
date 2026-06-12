@@ -144,7 +144,7 @@ export class StaffDiagnosticEntryController {
       result.items,
       this.templateService,
     );
-    const specialistNames = await this.service.resolveSpecialistNames(
+    const specialists = await this.service.resolveSpecialists(
       kgId,
       result.items,
     );
@@ -152,7 +152,7 @@ export class StaffDiagnosticEntryController {
       result.items,
       result.nextCursor,
       lookup,
-      specialistNames,
+      specialists,
     );
   }
 
@@ -194,13 +194,11 @@ export class StaffDiagnosticEntryController {
     const lookup = new Map<string, TemplateLookup>([
       [entry.templateId, { name: template.name, version: template.version }],
     ]);
-    const specialistNames = await this.service.resolveSpecialistNames(kgId, [
-      entry,
-    ]);
+    const specialists = await this.service.resolveSpecialists(kgId, [entry]);
     return DiagnosticEntryPresenter.one(
       entry,
       lookup,
-      specialistNames.get(entry.specialistId) ?? null,
+      specialists.get(entry.specialistId) ?? null,
     );
   }
 
@@ -220,13 +218,11 @@ export class StaffDiagnosticEntryController {
     const lookup = new Map<string, TemplateLookup>([
       [entry.templateId, { name: template.name, version: template.version }],
     ]);
-    const specialistNames = await this.service.resolveSpecialistNames(kgId, [
-      entry,
-    ]);
+    const specialists = await this.service.resolveSpecialists(kgId, [entry]);
     return DiagnosticEntryPresenter.one(
       entry,
       lookup,
-      specialistNames.get(entry.specialistId) ?? null,
+      specialists.get(entry.specialistId) ?? null,
     );
   }
 
@@ -287,13 +283,11 @@ export class StaffDiagnosticEntryController {
     const lookup = new Map<string, TemplateLookup>([
       [entry.templateId, { name: template.name, version: template.version }],
     ]);
-    const specialistNames = await this.service.resolveSpecialistNames(kgId, [
-      entry,
-    ]);
+    const specialists = await this.service.resolveSpecialists(kgId, [entry]);
     return DiagnosticEntryPresenter.one(
       entry,
       lookup,
-      specialistNames.get(entry.specialistId) ?? null,
+      specialists.get(entry.specialistId) ?? null,
     );
   }
 }

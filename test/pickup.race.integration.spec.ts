@@ -491,6 +491,7 @@ describeIntegration(
         dataSource.getRepository(PickupRequestTypeOrmEntity),
       );
       const tpRepo = new TrustedPersonRelationalRepository(
+        dataSource,
         dataSource.getRepository(TrustedPersonTypeOrmEntity),
       );
       const staffRepo = new StaffMemberRelationalRepository(

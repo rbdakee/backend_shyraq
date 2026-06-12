@@ -45,6 +45,28 @@ export class ChildDto {
   })
   current_group_name!: string | null;
 
+  @ApiProperty({
+    example: 'd3e4f5a6-2345-6789-bcde-2345678901bc',
+    nullable: true,
+    description:
+      'staff_members.id of the active mentor of the child current group ' +
+      '(group_mentors row with unassigned_at IS NULL). Null when the child ' +
+      'has no group, the group has no active mentor, or the overlay was not ' +
+      'built for this response (only the parent child-card endpoint resolves it).',
+  })
+  current_mentor_id!: string | null;
+
+  @ApiProperty({
+    example: 'Динара Сериковна',
+    nullable: true,
+    description:
+      'Display name of the active mentor, resolved via the staff identity ' +
+      'fallback (staff_members.full_name ?? users.full_name). Null when there ' +
+      'is no active mentor, the staff row/name is missing/blank, or the ' +
+      'overlay was not built for this response.',
+  })
+  current_mentor_name!: string | null;
+
   @ApiProperty({ example: null, nullable: true })
   enrollment_date!: string | null;
 

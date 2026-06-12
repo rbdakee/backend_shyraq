@@ -24,9 +24,11 @@ import {
 } from '@nestjs/swagger';
 import { CurrentUser } from '@/common/decorators/current-user.decorator';
 import { Roles } from '@/common/decorators/roles.decorator';
+import { ChildAccessGuard } from '@/common/guards/child-access.guard';
 import { JwtAuthGuard } from '@/common/guards/jwt-auth.guard';
 import { PendingRoleSelectGuard } from '@/common/guards/pending-role-select.guard';
 import { RolesGuard } from '@/common/guards/roles.guard';
+import { TrustedPersonAccessGuard } from '@/common/guards/trusted-person-access.guard';
 import type { JwtPayload } from '@/common/types/jwt-payload';
 import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-context';
 import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
@@ -55,9 +57,17 @@ function requireTenant(t: TenantContext): string {
  * for list/add. For PATCH/revoke, the caller must either have added the
  * row themselves or be an approved-active guardian on the same child.
  *
- * No `ChildAccessGuard` is used because the trusted-people endpoints are
- * keyed by `trusted_person.id` for PATCH/revoke (the guard expects a
- * child id in the URL). The service-level checks cover the same intent.
+ * Tenant resolution — derived from the RESOURCE, not the JWT (the multi-kg
+ * parent token carries `kindergarten_id: null` by design, so token-kg is only
+ * an optimisation slice, never the source of truth). Guards are mounted
+ * PER-METHOD (not controller-level) because this controller mixes two URL
+ * shapes:
+ *   - `children/:id/*` (`:id` = childId) → `ChildAccessGuard` resolves the
+ *     child cross-tenant, admits an approved guardian, and pins `req.tenant`.
+ *   - `trusted-people/:id` (`:id` = trusted_person.id) → `TrustedPersonAccessGuard`
+ *     resolves the row cross-tenant and pins `req.tenant` to its kg.
+ * The service then re-checks the guardian/ownership invariant in the resolved
+ * kg (defense-in-depth — the cross-tenant lookup resolves the kg only).
  */
 @ApiTags('Parent / Trusted People')
 @ApiBearerAuth()
@@ -68,6 +78,7 @@ export class ParentTrustedPersonController {
   constructor(private readonly service: TrustedPersonService) {}
 
   @Get('children/:id/trusted-people')
+  @UseGuards(ChildAccessGuard)
   @ApiOperation({
     summary:
       "Parent view of the child's trusted-people whitelist. Includes both active and revoked rows so the client can render historical state.",
@@ -90,6 +101,7 @@ export class ParentTrustedPersonController {
   }
 
   @Post('children/:id/trusted-people')
+  @UseGuards(ChildAccessGuard)
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
     summary:
@@ -121,6 +133,7 @@ export class ParentTrustedPersonController {
   }
 
   @Patch('trusted-people/:id')
+  @UseGuards(TrustedPersonAccessGuard)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
@@ -150,6 +163,7 @@ export class ParentTrustedPersonController {
   }
 
   @Post('trusted-people/:id/revoke')
+  @UseGuards(TrustedPersonAccessGuard)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:

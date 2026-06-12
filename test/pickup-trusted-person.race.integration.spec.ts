@@ -154,6 +154,7 @@ describeIntegration(
     it('serializes 5 concurrent markUsed(deactivate=true) on a one-time row — exactly one wins, four return false', async () => {
       await seedTrustedPerson(true);
       const repo = new TrustedPersonRelationalRepository(
+        dataSource,
         dataSource.getRepository(TrustedPersonTypeOrmEntity),
       );
 
@@ -186,6 +187,7 @@ describeIntegration(
     it('lets 5 concurrent markUsed(deactivate=false) all succeed on a non-one-time row (last-write wins on used_at)', async () => {
       await seedTrustedPerson(false);
       const repo = new TrustedPersonRelationalRepository(
+        dataSource,
         dataSource.getRepository(TrustedPersonTypeOrmEntity),
       );
 

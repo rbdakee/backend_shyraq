@@ -966,6 +966,39 @@ export class ChildService {
   }
 
   /**
+   * Resolves the active mentor of a single child's current group → display
+   * identity `{ id, fullName }`. Returns null when the child has no group or
+   * the group has no active mentor (`group_mentors` row with
+   * `unassigned_at IS NULL`). `fullName` uses the staff identity fallback
+   * (`staff_members.full_name ?? users.full_name`) and may be null when the
+   * staff row / name is missing or blank.
+   *
+   * Tenant-scoped via `GroupRepository.findActiveMentor` — callers on the
+   * cross-tenant parent path (no pinned `kindergarten_id`) must skip
+   * resolution, exactly like `resolveGroupName`.
+   */
+  async resolveCurrentMentor(
+    kindergartenId: string,
+    child: Child,
+  ): Promise<{ id: string; fullName: string | null } | null> {
+    const groupId = child.toState().currentGroupId;
+    if (!groupId) return null;
+    const mentor = await this.groups.findActiveMentor(kindergartenId, groupId);
+    if (!mentor) return null;
+    const staffMemberId = mentor.toState().staffMemberId;
+    const member = await this.staff.findById(kindergartenId, staffMemberId);
+    const memberState = member?.toState() ?? null;
+    let fullName = nonBlankOrNull(memberState?.fullName);
+    // Fallback to the linked users row when the staff_members display name is
+    // unset — same chain as StaffService.resolveIdentity.
+    if (fullName === null && memberState) {
+      const user = await this.users.findById(memberState.userId);
+      fullName = nonBlankOrNull(user?.toState().fullName);
+    }
+    return { id: staffMemberId, fullName };
+  }
+
+  /**
    * Batch variant for child lists — dedups `current_group_id`s (skipping the
    * null ones) so each distinct group is fetched once, then returns a map
    * keyed by `current_group_id`. Mirrors `resolveGuardianIdentities`. Children
