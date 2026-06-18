@@ -1,0 +1,58 @@
+# GitLab CI — gates pushes to main/development + merge requests.
+#
+# Two parallel jobs in the `verify` stage:
+#   1. lint-typecheck — fast ESLint + `tsc --noEmit`. The type-check is the
+#      safety net for the SWC image build (SWC transpiles only, no types).
+#   2. test — full pipeline (lint -> unit -> integration -> e2e) inside
+#      docker-compose against real PG + Redis, identical to the GitHub
+#      Actions workflow and `startup.relational.ci.sh`.
+#
+# Requirements: project CI/CD enabled with runners. The `test` job needs a
+# privileged Docker-in-Docker runner — GitLab.com shared runners qualify.
+
+stages:
+  - verify
+
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_BRANCH == "development"'
+
+lint-typecheck:
+  stage: verify
+  image: node:24.14.1-alpine
+  cache:
+    key:
+      files:
+        - package-lock.json
+    paths:
+      - .npm/
+  script:
+    - npm ci --no-audit --no-fund --cache .npm --prefer-offline
+    - npm run lint
+    - npm run typecheck
+
+test:
+  stage: verify
+  image: docker:27
+  services:
+    - docker:27-dind
+  timeout: 30m
+  variables:
+    DOCKER_HOST: tcp://docker:2376
+    DOCKER_TLS_CERTDIR: "/certs"
+    DOCKER_CERT_PATH: "/certs/client"
+    DOCKER_TLS_VERIFY: "1"
+  before_script:
+    - docker compose version || apk add --no-cache docker-cli-compose
+  script:
+    - >
+      docker compose
+      -f docker-compose.relational.ci.yaml
+      --env-file env-example-relational
+      -p ci
+      up --build --abort-on-container-exit --exit-code-from api
+  after_script:
+    - docker compose -f docker-compose.relational.ci.yaml -p ci logs api || true
+    - docker compose -f docker-compose.relational.ci.yaml -p ci down -v || true

@@ -1,0 +1,5 @@
+#!/bin/sh
+# Full unit suite runs here (not on pre-commit) so commits stay fast.
+# Tests still gate before code leaves the machine. maxWorkers is pinned in
+# package.json jest config to bound RAM.
+npm run test -- --passWithNoTests

@@ -33,6 +33,7 @@
     "start:prod": "node dist/main",
     "start:worker": "env-cmd -- ts-node -r tsconfig-paths/register src/main.worker.ts",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\"",
+    "typecheck": "tsc --noEmit",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",

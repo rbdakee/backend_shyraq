@@ -136,6 +136,7 @@ describeIntegration(
           groupId: row.group_id,
           templateSlotId: row.template_slot_id,
           activityName: row.activity_name,
+          category: row.category,
           locationId: row.location_id,
           startsAt: row.starts_at,
           endsAt: row.ends_at,
