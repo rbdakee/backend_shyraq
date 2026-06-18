@@ -24,6 +24,7 @@
     "docker:prod:logs": "docker compose -p balam-prod --env-file .env.production -f docker-compose.yml -f docker-compose.prod.yml logs -f",
     "prebuild": "rimraf dist",
     "build": "nest build",
+    "build:swc": "nest build -b swc",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start",
     "start:dev": "nest start --watch",
@@ -135,7 +136,7 @@
     ],
     "coverageDirectory": "../coverage",
     "testEnvironment": "node",
-    "maxWorkers": 2,
+    "maxWorkers": 3,
     "workerIdleMemoryLimit": "512MB"
   },
   "engines": {
