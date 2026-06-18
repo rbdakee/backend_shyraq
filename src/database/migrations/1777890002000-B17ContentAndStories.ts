@@ -1,4 +1,5 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
+import { appRoleIdent } from '../app-role.util';
 
 /**
  * B17 — Content & Stories (BP §9).
@@ -165,7 +166,7 @@ export class B17ContentAndStories1777890002000 implements MigrationInterface {
 
     // REVOKE TRUNCATE
     await queryRunner.query(
-      `REVOKE TRUNCATE ON "content_posts" FROM "shyraq_app"`,
+      `REVOKE TRUNCATE ON "content_posts" FROM ${appRoleIdent()}`,
     );
 
     // ── 3. group_stories ──────────────────────────────────────────────────────
@@ -221,7 +222,7 @@ export class B17ContentAndStories1777890002000 implements MigrationInterface {
 
     // REVOKE TRUNCATE
     await queryRunner.query(
-      `REVOKE TRUNCATE ON "group_stories" FROM "shyraq_app"`,
+      `REVOKE TRUNCATE ON "group_stories" FROM ${appRoleIdent()}`,
     );
   }
 

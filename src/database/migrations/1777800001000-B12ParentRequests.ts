@@ -1,4 +1,5 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
+import { appRoleIdent } from '../app-role.util';
 
 /**
  * B12 — Parent Requests (BP §6).
@@ -165,7 +166,7 @@ export class B12ParentRequests1777800001000 implements MigrationInterface {
     // ALTER DEFAULT PRIVILEGES in RevokeTruncateFromAppRole migration already
     // covers future tables, but explicit per-table revoke adds a hard guarantee.
     await queryRunner.query(
-      `REVOKE TRUNCATE ON "parent_requests", "parent_request_messages" FROM "shyraq_app"`,
+      `REVOKE TRUNCATE ON "parent_requests", "parent_request_messages" FROM ${appRoleIdent()}`,
     );
   }
 

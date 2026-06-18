@@ -1,4 +1,5 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
+import { appRoleIdent } from '../app-role.util';
 
 /**
  * B22a T9 — `child_status_history` audit table.
@@ -114,7 +115,7 @@ export class B22ChildStatusHistory1778633100000 implements MigrationInterface {
     // `IF EXISTS` would not apply here — REVOKE is silently no-op when
     // the privilege was never granted.
     await queryRunner.query(
-      `REVOKE TRUNCATE ON "child_status_history" FROM shyraq_app`,
+      `REVOKE TRUNCATE ON "child_status_history" FROM ${appRoleIdent()}`,
     );
   }
 

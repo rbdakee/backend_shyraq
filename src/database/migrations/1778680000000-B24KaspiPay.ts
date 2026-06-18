@@ -1,4 +1,5 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
+import { appRoleIdent } from '../app-role.util';
 
 /**
  * B24 — Kaspi Pay integration tables.
@@ -95,7 +96,7 @@ export class B24KaspiPay1778680000000 implements MigrationInterface {
     // privileges, but we add an explicit revoke here so intent is visible
     // when reading only this file (mirrors B22ChildStatusHistory pattern).
     await queryRunner.query(
-      `REVOKE TRUNCATE ON "kaspi_merchant_session" FROM shyraq_app`,
+      `REVOKE TRUNCATE ON "kaspi_merchant_session" FROM ${appRoleIdent()}`,
     );
 
     // ── 3. kaspi_global_config (global, NO RLS, single-row) ──────────────────

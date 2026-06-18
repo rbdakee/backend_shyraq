@@ -1,92 +1,44 @@
+# Dev override — merged over docker-compose.yml.
+#   npm run docker:dev:up
+# Full stack in docker: Postgres runs in a container and loads .env.development.
 services:
   postgres:
     image: postgres:17.9-alpine
     restart: unless-stopped
     environment:
+      # Bootstrap PG with the migration superuser (DATABASE_MIGRATION_USERNAME),
+      # NOT the runtime role — the InitExtensions migration later creates the
+      # non-superuser app role. Seeding PG with the runtime role would block
+      # migrations and break the RLS layout (CLAUDE.md §5).
       POSTGRES_USER: ${DATABASE_MIGRATION_USERNAME}
       POSTGRES_PASSWORD: ${DATABASE_MIGRATION_PASSWORD}
       POSTGRES_DB: ${DATABASE_NAME}
+    ports:
+      # Host access for psql / adminer. Host 5432/5433 are taken by host PG,
+      # so map 55432 (CLAUDE.md §6).
+      - "55432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DATABASE_MIGRATION_USERNAME} -d ${DATABASE_NAME}"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
-    volumes:
-      - redis-data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test:
+        ["CMD-SHELL", "pg_isready -U ${DATABASE_MIGRATION_USERNAME} -d ${DATABASE_NAME}"]
       interval: 10s
       timeout: 5s
       retries: 10
 
   api:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    restart: unless-stopped
     env_file:
-      - .env
-    environment:
-      DATABASE_HOST: postgres
-      DATABASE_PORT: 5432
-      REDIS_HOST: redis
-      BILLING_MONTHLY_CRON: disabled
-      BILLING_DISCOUNT_EXPIRE_CRON: disabled
-      BILLING_OVERDUE_CRON: disabled
-      CONTENT_PUBLISH_CRON: disabled
-      BIRTHDAY_GENERATION_CRON: disabled
-      STORY_CLEANUP_CRON: disabled
-      OUTBOX_PRUNE_CRON: disabled
-    ports:
-      - "${APP_PORT:-3000}:${APP_PORT:-3000}"
-    volumes:
-      - uploads-data:/usr/src/app/uploads
+      - .env.development
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
-    command: >
-      sh -c "npm run migration:run &&
-             npm run start:prod"
 
   worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    restart: unless-stopped
     env_file:
-      - .env
-    environment:
-      DATABASE_HOST: postgres
-      DATABASE_PORT: 5432
-      REDIS_HOST: redis
-      BILLING_MONTHLY_CRON: enabled
-      BILLING_DISCOUNT_EXPIRE_CRON: enabled
-      BILLING_OVERDUE_CRON: enabled
-      CONTENT_PUBLISH_CRON: enabled
-      BIRTHDAY_GENERATION_CRON: enabled
-      STORY_CLEANUP_CRON: enabled
-      OUTBOX_PRUNE_CRON: enabled
-    volumes:
-      - uploads-data:/usr/src/app/uploads
+      - .env.development
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
-      api:
-        condition: service_started
-    command: ["node", "dist/main.worker"]
 
 volumes:
   postgres-data:
-  redis-data:
-  uploads-data:

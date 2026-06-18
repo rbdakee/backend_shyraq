@@ -65,10 +65,15 @@ OTP_LENGTH=6
 OTP_TTL_SECONDS=1800
 
 # --- SuperAdmin seed user ---
-# Used by seed scripts to upsert bootstrap super_admin row.
-# CHANGE BEFORE FIRST PRODUCTION DEPLOY.
+# Consumed by `npm run seed:super-admin` to idempotently upsert the bootstrap
+# super_admin into `saas_users` (the table is otherwise EMPTY after migrations,
+# so Admin Web login has nobody to match until the seed runs). Re-running
+# resets the password to SUPER_ADMIN_SEED_PASSWORD. CHANGE BEFORE FIRST
+# PRODUCTION DEPLOY.
 SUPER_ADMIN_SEED_EMAIL=admin@shyraq.local
 SUPER_ADMIN_SEED_PASSWORD=admin123
+# Optional display name (default 'Super Admin').
+# SUPER_ADMIN_SEED_NAME=Super Admin
 
 # --- OTP test backdoor ---
 # CSV of phone numbers that bypass real SMS send and accept OTP_TEST_CODE.
@@ -186,14 +191,39 @@ FACE_PROVIDER=mock
 # --- File storage (B17) ---
 # FILE_STORAGE_PROVIDER selects the FileStoragePort adapter for media uploads
 # (content_posts.media_urls, group_stories.media_url).
-# WARNING: 's3' / 'yandex' currently throw `NotImplementedError` at adapter init — only 'local' is functional in Phase A. Real adapters are Phase B.
+#   'local'        — on-disk under FILE_STORAGE_LOCAL_DIR (default `uploads`).
+#                    Default / Phase A.
+#   's3' | 'yandex' — S3-compatible object storage (B17 Phase B). Both use the
+#                    SAME S3FileStorageAdapter; they differ only by endpoint /
+#                    path-style config below.
 FILE_STORAGE_PROVIDER=local
-# S3-compatible: requires credentials when FILE_STORAGE_PROVIDER=s3 or yandex.
+# FILE_STORAGE_LOCAL_DIR=uploads
+#
+# S3-compatible config — REQUIRED when FILE_STORAGE_PROVIDER=s3 or yandex.
+# The app fails loudly at bootstrap if BUCKET / ACCESS_KEY / SECRET_KEY are
+# missing. The bucket is kept PRIVATE: uploaded media is served only through
+# the auth-guarded MediaController (/api/v1/media/...), so `upload` returns a
+# backend URL — never a public bucket URL. (getSignedUrl issues short-TTL
+# pre-signed GETs for any future direct-download flow.)
+#
+# Environments are isolated by BUCKET, not by key-prefix — point each env at
+# its own container: prod → `balam-media`, dev/staging/other → `balam-media-dev`.
+#
+# ps.kz Object Storage (Universal/Cold tariff):
+#   FILE_STORAGE_ENDPOINT=https://object.pscloud.io   (container → <bucket>.object.pscloud.io)
+#   FILE_STORAGE_FORCE_PATH_STYLE=false               (ps.kz uses virtual-hosted style)
+#   FILE_STORAGE_REGION=us-east-1                      (placeholder — ps.kz ignores region)
+# Yandex Object Storage:
+#   FILE_STORAGE_ENDPOINT=https://storage.yandexcloud.net
+#   FILE_STORAGE_REGION=ru-central1
 # FILE_STORAGE_BUCKET=
-# FILE_STORAGE_REGION=
+# FILE_STORAGE_REGION=us-east-1
 # FILE_STORAGE_ACCESS_KEY=
 # FILE_STORAGE_SECRET_KEY=
-# FILE_STORAGE_ENDPOINT=   # Yandex Object Storage: https://storage.yandexcloud.net
+# FILE_STORAGE_ENDPOINT=
+# FILE_STORAGE_FORCE_PATH_STYLE=false
+# Override the served-URL prefix (defaults to the MediaController route).
+# FILE_STORAGE_URL_PREFIX=/api/v1/media
 
 # --- Push notifications (B9) ---
 # PUSH_PROVIDER selects the PushNotificationPort adapter for mobile push.

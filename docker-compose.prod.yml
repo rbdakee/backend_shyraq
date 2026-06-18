@@ -1,0 +1,13 @@
+# Prod override — merged over docker-compose.yml.
+#   npm run docker:prod:up
+# PostgreSQL is MANAGED (external) — no postgres container here. The app
+# connects to it via DATABASE_HOST / DATABASE_PORT / DATABASE_SSL_ENABLED from
+# .env.production. Only redis + api + worker run in docker.
+services:
+  api:
+    env_file:
+      - .env.production
+
+  worker:
+    env_file:
+      - .env.production

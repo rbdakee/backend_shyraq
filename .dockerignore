@@ -2,3 +2,9 @@
 /.data
 /dist
 /files
+
+# Keep real env files (secrets) OUT of the image — runtime env comes from the
+# compose `env_file` at container start, never baked into image layers.
+# `env-example-relational` (no leading dot) is NOT matched and stays available.
+.env
+.env.*

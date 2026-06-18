@@ -52,7 +52,7 @@ async function bootstrap() {
   app.useWebSocketAdapter(wsAdapter);
 
   const options = new DocumentBuilder()
-    .setTitle('Shyraq API v2')
+    .setTitle(configService.getOrThrow('app.name', { infer: true }))
     .setDescription('Multi-tenant kindergarten SaaS — REST + WS')
     .setVersion('0.0.1')
     .addBearerAuth()

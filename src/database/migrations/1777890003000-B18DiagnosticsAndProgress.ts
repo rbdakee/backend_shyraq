@@ -1,4 +1,5 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
+import { appRoleIdent } from '../app-role.util';
 
 /**
  * B18 — Diagnostics & Progress (BP §8).
@@ -210,7 +211,7 @@ export class B18DiagnosticsAndProgress1777890003000 implements MigrationInterfac
 
     // ── 4. REVOKE TRUNCATE (defence-in-depth per B13/B16 pattern) ─────────────
     await queryRunner.query(
-      `REVOKE TRUNCATE ON "diagnostic_templates", "diagnostic_entries", "progress_notes" FROM "shyraq_app"`,
+      `REVOKE TRUNCATE ON "diagnostic_templates", "diagnostic_entries", "progress_notes" FROM ${appRoleIdent()}`,
     );
   }
 

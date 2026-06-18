@@ -1,4 +1,5 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
+import { appRoleIdent } from '../app-role.util';
 
 /**
  * Drop TRUNCATE from the runtime app role (`shyraq_app`).
@@ -25,13 +26,13 @@ export class RevokeTruncateFromAppRole1777800000000 implements MigrationInterfac
     // Existing tables: drop TRUNCATE without disturbing the SELECT/INSERT/
     // UPDATE/DELETE grants the app needs at runtime.
     await queryRunner.query(
-      `REVOKE TRUNCATE ON ALL TABLES IN SCHEMA public FROM shyraq_app`,
+      `REVOKE TRUNCATE ON ALL TABLES IN SCHEMA public FROM ${appRoleIdent()}`,
     );
     // Tables created by future migrations: keep TRUNCATE off the default
     // privilege set so the next `CREATE TABLE` does not silently re-grant it.
     await queryRunner.query(`
       ALTER DEFAULT PRIVILEGES IN SCHEMA public
-        REVOKE TRUNCATE ON TABLES FROM shyraq_app
+        REVOKE TRUNCATE ON TABLES FROM ${appRoleIdent()}
     `);
   }
 
@@ -39,11 +40,11 @@ export class RevokeTruncateFromAppRole1777800000000 implements MigrationInterfac
     // Reversible — restore the (insecure) original grant. Useful only when
     // rolling back to a prod state that pre-dates this fix.
     await queryRunner.query(
-      `GRANT TRUNCATE ON ALL TABLES IN SCHEMA public TO shyraq_app`,
+      `GRANT TRUNCATE ON ALL TABLES IN SCHEMA public TO ${appRoleIdent()}`,
     );
     await queryRunner.query(`
       ALTER DEFAULT PRIVILEGES IN SCHEMA public
-        GRANT TRUNCATE ON TABLES TO shyraq_app
+        GRANT TRUNCATE ON TABLES TO ${appRoleIdent()}
     `);
   }
 }

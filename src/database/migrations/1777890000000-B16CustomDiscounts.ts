@@ -1,4 +1,5 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
+import { appRoleIdent } from '../app-role.util';
 
 /**
  * B16 — Custom Discounts (BP §4 extension).
@@ -185,7 +186,7 @@ export class B16CustomDiscounts1777890000000 implements MigrationInterface {
 
     // ── 4. REVOKE TRUNCATE (defence-in-depth per B13 pattern) ────────────────
     await queryRunner.query(
-      `REVOKE TRUNCATE ON "custom_discounts", "custom_discount_applications" FROM "shyraq_app"`,
+      `REVOKE TRUNCATE ON "custom_discounts", "custom_discount_applications" FROM ${appRoleIdent()}`,
     );
   }
 

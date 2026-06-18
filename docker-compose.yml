@@ -1,0 +1,74 @@
+# Base stack shared by dev and prod. DO NOT run bare — use the npm scripts:
+#   npm run docker:dev:up    (postgres + redis + api + worker, .env.development)
+#   npm run docker:prod:up   (redis + api + worker; managed PostgreSQL, .env.production)
+#
+# The env file and the postgres service (dev only) come from the per-mode
+# override file (docker-compose.dev.yml / docker-compose.prod.yml). This base
+# intentionally does NOT pin DATABASE_HOST — it comes from the env file
+# (dev: the `postgres` service, prod: the managed-DB endpoint).
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      REDIS_HOST: redis
+      # The API process must NOT schedule the recurring BullMQ slots — the
+      # worker owns them (CLAUDE.md / env-example "BullMQ cron toggles").
+      BILLING_MONTHLY_CRON: disabled
+      BILLING_DISCOUNT_EXPIRE_CRON: disabled
+      BILLING_OVERDUE_CRON: disabled
+      CONTENT_PUBLISH_CRON: disabled
+      BIRTHDAY_GENERATION_CRON: disabled
+      STORY_CLEANUP_CRON: disabled
+      OUTBOX_PRUNE_CRON: disabled
+    ports:
+      - "${APP_PORT}:${APP_PORT}"
+    depends_on:
+      redis:
+        condition: service_healthy
+    # migrate + seed run via the no-env-cmd scripts so the container's injected
+    # env (from env_file) is used as-is — env-cmd would override it with the
+    # image's baked .env. Then boot the compiled app.
+    command: >
+      sh -c "npm run db:migrate &&
+             npm run db:seed &&
+             npm run start:prod"
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      REDIS_HOST: redis
+      # The worker process OWNS the recurring BullMQ slots.
+      BILLING_MONTHLY_CRON: enabled
+      BILLING_DISCOUNT_EXPIRE_CRON: enabled
+      BILLING_OVERDUE_CRON: enabled
+      CONTENT_PUBLISH_CRON: enabled
+      BIRTHDAY_GENERATION_CRON: enabled
+      STORY_CLEANUP_CRON: enabled
+      OUTBOX_PRUNE_CRON: enabled
+    depends_on:
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_started
+    command: ["node", "dist/main.worker"]
+
+volumes:
+  redis-data:

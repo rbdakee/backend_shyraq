@@ -10,7 +10,7 @@ Shyraq — multi-tenant SaaS для управления детскими сад
 - Primary DB: **PostgreSQL 17**
 - Cache / OTP / queue (B9+): **Redis 7** (ioredis)
 - API: **REST** + **WebSocket** (B9+)
-- File Storage: **`LocalFileStorageAdapter`** (B17, диск; S3/Yandex — Phase B)
+- File Storage: **`LocalFileStorageAdapter`** (B17, диск) / **`S3FileStorageAdapter`** (Phase B, S3-совместимый — ps.kz Object Storage, Yandex). Env-switch `FILE_STORAGE_PROVIDER=local|s3|yandex`
 - Multi-tenancy: **PostgreSQL Row Level Security** + явная передача `kindergarten_id` (defense-in-depth)
 
 Источники истины:
@@ -82,7 +82,7 @@ src/modules/<x>/
 | `TokenBlocklistPort` | `RedisTokenBlocklist` | JWT JTI blocklist (logout, role-select rotation) |
 | `NotificationPort` | `LoggingNotificationAdapter` | Push/email уведомления (B9 заменит на BullMQ + FCM/APNS + WS) |
 | `ClockPort` | `SystemClock` (prod) / `FixedClock` (test) | `now()` — testable |
-| `FileStoragePort` | `LocalFileStorageAdapter` (default, B17) | Загрузка/чтение/удаление медиа-файлов. Mock — хранит на диске `/uploads/<kg_id>/<yyyy-mm>/<uuid>.<ext>`, раздаёт через `ServeStaticModule` по `/static/<kg_id>/<yyyy-mm>/<filename>`. Real S3/Yandex adapters — Phase B. Env-switch: `FILE_STORAGE_PROVIDER=local\|s3\|yandex` (default `local`). |
+| `FileStoragePort` | `LocalFileStorageAdapter` (default, B17) / `S3FileStorageAdapter` (Phase B) | Загрузка/чтение/удаление медиа-файлов. `local` — хранит на диске `<uploads>/<kg_id>/<…>/<uuid>.<ext>`. `s3`/`yandex` — S3-совместимое хранилище (ps.kz `object.pscloud.io`, Yandex `storage.yandexcloud.net`) через `@aws-sdk/client-s3`. Оба адаптера возвращают URL `/api/v1/media/<key>` — файлы раздаются только через auth-gated `MediaController` (бакет остаётся PRIVATE, не публичный). Окружения разделяются **отдельными бакетами** (`FILE_STORAGE_BUCKET` per-env: prod → `balam-media`, dev/прочие → `balam-media-dev`). Ключ внутри бакета — `<kg_id>/…` (и `<kg_id>/stories/…`). Env-switch: `FILE_STORAGE_PROVIDER=local\|s3\|yandex` (default `local`). |
 
 Регистрация в `<x>.module.ts`:
 

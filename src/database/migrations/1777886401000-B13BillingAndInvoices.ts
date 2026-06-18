@@ -1,4 +1,5 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
+import { appRoleIdent } from '../app-role.util';
 
 /**
  * B13 — Billing & Invoices (BP §4).
@@ -490,7 +491,7 @@ export class B13BillingAndInvoices1777886401000 implements MigrationInterface {
 
     // ── 11. REVOKE TRUNCATE (defence-in-depth per db8cb72 pattern) ─────────────
     await queryRunner.query(
-      `REVOKE TRUNCATE ON "tariff_plans", "tariff_assignments", "payment_accounts", "invoices", "invoice_line_items", "payments", "refunds", "kindergarten_holidays" FROM "shyraq_app"`,
+      `REVOKE TRUNCATE ON "tariff_plans", "tariff_assignments", "payment_accounts", "invoices", "invoice_line_items", "payments", "refunds", "kindergarten_holidays" FROM ${appRoleIdent()}`,
     );
 
     // ── 12. FK ALTER: parent_requests.invoice_id → invoices(id) (B12 leftover) ─
