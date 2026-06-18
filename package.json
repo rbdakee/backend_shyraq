@@ -134,7 +134,9 @@
       "**/*.(t|j)s"
     ],
     "coverageDirectory": "../coverage",
-    "testEnvironment": "node"
+    "testEnvironment": "node",
+    "maxWorkers": 2,
+    "workerIdleMemoryLimit": "512MB"
   },
   "engines": {
     "node": ">=20.0.0",
