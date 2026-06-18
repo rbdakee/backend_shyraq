@@ -19,10 +19,6 @@ import { ChildStatusHistoryEntity } from './infrastructure/persistence/relationa
 import { ChildGuardianRelationalRepository } from './infrastructure/persistence/relational/repositories/child-guardian.repository';
 import { ChildRelationalRepository } from './infrastructure/persistence/relational/repositories/child.repository';
 import { ChildStatusHistoryRelationalRepository } from './infrastructure/persistence/relational/repositories/child-status-history.repository';
-import {
-  BillingLifecyclePort,
-  NoopBillingLifecycleAdapter,
-} from './infrastructure/billing-lifecycle.port';
 import { LIFECYCLE_QUEUE } from './lifecycle-queue.constants';
 import { ParentApprovalController } from './parent-approval.controller';
 import { ParentChildController } from './parent-child.controller';
@@ -73,14 +69,16 @@ import { ParentLinkController } from './parent-link.controller';
       provide: ChildStatusHistoryRepository,
       useClass: ChildStatusHistoryRelationalRepository,
     },
-    // Default no-op for the billing-lifecycle bridge so service-unit
-    // wiring outside the full app graph compiles. The production binding
-    // lives in `BillingLifecycleBridgeModule` (`@Global()`), which
-    // overrides this token for every consumer that imports it.
-    {
-      provide: BillingLifecyclePort,
-      useClass: NoopBillingLifecycleAdapter,
-    },
+    // NOTE: do NOT register a local `BillingLifecyclePort` provider here.
+    // A module-local provider takes precedence over an imported one — even
+    // a `@Global()` one — for components declared in the same module. A
+    // local Noop here would shadow the real `BillingLifecycleAdapter` from
+    // the `@Global() BillingLifecycleBridgeModule` *for `ChildService`
+    // itself*, making `activateChild` always 409 `child_activation_requires_tariff`
+    // and `archive` silently skip closing tariff assignments. The real
+    // adapter is supplied globally by `BillingLifecycleBridgeModule`.
+    // `NoopBillingLifecycleAdapter` still exists for service-unit fakes,
+    // which construct `ChildService` directly rather than via DI.
   ],
   exports: [
     ChildRepository,
@@ -90,7 +88,10 @@ import { ParentLinkController } from './parent-link.controller';
     // exporting it would leak module-internal persistence detail per
     // CLAUDE.md §4 module-boundary discipline.
     ChildService,
-    BillingLifecyclePort,
+    // BillingLifecyclePort is NOT exported: it has no local provider here
+    // anymore (see the providers note above), so re-exporting it would throw
+    // UnknownExportException at boot. Consumers needing the port get the real
+    // adapter from the `@Global() BillingLifecycleBridgeModule` directly.
     // Re-export the queue token via the BullMQ module so consumers that
     // import ChildModule can `@InjectQueue(LIFECYCLE_QUEUE)`.
     BullModule,
