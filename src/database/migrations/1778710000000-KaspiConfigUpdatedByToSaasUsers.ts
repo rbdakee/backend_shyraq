@@ -13,9 +13,7 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  * non-critical). Existing rows carry `updated_by = NULL`, so the repoint is safe
  * with no backfill.
  */
-export class KaspiConfigUpdatedByToSaasUsers1778710000000
-  implements MigrationInterface
-{
+export class KaspiConfigUpdatedByToSaasUsers1778710000000 implements MigrationInterface {
   name = 'KaspiConfigUpdatedByToSaasUsers1778710000000';
 
   public async up(queryRunner: QueryRunner): Promise<void> {

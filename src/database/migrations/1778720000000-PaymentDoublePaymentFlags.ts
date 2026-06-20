@@ -18,9 +18,7 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  * `refund_required = false`. The partial index keeps the admin "needs refund"
  * query cheap.
  */
-export class PaymentDoublePaymentFlags1778720000000
-  implements MigrationInterface
-{
+export class PaymentDoublePaymentFlags1778720000000 implements MigrationInterface {
   name = 'PaymentDoublePaymentFlags1778720000000';
 
   public async up(queryRunner: QueryRunner): Promise<void> {
@@ -43,7 +41,9 @@ export class PaymentDoublePaymentFlags1778720000000
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(`DROP INDEX IF EXISTS "idx_payments_refund_required"`);
+    await queryRunner.query(
+      `DROP INDEX IF EXISTS "idx_payments_refund_required"`,
+    );
     await queryRunner.query(`
       ALTER TABLE "payments"
         DROP CONSTRAINT IF EXISTS "payments_duplicate_of_payment_id_fkey"
