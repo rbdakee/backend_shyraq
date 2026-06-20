@@ -162,6 +162,7 @@ describe('B24 Kaspi parent-pay (e2e)', () => {
   let jwtService: JwtService;
   let jwtSecret: string;
   let saAccess: string;
+  let saUserId: string;
   let prevProvider: string | undefined;
 
   // ── auth + seed helpers (mirror billing.e2e) ─────────────────────────────
@@ -184,6 +185,7 @@ describe('B24 Kaspi parent-pay (e2e)', () => {
 
   async function seedSuperAdmin(): Promise<void> {
     const id = randomUUID();
+    saUserId = id;
     const hash = await bcrypt.hash(SUPER_ADMIN_PASSWORD, 4);
     await dataSource.transaction(async (m) => {
       await m.query(`SET LOCAL app.bypass_rls = 'true'`);
@@ -529,5 +531,29 @@ describe('B24 Kaspi parent-pay (e2e)', () => {
       })
       .expect(422);
     expect(JSON.stringify(res.body)).toContain('kaspi_phone_number');
+  });
+
+  // ── #4 — super-admin Kaspi global-config PUT ───────────────────────────────
+
+  it('super-admin PUT /saas/kaspi/config returns 200 and persists updated_by as the saas_user (#4)', async () => {
+    // Pre-fix the FK `kaspi_global_config.updated_by` pointed at `users(id)`,
+    // but the super-admin lives in `saas_users` → every PUT 500'd. Migration
+    // 1778710000000 repoints the FK to `saas_users(id)`; this asserts the PUT
+    // now succeeds AND stamps updated_by with the super-admin's saas_users id.
+    const res = await request(server)
+      .put('/api/v1/saas/kaspi/config')
+      .set('Authorization', `Bearer ${saAccess}`)
+      .send({ app_build: '9999' })
+      .expect(200);
+    expect(res.body.app_build).toBe('9999');
+
+    const rows = (await dataSource.transaction(async (m) => {
+      await m.query(`SET LOCAL app.bypass_rls = 'true'`);
+      return m.query(
+        `SELECT app_build, updated_by FROM kaspi_global_config WHERE id = 1`,
+      );
+    })) as Array<{ app_build: string; updated_by: string | null }>;
+    expect(rows[0].app_build).toBe('9999');
+    expect(rows[0].updated_by).toBe(saUserId);
   });
 });

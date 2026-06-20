@@ -84,6 +84,13 @@ export interface RefundResult {
   status: 'processed';
 }
 
+export interface CancelPaymentInput {
+  /** Owning kindergarten — per-tenant adapters (Kaspi) resolve the session. */
+  kindergartenId: string;
+  /** The provider operation id (Kaspi `QrOperationId`) to recall. */
+  providerPaymentId: string;
+}
+
 export abstract class PaymentProviderPort {
   abstract createPayment(
     input: CreatePaymentInput,
@@ -92,4 +99,16 @@ export abstract class PaymentProviderPort {
     input: VerifyWebhookInput,
   ): Promise<VerifyWebhookResult>;
   abstract refund(input: RefundInput): Promise<RefundResult>;
+
+  /**
+   * Recall a still-pending provider payment so a fresh one can be created
+   * without leaving two live requests on the payer's side — the single-parent
+   * double-pay guard (`payment.service.initiate`). Default: no-op. Providers
+   * without a recall API (Mock completes synchronously; Halyk uses a redirect
+   * the user simply abandons) let the stale request expire. Kaspi overrides it
+   * (`POST qrpay/v01/remote/cancel { qrOperationId }`).
+   */
+  cancelPayment(_input: CancelPaymentInput): Promise<void> {
+    return Promise.resolve();
+  }
 }

@@ -924,6 +924,30 @@ const TEMPLATES: Record<string, EventTemplate> = {
     },
     data: stringMap({}),
   }),
+
+  // #5b — admin-facing alert that a SECOND payment settled on an invoice
+  // another guardian already paid (double payment). The later payment is
+  // flagged `refund_required`; the admin must refund it manually. Recipients
+  // are pre-resolved kg admins (resolveRecipientUserIdsFromPayload). Carries
+  // both payment ids + amount so the admin app can deep-link the queue item.
+  'payment.refund_required': ({ payload }) => ({
+    titleI18n: {
+      ru: 'Двойная оплата — нужен возврат',
+      kk: 'Қос төлем — қайтару қажет',
+      en: 'Double payment — refund required',
+    },
+    bodyI18n: {
+      ru: 'По счёту прошла повторная оплата. Проверьте и сделайте возврат вручную.',
+      kk: 'Шот бойынша қайталама төлем өтті. Тексеріп, қолмен қайтарыңыз.',
+      en: 'A duplicate payment settled on this invoice. Review and refund it manually.',
+    },
+    data: stringMap({
+      paymentId: payload.paymentId,
+      duplicateOfPaymentId: payload.duplicateOfPaymentId,
+      invoiceId: payload.invoiceId,
+      amount: payload.amount,
+    }),
+  }),
 };
 
 const RECIPIENT_RESOLVERS: Record<string, RecipientResolver> = {
@@ -986,6 +1010,8 @@ const RECIPIENT_RESOLVERS: Record<string, RecipientResolver> = {
   // T11 H6 — recipients are pre-resolved by the producer (kg admin
   // user_ids); the dispatcher reads the array verbatim from the payload.
   'enrollment.first_invoice_skipped': resolveRecipientUserIdsFromPayload,
+  // #5b — admin double-payment alert; recipients pre-resolved into the payload.
+  'payment.refund_required': resolveRecipientUserIdsFromPayload,
   // ── B24 Kaspi Pay — admin-facing; producer pre-resolves kg admin
   // user_ids into the payload (same pattern as enrollment.* above).
   'kaspi.session_expired': resolveRecipientUserIdsFromPayload,

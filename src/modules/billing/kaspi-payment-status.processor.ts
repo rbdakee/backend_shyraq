@@ -64,16 +64,22 @@ export class KaspiPaymentStatusProcessor extends WorkerHost {
     if (result.outcome === 'reschedule') {
       const createdAt = result.paymentCreatedAt ?? this.clock.now();
       nextDelay = nextDelayMs(createdAt, this.clock.now());
-      await this.queue.add(KASPI_PAYMENT_STATUS_JOB, job.data, {
-        // Deterministic jobId keeps the poll chain single-lived: BullMQ dedups
-        // a re-add of an already-queued tick. This completed delayed job's id
-        // is re-addable, which is exactly the reschedule semantics.
-        jobId: `kaspi-poll:${paymentId}`,
-        attempts: 1,
-        delay: nextDelay,
-        removeOnComplete: { count: 50 },
-        removeOnFail: { count: 50 },
-      });
+      const nextTick = (job.data.tick ?? 0) + 1;
+      await this.queue.add(
+        KASPI_PAYMENT_STATUS_JOB,
+        { ...job.data, tick: nextTick },
+        {
+          // Per-tick jobId: BullMQ refuses to re-add a job whose id matches the
+          // still-active current tick, so a FIXED jobId silently drops the
+          // reschedule and the chain dies after one tick. The monotonic tick
+          // makes each reschedule a fresh, never-deduped job.
+          jobId: `kaspi-poll-${paymentId}-${nextTick}`,
+          attempts: 1,
+          delay: nextDelay,
+          removeOnComplete: { count: 50 },
+          removeOnFail: { count: 50 },
+        },
+      );
     }
     // settled | failed | stop → do nothing, the chain terminates here.
 

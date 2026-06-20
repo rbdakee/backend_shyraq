@@ -1436,6 +1436,7 @@ describe('NotificationDispatcher', () => {
       'payment.completed',
       'payment.failed',
       'payment.refunded',
+      'payment.refund_required',
       'refund.processed',
       // ── B16 Custom Discounts ───────────────────────────────────────────
       'discount.activated',

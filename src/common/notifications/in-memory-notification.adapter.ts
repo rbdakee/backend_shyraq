@@ -27,6 +27,7 @@ import {
   NotifyPaymentCompletedInput,
   NotifyPaymentFailedInput,
   NotifyPaymentRefundedInput,
+  NotifyPaymentRefundRequiredInput,
   NotifyRefundProcessedInput,
   ParentRequestAcceptedEvent,
   ParentRequestCancelledEvent,
@@ -262,6 +263,13 @@ export class InMemoryNotificationAdapter extends NotificationPort {
     event: NotifyKaspiSessionExpiredInput,
   ): Promise<void> {
     this.record('kaspi_session_expired', event);
+    return Promise.resolve();
+  }
+
+  notifyPaymentRefundRequired(
+    event: NotifyPaymentRefundRequiredInput,
+  ): Promise<void> {
+    this.record('payment_refund_required', event);
     return Promise.resolve();
   }
 

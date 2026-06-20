@@ -423,6 +423,9 @@ class FakePaymentRepo extends PaymentRepository {
   markRefundedConditional(): Promise<Payment | null> {
     return Promise.resolve(null);
   }
+  markRefundRequired(): Promise<Payment | null> {
+    return Promise.resolve(null);
+  }
 }
 
 class FakePaymentAccountRepo extends PaymentAccountRepository {

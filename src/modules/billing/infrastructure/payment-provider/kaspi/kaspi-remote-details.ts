@@ -4,19 +4,20 @@
  * envelope in ONE place so the poller orchestration stays protocol-agnostic.
  *
  * ────────────────────────────────────────────────────────────────────────────
- * TODO(kaspi-protocol): verify field paths against live remote/details on the
- * pilot kindergarten.
- *
- * The original `kaspi_pay_test` reference is no longer on disk, so the exact
- * `remote/details` JSON shape is UNVERIFIED. The field paths assumed below are
- * the canonical Kaspi qrpay envelope shape (`{ StatusCode, Data: { Status,
- * ExpireDate, ... } }`, mirroring `remote/create` which returns
- * `Data.QrOperationId`). When the pilot kindergarten goes live, capture a real
- * `remote/details` body and confirm:
- *   - `body.Data.Status` is the QR-operation status string.
- *   - `body.Data.ExpireDate` is the ISO/epoch expiry of the QR operation.
- *   - the non-zero `StatusCode` / error-code session-expired heuristic below.
- * Adjust the constant sets here ONLY — no other K8 file interprets the body.
+ * Shape PARTIALLY VERIFIED on the 2026-06-20 live pilot. A real remote/details
+ * body looks like:
+ *   { "Data": { "Id": 16100684134, "Status": "RemotePaymentRejected",
+ *               "Amount": "5 ₸", "AvailableReturnAmount": "0 ₸",
+ *               "PossibleReturnType": "None", "ExpireDate"?: ...,
+ *               "OrderNumber": "QR16100684134", "ReceiptUrl": "...",
+ *               "RecreateDeepLink": "..." },
+ *     "StatusCode": 0, "Message": "OK", "Code": 0 }
+ * Confirmed status strings: paid='Processed', pending='RemotePaymentCreated',
+ * cancelled='RemotePaymentRejected'. NOTE Kaspi prefixes remote-flow statuses
+ * with 'RemotePayment' — the status sets below carry both prefixed + bare forms.
+ * STILL TODO: confirm the session-expired envelope shape (non-zero StatusCode +
+ * auth-code) and the ExpireDate field on a real expiry. Adjust the constant
+ * sets here ONLY — no other K8 file interprets the body.
  * ────────────────────────────────────────────────────────────────────────────
  *
  * Tolerance contract (deliberately permissive — an unknown/missing status with
@@ -51,22 +52,44 @@ export interface ParsedRemoteDetails {
 }
 
 // Case-insensitive status maps. Keys are lower-cased Kaspi status strings.
-const PROCESSED_STATUSES = new Set<string>(['processed']);
+//
+// VERIFIED on the 2026-06-20 live pilot (remote/details captured):
+//   - paid op   → Data.Status = 'Processed'
+//   - pending   → Data.Status = 'RemotePaymentCreated'
+//   - cancelled → Data.Status = 'RemotePaymentRejected' ("Отклонен клиентом")
+// Kaspi prefixes the remote-flow statuses with 'RemotePayment'. We keep BOTH
+// the bare and the prefixed forms so a flow that omits the prefix still maps.
+const PROCESSED_STATUSES = new Set<string>([
+  'processed',
+  'remotepaymentprocessed',
+]);
 
 const PENDING_STATUSES = new Set<string>([
   'remotepaymentcreated',
+  'remotepaymentwait',
+  'remotepaymentnew',
   'wait',
   'created',
   'new',
 ]);
 
 const TERMINAL_STATUSES = new Set<string>([
+  // bare forms
   'canceled',
   'cancelled',
   'rejected',
   'expired',
   'error',
   'declined',
+  'failed',
+  // RemotePayment-prefixed forms (live-verified: RemotePaymentRejected)
+  'remotepaymentrejected',
+  'remotepaymentcanceled',
+  'remotepaymentcancelled',
+  'remotepaymentexpired',
+  'remotepaymentdeclined',
+  'remotepaymenterror',
+  'remotepaymentfailed',
 ]);
 
 /**

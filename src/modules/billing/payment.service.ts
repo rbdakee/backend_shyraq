@@ -15,6 +15,7 @@ import { TransactionRunnerPort } from '@/shared-kernel/application/ports/transac
 import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import { ChildGuardianRepository } from '@/modules/child/infrastructure/persistence/child-guardian.repository';
 import { KindergartenRepository } from '@/modules/kindergarten/infrastructure/persistence/kindergarten.repository';
+import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
 import {
   Payment,
   PaymentProvider,
@@ -151,6 +152,13 @@ export class PaymentService {
     @Optional()
     @InjectQueue(KASPI_PAYMENT_STATUS_QUEUE)
     private readonly kaspiPollQueue?: Queue,
+    // #5b — optional StaffMemberRepository, used ONLY to pre-resolve the kg's
+    // active admins for the double-payment `payment.refund_required` outbox
+    // alert. Optional so the many existing PaymentService specs (which build
+    // the service without it) keep compiling; when absent the admin ping is
+    // skipped (the row is still flagged + visible in the admin list).
+    @Optional()
+    private readonly staffRepo?: StaffMemberRepository,
   ) {}
 
   /**
@@ -275,6 +283,19 @@ export class PaymentService {
           'amount_mismatch_partial',
         );
       }
+    }
+
+    // Single-parent double-pay guard: recall any non-terminal kaspi_pay payment
+    // THIS payer already has on THIS invoice before creating a new request, so
+    // a re-initiate never leaves two live Kaspi requests on the payer's phone.
+    // Different payers are intentionally NOT recalled — a genuine two-parent
+    // double payment is detected + flagged (refund_required) at settlement.
+    if (input.provider === 'kaspi_pay' && input.payerUserId) {
+      await this.recallInFlightKaspiForPayer(
+        kindergartenId,
+        invoice.id,
+        input.payerUserId,
+      );
     }
 
     // Build domain Payment in `initiated` state. Persist BEFORE calling
@@ -417,13 +438,14 @@ export class PaymentService {
         const jobData: KaspiPaymentStatusJobData = {
           kindergartenId,
           paymentId: payment.id,
+          tick: 0,
         };
         await this.kaspiPollQueue
           .add(KASPI_PAYMENT_STATUS_JOB, jobData, {
-            // Deterministic jobId keeps the poll chain single-lived: BullMQ
-            // dedups a re-add of an already-queued tick, and a completed
-            // delayed job with this id is re-addable (the reschedule path).
-            jobId: `kaspi-poll:${payment.id}`,
+            // tick 0 — the reschedule chain increments the tick (see processor).
+            // A fixed-per-tick jobId still dedups a double-initiate of the SAME
+            // payment (single-lived chain), while each reschedule stays unique.
+            jobId: `kaspi-poll-${payment.id}-0`,
             attempts: 1,
             delay: KASPI_POLL_AGGRESSIVE_INTERVAL_MS,
             removeOnComplete: { count: 50 },
@@ -589,6 +611,66 @@ export class PaymentService {
    *     actually flipped on this call (the `updated` variable from the
    *     conditional UPDATE is non-null).
    */
+  /**
+   * Single-parent double-pay guard (#5a). Recalls every still-pending
+   * (`initiated`/`processing`) `kaspi_pay` payment the SAME payer already has on
+   * this invoice: cancels the live Kaspi remote operation (best-effort) and
+   * flips our row to `failed` ('superseded_by_new_payment'). This leaves only
+   * the about-to-be-created request live, so a re-initiating parent can never
+   * pay twice. Scoped to one payer — a true two-parent race is allowed through
+   * and caught at settlement by the duplicate detector.
+   */
+  private async recallInFlightKaspiForPayer(
+    kindergartenId: string,
+    invoiceId: string,
+    payerUserId: string,
+  ): Promise<void> {
+    const existing = await this.paymentRepo.findByInvoiceId(
+      kindergartenId,
+      invoiceId,
+    );
+    const now = this.clock.now();
+    for (const prev of existing) {
+      const inFlight =
+        prev.status === 'initiated' || prev.status === 'processing';
+      if (
+        !inFlight ||
+        prev.provider !== 'kaspi_pay' ||
+        prev.payerUserId !== payerUserId
+      ) {
+        continue;
+      }
+      if (prev.providerTxnId) {
+        try {
+          await this.paymentProvider.cancelPayment({
+            kindergartenId,
+            providerPaymentId: prev.providerTxnId,
+          });
+        } catch (err) {
+          // Best-effort: the op may already be terminal, or Kaspi may be
+          // unreachable. We still fail our row so the new request is the only
+          // one we will settle; a stale Kaspi op expires on its own ExpireDate.
+          this.logger.warn(
+            `payment.initiate: kaspi recall failed for prev=${prev.id} (proceeding): ${err instanceof Error ? err.message : err}`,
+          );
+        }
+      }
+      await this.paymentRepo
+        .markFailedConditional(
+          kindergartenId,
+          prev.id,
+          'superseded_by_new_payment',
+          null,
+          now,
+        )
+        .catch((err) => {
+          this.logger.warn(
+            `payment.initiate: failed to supersede prev=${prev.id}: ${err instanceof Error ? err.message : err}`,
+          );
+        });
+    }
+  }
+
   private async applyCompletedPayment(
     kindergartenId: string,
     paymentId: string,
@@ -688,6 +770,50 @@ export class PaymentService {
       updated.amount,
     );
 
+    // Double-payment detection (#5b): if ANOTHER completed payment already
+    // exists on this invoice, two guardians paid the same month in parallel.
+    // The invoice stays paid and we keep the credit (the money really moved),
+    // but THIS later settlement is flagged for a MANUAL admin refund, pointing
+    // at the first/kept payment so the admin app can link to it. The per-invoice
+    // advisory lock above serialises settlements, so the earlier one is always
+    // already `completed` here and only the later duplicate is flagged.
+    const siblings = await this.paymentRepo.findByInvoiceId(
+      kindergartenId,
+      current.invoiceId,
+    );
+    const earlierCompleted = siblings
+      .filter((p) => p.id !== updated.id && p.status === 'completed')
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())[0];
+    if (earlierCompleted) {
+      await this.paymentRepo
+        .markRefundRequired(
+          kindergartenId,
+          updated.id,
+          'double_payment',
+          earlierCompleted.id,
+          now,
+        )
+        .catch((err) =>
+          this.logger.warn(
+            `payment.completed: failed to flag double payment=${updated.id} dup_of=${earlierCompleted.id}: ${err instanceof Error ? err.message : err}`,
+          ),
+        );
+      this.logger.warn(
+        `double_payment_detected: payment=${updated.id} duplicates=${earlierCompleted.id} invoice=${current.invoiceId} kg=${kindergartenId} — needs manual admin refund`,
+      );
+      // Best-effort admin ping so the manual-refund queue surfaces, not just a
+      // flag in the payments list. Never fails settlement.
+      await this.notifyDoublePayment(
+        kindergartenId,
+        updated,
+        earlierCompleted.id,
+      ).catch((err) =>
+        this.logger.warn(
+          `payment.completed: double-pay admin notify failed for payment=${updated.id}: ${err instanceof Error ? err.message : err}`,
+        ),
+      );
+    }
+
     // Fiscal receipt emit — best-effort. OFD providers (B15) are async +
     // transient by nature; refusing to settle a payment because an OFD
     // request blipped would be the wrong trade-off. Wrap in try/catch and
@@ -742,6 +868,46 @@ export class PaymentService {
     }
 
     return updated;
+  }
+
+  /**
+   * #5b admin ping — resolve the kg's active admins and emit
+   * `payment.refund_required` so the manual-refund queue surfaces in the admin
+   * app (not just a flag in the payments list). Skipped when the optional
+   * `StaffMemberRepository` is absent (unit-test wiring) or the kg has no
+   * active admins. Runs under the caller's ambient tenant context (the
+   * settlement TX), so both the staff read (RLS) and the outbox insert stay
+   * kg-scoped. Mirrors the poller's `notifyKaspiSessionExpired` recipient
+   * resolution.
+   */
+  private async notifyDoublePayment(
+    kindergartenId: string,
+    duplicate: Payment,
+    duplicateOfPaymentId: string,
+  ): Promise<void> {
+    if (!this.staffRepo) return;
+    const admins = await this.staffRepo.listByKindergarten(kindergartenId, {
+      role: 'admin',
+      isActive: true,
+    });
+    const recipientUserIds = Array.from(
+      new Set(
+        admins
+          .map((s) => s.toState().userId)
+          .filter((u): u is string => typeof u === 'string'),
+      ),
+    );
+    if (recipientUserIds.length === 0) return;
+    await this.notificationPort.notifyPaymentRefundRequired({
+      kindergartenId,
+      paymentId: duplicate.id,
+      duplicateOfPaymentId,
+      invoiceId: duplicate.invoiceId,
+      childId: duplicate.childId,
+      amount: duplicate.amount.toNumber(),
+      reason: 'double_payment',
+      recipientUserIds,
+    });
   }
 
   /**

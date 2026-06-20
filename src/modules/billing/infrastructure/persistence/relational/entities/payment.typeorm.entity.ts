@@ -79,6 +79,15 @@ export class PaymentTypeOrmEntity {
   @Column({ name: 'refund_id', type: 'uuid', nullable: true })
   refundId!: string | null;
 
+  @Column({ name: 'refund_required', type: 'boolean', default: false })
+  refundRequired!: boolean;
+
+  @Column({ name: 'refund_reason', type: 'text', nullable: true })
+  refundReason!: string | null;
+
+  @Column({ name: 'duplicate_of_payment_id', type: 'uuid', nullable: true })
+  duplicateOfPaymentId!: string | null;
+
   @CreateDateColumn({
     name: 'created_at',
     type: 'timestamptz',

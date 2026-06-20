@@ -27,6 +27,7 @@ import {
   NotifyPaymentCompletedInput,
   NotifyPaymentFailedInput,
   NotifyPaymentRefundedInput,
+  NotifyPaymentRefundRequiredInput,
   NotifyRefundProcessedInput,
   ParentRequestAcceptedEvent,
   ParentRequestCancelledEvent,
@@ -474,6 +475,24 @@ export class OutboxNotificationAdapter extends NotificationPort {
     // dispatcher's `resolveRecipientUserIdsFromPayload` — same pattern as
     // `enrollment.first_invoice_skipped`. No PII / payment context carried.
     return this.enqueue(event.kindergartenId, 'kaspi.session_expired', {
+      recipientUserIds: event.recipientUserIds,
+    });
+  }
+
+  notifyPaymentRefundRequired(
+    event: NotifyPaymentRefundRequiredInput,
+  ): Promise<void> {
+    // #5b — recipients are pre-resolved kg admins, fanned out by the
+    // dispatcher's `resolveRecipientUserIdsFromPayload` (mirrors
+    // `kaspi.session_expired`). Carries the duplicate + kept payment ids so
+    // the admin app can deep-link both.
+    return this.enqueue(event.kindergartenId, 'payment.refund_required', {
+      paymentId: event.paymentId,
+      duplicateOfPaymentId: event.duplicateOfPaymentId,
+      invoiceId: event.invoiceId,
+      childId: event.childId,
+      amount: event.amount,
+      reason: event.reason,
       recipientUserIds: event.recipientUserIds,
     });
   }

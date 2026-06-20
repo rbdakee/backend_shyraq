@@ -27,6 +27,9 @@ export const PaymentPresenter = {
       status: s.status,
       paid_at: s.paidAt ? s.paidAt.toISOString() : null,
       refund_id: s.refundId,
+      refund_required: payment.refundRequired,
+      refund_reason: payment.refundReason,
+      duplicate_of_payment_id: payment.duplicateOfPaymentId,
       created_at: s.createdAt.toISOString(),
       updated_at: s.updatedAt.toISOString(),
     };
