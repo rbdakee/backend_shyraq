@@ -70,8 +70,8 @@ describe('MediaSignInterceptor', () => {
     const interceptor = new MediaSignInterceptor(
       storage,
       reflectorReturning(skip),
-      TEST_CFG,
     );
+    interceptor.cfg = TEST_CFG; // override env-resolved config for tests
     return lastValueFrom(interceptor.intercept(makeCtx(), handlerOf(body)));
   }
 

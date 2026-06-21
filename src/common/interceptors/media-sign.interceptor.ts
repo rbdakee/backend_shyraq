@@ -151,16 +151,20 @@ export function resolveMediaKey(
  */
 @Injectable()
 export class MediaSignInterceptor implements NestInterceptor {
-  private readonly cfg: MediaUrlConfig;
+  /**
+   * Bucket addressing config, resolved from env at construction. It is a
+   * PLAIN FIELD, not a constructor parameter: Nest tries to DI-resolve every
+   * constructor argument, and a 3rd arg typed as an interface (erased to
+   * `Object` at runtime) has no provider → `UnknownDependenciesException` at
+   * bootstrap (the whole app fails to start). Unit tests override this field
+   * after instantiation instead.
+   */
+  cfg: MediaUrlConfig = readMediaUrlConfig();
 
   constructor(
     @Inject(FileStoragePort) private readonly storage: FileStoragePort,
     private readonly reflector: Reflector,
-    config?: MediaUrlConfig,
-  ) {
-    // `config` is only passed by unit tests; production resolves from env.
-    this.cfg = config ?? readMediaUrlConfig();
-  }
+  ) {}
 
   intercept(ctx: ExecutionContext, next: CallHandler): Observable<unknown> {
     if (ctx.getType() !== 'http') return next.handle();
