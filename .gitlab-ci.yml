@@ -68,9 +68,10 @@ test:
 #
 # Required CI/CD variables (Settings → CI/CD → Variables) — kept OUT of this
 # committed file on purpose (no infra host/IP hardcoded in the repo):
-#   DEPLOY_SSH_HOST  — server host/IP            (Variable)
-#   DEPLOY_SSH_USER  — ssh user                   (Variable)
-#   DEPLOY_SSH_KEY   — private deploy key         (Variable, type FILE)
+#   DEPLOY_SSH_HOST  — server host/IP                  (Variable)
+#   DEPLOY_SSH_USER  — ssh user                         (Variable)
+#   DEPLOY_SSH_KEY   — base64 of the private deploy key  (Variable)
+#                      generate: base64 of the private key file, one line.
 # These must be exposed to the deploy jobs' branches: if `main`/`development`
 # are PROTECTED branches, mark the variables Protected too; otherwise leave
 # Protected unchecked.
@@ -80,9 +81,10 @@ test:
   before_script:
     - apk add --no-cache openssh-client
     - mkdir -p ~/.ssh && chmod 700 ~/.ssh
-    # FILE-type var → $DEPLOY_SSH_KEY is a path; strip CR in case it was
-    # pasted from Windows, then lock perms so ssh accepts the key.
-    - tr -d '\r' < "$DEPLOY_SSH_KEY" > ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
+    # DEPLOY_SSH_KEY holds the BASE64 of the private key (single line). Pasting
+    # a raw multi-line OpenSSH key into a CI variable mangles the newlines and
+    # ssh fails with "error in libcrypto"; base64 avoids that entirely.
+    - echo "$DEPLOY_SSH_KEY" | base64 -d > ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
     - ssh-keyscan -H "$DEPLOY_SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
   # `bash -lc` → login shell so docker/npm are on PATH in the non-interactive
   # SSH session. `git pull --ff-only` aborts loudly instead of creating a merge
