@@ -2,7 +2,22 @@ import { CallHandler, ExecutionContext } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { lastValueFrom, of } from 'rxjs';
 import { FileStoragePort } from '@/shared-kernel/storage/file-storage.port';
-import { MediaSignInterceptor } from './media-sign.interceptor';
+import {
+  MediaSignInterceptor,
+  MediaUrlConfig,
+  resolveMediaKey,
+} from './media-sign.interceptor';
+
+// Explicit config used by tests (production reads this from env). Mirrors the
+// ps.kz dev wiring so the absolute-bucket-URL branch is exercised.
+const TEST_CFG: MediaUrlConfig = {
+  urlPrefix: '/api/v1/media',
+  legacyPrefix: '/static',
+  bucketBases: [
+    'https://balam-media-dev.object.pscloud.io/',
+    'https://object.pscloud.io/balam-media-dev/',
+  ],
+};
 
 /**
  * Hand-written in-memory fake (CLAUDE.md §7 — no Jest auto-mock). Records the
@@ -55,6 +70,7 @@ describe('MediaSignInterceptor', () => {
     const interceptor = new MediaSignInterceptor(
       storage,
       reflectorReturning(skip),
+      TEST_CFG,
     );
     return lastValueFrom(interceptor.intercept(makeCtx(), handlerOf(body)));
   }
@@ -148,5 +164,108 @@ describe('MediaSignInterceptor', () => {
 
     expect(out).toBe(body);
     expect(storage.signCalls).toHaveLength(0);
+  });
+
+  it('signs legacy /static/<key> photos (pre-SP5 rows)', async () => {
+    const body = { photo_url: '/static/kg-1/2025-01/legacy.jpg' };
+
+    const out = (await run(body)) as typeof body;
+
+    expect(out.photo_url).toMatch(/cdn\.example\/kg-1\/2025-01\/legacy\.jpg/);
+    expect(storage.signCalls).toEqual([
+      { key: 'kg-1/2025-01/legacy.jpg', ttl: 3600 },
+    ]);
+  });
+
+  it('re-signs absolute bucket URLs and strips a stale signature', async () => {
+    const body = {
+      avatar_url:
+        'https://balam-media-dev.object.pscloud.io/kg-1/2025-01/avatar.jpg?X-Amz-Signature=stale&X-Amz-Expires=900',
+      path_style:
+        'https://object.pscloud.io/balam-media-dev/kg-1/2025-01/p.png',
+    };
+
+    const out = (await run(body)) as typeof body;
+
+    expect(out.avatar_url).toBe(
+      'https://cdn.example/kg-1/2025-01/avatar.jpg?sig=abc&ttl=3600',
+    );
+    expect(out.path_style).toBe(
+      'https://cdn.example/kg-1/2025-01/p.png?sig=abc&ttl=3600',
+    );
+    expect(storage.signCalls).toEqual(
+      expect.arrayContaining([
+        { key: 'kg-1/2025-01/avatar.jpg', ttl: 3600 },
+        { key: 'kg-1/2025-01/p.png', ttl: 3600 },
+      ]),
+    );
+  });
+
+  it('leaves genuine external CDN URLs (different host) untouched', async () => {
+    const body = { avatar_url: 'https://cdn.shyraq.app/u/abcd1234.jpg' };
+
+    const out = (await run(body)) as typeof body;
+
+    expect(out.avatar_url).toBe('https://cdn.shyraq.app/u/abcd1234.jpg');
+    expect(storage.signCalls).toHaveLength(0);
+  });
+
+  it('signs absolute backend-host /api/v1/media URLs (children.photo_url shape)', async () => {
+    // The real stored shape: client baked the backend base URL onto the
+    // canonical media route (http://<ip>:<port>/api/v1/media/<key>).
+    const body = {
+      photo_url:
+        'http://194.238.42.156:5678/api/v1/media/kg-1/2026-06/child.jpg',
+    };
+
+    const out = (await run(body)) as typeof body;
+
+    expect(out.photo_url).toBe(
+      'https://cdn.example/kg-1/2026-06/child.jpg?sig=abc&ttl=3600',
+    );
+    expect(storage.signCalls).toEqual([
+      { key: 'kg-1/2026-06/child.jpg', ttl: 3600 },
+    ]);
+  });
+});
+
+describe('resolveMediaKey', () => {
+  const cfg: MediaUrlConfig = {
+    urlPrefix: '/api/v1/media',
+    legacyPrefix: '/static',
+    bucketBases: [
+      'https://balam-media-dev.object.pscloud.io/',
+      'https://object.pscloud.io/balam-media-dev/',
+    ],
+  };
+
+  it('extracts the key from each recognised form', () => {
+    expect(resolveMediaKey('/api/v1/media/a/b/c.png', cfg)).toBe('a/b/c.png');
+    expect(resolveMediaKey('/static/a/b/c.png', cfg)).toBe('a/b/c.png');
+    expect(
+      resolveMediaKey(
+        'https://balam-media-dev.object.pscloud.io/a/b/c.png?X-Amz-Signature=x',
+        cfg,
+      ),
+    ).toBe('a/b/c.png');
+    expect(
+      resolveMediaKey(
+        'https://object.pscloud.io/balam-media-dev/a/b/c.png',
+        cfg,
+      ),
+    ).toBe('a/b/c.png');
+    // absolute backend-host URL (the real children.photo_url shape)
+    expect(
+      resolveMediaKey('http://194.238.42.156:5678/api/v1/media/a/b/c.png', cfg),
+    ).toBe('a/b/c.png');
+    expect(
+      resolveMediaKey('https://api.shyraq.app/static/a/b/c.png', cfg),
+    ).toBe('a/b/c.png');
+  });
+
+  it('returns null for external / unrelated strings', () => {
+    expect(resolveMediaKey('https://cdn.shyraq.app/x.jpg', cfg)).toBeNull();
+    expect(resolveMediaKey('just a title', cfg)).toBeNull();
+    expect(resolveMediaKey('/api/v1/media/', cfg)).toBeNull();
   });
 });
