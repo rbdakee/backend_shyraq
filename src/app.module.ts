@@ -47,6 +47,7 @@ import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { KindergartenScopeGuard } from './common/guards/kindergarten-scope.guard';
 import { PendingRoleSelectGuard } from './common/guards/pending-role-select.guard';
 import { TenantContextInterceptor } from './common/interceptors/tenant-context.interceptor';
+import { MediaSignInterceptor } from './common/interceptors/media-sign.interceptor';
 import { DomainErrorFilter } from './common/filters/domain-error.filter';
 
 const resolveI18nPath = (): string => {
@@ -172,6 +173,13 @@ const resolveI18nPath = (): string => {
     // interceptors, so JwtAuthGuard fills user, KindergartenScopeGuard fills
     // tenant, and finally TenantContextInterceptor wraps the handler.
     { provide: APP_INTERCEPTOR, useClass: TenantContextInterceptor },
+    // Rewrites canonical `/api/v1/media/<key>` URLs in every successful
+    // response into short-lived presigned URLs (private bucket → directly
+    // loadable in `<img src>` without an auth header). Registered AFTER the
+    // tenant interceptor so it sees the handler's final DTO; depends on
+    // FileStoragePort (exported by ContentModule). No-op on the local
+    // adapter; opt out per-handler with @SkipMediaSign().
+    { provide: APP_INTERCEPTOR, useClass: MediaSignInterceptor },
     // Global filter that maps domain errors -> HTTP. Per-controller filters
     // are not needed because every error carries its own `code`.
     { provide: APP_FILTER, useClass: DomainErrorFilter },

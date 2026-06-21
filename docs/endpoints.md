@@ -7,6 +7,7 @@
 Принятые соглашения:
 - Ответы локализуются по `users.locale` (`ru` / `kk`) c fallback на RU.
 - Presigned upload для медиа — через общий `StorageModule` (см. раздел Shared).
+- **Media read URLs — presigned.** Любое поле `media_urls[]` / `media_url` в УСПЕШНОМ ответе переписывается глобальным `MediaSignInterceptor`: канонический `/api/v1/media/<key>` → короткоживущий presigned URL прямо в приватный object-store (TTL **1 час**), пригодный для `<img src>` без auth-заголовка. Файл всегда остаётся в приватном бакете — временна только подпись ссылки. На local-адаптере это no-op (возвращается тот же `/api/v1/media/<key>`), а сам роут `GET /api/v1/media/:kgId/:yyyyMm/:filename` (JWT + kg-scope) остаётся fallback'ом. Исключение: `POST /admin/content/upload-media` помечен `@SkipMediaSign()` и возвращает канонический (неподписанный) `url`+`key`, которые клиент сохраняет в `media_urls`.
 - OTP — через `AuthModule` (login) и `PickupModule` (доверенное лицо). Идентификация также возможна через Identity QR (fallback).
 
 **Guards (cross-cutting):**
