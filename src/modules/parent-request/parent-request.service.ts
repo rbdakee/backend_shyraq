@@ -18,6 +18,7 @@ import { OtpStorePort } from '@/modules/auth/otp-store.port';
 import { SmsPort } from '@/modules/auth/sms.port';
 import { ChildNotFoundError } from '@/modules/child/domain/errors/child-not-found.error';
 import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
+import { ChildService } from '@/modules/child/child.service';
 import { ChildGuardianRepository } from '@/modules/child/infrastructure/persistence/child-guardian.repository';
 import { GroupRepository } from '@/modules/group/infrastructure/persistence/group.repository';
 import { KindergartenRepository } from '@/modules/kindergarten/infrastructure/persistence/kindergarten.repository';
@@ -198,6 +199,12 @@ export class ParentRequestService {
     // staff-name branch fails closed → the display field resolves to null.
     @Optional()
     private readonly staffService?: StaffService,
+    // Optional for the same reason — used by `resolveChildNames` for the
+    // staff `child_name` overlay (children.id → full_name, incl. archived).
+    // When undefined (positional spec wiring) it fails closed → empty map →
+    // `child_name` resolves to null.
+    @Optional()
+    private readonly childService?: ChildService,
   ) {}
 
   /**
@@ -272,6 +279,28 @@ export class ParentRequestService {
       out.set(staffId, nonBlankOrNull(identity.fullName));
     }
     return out;
+  }
+
+  /**
+   * Identity overlay for parent_request `child_name` — resolves each request's
+   * `child_id` to `children.full_name` (INCLUDING archived children) within the
+   * caller kg, batched + deduped, via `ChildService.resolveChildNames`. Mirrors
+   * `resolveRequestStaffNames`. Returns a `Map<childId, full_name>`; ids missing
+   * from the map (missing / cross-tenant child rows) render `child_name` as
+   * null. Fails closed to an empty map when the `ChildService` port is not
+   * wired (legacy positional spec construction).
+   */
+  async resolveChildNames(
+    kindergartenId: string,
+    requests: ParentRequest[],
+  ): Promise<Map<string, string>> {
+    if (!this.childService) {
+      return new Map();
+    }
+    return this.childService.resolveChildNames(
+      kindergartenId,
+      requests.map((r) => r.childId).filter((id): id is string => !!id),
+    );
   }
 
   /**

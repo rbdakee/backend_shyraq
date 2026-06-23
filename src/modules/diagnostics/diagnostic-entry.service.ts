@@ -8,6 +8,7 @@ import {
 import { NotificationPort } from '@/common/notifications/notification.port';
 import { ChildGuardianRepository } from '@/modules/child/infrastructure/persistence/child-guardian.repository';
 import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
+import { ChildService } from '@/modules/child/child.service';
 import { ChildNotFoundError } from '@/modules/child/domain/errors/child-not-found.error';
 import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
 import { StaffMember } from '@/modules/staff/domain/entities/staff-member.entity';
@@ -92,6 +93,11 @@ export class DiagnosticEntryService {
     // users.full_name`). When missing, name resolution fails closed →
     // `specialist_full_name = null`.
     private readonly staffService?: StaffService,
+    // Optional for the same reason — used by `resolveChildNames` for the
+    // staff `child_name` overlay (children.id → children.full_name, incl.
+    // archived). When missing (legacy positional spec wiring), name
+    // resolution fails closed → empty map → `child_name = null`.
+    private readonly childService?: ChildService,
   ) {}
 
   /**
@@ -131,6 +137,28 @@ export class DiagnosticEntryService {
       });
     }
     return out;
+  }
+
+  /**
+   * Identity overlay for diagnostic-entry `child_name` — resolves each entry's
+   * `child_id` to `children.full_name` (INCLUDING archived children) within the
+   * caller kg, batched + deduped, via `ChildService.resolveChildNames`. Mirrors
+   * `resolveSpecialists`. Returns a `Map<childId, full_name>`; ids missing from
+   * the map (missing / cross-tenant child rows) render `child_name` as null.
+   * Fails closed to an empty map when the `ChildService` port is not wired
+   * (legacy positional spec construction).
+   */
+  async resolveChildNames(
+    kindergartenId: string,
+    entries: DiagnosticEntry[],
+  ): Promise<Map<string, string>> {
+    if (!this.childService) {
+      return new Map();
+    }
+    return this.childService.resolveChildNames(
+      kindergartenId,
+      entries.map((e) => e.childId),
+    );
   }
 
   /**

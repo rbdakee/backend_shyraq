@@ -507,6 +507,29 @@ export class ChildRelationalRepository extends ChildRepository {
     return rows.map((r) => ({ id: r.id, fullName: r.full_name }));
   }
 
+  /**
+   * Batch `id → full_name` resolver INCLUDING archived children (no
+   * `status` filter) — the staff `child_name` overlay must resolve names for
+   * archived children referenced by older diagnostic entries / parent
+   * requests. Single `WHERE id = ANY($2)` keyed by the deduped ids; missing /
+   * cross-tenant ids simply do not land in the map.
+   */
+  async findFullNamesByIds(
+    kindergartenId: string,
+    ids: string[],
+  ): Promise<Map<string, string>> {
+    const unique = [...new Set(ids)];
+    const out = new Map<string, string>();
+    if (unique.length === 0) return out;
+    const rows = (await this.manager().query(
+      `SELECT id, full_name FROM children
+        WHERE kindergarten_id = $1 AND id = ANY($2)`,
+      [kindergartenId, unique],
+    )) as Array<{ id: string; full_name: string }>;
+    for (const r of rows) out.set(r.id, r.full_name);
+    return out;
+  }
+
   // ── B-DASH — Dashboard summary aggregate ──────────────────────────────
 
   async countActiveByKindergarten(kindergartenId: string): Promise<number> {

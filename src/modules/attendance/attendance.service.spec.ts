@@ -296,6 +296,14 @@ class FakeChildRepo extends ChildRepository {
     if (!c || c.kindergartenId !== kg) return Promise.resolve(null);
     return Promise.resolve(c);
   }
+  findFullNamesByIds(kg: string, ids: string[]): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    for (const id of [...new Set(ids)]) {
+      const c = this.byId.get(id);
+      if (c && c.kindergartenId === kg) out.set(id, c.toState().fullName);
+    }
+    return Promise.resolve(out);
+  }
   findByKindergartenAndIin(_kg: string, _iin: string): Promise<Child | null> {
     return Promise.resolve(null);
   }
@@ -1218,6 +1226,26 @@ describe('AttendanceService — service-unit', () => {
       const w = wire();
       const map = await w.service.resolvePickupUserNames([
         makeCheckOutEvent(PICKUP_USER),
+      ]);
+      expect(map.size).toBe(0);
+    });
+  });
+
+  describe('resolveChildNames', () => {
+    it('resolves child_id → full_name via the child repo (deduped)', async () => {
+      const w = wire(); // seeds CHILD → 'Test Child'
+      const map = await w.service.resolveChildNames(KG, [
+        { childId: CHILD },
+        { childId: CHILD },
+      ]);
+      expect(map.get(CHILD)).toBe('Test Child');
+      expect(map.size).toBe(1);
+    });
+
+    it('omits ids with no matching child row (rendered as null upstream)', async () => {
+      const w = wire();
+      const map = await w.service.resolveChildNames(KG, [
+        { childId: 'dddddddd-dddd-dddd-dddd-dddddddddddd' },
       ]);
       expect(map.size).toBe(0);
     });

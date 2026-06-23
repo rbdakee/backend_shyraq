@@ -9,19 +9,22 @@ export class AttendancePresenter {
    * carry display names resolved by the service (the row stores only ids):
    *   - `recordedByFullName` — staff_members.id → users.full_name.
    *   - `pickupUserFullName` — users.id → users.full_name (check_out only).
-   * Absent overlay → the respective `*_full_name` falls back to null.
-   * Mirrors `ProgressNotePresenter.one`'s `mentorFullName` overlay.
+   *   - `childName` — children.id → children.full_name (incl. archived).
+   * Absent overlay → the respective `*_full_name` / `child_name` falls back
+   * to null. Mirrors `ProgressNotePresenter.one`'s `mentorFullName` overlay.
    */
   static event(
     e: AttendanceEvent,
     recordedByFullName: string | null = null,
     pickupUserFullName: string | null = null,
+    childName: string | null = null,
   ): AttendanceEventResponseDto {
     const s = e.toState();
     return {
       id: s.id,
       kindergartenId: s.kindergartenId,
       childId: s.childId,
+      child_name: childName,
       eventType: s.eventType,
       method: s.method,
       recordedBy: s.recordedBy,

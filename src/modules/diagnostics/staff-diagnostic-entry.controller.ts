@@ -148,11 +148,13 @@ export class StaffDiagnosticEntryController {
       kgId,
       result.items,
     );
+    const childNames = await this.service.resolveChildNames(kgId, result.items);
     return DiagnosticEntryPresenter.list(
       result.items,
       result.nextCursor,
       lookup,
       specialists,
+      childNames,
     );
   }
 
@@ -195,10 +197,12 @@ export class StaffDiagnosticEntryController {
       [entry.templateId, { name: template.name, version: template.version }],
     ]);
     const specialists = await this.service.resolveSpecialists(kgId, [entry]);
+    const childNames = await this.service.resolveChildNames(kgId, [entry]);
     return DiagnosticEntryPresenter.one(
       entry,
       lookup,
       specialists.get(entry.specialistId) ?? null,
+      childNames.get(entry.childId) ?? null,
     );
   }
 
@@ -219,10 +223,12 @@ export class StaffDiagnosticEntryController {
       [entry.templateId, { name: template.name, version: template.version }],
     ]);
     const specialists = await this.service.resolveSpecialists(kgId, [entry]);
+    const childNames = await this.service.resolveChildNames(kgId, [entry]);
     return DiagnosticEntryPresenter.one(
       entry,
       lookup,
       specialists.get(entry.specialistId) ?? null,
+      childNames.get(entry.childId) ?? null,
     );
   }
 
@@ -284,10 +290,12 @@ export class StaffDiagnosticEntryController {
       [entry.templateId, { name: template.name, version: template.version }],
     ]);
     const specialists = await this.service.resolveSpecialists(kgId, [entry]);
+    const childNames = await this.service.resolveChildNames(kgId, [entry]);
     return DiagnosticEntryPresenter.one(
       entry,
       lookup,
       specialists.get(entry.specialistId) ?? null,
+      childNames.get(entry.childId) ?? null,
     );
   }
 }

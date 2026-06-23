@@ -1673,6 +1673,21 @@ export class ChildService {
     return this.children.listActiveLightByKg(kindergartenId);
   }
 
+  /**
+   * Batch resolve `child id → full_name` within the kg, INCLUDING archived
+   * children. Thin pass-through over `ChildRepository.findFullNamesByIds` for
+   * cross-module consumers (diagnostics + parent-request staff-facing
+   * `child_name` identity overlay) so they do not reach into the repository
+   * directly — CLAUDE.md §4 module boundary. Ids are deduped by the repo;
+   * missing / cross-tenant ids are absent from the map (caller renders null).
+   */
+  async resolveChildNames(
+    kindergartenId: string,
+    ids: string[],
+  ): Promise<Map<string, string>> {
+    return this.children.findFullNamesByIds(kindergartenId, ids);
+  }
+
   // ── helpers ─────────────────────────────────────────────────────────────
 
   /**

@@ -317,6 +317,28 @@ export abstract class ChildRepository {
     return Promise.resolve([]);
   }
 
+  /**
+   * Batch resolve `children.id → children.full_name` within the kg, INCLUDING
+   * archived children (a diagnostic entry or parent request can reference an
+   * archived child, so this must NOT filter on status — unlike
+   * `listActiveLightByKg`). Used by the staff-facing identity overlay that
+   * surfaces `child_name` on diagnostic-entry / parent-request reads. Ids are
+   * deduped; missing/cross-tenant ids simply do not appear in the returned map
+   * (the caller renders those as `null`). Empty input returns an empty map
+   * without a query.
+   *
+   * Non-abstract default-stub (returns an empty map) so the many in-memory
+   * service-unit fakes that `extends ChildRepository` keep compiling without
+   * declaring it — mirrors the `listActiveLightByKg` / DiscountTargetResolver
+   * helpers above. The relational impl overrides with the real batch SELECT.
+   */
+  findFullNamesByIds(
+    _kindergartenId: string,
+    _ids: string[],
+  ): Promise<Map<string, string>> {
+    return Promise.resolve(new Map());
+  }
+
   // ── B-DASH — Dashboard summary aggregate ──────────────────────────────
 
   /**

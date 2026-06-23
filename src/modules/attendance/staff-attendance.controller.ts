@@ -180,14 +180,16 @@ export class StaffAttendanceController {
     kgId: string,
     event: AttendanceEvent,
   ): Promise<AttendanceEventResponseDto> {
-    const [recordedByNames, pickupNames] = await Promise.all([
+    const [recordedByNames, pickupNames, childNames] = await Promise.all([
       this.service.resolveRecordedByNames(kgId, [event]),
       this.service.resolvePickupUserNames([event]),
+      this.service.resolveChildNames(kgId, [event]),
     ]);
     return AttendancePresenter.event(
       event,
       event.recordedBy ? (recordedByNames.get(event.recordedBy) ?? null) : null,
       event.pickupUserId ? (pickupNames.get(event.pickupUserId) ?? null) : null,
+      childNames.get(event.childId) ?? null,
     );
   }
 }

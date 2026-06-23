@@ -660,6 +660,25 @@ export class AttendanceService {
     );
   }
 
+  /**
+   * `child_name` overlay for attendance events — resolves each event's
+   * `child_id` to `children.full_name` (INCLUDING archived children) within
+   * the caller kg, batched + deduped. Reuses the already-injected
+   * `ChildRepository.findFullNamesByIds` (the same batch resolver the
+   * diagnostics / parent-request `child_name` overlays consume). Returns a
+   * `Map<childId, full_name>`; ids missing from the map (missing /
+   * cross-tenant child rows) render `child_name` as null.
+   */
+  async resolveChildNames(
+    kindergartenId: string,
+    events: { childId: string }[],
+  ): Promise<Map<string, string>> {
+    return this.childRepo.findFullNamesByIds(
+      kindergartenId,
+      events.map((e) => e.childId),
+    );
+  }
+
   /** `set_by` overlay for daily-status rows (staff names). */
   async resolveSetByNames(
     kindergartenId: string,
