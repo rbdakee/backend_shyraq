@@ -12,6 +12,7 @@ interface AuthBody {
     role: string;
     kindergarten_id: string | null;
     group_id: string | null;
+    specialist_type: string | null;
   }[];
   kindergartens: { id: string; name: string; slug: string }[];
   user: {
@@ -84,7 +85,12 @@ describe('Auth — /api/v1/auth/* (e2e)', () => {
     expect(body.pending_role_select).toBe(false);
     expect(body.token_type).toBe('Bearer');
     expect(body.roles).toEqual([
-      { role: 'parent', kindergarten_id: null, group_id: null },
+      {
+        role: 'parent',
+        kindergarten_id: null,
+        group_id: null,
+        specialist_type: null,
+      },
     ]);
     expect(body.user.phone).toBe(PARENT_PHONE);
   });

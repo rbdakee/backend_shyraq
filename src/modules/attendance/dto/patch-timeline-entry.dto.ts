@@ -35,7 +35,15 @@ export class PatchTimelineEntryDto {
   @IsUrl({}, { each: true })
   mediaUrls?: string[] | null;
 
-  @ApiPropertyOptional({ example: { mood: 'happy' }, nullable: true })
+  @ApiPropertyOptional({
+    example: { mood: 'ok' },
+    nullable: true,
+    description:
+      'Freeform jsonb. Adaptive shape per entry_type (BR-013, server-enforced): ' +
+      "mood → { mood: 'happy'|'ok'|'sad' }; meal → { ate: 'all'|'half'|'little' }. " +
+      'Validated against the entry’s (immutable) entry_type when present; ' +
+      'out-of-range → 422 invalid_timeline_metadata.',
+  })
   @IsOptional()
   @IsObject()
   metadata?: Record<string, unknown> | null;

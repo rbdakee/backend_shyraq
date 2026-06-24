@@ -959,7 +959,12 @@ describe('AuthService', () => {
       expect(res.refreshToken!.length).toBe(64);
       expect(res.pendingRoleSelect).toBe(false);
       expect(res.roles).toEqual([
-        { role: 'parent', kindergartenId: null, groupId: null },
+        {
+          role: 'parent',
+          kindergartenId: null,
+          groupId: null,
+          specialistType: null,
+        },
       ]);
     });
 
@@ -978,7 +983,12 @@ describe('AuthService', () => {
 
       expect(res.pendingRoleSelect).toBe(false);
       expect(res.roles).toEqual([
-        { role: 'parent', kindergartenId: 'kg-1', groupId: null },
+        {
+          role: 'parent',
+          kindergartenId: 'kg-1',
+          groupId: null,
+          specialistType: null,
+        },
       ]);
       expect(res.kindergartens).toEqual([{ id: 'kg-1', name: '', slug: '' }]);
     });
@@ -1215,7 +1225,12 @@ describe('AuthService', () => {
         });
 
         expect(res.roles).toEqual([
-          { role: 'parent', kindergartenId: KG_OTHER, groupId: null },
+          {
+            role: 'parent',
+            kindergartenId: KG_OTHER,
+            groupId: null,
+            specialistType: null,
+          },
         ]);
         expect(res.pendingRoleSelect).toBe(false);
       });
@@ -1252,7 +1267,12 @@ describe('AuthService', () => {
         expect(res.pendingRoleSelect).toBe(false);
         expect(res.refreshToken).not.toBeNull();
         expect(res.roles).toEqual([
-          { role: 'parent', kindergartenId: null, groupId: null },
+          {
+            role: 'parent',
+            kindergartenId: null,
+            groupId: null,
+            specialistType: null,
+          },
         ]);
         expect(refresh.rows).toHaveLength(1);
         expect(refresh.rows[0].kindergartenId).toBeNull();
@@ -1293,8 +1313,18 @@ describe('AuthService', () => {
         expect(res.refreshToken).not.toBeNull();
         // Both guardian kgs surfaced for client-side child switching.
         expect(res.roles).toEqual([
-          { role: 'parent', kindergartenId: KG_A, groupId: null },
-          { role: 'parent', kindergartenId: KG_B, groupId: null },
+          {
+            role: 'parent',
+            kindergartenId: KG_A,
+            groupId: null,
+            specialistType: null,
+          },
+          {
+            role: 'parent',
+            kindergartenId: KG_B,
+            groupId: null,
+            specialistType: null,
+          },
         ]);
         // The committed session is UNSCOPED (kg=null) under the parent audience
         // so the children list fans out cross-tenant.
@@ -1454,9 +1484,15 @@ describe('AuthService', () => {
           role: 'mentor',
           kindergartenId: KG_A,
           groupId: GROUP_PRIMARY,
+          specialistType: null,
         });
         expect(specialist?.groupId).toBeNull();
         expect(parent?.groupId).toBeNull();
+        // BR-015: only the specialist role carries a non-null specialist_type;
+        // mentor and parent rows stay null.
+        expect(specialist?.specialistType).toBe('psychologist');
+        expect(mentor?.specialistType).toBeNull();
+        expect(parent?.specialistType).toBeNull();
       });
     });
 
@@ -2310,7 +2346,12 @@ describe('AuthService', () => {
       });
 
       expect(res.roles).toEqual([
-        { role: 'parent', kindergartenId: 'kg-1', groupId: null },
+        {
+          role: 'parent',
+          kindergartenId: 'kg-1',
+          groupId: null,
+          specialistType: null,
+        },
       ]);
       expect(res.refreshToken).not.toBeNull();
     });

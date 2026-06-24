@@ -48,6 +48,7 @@ interface AuthBody {
     role: string;
     kindergarten_id: string | null;
     group_id: string | null;
+    specialist_type: string | null;
   }[];
   user: {
     id: string;
@@ -249,7 +250,12 @@ describe('B6 parent onboarding (e2e)', () => {
     const auth = await otpLogin(parentXPhone);
     expect(auth.pending_role_select).toBe(false);
     expect(auth.roles).toEqual([
-      { role: 'parent', kindergarten_id: a.kgId, group_id: null },
+      {
+        role: 'parent',
+        kindergarten_id: a.kgId,
+        group_id: null,
+        specialist_type: null,
+      },
     ]);
     expect(auth.user.phone).toBe(parentXPhone);
 
@@ -311,7 +317,12 @@ describe('B6 parent onboarding (e2e)', () => {
     // Parent Y logs in (no guardian rows yet — JWT is unscoped parent).
     const yInitial = await otpLogin(parentYPhone);
     expect(yInitial.roles).toEqual([
-      { role: 'parent', kindergarten_id: null, group_id: null },
+      {
+        role: 'parent',
+        kindergarten_id: null,
+        group_id: null,
+        specialist_type: null,
+      },
     ]);
 
     // Y links by IIN as nanny — pending_approval row created. Response is a
@@ -354,7 +365,12 @@ describe('B6 parent onboarding (e2e)', () => {
       .expect(200);
     const yScoped = refreshed.body as AuthBody;
     expect(yScoped.roles).toEqual([
-      { role: 'parent', kindergarten_id: a.kgId, group_id: null },
+      {
+        role: 'parent',
+        kindergarten_id: a.kgId,
+        group_id: null,
+        specialist_type: null,
+      },
     ]);
 
     // Y now sees the child.
@@ -542,7 +558,12 @@ describe('B6 parent onboarding (e2e)', () => {
       .expect(200);
     const yPostRefresh = yPostRefreshRes.body as AuthBody;
     expect(yPostRefresh.roles).toEqual([
-      { role: 'parent', kindergarten_id: null, group_id: null },
+      {
+        role: 'parent',
+        kindergarten_id: null,
+        group_id: null,
+        specialist_type: null,
+      },
     ]);
 
     // Re-link: revoked row does NOT block — partial-unique idx allows a fresh

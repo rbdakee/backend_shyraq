@@ -11,6 +11,7 @@ import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { TimelineEntry } from './domain/entities/timeline-entry.entity';
 import { InvalidAttendanceTimestampError } from './domain/errors/invalid-attendance-timestamp.error';
 import { InvalidTimelineEntryTypeError } from './domain/errors/invalid-timeline-entry-type.error';
+import { InvalidTimelineMetadataError } from './domain/errors/invalid-timeline-metadata.error';
 import { MentorScopeViolatedError } from './domain/errors/mentor-scope-violated.error';
 import { TimelineEntryNotFoundError } from './domain/errors/timeline-entry-not-found.error';
 import { TimelineEntryType } from './domain/value-objects/timeline-entry-type.vo';
@@ -159,6 +160,11 @@ export class TimelineService {
       throw new InvalidTimelineEntryTypeError(dto.entryType);
     }
 
+    // BR-013: mood/meal metadata shape validation (422 if the typed key is
+    // present but out of range). Runs before any DB work so invalid input
+    // never opens the TX path.
+    this.assertTimelineMetadata(dto.entryType, dto.metadata);
+
     const staffMemberId = await this.resolveStaffMemberId(
       kindergartenId,
       callerUserId,
@@ -249,6 +255,13 @@ export class TimelineService {
       : undefined;
     if (patchedEntryTime !== undefined) {
       this.assertNotFuture(patchedEntryTime);
+    }
+
+    // BR-013: validate the patched metadata against the (immutable) entry_type.
+    // entry_type cannot change on update, so we read it off the loaded entry.
+    // Only validate when metadata is part of the patch (undefined = untouched).
+    if (dto.metadata !== undefined) {
+      this.assertTimelineMetadata(entry.entryType.value, dto.metadata);
     }
 
     entry.applyPatch({
@@ -379,6 +392,43 @@ export class TimelineService {
     const SKEW_MS = 5 * 60 * 1000;
     if (when.getTime() > now.getTime() + SKEW_MS) {
       throw new InvalidAttendanceTimestampError(when, now);
+    }
+  }
+
+  /**
+   * BR-013 — server-side validation of the adaptive `metadata` shape.
+   *
+   * Contract (mirrors local_docs/mobile_staff/BACKEND_RESPONSE_013):
+   *   - entry_type='mood' → if `metadata.mood` is present it must be one of
+   *     `happy | ok | sad`.
+   *   - entry_type='meal' → if `metadata.ate` is present it must be one of
+   *     `all | half | little`.
+   * `metadata` stays optional — null/undefined passes, the typed key may be
+   * absent, and extra keys are ignored. All other entry_types skip validation.
+   * Invalid values throw `InvalidTimelineMetadataError` → 422.
+   */
+  private assertTimelineMetadata(
+    entryType: string,
+    metadata: Record<string, unknown> | null | undefined,
+  ): void {
+    if (metadata == null) return;
+    if (entryType === 'mood') {
+      const v = metadata['mood'];
+      if (v !== undefined && !['happy', 'ok', 'sad'].includes(v as string)) {
+        throw new InvalidTimelineMetadataError(
+          'mood',
+          `mood must be happy|ok|sad, got ${String(v)}`,
+        );
+      }
+    }
+    if (entryType === 'meal') {
+      const v = metadata['ate'];
+      if (v !== undefined && !['all', 'half', 'little'].includes(v as string)) {
+        throw new InvalidTimelineMetadataError(
+          'meal',
+          `ate must be all|half|little, got ${String(v)}`,
+        );
+      }
     }
   }
 }

@@ -14,6 +14,7 @@ interface SuperAdminAuthBody {
     role: string;
     kindergarten_id: string | null;
     group_id: string | null;
+    specialist_type: string | null;
   }[];
 }
 
@@ -73,7 +74,12 @@ describe('SuperAdmin Auth — /api/v1/saas/auth/* (e2e)', () => {
     expect(body.access_token.length).toBeGreaterThan(0);
     expect(body.refresh_token.length).toBe(64);
     expect(body.roles).toEqual([
-      { role: 'super_admin', kindergarten_id: null, group_id: null },
+      {
+        role: 'super_admin',
+        kindergarten_id: null,
+        group_id: null,
+        specialist_type: null,
+      },
     ]);
   });
 

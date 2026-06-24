@@ -32,6 +32,7 @@ interface AuthBody {
     role: string;
     kindergarten_id: string | null;
     group_id: string | null;
+    specialist_type: string | null;
   }[];
   user: { id: string; phone: string; full_name: string };
 }

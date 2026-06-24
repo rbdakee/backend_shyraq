@@ -37,6 +37,9 @@ export class MealItemEntity {
   @Column({ type: 'int', nullable: true })
   calories: number | null;
 
+  @Column({ name: 'serve_time', type: 'text', nullable: true })
+  serve_time: string | null;
+
   @Column({ type: 'int', default: 0 })
   position: number;
 }

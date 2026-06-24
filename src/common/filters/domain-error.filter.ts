@@ -61,6 +61,7 @@ import { DailyStatusNotFoundError } from '@/modules/attendance/domain/errors/dai
 import { InvalidAttendancePickupError } from '@/modules/attendance/domain/errors/invalid-attendance-pickup.error';
 import { InvalidAttendanceTimestampError } from '@/modules/attendance/domain/errors/invalid-attendance-timestamp.error';
 import { InvalidTimelineEntryTypeError } from '@/modules/attendance/domain/errors/invalid-timeline-entry-type.error';
+import { InvalidTimelineMetadataError } from '@/modules/attendance/domain/errors/invalid-timeline-metadata.error';
 import { PickupUserNotAllowedError } from '@/modules/attendance/domain/errors/pickup-user-not-allowed.error';
 import { TimelineEntryNotAuthorError } from '@/modules/attendance/domain/errors/timeline-entry-not-author.error';
 import { TimelineEntryNotFoundError } from '@/modules/attendance/domain/errors/timeline-entry-not-found.error';
@@ -207,6 +208,8 @@ export class DomainErrorFilter implements ExceptionFilter {
     if (err instanceof InvalidAttendanceTimestampError)
       return HttpStatus.UNPROCESSABLE_ENTITY;
     if (err instanceof InvalidTimelineEntryTypeError)
+      return HttpStatus.UNPROCESSABLE_ENTITY;
+    if (err instanceof InvalidTimelineMetadataError)
       return HttpStatus.UNPROCESSABLE_ENTITY;
     // B9 Notifications
     if (err instanceof NotificationNotFoundError) return HttpStatus.NOT_FOUND;

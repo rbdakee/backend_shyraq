@@ -6,6 +6,13 @@ export interface RoleView {
   role: string;
   kindergartenId: string | null;
   groupId: string | null;
+  /**
+   * Raw specialist-type enum (psychologist | speech_therapist | music_teacher
+   * | physical_ed | nutritionist). Non-null ONLY for `role === 'specialist'`;
+   * null for every other role (admin/mentor/reception/parent/super-admin).
+   * Required field so the compiler flags any role literal that forgets it.
+   */
+  specialistType: string | null;
 }
 
 export interface KindergartenSummaryView {

@@ -62,7 +62,14 @@ export class CreateTimelineEntryDto {
   @IsUrl({}, { each: true })
   mediaUrls?: string[];
 
-  @ApiPropertyOptional({ example: { mood: 'happy', energyLevel: 'high' } })
+  @ApiPropertyOptional({
+    example: { mood: 'happy' },
+    description:
+      'Freeform jsonb. Adaptive shape per entry_type (BR-013, server-enforced): ' +
+      "mood → { mood: 'happy'|'ok'|'sad' }; meal → { ate: 'all'|'half'|'little' }. " +
+      'The typed key is validated only when present (out-of-range → 422 ' +
+      'invalid_timeline_metadata); extra keys are ignored; other entry types are not validated.',
+  })
   @IsOptional()
   @IsObject()
   metadata?: Record<string, unknown>;

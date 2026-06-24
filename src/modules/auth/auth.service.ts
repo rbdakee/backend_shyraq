@@ -465,6 +465,9 @@ export class AuthService implements OnModuleInit {
           role: selectedRole,
           kindergartenId: selectedKindergartenId,
           groupId: null,
+          // Non-null only for the staff `specialist` role; the parent-select
+          // branch leaves `match` undefined → null.
+          specialistType: match?.specialistType ?? null,
         },
       ],
       kindergartens: [{ id: selectedKindergartenId, name: '', slug: '' }],
@@ -530,7 +533,14 @@ export class AuthService implements OnModuleInit {
       tokenType: 'Bearer',
       expiresIn: access.expiresIn,
       pendingRoleSelect: false,
-      roles: [{ role: user.role, kindergartenId: null, groupId: null }],
+      roles: [
+        {
+          role: user.role,
+          kindergartenId: null,
+          groupId: null,
+          specialistType: null,
+        },
+      ],
     };
   }
 
@@ -576,7 +586,14 @@ export class AuthService implements OnModuleInit {
       tokenType: 'Bearer',
       expiresIn: access.expiresIn,
       pendingRoleSelect: false,
-      roles: [{ role: user.role, kindergartenId: null, groupId: null }],
+      roles: [
+        {
+          role: user.role,
+          kindergartenId: null,
+          groupId: null,
+          specialistType: null,
+        },
+      ],
     };
   }
 
@@ -683,7 +700,12 @@ export class AuthService implements OnModuleInit {
       );
       chosen =
         distinctKgs.size > 1
-          ? { role: 'parent', kindergartenId: null, groupId: null }
+          ? {
+              role: 'parent',
+              kindergartenId: null,
+              groupId: null,
+              specialistType: null,
+            }
           : roles[0];
     } else if (meta.requestedKindergartenId) {
       chosen =
@@ -818,7 +840,14 @@ export class AuthService implements OnModuleInit {
     const allowed = APP_ALLOWED_ROLES[app];
     const roles = allRoles.filter((r) => allowed.has(r.role));
     if (roles.length === 0 && app === 'parent') {
-      return [{ role: 'parent', kindergartenId: null, groupId: null }];
+      return [
+        {
+          role: 'parent',
+          kindergartenId: null,
+          groupId: null,
+          specialistType: null,
+        },
+      ];
     }
     return roles;
   }
@@ -861,6 +890,9 @@ export class AuthService implements OnModuleInit {
         s.role === 'mentor'
           ? (primaryGroupByKg.get(s.kindergartenId) ?? null)
           : null,
+      // Domain invariant: specialistType is non-null only for `specialist`
+      // staff; the getter already returns null for admin/mentor/reception.
+      specialistType: s.specialistType,
     }));
 
     // Append parent rows for kgs where the user has approved guardian links
@@ -871,7 +903,12 @@ export class AuthService implements OnModuleInit {
     const staffKgIds = new Set(staffEntries.map((s) => s.kindergartenId));
     for (const kgId of guardianKindergartenIds) {
       if (!staffKgIds.has(kgId)) {
-        roles.push({ role: 'parent', kindergartenId: kgId, groupId: null });
+        roles.push({
+          role: 'parent',
+          kindergartenId: kgId,
+          groupId: null,
+          specialistType: null,
+        });
       }
     }
 
@@ -879,7 +916,14 @@ export class AuthService implements OnModuleInit {
     // so the caller can still issue a token (legacy parent shape).
     if (roles.length === 0) {
       return {
-        roles: [{ role: 'parent', kindergartenId: null, groupId: null }],
+        roles: [
+          {
+            role: 'parent',
+            kindergartenId: null,
+            groupId: null,
+            specialistType: null,
+          },
+        ],
         kindergartens: [],
       };
     }

@@ -13,6 +13,7 @@ import { ContentFeedService } from './content-feed.service';
 import { GroupStoryRepository } from './group-story.repository';
 import { ParentContentController } from './parent-content.controller';
 import { SaasContentController } from './saas-content.controller';
+import { StaffMediaController } from './staff-media.controller';
 import { StaffStoriesController } from './staff-stories.controller';
 import { StoryService } from './story.service';
 import { BirthdayGeneratorService } from './birthday-generator.service';
@@ -56,6 +57,7 @@ import {
   controllers: [
     AdminContentController,
     StaffStoriesController,
+    StaffMediaController,
     ParentContentController,
     SaasContentController,
     MediaController,

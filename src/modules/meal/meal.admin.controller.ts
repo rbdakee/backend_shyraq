@@ -125,6 +125,7 @@ export class MealAdminController {
         allergens: i.allergens,
         photoUrl: i.photo_url,
         calories: i.calories,
+        serveTime: i.serve_time,
         position: i.position,
       })),
     });
@@ -205,6 +206,7 @@ export class MealAdminController {
       allergens: dto.allergens,
       photoUrl: dto.photo_url,
       calories: dto.calories,
+      serveTime: dto.serve_time,
       position: dto.position,
     });
     return MealPlanResponseDto.fromDomain(plan);
@@ -233,6 +235,7 @@ export class MealAdminController {
       allergens: dto.allergens,
       photoUrl: dto.photo_url,
       calories: dto.calories,
+      serveTime: dto.serve_time,
       position: dto.position,
     });
     return MealPlanResponseDto.fromDomain(plan);

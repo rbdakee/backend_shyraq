@@ -141,5 +141,46 @@ describe('MealPlan', () => {
       expect(hydrated.items).toHaveLength(1);
       expect(hydrated.items[0].mealType).toBe('snack_am');
     });
+
+    it('round-trips an item serveTime through toState()/hydrate()', () => {
+      const plan = makePlan();
+      plan.addItem(
+        {
+          id: 'i-1',
+          mealType: 'breakfast',
+          dishName: { ru: 'Каша' },
+          serveTime: '08:30',
+        },
+        NOW,
+      );
+      expect(plan.items[0].serveTime).toBe('08:30');
+
+      const hydrated = MealPlan.hydrate(plan.toState());
+      expect(hydrated.items[0].serveTime).toBe('08:30');
+    });
+
+    it('defaults item serveTime to null when omitted', () => {
+      const plan = makePlan();
+      plan.addItem(
+        { id: 'i-1', mealType: 'lunch', dishName: { ru: 'Суп' } },
+        NOW,
+      );
+      expect(plan.items[0].serveTime).toBeNull();
+    });
+
+    it('clears item serveTime when patched to null', () => {
+      const plan = makePlan();
+      plan.addItem(
+        {
+          id: 'i-1',
+          mealType: 'dinner',
+          dishName: { ru: 'Чай' },
+          serveTime: '18:00',
+        },
+        NOW,
+      );
+      plan.updateItem('i-1', { serveTime: null }, LATER);
+      expect(plan.items[0].serveTime).toBeNull();
+    });
   });
 });

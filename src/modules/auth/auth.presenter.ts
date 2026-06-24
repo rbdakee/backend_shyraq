@@ -68,6 +68,7 @@ function roleView(r: RoleView): RoleResponseDto {
     role: r.role,
     kindergarten_id: r.kindergartenId,
     group_id: r.groupId,
+    specialist_type: r.specialistType,
   };
 }
 

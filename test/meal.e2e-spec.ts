@@ -233,7 +233,11 @@ describe('B7 meal plans (e2e)', () => {
         group_id: grpId,
         is_published: true,
         items: [
-          { meal_type: 'breakfast', dish_name: { ru: 'Каша' } },
+          {
+            meal_type: 'breakfast',
+            dish_name: { ru: 'Каша' },
+            serve_time: '08:30',
+          },
           { meal_type: 'lunch', dish_name: { ru: 'Суп' } },
         ],
       })
@@ -242,6 +246,10 @@ describe('B7 meal plans (e2e)', () => {
     expect(planRes.body.date).toBe('2026-05-01');
     expect(planRes.body.group_id).toBe(grpId);
     expect(planRes.body.items).toHaveLength(2);
+    const breakfast = planRes.body.items.find(
+      (i: { meal_type: string }) => i.meal_type === 'breakfast',
+    );
+    expect(breakfast.serve_time).toBe('08:30');
 
     // GET plan → 200 with items
     const getRes = await request(server)
@@ -354,10 +362,26 @@ describe('B7 meal plans (e2e)', () => {
     const itemRes = await request(server)
       .post(`/api/v1/admin/meal-plans/${planId}/items`)
       .set('Authorization', `Bearer ${a.adminToken}`)
-      .send({ meal_type: 'breakfast', dish_name: { ru: 'Овсянка' } })
+      .send({
+        meal_type: 'breakfast',
+        dish_name: { ru: 'Овсянка' },
+        serve_time: '08:30',
+      })
       .expect(201);
     expect(itemRes.body.items).toHaveLength(1);
+    expect(itemRes.body.items[0].serve_time).toBe('08:30');
     const itemId = itemRes.body.items[0].id as string;
+
+    // Invalid serve_time → 400
+    await request(server)
+      .post(`/api/v1/admin/meal-plans/${planId}/items`)
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .send({
+        meal_type: 'lunch',
+        dish_name: { ru: 'Суп' },
+        serve_time: '25:00',
+      })
+      .expect(400);
 
     // PATCH item → 200 (returns updated plan)
     const patchItemRes = await request(server)

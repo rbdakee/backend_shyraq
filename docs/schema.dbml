@@ -1295,6 +1295,7 @@ Table meal_items {
   allergens       text[]
   photo_url       text
   calories        int
+  serve_time      text // "HH:mm" 24h, nullable (BR-014)
   position        int [not null, default: 0]
 
   indexes {

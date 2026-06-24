@@ -16,10 +16,11 @@
  *
  * Error codes asserted:
  *   invalid_timeline_entry_type    → 422 (check_in/check_out reserved)
+ *   invalid_timeline_metadata      → 422 (mood/meal metadata out of range, BR-013)
  *   timeline_entry_not_found       → 404
  *   timeline_entry_not_author      → 403 (non-admin non-author)
  *
- * Scenarios A–G.
+ * Scenarios A–H.
  */
 import type { Server } from 'node:http';
 import bcrypt from 'bcryptjs';
@@ -636,5 +637,38 @@ describe('B8 timeline (e2e)', () => {
       .send({ title: 'cross-tenant' });
     expect(crossPatch.status).toBe(404);
     expect(crossPatch.body.error).toBe('timeline_entry_not_found');
+  });
+
+  // ── H. BR-013 mood/meal metadata shape → 422 ─────────────────────────────
+
+  it('rejects out-of-range mood metadata with 422 invalid_timeline_metadata (Scenario H)', async () => {
+    const a = await createKgWithAdmin('tl-h', '+77011140009');
+    const childId = await createChild(a.adminToken, {
+      full_name: 'H-Child',
+      date_of_birth: '2022-08-01',
+    });
+
+    // B22b T13: staff must be the active mentor of the child's group to create.
+    await seedGroupAndMentorForChild({
+      kgId: a.kgId,
+      childId,
+      staffMemberId: a.staffMemberId,
+    });
+
+    // Invalid mood value → 422 invalid_timeline_metadata.
+    const badRes = await request(server)
+      .post('/api/v1/staff/timeline-entries')
+      .set('Authorization', `Bearer ${a.staffToken}`)
+      .send({ childId, entryType: 'mood', metadata: { mood: 'bad' } });
+    expect(badRes.status).toBe(422);
+    expect(badRes.body.error).toBe('invalid_timeline_metadata');
+
+    // Valid mood value → 201 (sanity check that the happy path still works).
+    const okRes = await request(server)
+      .post('/api/v1/staff/timeline-entries')
+      .set('Authorization', `Bearer ${a.staffToken}`)
+      .send({ childId, entryType: 'mood', metadata: { mood: 'happy' } })
+      .expect(201);
+    expect(okRes.body.entryType).toBe('mood');
   });
 });
