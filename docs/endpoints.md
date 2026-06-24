@@ -66,6 +66,9 @@
   "pending_role_select": false,            // true у multi-kg staff/admin до /auth/role/select
   "roles": [
     { "role": "admin",  "kindergarten_id": "uuid", "group_id": null }
+    // role:'mentor' → group_id = id основной (is_primary) активной группы из
+    // group_mentors (fallback: первая активная); если назначений нет — null.
+    // Все прочие роли (parent/admin/specialist/reception/superadmin) → group_id: null.
   ],
   "kindergartens": [
     { "id": "uuid", "name": "Солнышко", "slug": "sunshine" }
@@ -1046,9 +1049,10 @@ Qundylyq реализуется как `content_posts` с `content_type='qundyly
 
 | Метод | Путь | Назначение |
 |---|---|---|
-| GET | `/staff/my-groups` | Группы, привязанные к сотруднику через `group_mentors` (для mentor) или все группы садика (для specialist). |
-| GET | `/staff/my-groups/:groupId/children` | Дети активной группы. |
-| GET | `/staff/children/:id` | Карточка ребёнка (для своей группы или для specialist). Содержит: профиль, allergy/medical_notes, guardians (имена/телефоны), текущая группа, timeline сегодня, последние диагностики. |
+| GET | `/staff/my-groups` | Активные mentor-назначения вызывающего через `group_mentors`. Каждая запись: `id`, `name`, `age_range` (форматируется из `age_range_min/max`, e.g. `"4–5 лет"` \| `null`), `room` (имя `current_location_id` \| `null`), `is_primary`, `children_count` (активные дети группы). Роли: mentor/specialist/reception (specialist получает записи, только если он также назначен mentor'ом). |
+| GET | `/staff/my-groups/:groupId/children` | Ростер активных детей группы. Opaque-cursor пагинация: query `limit` (default 20, max 100) + `cursor`; ответ `{ items: [{ id, full_name, date_of_birth, photo_url, current_group_id, day_status }], next_cursor }`. `day_status` — статус `child_daily_status` на сегодня (Asia/Almaty) или `null`. Только `mentor`, активно назначенный на группу; иначе 403 `mentor_not_assigned_to_group`. Кросс-тенант изолирован. |
+| GET | `/staff/children` | Child-picker специалиста: активные дети садика для выбора при диагностике. Query `specialist_scope=true` (контракт) + `limit`/`cursor`; ответ — тот же `{ items, next_cursor }`, что и ростер. Роль: `specialist`. |
+| GET | `/staff/children/:id` | Карточка ребёнка (kindergarten-scoped, любая staff-роль садика). Содержит: `id`, `full_name`, `date_of_birth`, `photo_url`, `current_group_id`, `group_name`, `allergies` (free-text `allergy_notes` обёрнут в массив: `[]` или `["..."]`), `medical_notes`, `guardians[{ user_id, full_name, phone, relation (=role: primary/secondary/nanny), can_pickup }]` (только approved). 404 `child_not_found` если ребёнок не в садике вызывающего. |
 
 ### 3.3 Attendance (Check-in / Check-out manual)
 
@@ -1057,7 +1061,7 @@ Qundylyq реализуется как `content_posts` с `content_type='qundyly
 | POST | `/staff/attendance/check-in` | Ручной check-in: `child_id`, опц. `recorded_at`, `notes`. `method='manual'`. |
 | POST | `/staff/attendance/check-out` | Ручной check-out: `child_id`, `pickup_user_id` (guardian/trusted), `pickup_request_id` (если был OTP flow), `notes`. Ответ-событие несёт `recorded_by_full_name` + `pickup_user_full_name` (display-overlay). |
 | PATCH | `/staff/attendance/:eventId` | Корректировка ранее сделанной записи (в окне той же смены). |
-| GET | `/staff/attendance/today` | События сегодня по моим группам. |
+| GET | `/staff/attendance/today` | Дневная сводка посещаемости (counts) для mentor/specialist. Query `groupId` (для mentor — обязателен и проверяется активное назначение, иначе 403 `mentor_not_assigned_to_group` / `mentor_group_required`; для specialist/reception — опционален, без него по всему садику) + опц. `date` (YYYY-MM-DD, default Asia/Almaty today). Ответ: `{ in_kindergarten, checked_out, absent, on_vacation, sick, late }`. Аналог `/admin/dashboard/attendance-today` в staff-скоупе (+ `late`). |
 
 ### 3.4 Face ID (staff-facing)
 

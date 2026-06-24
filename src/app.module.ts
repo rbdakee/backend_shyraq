@@ -41,6 +41,7 @@ import { ParentRequestModule } from './modules/parent-request/parent-request.mod
 import { ScheduleModule } from './modules/schedule/schedule.module';
 import { ScheduleRolloutModule } from './modules/schedule-rollout/schedule-rollout.module';
 import { StaffModule } from './modules/staff/staff.module';
+import { StaffPortalModule } from './modules/staff-portal/staff-portal.module';
 import { UsersModule } from './modules/users/users.module';
 import { WebsocketModule } from './websocket/websocket.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
@@ -160,6 +161,9 @@ const resolveI18nPath = (): string => {
     ContentModule,
     DashboardModule,
     DiagnosticsModule,
+    // Read-only Staff-App composition layer (leaf module — owns no table).
+    // Composes Group/Child/Attendance/Location ports; mirrors DashboardModule.
+    StaffPortalModule,
     // FINDINGS.md SP5 — `ServeStaticModule` removed. Uploaded media is now
     // served by `MediaController` (`GET /api/v1/media/:kgId/:yyyyMm/:filename`)
     // behind JwtAuthGuard + KindergartenScopeGuard + path-segment kg match.

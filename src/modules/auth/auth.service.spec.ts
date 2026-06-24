@@ -67,6 +67,14 @@ import {
   PendingApplicantRequestView,
 } from '@/modules/child/infrastructure/persistence/child-guardian.repository';
 import { NotificationPort } from '@/common/notifications/notification.port';
+import { Group } from '@/modules/group/domain/entities/group.entity';
+import { GroupMentor } from '@/modules/group/domain/entities/group-mentor.entity';
+import {
+  CreateGroupInput,
+  GroupRepository,
+  ListGroupsFilters,
+  UpdateGroupInput,
+} from '@/modules/group/infrastructure/persistence/group.repository';
 
 class FixedClock implements ClockPort {
   constructor(private readonly fixed: Date) {}
@@ -532,6 +540,70 @@ class FakeGuardianRepo extends ChildGuardianRepository {
   }
 }
 
+class FakeGroupRepo extends GroupRepository {
+  /** Active mentor assignments per user (cross-tenant), keyed by userId. */
+  activeMentorAssignmentsByUserId = new Map<string, GroupMentor[]>();
+
+  create(_kg: string, _input: CreateGroupInput): Promise<Group> {
+    return Promise.reject(new Error('not implemented'));
+  }
+  findById(_kg: string, _id: string): Promise<Group | null> {
+    return Promise.resolve(null);
+  }
+  list(_kg: string, _filters?: ListGroupsFilters): Promise<Group[]> {
+    return Promise.resolve([]);
+  }
+  update(
+    _kg: string,
+    _id: string,
+    _patch: UpdateGroupInput,
+  ): Promise<Group | null> {
+    return Promise.resolve(null);
+  }
+  save(_group: Group): Promise<Group> {
+    return Promise.reject(new Error('not implemented'));
+  }
+  assignMentor(
+    _kg: string,
+    _groupId: string,
+    _staffMemberId: string,
+    _now: Date,
+  ): Promise<GroupMentor> {
+    return Promise.reject(new Error('not implemented'));
+  }
+  unassignMentor(
+    _kg: string,
+    _groupId: string,
+    _now: Date,
+  ): Promise<GroupMentor | null> {
+    return Promise.resolve(null);
+  }
+  unassignMentorByStaffMember(
+    _kg: string,
+    _staffMemberId: string,
+    _now: Date,
+  ): Promise<number> {
+    return Promise.resolve(0);
+  }
+  findActiveMentor(_kg: string, _groupId: string): Promise<GroupMentor | null> {
+    return Promise.resolve(null);
+  }
+  listMentorHistory(_kg: string, _groupId: string): Promise<GroupMentor[]> {
+    return Promise.resolve([]);
+  }
+  findActiveMentorAssignmentsByUserIdCrossTenant(
+    userId: string,
+    kindergartenId?: string,
+  ): Promise<GroupMentor[]> {
+    const all = this.activeMentorAssignmentsByUserId.get(userId) ?? [];
+    return Promise.resolve(
+      kindergartenId === undefined
+        ? all
+        : all.filter((a) => a.kindergartenId === kindergartenId),
+    );
+  }
+}
+
 class FakeNotificationPort extends NotificationPort {
   approved: {
     kindergartenId: string;
@@ -662,6 +734,7 @@ interface AuthDeps {
   blocklist: FakeBlocklist;
   staffRepo: FakeStaffRepo;
   guardianRepo: FakeGuardianRepo;
+  groupRepo: FakeGroupRepo;
   notifications: FakeNotificationPort;
 }
 
@@ -677,6 +750,7 @@ function build(): AuthDeps {
   const blocklist = new FakeBlocklist();
   const staffRepo = new FakeStaffRepo();
   const guardianRepo = new FakeGuardianRepo();
+  const groupRepo = new FakeGroupRepo();
   const notifications = new FakeNotificationPort();
   const config = new ConfigService<Record<string, unknown>>({
     auth: {
@@ -710,6 +784,7 @@ function build(): AuthDeps {
     guardianRepo,
     fakeTxRunner,
     notifications,
+    groupRepo,
   );
   service.onModuleInit();
   return {
@@ -725,6 +800,7 @@ function build(): AuthDeps {
     blocklist,
     staffRepo,
     guardianRepo,
+    groupRepo,
     notifications,
   };
 }
@@ -775,6 +851,7 @@ describe('AuthService', () => {
       const blocklist = new FakeBlocklist();
       const staffRepo = new FakeStaffRepo();
       const guardianRepo = new FakeGuardianRepo();
+      const groupRepo = new FakeGroupRepo();
       const notifications = new FakeNotificationPort();
       const config = new ConfigService<Record<string, unknown>>({
         auth: {
@@ -808,6 +885,7 @@ describe('AuthService', () => {
         guardianRepo,
         fakeTxRunner,
         notifications,
+        groupRepo,
       );
       const saved = process.env.NODE_ENV;
       if (nodeEnv === undefined) {
@@ -834,6 +912,7 @@ describe('AuthService', () => {
         blocklist,
         staffRepo,
         guardianRepo,
+        groupRepo,
         notifications,
       };
     }
@@ -1301,6 +1380,83 @@ describe('AuthService', () => {
 
         expect(refresh.rows).toHaveLength(1);
         expect(refresh.rows[0].audience).toBe('staff');
+      });
+    });
+
+    describe('mentor group_id backfill', () => {
+      const KG_B = '22222222-2222-2222-2222-222222222222';
+      const KG_C = '66666666-6666-6666-6666-666666666666';
+      const GROUP_PRIMARY = '99999999-9999-9999-9999-999999999999';
+      const GROUP_OTHER = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+
+      function mentorAssignment(
+        kindergartenId: string,
+        groupId: string,
+        isPrimary: boolean,
+      ): GroupMentor {
+        return GroupMentor.hydrate({
+          id: `gm-${kindergartenId}-${groupId}`,
+          kindergartenId,
+          groupId,
+          staffMemberId: `staff-${kindergartenId}-mentor`,
+          isPrimary,
+          assignedAt: new Date('2025-01-01T00:00:00Z'),
+          unassignedAt: null,
+          createdAt: new Date('2025-01-01T00:00:00Z'),
+        });
+      }
+
+      it('sets the mentor role group_id to the primary assignment while other roles stay null', async () => {
+        // User is a mentor in kg-A (with a primary group), a specialist in
+        // kg-B, and a parent (guardian) in kg-C. Only the mentor role must
+        // carry a group_id; specialist + parent rows stay null.
+        const { service, refresh, users, staffRepo, guardianRepo, groupRepo } =
+          build();
+        const userId = 'user-1';
+        users.put(
+          User.hydrate({
+            id: userId,
+            phone: PHONE,
+            fullName: 'X',
+            avatarUrl: null,
+            iin: null,
+            dateOfBirth: null,
+            locale: 'ru',
+          }),
+        );
+        staffRepo.rows.push(activeStaff(userId, KG_A, 'mentor'));
+        staffRepo.rows.push(activeStaff(userId, KG_B, 'specialist'));
+        guardianRepo.approvedKindergartenIdsByUserId.set(userId, [KG_C]);
+        // Two active assignments in kg-A; the non-primary comes first to prove
+        // the primary one wins regardless of order.
+        groupRepo.activeMentorAssignmentsByUserId.set(userId, [
+          mentorAssignment(KG_A, GROUP_OTHER, false),
+          mentorAssignment(KG_A, GROUP_PRIMARY, true),
+        ]);
+
+        const raw = generateRefreshToken();
+        await refresh.create({
+          userId,
+          kindergartenId: KG_A,
+          tokenHash: hashRefreshToken(raw),
+          deviceId: null,
+          ipAddress: null,
+          expiresAt: computeRefreshExpiresAt(new Date('2025-01-01'), 30),
+          audience: null, // null audience → roles returned unfiltered
+        });
+
+        const res = await service.refreshToken({ rawRefreshToken: raw });
+
+        const mentor = res.roles.find((r) => r.role === 'mentor');
+        const specialist = res.roles.find((r) => r.role === 'specialist');
+        const parent = res.roles.find((r) => r.role === 'parent');
+        expect(mentor).toEqual({
+          role: 'mentor',
+          kindergartenId: KG_A,
+          groupId: GROUP_PRIMARY,
+        });
+        expect(specialist?.groupId).toBeNull();
+        expect(parent?.groupId).toBeNull();
       });
     });
 

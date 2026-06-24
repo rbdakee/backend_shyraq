@@ -42,6 +42,7 @@ import { TokenBlocklistPort } from './token-blocklist.port';
 import { NotificationPort } from '@/common/notifications/notification.port';
 import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
 import { ChildGuardianRepository } from '@/modules/child/infrastructure/persistence/child-guardian.repository';
+import { GroupRepository } from '@/modules/group/infrastructure/persistence/group.repository';
 
 const OTP_LOCKED_TTL_SEC = 900;
 const OTP_RESEND_AFTER_SEC = 60;
@@ -163,6 +164,7 @@ export class AuthService implements OnModuleInit {
     private readonly tx: TransactionRunnerPort,
     @Inject(NotificationPort)
     private readonly notifications: NotificationPort,
+    private readonly groups: GroupRepository,
   ) {}
 
   onModuleInit(): void {
@@ -830,15 +832,35 @@ export class AuthService implements OnModuleInit {
     roles: RoleView[];
     kindergartens: { id: string; name: string; slug: string }[];
   }> {
-    const [staffEntries, guardianKindergartenIds] = await Promise.all([
-      this.staff.findAllActiveByUserId(user.id),
-      this.guardians.listApprovedKindergartenIdsByUserId(user.id),
-    ]);
+    const [staffEntries, guardianKindergartenIds, mentorAssignments] =
+      await Promise.all([
+        this.staff.findAllActiveByUserId(user.id),
+        this.guardians.listApprovedKindergartenIdsByUserId(user.id),
+        // Cross-tenant lookup of the user's currently-active mentor
+        // assignments — fetched ONCE here, then indexed by kg below so the
+        // per-entry `.map` stays in-memory (no per-role DB round-trip).
+        this.groups.findActiveMentorAssignmentsByUserIdCrossTenant(user.id),
+      ]);
+
+    // Index the primary active group per kindergarten for the mentor role.
+    // Prefer the assignment flagged `isPrimary`; fall back to the first
+    // active one in that kg when none is flagged.
+    const primaryGroupByKg = new Map<string, string>();
+    for (const a of mentorAssignments) {
+      if (a.isPrimary || !primaryGroupByKg.has(a.kindergartenId)) {
+        primaryGroupByKg.set(a.kindergartenId, a.groupId);
+      }
+    }
 
     const roles: RoleView[] = staffEntries.map((s) => ({
       role: s.role,
       kindergartenId: s.kindergartenId,
-      groupId: null,
+      // Only mentors carry a group; every other role stays null. Falls back
+      // to null when the mentor has no active assignment in that kg.
+      groupId:
+        s.role === 'mentor'
+          ? (primaryGroupByKg.get(s.kindergartenId) ?? null)
+          : null,
     }));
 
     // Append parent rows for kgs where the user has approved guardian links

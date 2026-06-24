@@ -7,6 +7,7 @@ import { RedisModule } from '@/redis/redis.module';
 import { UsersModule } from '@/modules/users/users.module';
 import { StaffModule } from '@/modules/staff/staff.module';
 import { ChildModule } from '@/modules/child/child.module';
+import { GroupModule } from '@/modules/group/group.module';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { BcryptPasswordHasherAdapter } from './infrastructure/adapters/bcrypt-password-hasher.adapter';
@@ -42,6 +43,7 @@ import {
     UsersModule,
     StaffModule,
     ChildModule,
+    GroupModule,
     TypeOrmModule.forFeature([
       RefreshTokenEntity,
       SaasRefreshTokenEntity,
