@@ -78,6 +78,11 @@ test:
 .deploy:
   stage: deploy
   image: alpine:3.20
+  # Backstop: a healthy deploy returns within a few minutes once `up -d` is
+  # done. If it ever runs this long, something is genuinely stuck (build
+  # deadlock, migration lock) — fail fast instead of holding the pipeline for
+  # the default hour.
+  timeout: 20m
   before_script:
     - apk add --no-cache openssh-client
     - mkdir -p ~/.ssh && chmod 700 ~/.ssh
@@ -100,9 +105,25 @@ deploy-dev:
   rules:
     - if: '$CI_COMMIT_BRANCH == "development"'
   script:
+    # The build+`up` runs with its output redirected to a file and stdin closed
+    # ON THE REMOTE, then we tail the log. Without this, the detached `up -d`
+    # leaves the SSH stdout/stderr pipe open and the job hangs "running" until
+    # the timeout even though the deploy already finished. git steps run under
+    # `set -e` (a diverged checkout fails the job); `code=$?` + `exit $code`
+    # surface the real build result to GitLab.
     - >
       ssh -i ~/.ssh/id_deploy "$DEPLOY_SSH_USER@$DEPLOY_SSH_HOST"
-      "bash -lc 'cd ~/backend_balam_dev && git fetch --all --prune && git checkout development && git pull --ff-only && npm run docker:dev:up'"
+      "bash -lc 'set -e;
+      cd ~/backend_balam_dev;
+      git fetch --all --prune;
+      git checkout development;
+      git pull --ff-only;
+      set +e;
+      npm run docker:dev:up < /dev/null > /tmp/balam-dev-deploy.log 2>&1;
+      code=\$?;
+      tail -n 120 /tmp/balam-dev-deploy.log;
+      exit \$code'"
+      < /dev/null
 
 deploy-prod:
   extends: .deploy
@@ -114,6 +135,19 @@ deploy-prod:
     - if: '$CI_COMMIT_BRANCH == "main"'
       when: manual
   script:
+    # Same redirect-on-remote pattern as deploy-dev — keeps the SSH channel from
+    # hanging after the detached `up -d` and surfaces the build result + exit
+    # code to GitLab.
     - >
       ssh -i ~/.ssh/id_deploy "$DEPLOY_SSH_USER@$DEPLOY_SSH_HOST"
-      "bash -lc 'cd ~/backend_balam_prod && git fetch --all --prune && git checkout main && git pull --ff-only && npm run docker:prod:up'"
+      "bash -lc 'set -e;
+      cd ~/backend_balam_prod;
+      git fetch --all --prune;
+      git checkout main;
+      git pull --ff-only;
+      set +e;
+      npm run docker:prod:up < /dev/null > /tmp/balam-prod-deploy.log 2>&1;
+      code=\$?;
+      tail -n 120 /tmp/balam-prod-deploy.log;
+      exit \$code'"
+      < /dev/null

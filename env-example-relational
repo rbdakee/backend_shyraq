@@ -10,8 +10,6 @@ APP_NAME="Shyraq API"
 API_PREFIX=api
 APP_FALLBACK_LANGUAGE=kk
 APP_HEADER_LANGUAGE=x-custom-lang
-FRONTEND_DOMAIN=http://localhost:3000
-BACKEND_DOMAIN=http://localhost:3000
 
 # --- PostgreSQL ---
 # DATABASE_USERNAME / PASSWORD must be a non-superuser role (e.g. `shyraq_app`,
