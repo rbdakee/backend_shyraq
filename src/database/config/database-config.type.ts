@@ -7,6 +7,7 @@ export type DatabaseConfig = {
   name?: string;
   username?: string;
   synchronize?: boolean;
+  logging: boolean;
   maxConnections: number;
   sslEnabled?: boolean;
   rejectUnauthorized?: boolean;

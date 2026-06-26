@@ -47,6 +47,10 @@ class EnvironmentVariablesValidator {
   @IsOptional()
   DATABASE_SYNCHRONIZE: boolean;
 
+  @IsBoolean()
+  @IsOptional()
+  DATABASE_LOGGING: boolean;
+
   @IsInt()
   @IsOptional()
   DATABASE_MAX_CONNECTIONS: number;
@@ -75,6 +79,12 @@ class EnvironmentVariablesValidator {
 export default registerAs<DatabaseConfig>('database', () => {
   validateConfig(process.env, EnvironmentVariablesValidator);
 
+  const logging =
+    process.env.DATABASE_LOGGING !== undefined &&
+    process.env.DATABASE_LOGGING !== ''
+      ? process.env.DATABASE_LOGGING === 'true'
+      : process.env.NODE_ENV === 'development';
+
   return {
     url: process.env.DATABASE_URL,
     type: process.env.DATABASE_TYPE,
@@ -86,6 +96,7 @@ export default registerAs<DatabaseConfig>('database', () => {
     name: process.env.DATABASE_NAME,
     username: process.env.DATABASE_USERNAME,
     synchronize: process.env.DATABASE_SYNCHRONIZE === 'true',
+    logging,
     maxConnections: process.env.DATABASE_MAX_CONNECTIONS
       ? parseInt(process.env.DATABASE_MAX_CONNECTIONS, 10)
       : 100,
