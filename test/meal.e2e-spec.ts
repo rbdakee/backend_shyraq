@@ -372,7 +372,7 @@ describe('B7 meal plans (e2e)', () => {
     expect(itemRes.body.items[0].serve_time).toBe('08:30');
     const itemId = itemRes.body.items[0].id as string;
 
-    // Invalid serve_time → 400
+    // Invalid serve_time → 422
     await request(server)
       .post(`/api/v1/admin/meal-plans/${planId}/items`)
       .set('Authorization', `Bearer ${a.adminToken}`)
@@ -381,7 +381,7 @@ describe('B7 meal plans (e2e)', () => {
         dish_name: { ru: 'Суп' },
         serve_time: '25:00',
       })
-      .expect(400);
+      .expect(422);
 
     // PATCH item → 200 (returns updated plan)
     const patchItemRes = await request(server)
