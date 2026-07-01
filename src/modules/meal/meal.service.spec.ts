@@ -499,6 +499,21 @@ describe('MealService', () => {
       expect(updated.items[0].mealType).toBe('breakfast');
     });
 
+    it('addItem persists serveTime on the item', async () => {
+      const planRepo = new FakeMealPlanRepository();
+      const groupRepo = new FakeGroupRepository();
+      const childRepo = new FakeChildRepository();
+      const svc = makeService(planRepo, groupRepo, childRepo);
+
+      const plan = await svc.createPlan(KG_UUID, { date: '2026-05-01' });
+      const updated = await svc.addItem(KG_UUID, plan.id, {
+        mealType: 'breakfast',
+        dishName: { ru: 'Каша' },
+        serveTime: '08:30',
+      });
+      expect(updated.items[0].serveTime).toBe('08:30');
+    });
+
     it('removeItem throws MealItemNotFoundError for unknown item', async () => {
       const planRepo = new FakeMealPlanRepository();
       const groupRepo = new FakeGroupRepository();

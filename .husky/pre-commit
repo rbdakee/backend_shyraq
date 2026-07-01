@@ -1,3 +1,6 @@
 #!/bin/sh
+# Fast gate: lint + type-check only. The full test suite runs on pre-push
+# (see .husky/pre-push) so commits stay quick. SWC build skips type-checking,
+# so `typecheck` (tsc --noEmit) is the safety net that catches type errors.
 npm run lint
-npm run test -- --passWithNoTests
+npm run typecheck

@@ -97,6 +97,42 @@ const NANNY_ALLOWED_EVENT_KEYS = new Set<string>([
 ]);
 
 /**
+ * BR-016 — WS group-fanout (Core 6). These event-keys are additionally
+ * broadcast to the `group:{groupId}` room, where the group's mentors
+ * (воспитатели) are auto-subscribed via `group_mentors` (see
+ * `ws-auto-subscribe.service.ts`). This is a room-level "refresh your
+ * screen" signal that fires ALWAYS — independent of per-user `in_app`
+ * preferences (those still gate the parent-facing `user:` broadcasts).
+ *
+ * `diagnostic.new` / `progress_note.new` are deliberately EXCLUDED — the
+ * group room holds mentors, and specialist data must stay private to the
+ * child's guardians (parent-facing `user:` rooms only).
+ */
+const GROUP_FANOUT_EVENT_KEYS = new Set<string>([
+  'attendance.checkin',
+  'attendance.checkout',
+  'daily_status.changed',
+  'timeline.entry_created',
+  'content.story_new',
+  'content.news_published',
+]);
+
+/**
+ * Subset of `GROUP_FANOUT_EVENT_KEYS` whose group must be derived from the
+ * child (lazy `childRepo.findById` → `currentGroupId`). The `content.*`
+ * keys are absent because their resolvers already surface a `groupId`
+ * (`content.story_new` always; `content.news_published` only for the
+ * `targetType=group` branch — `all`/`child` carry no group and therefore
+ * receive no group emit, which is correct).
+ */
+const GROUP_FANOUT_CHILD_KEYS = new Set<string>([
+  'attendance.checkin',
+  'attendance.checkout',
+  'daily_status.changed',
+  'timeline.entry_created',
+]);
+
+/**
  * Sentinel error thrown by `dispatch()` when the run terminates in `failed`
  * status. The worker's per-event savepoint catches it, rolls the savepoint
  * back (so any history rows / preference upserts written inside the
@@ -924,6 +960,30 @@ const TEMPLATES: Record<string, EventTemplate> = {
     },
     data: stringMap({}),
   }),
+
+  // #5b — admin-facing alert that a SECOND payment settled on an invoice
+  // another guardian already paid (double payment). The later payment is
+  // flagged `refund_required`; the admin must refund it manually. Recipients
+  // are pre-resolved kg admins (resolveRecipientUserIdsFromPayload). Carries
+  // both payment ids + amount so the admin app can deep-link the queue item.
+  'payment.refund_required': ({ payload }) => ({
+    titleI18n: {
+      ru: 'Двойная оплата — нужен возврат',
+      kk: 'Қос төлем — қайтару қажет',
+      en: 'Double payment — refund required',
+    },
+    bodyI18n: {
+      ru: 'По счёту прошла повторная оплата. Проверьте и сделайте возврат вручную.',
+      kk: 'Шот бойынша қайталама төлем өтті. Тексеріп, қолмен қайтарыңыз.',
+      en: 'A duplicate payment settled on this invoice. Review and refund it manually.',
+    },
+    data: stringMap({
+      paymentId: payload.paymentId,
+      duplicateOfPaymentId: payload.duplicateOfPaymentId,
+      invoiceId: payload.invoiceId,
+      amount: payload.amount,
+    }),
+  }),
 };
 
 const RECIPIENT_RESOLVERS: Record<string, RecipientResolver> = {
@@ -986,6 +1046,8 @@ const RECIPIENT_RESOLVERS: Record<string, RecipientResolver> = {
   // T11 H6 — recipients are pre-resolved by the producer (kg admin
   // user_ids); the dispatcher reads the array verbatim from the payload.
   'enrollment.first_invoice_skipped': resolveRecipientUserIdsFromPayload,
+  // #5b — admin double-payment alert; recipients pre-resolved into the payload.
+  'payment.refund_required': resolveRecipientUserIdsFromPayload,
   // ── B24 Kaspi Pay — admin-facing; producer pre-resolves kg admin
   // user_ids into the payload (same pattern as enrollment.* above).
   'kaspi.session_expired': resolveRecipientUserIdsFromPayload,
@@ -1495,6 +1557,45 @@ export class NotificationDispatcher {
           } catch (err) {
             this.logger.warn(
               `ws_broadcast_failed user=${u.userId} event=${event.eventKey}: ${(err as Error).message}`,
+            );
+          }
+        }
+      }
+
+      // 5b) BR-016 — WS group-fanout (Core 6). Room-level "refresh" signal to
+      //     the group's mentors. Fires ALWAYS for the fanout keys — outside the
+      //     `inAppUsers` block above — because it is independent of per-user
+      //     in_app prefs and must reach the group room even when there are no
+      //     in-app parent recipients. The group is taken from the resolver
+      //     (content.*) or derived from the child (attendance/daily_status/
+      //     timeline). When no group can be resolved, nothing is emitted.
+      if (GROUP_FANOUT_EVENT_KEYS.has(event.eventKey)) {
+        let groupId = recipients.groupId ?? null;
+        if (
+          !groupId &&
+          GROUP_FANOUT_CHILD_KEYS.has(event.eventKey) &&
+          recipients.childId
+        ) {
+          const child = await this.childRepo.findById(
+            event.kindergartenId,
+            recipients.childId,
+          );
+          groupId = child?.currentGroupId ?? null;
+        }
+        if (groupId) {
+          try {
+            this.wsBroadcaster.broadcastToGroup(groupId, event.eventKey, {
+              title_i18n: rendered.titleI18n,
+              body_i18n: rendered.bodyI18n,
+              data: {
+                ...rendered.data,
+                groupId,
+                ...(recipients.childId ? { childId: recipients.childId } : {}),
+              },
+            });
+          } catch (err) {
+            this.logger.warn(
+              `ws_group_broadcast_failed group=${groupId} event=${event.eventKey}: ${(err as Error).message}`,
             );
           }
         }

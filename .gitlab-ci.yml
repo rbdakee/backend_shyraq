@@ -1,0 +1,153 @@
+# GitLab CI — gates pushes to main/development + merge requests.
+#
+# Two parallel jobs in the `verify` stage:
+#   1. lint-typecheck — fast ESLint + `tsc --noEmit`. The type-check is the
+#      safety net for the SWC image build (SWC transpiles only, no types).
+#   2. test — full pipeline (lint -> unit -> integration -> e2e) inside
+#      docker-compose against real PG + Redis, identical to the GitHub
+#      Actions workflow and `startup.relational.ci.sh`.
+#
+# Requirements: project CI/CD enabled with runners. The `test` job needs a
+# privileged Docker-in-Docker runner — GitLab.com shared runners qualify.
+
+stages:
+  - verify
+  - deploy
+
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_BRANCH == "development"'
+
+lint-typecheck:
+  stage: verify
+  image: node:24.14.1-alpine
+  cache:
+    key:
+      files:
+        - package-lock.json
+    paths:
+      - .npm/
+  script:
+    - npm ci --no-audit --no-fund --cache .npm --prefer-offline
+    - npm run lint
+    - npm run typecheck
+
+test:
+  stage: verify
+  image: docker:27
+  services:
+    - docker:27-dind
+  timeout: 30m
+  variables:
+    DOCKER_HOST: tcp://docker:2376
+    DOCKER_TLS_CERTDIR: "/certs"
+    DOCKER_CERT_PATH: "/certs/client"
+    DOCKER_TLS_VERIFY: "1"
+  before_script:
+    - docker compose version || apk add --no-cache docker-cli-compose
+  script:
+    - >
+      docker compose
+      -f docker-compose.relational.ci.yaml
+      --env-file env-example-relational
+      -p ci
+      up --build --abort-on-container-exit --exit-code-from api
+  after_script:
+    - docker compose -f docker-compose.relational.ci.yaml -p ci logs api || true
+    - docker compose -f docker-compose.relational.ci.yaml -p ci down -v || true
+
+# ── deploy ───────────────────────────────────────────────────────────────────
+# CD = automate the manual deploy: SSH into the (single) server and run the
+# same `npm run docker:dev:up` / `docker:prod:up` the operator runs by hand.
+# Dev and prod live on ONE host in separate checkouts
+# (~/backend_balam_dev, ~/backend_balam_prod), so a single SSH credential
+# serves both. The deploy stage only runs after `verify` (lint+typecheck+tests)
+# passes, because GitLab gates later stages on earlier ones.
+#
+# Required CI/CD variables (Settings → CI/CD → Variables) — kept OUT of this
+# committed file on purpose (no infra host/IP hardcoded in the repo):
+#   DEPLOY_SSH_HOST  — server host/IP                  (Variable)
+#   DEPLOY_SSH_USER  — ssh user                         (Variable)
+#   DEPLOY_SSH_KEY   — base64 of the private deploy key  (Variable)
+#                      generate: base64 of the private key file, one line.
+# These must be exposed to the deploy jobs' branches: if `main`/`development`
+# are PROTECTED branches, mark the variables Protected too; otherwise leave
+# Protected unchecked.
+.deploy:
+  stage: deploy
+  image: alpine:3.20
+  # Backstop: a healthy deploy returns within a few minutes once `up -d` is
+  # done. If it ever runs this long, something is genuinely stuck (build
+  # deadlock, migration lock) — fail fast instead of holding the pipeline for
+  # the default hour.
+  timeout: 20m
+  before_script:
+    - apk add --no-cache openssh-client
+    - mkdir -p ~/.ssh && chmod 700 ~/.ssh
+    # DEPLOY_SSH_KEY holds the BASE64 of the private key (single line). Pasting
+    # a raw multi-line OpenSSH key into a CI variable mangles the newlines and
+    # ssh fails with "error in libcrypto"; base64 avoids that entirely.
+    - echo "$DEPLOY_SSH_KEY" | base64 -d > ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
+    - ssh-keyscan -H "$DEPLOY_SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+  # `bash -lc` → login shell so docker/npm are on PATH in the non-interactive
+  # SSH session. `git pull --ff-only` aborts loudly instead of creating a merge
+  # if the server checkout ever diverges. The api container's startup runs
+  # migrations + seed before booting (see docker-compose.yml `command`).
+
+deploy-dev:
+  extends: .deploy
+  environment:
+    name: development
+    # Host comes from the CI variable — no IP hardcoded in the repo.
+    url: http://$DEPLOY_SSH_HOST:5678
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "development"'
+  script:
+    # The build+`up` runs with its output redirected to a file and stdin closed
+    # ON THE REMOTE, then we tail the log. Without this, the detached `up -d`
+    # leaves the SSH stdout/stderr pipe open and the job hangs "running" until
+    # the timeout even though the deploy already finished. git steps run under
+    # `set -e` (a diverged checkout fails the job); `code=$?` + `exit $code`
+    # surface the real build result to GitLab.
+    - >
+      ssh -i ~/.ssh/id_deploy "$DEPLOY_SSH_USER@$DEPLOY_SSH_HOST"
+      "bash -lc 'set -e;
+      cd ~/backend_balam_dev;
+      git fetch --all --prune;
+      git checkout development;
+      git pull --ff-only;
+      set +e;
+      npm run docker:dev:up < /dev/null > /tmp/balam-dev-deploy.log 2>&1;
+      code=\$?;
+      tail -n 120 /tmp/balam-dev-deploy.log;
+      exit \$code'"
+      < /dev/null
+
+deploy-prod:
+  extends: .deploy
+  environment:
+    name: production
+  rules:
+    # Manual gate: the job appears on `main` pipelines as a ▶ button. To make
+    # prod auto-deploy on every push/merge to main, drop `when: manual`.
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+  script:
+    # Same redirect-on-remote pattern as deploy-dev — keeps the SSH channel from
+    # hanging after the detached `up -d` and surfaces the build result + exit
+    # code to GitLab.
+    - >
+      ssh -i ~/.ssh/id_deploy "$DEPLOY_SSH_USER@$DEPLOY_SSH_HOST"
+      "bash -lc 'set -e;
+      cd ~/backend_balam_prod;
+      git fetch --all --prune;
+      git checkout main;
+      git pull --ff-only;
+      set +e;
+      npm run docker:prod:up < /dev/null > /tmp/balam-prod-deploy.log 2>&1;
+      code=\$?;
+      tail -n 120 /tmp/balam-prod-deploy.log;
+      exit \$code'"
+      < /dev/null

@@ -7,6 +7,7 @@
 Принятые соглашения:
 - Ответы локализуются по `users.locale` (`ru` / `kk`) c fallback на RU.
 - Presigned upload для медиа — через общий `StorageModule` (см. раздел Shared).
+- **Media read URLs — presigned.** Любая строка в УСПЕШНОМ ответе, указывающая на наш приватный object-store, переписывается глобальным `MediaSignInterceptor` в короткоживущий presigned URL (TTL **1 час**), пригодный для `<img src>` без auth-заголовка. Файл всегда остаётся в приватном бакете — временна только подпись. Распознаются формы (см. `resolveMediaKey`): `/api/v1/media/<key>` (текущие загрузки), легаси `/static/<key>`, абсолютный URL на **наш бэкенд** `http(s)://<host>/api/v1/media/<key>` (так хранятся клиент-заполняемые поля — `children.photo_url`, `users.avatar_url`, `trusted_people.photo_url`, `meal_items.photo_url`, и т.п.), и прямой URL бакета (стухшая `?X-Amz-…` срезается и переподписывается). Внешние CDN-ссылки (другой хост) не трогаются. На local-адаптере это no-op; роут `GET /api/v1/media/:kgId/:yyyyMm/:filename` (JWT + kg-scope) остаётся fallback'ом. Исключение: `POST /admin/content/upload-media` помечен `@SkipMediaSign()` и возвращает канонический (неподписанный) `url`+`key`, которые клиент сохраняет.
 - OTP — через `AuthModule` (login) и `PickupModule` (доверенное лицо). Идентификация также возможна через Identity QR (fallback).
 
 **Guards (cross-cutting):**
@@ -64,7 +65,13 @@
   "expires_in": 900,                       // seconds of access_token TTL
   "pending_role_select": false,            // true у multi-kg staff/admin до /auth/role/select
   "roles": [
-    { "role": "admin",  "kindergarten_id": "uuid", "group_id": null }
+    { "role": "admin",  "kindergarten_id": "uuid", "group_id": null, "specialist_type": null }
+    // role:'mentor' → group_id = id основной (is_primary) активной группы из
+    // group_mentors (fallback: первая активная); если назначений нет — null.
+    // Все прочие роли (parent/admin/specialist/reception/superadmin) → group_id: null.
+    // specialist_type → raw enum (psychologist|speech_therapist|music_teacher|
+    // physical_ed|nutritionist) ТОЛЬКО при role:'specialist'; иначе null.
+    // Мобилка строит i18n-карту enum→label сама.
   ],
   "kindergartens": [
     { "id": "uuid", "name": "Солнышко", "slug": "sunshine" }
@@ -205,7 +212,7 @@
 }
 ```
 
-В B9 диспетчер бродкастит исключительно в `user:{userId}` комнаты. Порты `broadcastToChild` / `broadcastToGroup` зарезервированы для B17 (scoped fanout по ребёнку/группе); клиентские комнаты `child:*` и `group:*` уже заполняются при handshake для forward-compatibility.
+Диспетчер бродкастит в `user:{userId}` комнаты для всех событий (соблюдая персональные `in_app`-prefs). **BR-016 — WS group-fanout активен для Core 6 событий:** `attendance.checkin`, `attendance.checkout`, `daily_status.changed`, `timeline.entry_created`, `content.story_new`, `content.news_published` (только `targetType=group`) дополнительно бродкастятся в `group:{groupId}` (воспитателям группы) через `broadcastToGroup`. Это room-level «обнови экран» — срабатывает **всегда**, независимо от per-user `in_app`-настроек (личные `user:`-события prefs соблюдают как раньше). В груп-рассылке `data` дополнительно несёт `groupId` (+`childId` для child-событий) для точечной инвалидации кэша на клиенте. `group_id` для child-событий резолвится из `children.current_group_id`; для `content.*` — из резолвера. `diagnostic.new` / `progress_note.new` в груп-набор **не входят** (приватность специалистских данных — в `group:`-комнатах сидят воспитатели, не специалисты). Порт `broadcastToChild` пока не вызывается. Клиентские комнаты `child:*` и `group:*` заполняются при handshake.
 
 Полные payload-схемы и правила подписки — `architecture.md` §6.4 "WebSocket room catalog" + §6.5 "Notification event catalog".
 
@@ -704,7 +711,7 @@ Email + password (не OTP). Access-токен — тот же JWT HS256 (`JWT_A
 | POST | `/admin/meal-plans` | Создать `meal_plan`. Body: `{date, group_id?}`. Response 201. Errors: 409 `meal_plan_already_exists` (unique `(kg, date, group_id)`), 404 `group_not_found`. |
 | PATCH | `/admin/meal-plans/:id` | Обновить `is_published?`, `notes?`. Errors: 404 `meal_plan_not_found`. |
 | DELETE | `/admin/meal-plans/:id` | Удалить (каскадно удаляет `meal_items`). Errors: 404 `meal_plan_not_found`. |
-| POST | `/admin/meal-plans/:id/items` | Добавить блюдо. Body: `{meal_type, dish_name: {ru, kz}, description?: {ru, kz}, allergens?: string[], calories?: int, photo_url?: string, position?: int}`. `meal_type` — enum `breakfast|snack_am|lunch|snack_pm|dinner`. Response 201. Errors: 404 `meal_plan_not_found`, 400 `invalid_meal_type`. |
+| POST | `/admin/meal-plans/:id/items` | Добавить блюдо. Body: `{meal_type, dish_name: {ru, kz}, description?: {ru, kz}, allergens?: string[], calories?: int, photo_url?: string, serve_time?: "HH:mm", position?: int}`. `meal_type` — enum `breakfast|snack_am|lunch|snack_pm|dinner`. `serve_time` — время подачи `"HH:mm"` (24ч), опционально/nullable. Response 201. Errors: 404 `meal_plan_not_found`, 400 `invalid_meal_type`. |
 | PATCH | `/admin/meal-plans/:id/items/:itemId` | Обновить поля блюда. Errors: 404 `meal_plan_not_found`, 404 `meal_item_not_found`. |
 | DELETE | `/admin/meal-plans/:id/items/:itemId` | Удалить блюдо. Errors: 404 `meal_plan_not_found`, 404 `meal_item_not_found`. |
 | POST | `/admin/meal-plans/copy-week` | Ручной запуск copy-week (аналог cron). Body: `{source_week_start_date}` — понедельник источника; копирует ПН–ПТ на следующую неделю. Идемпотентен. Response: `{plans_created: N, plans_skipped: N}`. |
@@ -1045,9 +1052,10 @@ Qundylyq реализуется как `content_posts` с `content_type='qundyly
 
 | Метод | Путь | Назначение |
 |---|---|---|
-| GET | `/staff/my-groups` | Группы, привязанные к сотруднику через `group_mentors` (для mentor) или все группы садика (для specialist). |
-| GET | `/staff/my-groups/:groupId/children` | Дети активной группы. |
-| GET | `/staff/children/:id` | Карточка ребёнка (для своей группы или для specialist). Содержит: профиль, allergy/medical_notes, guardians (имена/телефоны), текущая группа, timeline сегодня, последние диагностики. |
+| GET | `/staff/my-groups` | Активные mentor-назначения вызывающего через `group_mentors`. Каждая запись: `id`, `name`, `age_range` (форматируется из `age_range_min/max`, e.g. `"4–5 лет"` \| `null`), `room` (имя `current_location_id` \| `null`), `is_primary`, `children_count` (активные дети группы). Роли: mentor/specialist/reception (specialist получает записи, только если он также назначен mentor'ом). |
+| GET | `/staff/my-groups/:groupId/children` | Ростер активных детей группы. Opaque-cursor пагинация: query `limit` (default 20, max 100) + `cursor`; ответ `{ items: [{ id, full_name, date_of_birth, photo_url, current_group_id, day_status }], next_cursor }`. `day_status` — статус `child_daily_status` на сегодня (Asia/Almaty) или `null`. Только `mentor`, активно назначенный на группу; иначе 403 `mentor_not_assigned_to_group`. Кросс-тенант изолирован. |
+| GET | `/staff/children` | Child-picker специалиста: активные дети садика для выбора при диагностике. Query `specialist_scope=true` (контракт) + `limit`/`cursor`; ответ — тот же `{ items, next_cursor }`, что и ростер. Роль: `specialist`. |
+| GET | `/staff/children/:id` | Карточка ребёнка (kindergarten-scoped, любая staff-роль садика). Содержит: `id`, `full_name`, `date_of_birth`, `photo_url`, `current_group_id`, `group_name`, `allergies` (free-text `allergy_notes` обёрнут в массив: `[]` или `["..."]`), `medical_notes`, `guardians[{ user_id, full_name, phone, relation (=role: primary/secondary/nanny), can_pickup }]` (только approved). 404 `child_not_found` если ребёнок не в садике вызывающего. |
 
 ### 3.3 Attendance (Check-in / Check-out manual)
 
@@ -1056,7 +1064,7 @@ Qundylyq реализуется как `content_posts` с `content_type='qundyly
 | POST | `/staff/attendance/check-in` | Ручной check-in: `child_id`, опц. `recorded_at`, `notes`. `method='manual'`. |
 | POST | `/staff/attendance/check-out` | Ручной check-out: `child_id`, `pickup_user_id` (guardian/trusted), `pickup_request_id` (если был OTP flow), `notes`. Ответ-событие несёт `recorded_by_full_name` + `pickup_user_full_name` (display-overlay). |
 | PATCH | `/staff/attendance/:eventId` | Корректировка ранее сделанной записи (в окне той же смены). |
-| GET | `/staff/attendance/today` | События сегодня по моим группам. |
+| GET | `/staff/attendance/today` | Дневная сводка посещаемости (counts) для mentor/specialist. Query `groupId` (для mentor — обязателен и проверяется активное назначение, иначе 403 `mentor_not_assigned_to_group` / `mentor_group_required`; для specialist/reception — опционален, без него по всему садику) + опц. `date` (YYYY-MM-DD, default Asia/Almaty today). Ответ: `{ in_kindergarten, checked_out, absent, on_vacation, sick, late }`. Аналог `/admin/dashboard/attendance-today` в staff-скоупе (+ `late`). |
 
 ### 3.4 Face ID (staff-facing)
 
@@ -1146,10 +1154,20 @@ Qundylyq реализуется как `content_posts` с `content_type='qundyly
 
 **Display-overlays (B-N2):** `timeline_entry` несёт computed `recorded_by_full_name` (`recordedBy → staff_members.full_name ?? users.full_name`); `child_daily_status` несёт `set_by_full_name` (`setBy → …`). `null` при пустом источнике / не найдено / имя пустое. Резолв батчем (без N+1). Те же поля — в parent-проекциях (§4.3).
 
+**Схема `metadata` (BR-013, server-enforced):** поле `metadata` — freeform jsonb, но для двух типов значение проверяется на сервере (POST и PATCH):
+
+| `entry_type` | `metadata` | Допустимые значения |
+|---|---|---|
+| `mood` | `{ "mood": <enum> }` | `happy` \| `ok` \| `sad` |
+| `meal` | `{ "ate": <enum> }` | `all` \| `half` \| `little` |
+| `activity` / `note` / `photo` / `medication` / `nap` | — (схемы нет, контент в `title`/`body`/`media_urls`) | — |
+
+Проверяется «если типизированный ключ присутствует»: `metadata` опционально, отсутствие ключа проходит, лишние ключи игнорируются, прочие типы не валидируются. Невалидное значение → `422 invalid_timeline_metadata` (тело `{ error: "invalid_timeline_metadata", details: { entryType, reason } }`).
+
 | Метод | Путь | Назначение |
 |---|---|---|
-| POST | `/staff/timeline-entries` | Создать запись: `child_id`, `entry_type` (activity/meal/nap/note/photo/mood/medication), `title`, `body`, `media_urls[]`, `metadata`, `entry_time`. Ответ несёт `recorded_by_full_name`. |
-| PATCH | `/staff/timeline-entries/:id` | Редактировать (только автор или admin). |
+| POST | `/staff/timeline-entries` | Создать запись: `child_id`, `entry_type` (activity/meal/nap/note/photo/mood/medication), `title`, `body`, `media_urls[]`, `metadata` (mood/meal — см. схему выше), `entry_time`. Ответ несёт `recorded_by_full_name`. Невалидное mood/ate → `422 invalid_timeline_metadata`. |
+| PATCH | `/staff/timeline-entries/:id` | Редактировать (только автор или admin). `entry_type` неизменяем; если передан `metadata`, валидируется по типу записи (mood/meal — см. схему выше) → `422 invalid_timeline_metadata`. |
 | DELETE | `/staff/timeline-entries/:id` | Удалить. |
 | GET | `/staff/timeline/child/:id` | Timeline ребёнка (пагинация). |
 | POST | `/staff/daily-status` | Установить `child_daily_status` на дату: `child_id`, `date`, `status` (present/absent/sick/late/early_pickup/on_vacation), `note`. |
@@ -1283,6 +1301,38 @@ Templates create/update/deactivate — `/admin/diagnostic-templates` (admin role
 | 404 | `group_story_not_found` | Story не найдена |
 | 410 | `group_story_expired` | Story просрочена (`expires_at <= NOW()`) |
 
+### 3.12a Media Upload (generic staff) — BR-012
+
+**Auth:** `KindergartenScopeGuard` + `@Roles('mentor', 'specialist', 'reception', 'admin')`.
+
+Обобщённый staff-аплоад фото для экранов timeline (M-06), progress-notes (M-12), diagnostics (SP-03). Тонкая обёртка над тем же `ContentService.uploadMedia`, что и admin `POST /admin/content/upload-media`. Возвращает **канонический** `/api/v1/media/<key>` URL (`@SkipMediaSign` — НЕ presigned, чтобы клиент мог сохранить стабильный URL в media-поле записи). На чтении соответствующего GET URL автоматически презайнится глобальным `MediaSignInterceptor`.
+
+| Метод | Путь | Назначение |
+|---|---|---|
+| POST | `/staff/media` | Загрузить одно изображение. `multipart/form-data`: поле `file` (обязательно). Только `image/jpeg \| image/png \| image/webp`, ≤ **10 MB**. Видео не поддерживается. Ключ kg-scoped: `<kgId>/<yyyy-mm>/<uuid>.<ext>`. Response 200: `{url, key, bytes}`. Errors: 400 `media_file_required` / `media_type_invalid` / `media_too_large`. |
+
+**Response (200):**
+
+```json
+{
+  "url": "/api/v1/media/<kgId>/2026-06/<uuid>.png",
+  "key": "<kgId>/2026-06/<uuid>.png",
+  "bytes": 204800
+}
+```
+
+**Куда класть `url` (поля различаются по экранам):** M-06 timeline → `mediaUrls: string[]` (camelCase, `POST/PATCH /staff/timeline-entries`); M-12 progress-notes → `media_urls: string[]` (snake_case, `POST/PATCH /staff/progress-notes`); SP-03 diagnostics → `attachments: string[]` (snake_case, `POST/PATCH /staff/diagnostic-entries`). Привязка к записи — на стороне клиента (upload → url → передать в нужное поле при create/patch).
+
+**Error map (§3.12a):**
+
+| HTTP | `error` | Когда |
+|---|---|---|
+| 400 | `media_file_required` | Файл `file` не передан |
+| 400 | `media_type_invalid` | MIME не `image/jpeg \| png \| webp` |
+| 400 | `media_too_large` | Файл > 10 MB (либо 413 если multer оборвал поток раньше) |
+| 401 | — | Bearer отсутствует/невалиден/отозван |
+| 403 | `insufficient_role` | Роль не mentor/specialist/reception/admin |
+
 ### 3.13 Content (read-only)
 
 **Auth:** `mentor`, `specialist`, or `reception` role.
@@ -1290,7 +1340,7 @@ Templates create/update/deactivate — `/admin/diagnostic-templates` (admin role
 | Метод | Путь | Назначение |
 |---|---|---|
 | GET | `/staff/schedule/week` | Расписание моей группы на неделю. Query: `week_start_date?` (default: текущая неделя). Response: `[{day_of_week, events: [{id, activity_name, starts_at, ends_at, status, location_id?, location_name?}]}]`. `location_name` — computed (`locationId → locations.name`), `null` при пустом / не найденном. |
-| GET | `/staff/meal-plans` | Меню на период. Query: `date_from`, `date_to`, `group_id?`. Response: `[{date, group_id?, items: [{meal_type, dish_name, allergens?, calories?}]}]`. |
+| GET | `/staff/meal-plans` | Меню на период. Query: `date_from`, `date_to`, `group_id?`. Response: `[{date, group_id?, items: [{meal_type, dish_name, allergens?, calories?, serve_time?}]}]`. `serve_time` — `"HH:mm"` или `null`. |
 | GET | `/staff/content/news` | Новости садика. |
 
 ### 3.14 Enrollments (Admin also acts here; reception)
@@ -1504,7 +1554,7 @@ Wire-keys — snake_case (`child_id`, `weekend_dates`, `expected_time`, `is_one_
 | GET | `/parent/feed` | Устаревший endpoint (сохранён для обратной совместимости). Лента: news, qundylyq, birthdays, targeted posts (all / group / child). Локализовано по `users.locale`. Предпочтительный path — `GET /parent/children/:id/content`. |
 | GET | `/parent/content/news` | Только новости садика (все kg ребёнка). |
 | GET | `/parent/content/qundylyq/current` | Текущий Qundylyq (тема месяца, `status='published'`, последний по `published_at`). |
-| GET | `/parent/children/:id/menu` | Меню на период. Query: `date_from`, `date_to` (ISO date, обязательны). Возвращает `meal_plans` группы ребёнка (приоритет) или общего садика за период с вложенными `meal_items`. Response: `[{date, items: [{meal_type, dish_name: {ru,kz}, description?, allergens?, calories?, photo_url?}]}]`. Errors: 404 `child_not_found`, 403 `access_denied`. |
+| GET | `/parent/children/:id/menu` | Меню на период. Query: `date_from`, `date_to` (ISO date, обязательны). Возвращает `meal_plans` группы ребёнка (приоритет) или общего садика за период с вложенными `meal_items`. Response: `[{date, items: [{meal_type, dish_name: {ru,kz}, description?, allergens?, calories?, photo_url?, serve_time?}]}]`. `serve_time` — `"HH:mm"` или `null`. Errors: 404 `child_not_found`, 403 `access_denied`. |
 | GET | `/parent/children/:id/schedule` | Расписание группы ребёнка. Query: `date_from`, `date_to` (ISO date, обязательны). Возвращает `activity_events` группы за период. Response: `[{id, activity_name, starts_at, ends_at, status, location_id?, location_name?, notes?}]`. `location_name` — computed display-overlay (`locationId → locations.name`), `null` при пустом / не найденном. Errors: 404 `child_not_found`, 403 `access_denied`. |
 
 **Error map (§4.9):**

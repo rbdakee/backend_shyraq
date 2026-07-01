@@ -9,6 +9,8 @@ export interface ListPaymentsFilter {
   provider?: PaymentProvider;
   status?: PaymentStatus;
   childId?: string;
+  /** When true, return only payments flagged `refund_required` (#5b). */
+  refundRequired?: boolean;
   /** ISO `YYYY-MM-DD`. Filters `created_at >= fromDate`. */
   fromDate?: Date;
   /** ISO `YYYY-MM-DD`. Filters `created_at <= toDate`. */
@@ -147,6 +149,20 @@ export abstract class PaymentRepository {
     kindergartenId: string,
     id: string,
     refundId: string,
+    now: Date,
+  ): Promise<Payment | null>;
+
+  /**
+   * Flag a completed payment as a double payment needing a manual refund (#5b).
+   * Unconditional UPDATE on the (already-settled) row: sets `refund_required`,
+   * `refund_reason` and `duplicate_of_payment_id` (the first/kept payment).
+   * Returns the hydrated row, or null if the id was not found in this kg.
+   */
+  abstract markRefundRequired(
+    kindergartenId: string,
+    id: string,
+    reason: string,
+    duplicateOfPaymentId: string,
     now: Date,
   ): Promise<Payment | null>;
 

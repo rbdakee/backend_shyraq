@@ -12,6 +12,7 @@ import { KaspiGlobalConfig } from '../../../domain/kaspi-global-config';
 import { KaspiGlobalConfigService } from '../../../kaspi-global-config.service';
 import { KaspiMerchantSessionRepository } from '../../persistence/kaspi-merchant-session.repository';
 import {
+  CancelPaymentInput,
   CreatePaymentInput,
   CreatePaymentResult,
   PaymentProviderPort,
@@ -258,6 +259,42 @@ export class KaspiPaymentProvider extends PaymentProviderPort {
     const { status, json } = await this.http.request('GET', url, { headers });
 
     return parseRemoteDetails(status, json);
+  }
+
+  // ── cancelPayment — qrpay remote/cancel (recall a pending remote op) ──────
+
+  /**
+   * Recalls a still-pending Kaspi remote payment operation so a fresh one can
+   * be created without leaving two live requests on the payer's phone (the
+   * single-parent double-pay guard in `payment.service.initiate`). Mirrors the
+   * reference `invoice.js` cancel: POST /v01/remote/cancel { qrOperationId }.
+   * A non-2xx (e.g. the op is already terminal) throws PaymentProviderError —
+   * the caller treats recall as best-effort and proceeds regardless.
+   */
+  async cancelPayment(input: CancelPaymentInput): Promise<void> {
+    const { session, cfg } = await this.resolveActiveSession(
+      input.kindergartenId,
+    );
+    const device = this.deviceIdentity(session);
+    const kaspiSession = this.kaspiSession(session);
+
+    const url = `${cfg.qrpayUrl}/v01/remote/cancel`;
+    const headers = {
+      ...signedQrPayHeaders(url, kaspiSession, device, this.appConfig(cfg)),
+      'Content-Type': 'application/json',
+    };
+
+    const { status } = await this.http.request('POST', url, {
+      headers,
+      body: { qrOperationId: Number(input.providerPaymentId) },
+    });
+
+    if (status < 200 || status >= 300) {
+      throw new PaymentProviderError(
+        'kaspi_pay',
+        `kaspi_cancel_http_${status}`,
+      );
+    }
   }
 
   // ── verifyWebhook — UNSUPPORTED (settlement is via the K8 poller) ─────────

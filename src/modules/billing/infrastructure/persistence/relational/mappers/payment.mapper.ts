@@ -26,6 +26,9 @@ export class PaymentMapper {
       providerPayload: row.providerPayload,
       paidAt: row.paidAt,
       refundId: row.refundId,
+      refundRequired: row.refundRequired,
+      refundReason: row.refundReason,
+      duplicateOfPaymentId: row.duplicateOfPaymentId,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };

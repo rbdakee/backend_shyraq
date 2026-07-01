@@ -153,6 +153,22 @@ class FakeAttendanceEventRepo extends AttendanceEventRepository {
       [...this.rows.values()].filter((e) => e.kindergartenId === kg),
     );
   }
+  /** Test-driven buckets + captured args for getDaySummary. */
+  lastEventBuckets = { inKindergarten: 0, checkedOut: 0 };
+  lastEventArgs: {
+    dayStartIso: string;
+    dayEndExclusiveIso: string;
+    groupId?: string;
+  } | null = null;
+  override lastEventBucketsForDate(
+    _kg: string,
+    dayStartIso: string,
+    dayEndExclusiveIso: string,
+    groupId?: string,
+  ): Promise<{ inKindergarten: number; checkedOut: number }> {
+    this.lastEventArgs = { dayStartIso, dayEndExclusiveIso, groupId };
+    return Promise.resolve(this.lastEventBuckets);
+  }
 }
 
 class FakeChildDailyStatusRepo extends ChildDailyStatusRepository {
@@ -249,6 +265,24 @@ class FakeChildDailyStatusRepo extends ChildDailyStatusRepository {
     }
     return Promise.resolve(items);
   }
+  /** Test-driven histogram + captured args for getDaySummary. */
+  statusCounts: Record<string, number> = {};
+  statusCountArgs: {
+    date: string;
+    dayStartIso: string;
+    dayEndExclusiveIso: string;
+    groupId?: string;
+  } | null = null;
+  override countByStatusForDate(
+    _kg: string,
+    date: string,
+    dayStartIso: string,
+    dayEndExclusiveIso: string,
+    groupId?: string,
+  ): Promise<Record<string, number>> {
+    this.statusCountArgs = { date, dayStartIso, dayEndExclusiveIso, groupId };
+    return Promise.resolve(this.statusCounts);
+  }
 }
 
 class FakeTimelineRepo extends TimelineEntryRepository {
@@ -295,6 +329,14 @@ class FakeChildRepo extends ChildRepository {
     const c = this.byId.get(id);
     if (!c || c.kindergartenId !== kg) return Promise.resolve(null);
     return Promise.resolve(c);
+  }
+  findFullNamesByIds(kg: string, ids: string[]): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    for (const id of [...new Set(ids)]) {
+      const c = this.byId.get(id);
+      if (c && c.kindergartenId === kg) out.set(id, c.toState().fullName);
+    }
+    return Promise.resolve(out);
   }
   findByKindergartenAndIin(_kg: string, _iin: string): Promise<Child | null> {
     return Promise.resolve(null);
@@ -1047,6 +1089,80 @@ describe('AttendanceService — service-unit', () => {
     });
   });
 
+  describe('getDaySummary', () => {
+    it('returns all six buckets including late, mapped from event + daily-status ports', async () => {
+      const w = wire();
+      w.eventRepo.lastEventBuckets = { inKindergarten: 42, checkedOut: 7 };
+      w.dailyRepo.statusCounts = {
+        present: 40,
+        absent: 5,
+        on_vacation: 3,
+        sick: 2,
+        late: 4,
+      };
+
+      const res = await w.service.getDaySummary(KG, {});
+
+      expect(res).toEqual({
+        in_kindergarten: 42,
+        checked_out: 7,
+        absent: 5,
+        on_vacation: 3,
+        sick: 2,
+        late: 4,
+      });
+    });
+
+    it('returns zeros (incl. late) when no events and no daily-status rows exist', async () => {
+      const w = wire();
+      const res = await w.service.getDaySummary(KG, {});
+      expect(res).toEqual({
+        in_kindergarten: 0,
+        checked_out: 0,
+        absent: 0,
+        on_vacation: 0,
+        sick: 0,
+        late: 0,
+      });
+    });
+
+    it('defaults the date to Asia/Almaty today and derives the day instant window', async () => {
+      // NOW = 2026-05-01T09:00:00Z = 14:00 Almaty (UTC+5) → today 2026-05-01.
+      const w = wire();
+      await w.service.getDaySummary(KG, {});
+      // Almaty 2026-05-01 00:00 = UTC 2026-04-30T19:00:00Z.
+      // Almaty 2026-05-02 00:00 = UTC 2026-05-01T19:00:00Z.
+      expect(w.dailyRepo.statusCountArgs).toEqual({
+        date: '2026-05-01',
+        dayStartIso: '2026-04-30T19:00:00.000Z',
+        dayEndExclusiveIso: '2026-05-01T19:00:00.000Z',
+        groupId: undefined,
+      });
+      expect(w.eventRepo.lastEventArgs).toEqual({
+        dayStartIso: '2026-04-30T19:00:00.000Z',
+        dayEndExclusiveIso: '2026-05-01T19:00:00.000Z',
+        groupId: undefined,
+      });
+    });
+
+    it('honours an explicit date override and propagates the group filter', async () => {
+      const w = wire();
+      const groupId = 'a1b2c3d4-0000-0000-0000-000000000001';
+      await w.service.getDaySummary(KG, { date: '2026-04-10', groupId });
+      expect(w.dailyRepo.statusCountArgs).toEqual({
+        date: '2026-04-10',
+        dayStartIso: '2026-04-09T19:00:00.000Z',
+        dayEndExclusiveIso: '2026-04-10T19:00:00.000Z',
+        groupId,
+      });
+      expect(w.eventRepo.lastEventArgs).toEqual({
+        dayStartIso: '2026-04-09T19:00:00.000Z',
+        dayEndExclusiveIso: '2026-04-10T19:00:00.000Z',
+        groupId,
+      });
+    });
+  });
+
   describe('listEventsByChild / listEventsByGroup', () => {
     it('returns events filtered by child', async () => {
       const w = wire();
@@ -1218,6 +1334,26 @@ describe('AttendanceService — service-unit', () => {
       const w = wire();
       const map = await w.service.resolvePickupUserNames([
         makeCheckOutEvent(PICKUP_USER),
+      ]);
+      expect(map.size).toBe(0);
+    });
+  });
+
+  describe('resolveChildNames', () => {
+    it('resolves child_id → full_name via the child repo (deduped)', async () => {
+      const w = wire(); // seeds CHILD → 'Test Child'
+      const map = await w.service.resolveChildNames(KG, [
+        { childId: CHILD },
+        { childId: CHILD },
+      ]);
+      expect(map.get(CHILD)).toBe('Test Child');
+      expect(map.size).toBe(1);
+    });
+
+    it('omits ids with no matching child row (rendered as null upstream)', async () => {
+      const w = wire();
+      const map = await w.service.resolveChildNames(KG, [
+        { childId: 'dddddddd-dddd-dddd-dddd-dddddddddddd' },
       ]);
       expect(map.size).toBe(0);
     });

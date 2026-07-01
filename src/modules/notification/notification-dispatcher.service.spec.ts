@@ -82,9 +82,18 @@ class FakeGuardianRepo
   implements ChildGuardianRepository
 {
   rowsByChild = new Map<string, ChildGuardian[]>();
+  approvedUserIdsByGroup = new Map<string, string[]>();
 
   setGuardiansForChild(childId: string, guardians: ChildGuardian[]): void {
     this.rowsByChild.set(childId, guardians);
+  }
+
+  setApprovedUserIdsForGroup(groupId: string, userIds: string[]): void {
+    this.approvedUserIdsByGroup.set(groupId, userIds);
+  }
+
+  findApprovedUserIdsByGroup(_kg: string, groupId: string): Promise<string[]> {
+    return Promise.resolve(this.approvedUserIdsByGroup.get(groupId) ?? []);
   }
 
   create(): Promise<void> {
@@ -275,12 +284,16 @@ class RecordingPushPort extends PushNotificationPort {
 class RecordingWsBroadcaster extends WsBroadcaster {
   userBroadcasts: { userId: string; eventName: string; payload: unknown }[] =
     [];
+  groupBroadcasts: { groupId: string; eventName: string; payload: unknown }[] =
+    [];
 
   broadcastToUser(userId: string, eventName: string, payload: unknown): void {
     this.userBroadcasts.push({ userId, eventName, payload });
   }
   broadcastToChild(): void {}
-  broadcastToGroup(): void {}
+  broadcastToGroup(groupId: string, eventName: string, payload: unknown): void {
+    this.groupBroadcasts.push({ groupId, eventName, payload });
+  }
 }
 
 class FakeChildRepo extends ChildRepository {
@@ -420,7 +433,10 @@ function approvedGuardian(
   });
 }
 
-function makeChild(fullName = 'Айгерим Сериккызы'): Child {
+function makeChild(
+  fullName = 'Айгерим Сериккызы',
+  currentGroupId: string | null = null,
+): Child {
   return Child.hydrate({
     id: CHILD,
     kindergartenId: KG,
@@ -430,7 +446,7 @@ function makeChild(fullName = 'Айгерим Сериккызы'): Child {
     gender: 'f',
     photoUrl: null,
     status: 'active',
-    currentGroupId: null,
+    currentGroupId,
     enrollmentDate: null,
     archivedAt: null,
     archiveReason: null,
@@ -569,6 +585,115 @@ describe('NotificationDispatcher', () => {
       expect(w.pushPort.calls[0].target.userId).toBe(USER_A);
       // WS broadcast happens for both in-app users.
       expect(w.ws.userBroadcasts).toHaveLength(2);
+    });
+  });
+
+  // ── BR-016 — WS group-fanout (Core 6) ──────────────────────────────────
+
+  describe('WS group-fanout (BR-016)', () => {
+    function makeStoryNewEvent(): OutboxEvent {
+      return OutboxEvent.create(
+        {
+          id: '99999999-9999-9999-9999-9999br016st1',
+          kindergartenId: KG,
+          eventKey: 'content.story_new',
+          payload: {
+            storyId: 'story-1',
+            groupId: 'G1',
+            mediaType: 'image',
+          },
+        },
+        NOW,
+      );
+    }
+
+    function makeInvoiceCreatedEvent(): OutboxEvent {
+      return OutboxEvent.create(
+        {
+          id: '99999999-9999-9999-9999-9999br016in1',
+          kindergartenId: KG,
+          eventKey: 'invoice.created',
+          payload: {
+            invoiceId: 'inv-1',
+            childId: CHILD,
+            invoiceType: 'monthly',
+            amountAfterDiscount: 50000,
+            dueDate: '2026-06-01',
+          },
+        },
+        NOW,
+      );
+    }
+
+    it('broadcasts attendance.checkin to the child group with groupId + childId in data', async () => {
+      const w = wire();
+      w.guardianRepo.setGuardiansForChild(CHILD, [
+        approvedGuardian(USER_A, 'primary'),
+      ]);
+      // Child currently sits in group G1 — the dispatcher derives the
+      // group from the child via childRepo.findById.
+      w.childRepo.set(makeChild('Айгерим', 'G1'));
+
+      const result = await w.dispatcher.dispatch(makeAttendanceEvent());
+
+      expect(result).toEqual({ status: 'dispatched' });
+      expect(w.ws.groupBroadcasts).toHaveLength(1);
+      const gb = w.ws.groupBroadcasts[0];
+      expect(gb.groupId).toBe('G1');
+      expect(gb.eventName).toBe('attendance.checkin');
+      const data = (gb.payload as { data: Record<string, unknown> }).data;
+      expect(data.groupId).toBe('G1');
+      expect(data.childId).toBe(CHILD);
+    });
+
+    it('does not broadcast to any group for a parent-only event (invoice.created)', async () => {
+      const w = wire();
+      w.guardianRepo.setGuardiansForChild(CHILD, [
+        approvedGuardian(USER_A, 'primary'),
+      ]);
+      w.childRepo.set(makeChild('Айгерим', 'G1'));
+
+      const result = await w.dispatcher.dispatch(makeInvoiceCreatedEvent());
+
+      expect(result).toEqual({ status: 'dispatched' });
+      expect(w.ws.groupBroadcasts).toHaveLength(0);
+    });
+
+    it('emits no group-broadcast when the child has no current group, but user broadcasts still happen', async () => {
+      const w = wire();
+      w.guardianRepo.setGuardiansForChild(CHILD, [
+        approvedGuardian(USER_A, 'primary'),
+      ]);
+      // Child has no current group (currentGroupId=null) → no group emit.
+      w.childRepo.set(makeChild('Айгерим', null));
+
+      const result = await w.dispatcher.dispatch(makeAttendanceEvent());
+
+      expect(result).toEqual({ status: 'dispatched' });
+      expect(w.ws.groupBroadcasts).toHaveLength(0);
+      // Personal user: broadcast still fires for the in-app guardian.
+      expect(w.ws.userBroadcasts).toHaveLength(1);
+    });
+
+    it('broadcasts content.story_new to the resolver group without hitting childRepo', async () => {
+      const w = wire();
+      // Guardians of children in group G1 — resolver returns groupId='G1'
+      // and the non-empty user set keeps the dispatch from short-circuiting.
+      w.guardianRepo.setApprovedUserIdsForGroup('G1', [USER_A]);
+      // Intentionally NO child row registered: the group must come from the
+      // resolver payload, not from childRepo.findById.
+
+      const result = await w.dispatcher.dispatch(makeStoryNewEvent());
+
+      expect(result).toEqual({ status: 'dispatched' });
+      expect(w.ws.groupBroadcasts).toHaveLength(1);
+      const gb = w.ws.groupBroadcasts[0];
+      expect(gb.groupId).toBe('G1');
+      expect(gb.eventName).toBe('content.story_new');
+      const data = (gb.payload as { data: Record<string, unknown> }).data;
+      expect(data.groupId).toBe('G1');
+      // content.story_new carries no childId — should be absent from data.
+      expect(data.childId).toBeUndefined();
     });
   });
 
@@ -1436,6 +1561,7 @@ describe('NotificationDispatcher', () => {
       'payment.completed',
       'payment.failed',
       'payment.refunded',
+      'payment.refund_required',
       'refund.processed',
       // ── B16 Custom Discounts ───────────────────────────────────────────
       'discount.activated',

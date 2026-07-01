@@ -31,6 +31,7 @@ import {
   FiscalReceiptPort,
 } from './infrastructure/fiscal-receipt/fiscal-receipt.port';
 import {
+  CancelPaymentInput,
   CreatePaymentInput,
   CreatePaymentResult,
   PaymentProviderPort,
@@ -49,6 +50,7 @@ import {
 } from './infrastructure/persistence/payment.repository';
 import { InvoiceService } from './invoice.service';
 import { KindergartenRepository } from '@/modules/kindergarten/infrastructure/persistence/kindergarten.repository';
+import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
 import { PaymentService } from './payment.service';
 import { PaymentAccountService } from './payment-account.service';
 import { PaymentAccountRepository } from './infrastructure/persistence/payment-account.repository';
@@ -247,6 +249,30 @@ class FakePaymentRepo extends PaymentRepository {
     );
   }
 
+  markRefundRequired(
+    kindergartenId: string,
+    id: string,
+    reason: string,
+    duplicateOfPaymentId: string,
+    now: Date,
+  ): Promise<Payment | null> {
+    // Unconditional flag (mirrors the relational impl — no status guard):
+    // the row is already settled when this is called.
+    const p = this.rows.get(id);
+    if (!p || p.kindergartenId !== kindergartenId) {
+      return Promise.resolve(null);
+    }
+    const updated = Payment.fromState({
+      ...p.toState(),
+      refundRequired: true,
+      refundReason: reason,
+      duplicateOfPaymentId,
+      updatedAt: now,
+    });
+    this.rows.set(id, updated);
+    return Promise.resolve(updated);
+  }
+
   private transition(
     kindergartenId: string,
     id: string,
@@ -438,6 +464,9 @@ class FakePaymentProvider extends PaymentProviderPort {
     Promise.reject(new WebhookSignatureInvalidError('mock'));
   refundImpl: (input: RefundInput) => Promise<RefundResult> = () =>
     Promise.resolve({ providerRefundId: 'r1', status: 'processed' });
+  cancelCalls: CancelPaymentInput[] = [];
+  cancelPaymentImpl: (input: CancelPaymentInput) => Promise<void> = () =>
+    Promise.resolve();
 
   createPayment(input: CreatePaymentInput): Promise<CreatePaymentResult> {
     return this.createPaymentImpl(input);
@@ -447,6 +476,10 @@ class FakePaymentProvider extends PaymentProviderPort {
   }
   refund(input: RefundInput): Promise<RefundResult> {
     return this.refundImpl(input);
+  }
+  cancelPayment(input: CancelPaymentInput): Promise<void> {
+    this.cancelCalls.push(input);
+    return this.cancelPaymentImpl(input);
   }
 }
 
@@ -519,7 +552,10 @@ interface Harness {
   clock: FixedClock;
 }
 
-function buildHarness(opts?: { kindergartenName?: string }): Harness {
+function buildHarness(opts?: {
+  kindergartenName?: string;
+  adminUserIds?: string[];
+}): Harness {
   const clock = new FixedClock(NOW);
   const paymentRepo = new FakePaymentRepo();
   const invoiceRepo = new FakeInvoiceRepo();
@@ -548,6 +584,18 @@ function buildHarness(opts?: { kindergartenName?: string }): Harness {
           }),
       } as unknown as KindergartenRepository)
     : undefined;
+  // #5b — optional StaffMemberRepository stub: only `listByKindergarten` is
+  // exercised (to pre-resolve admin user_ids for the double-pay notification).
+  const staffRepo = opts?.adminUserIds
+    ? ({
+        listByKindergarten: () =>
+          Promise.resolve(
+            (opts.adminUserIds ?? []).map((userId) => ({
+              toState: () => ({ userId }),
+            })),
+          ),
+      } as unknown as StaffMemberRepository)
+    : undefined;
   const service = new PaymentService(
     paymentRepo,
     invoiceRepo,
@@ -560,6 +608,8 @@ function buildHarness(opts?: { kindergartenName?: string }): Harness {
     txRunner,
     undefined,
     kindergartens,
+    undefined,
+    staffRepo,
   );
   return {
     service,
@@ -1822,5 +1872,288 @@ describe('PaymentService.initiate — H14 partial on overdue', () => {
     expect(result.payment.status).toBe('completed');
     const invAfter = await h.invoiceRepo.findById(KG, INVOICE);
     expect(invAfter?.status).toBe('paid');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// #5a — single-parent double-pay guard (recallInFlightKaspiForPayer).
+// A parent re-initiating a Kaspi payment on the same invoice must have their
+// own still-pending request recalled (Kaspi remote/cancel) + flipped to
+// `failed`, so only the newest request stays live.
+// ─────────────────────────────────────────────────────────────────────────
+
+const PAYER2 = 'pppppppp-pppp-pppp-pppp-pppppppppppp';
+
+function seedInFlightKaspi(
+  h: Harness,
+  overrides: Partial<PaymentState> = {},
+): Payment {
+  const p = Payment.fromState({
+    id: 'pmt-inflight',
+    kindergartenId: KG,
+    invoiceId: INVOICE,
+    childId: CHILD,
+    payerUserId: PAYER,
+    amount: m(50_000),
+    provider: 'kaspi_pay',
+    providerTxnId: 'qr-old',
+    idempotencyKey: 'idem-old',
+    status: 'processing',
+    providerPayload: null,
+    paidAt: null,
+    refundId: null,
+    createdAt: NOW,
+    updatedAt: NOW,
+    ...overrides,
+  });
+  h.paymentRepo.rows.set(p.id, p);
+  return p;
+}
+
+describe('PaymentService.initiate — single-parent Kaspi recall (#5a)', () => {
+  function initKaspi(h: Harness, idempotencyKey: string): Promise<unknown> {
+    // Async path: provider returns `initiated` so the recall + new
+    // `processing` Kaspi request flow is exercised (no synchronous settle).
+    h.provider.createPaymentImpl = () =>
+      Promise.resolve({
+        providerPaymentId: 'qr-new',
+        status: 'initiated',
+        redirectUrl: 'https://kaspi/pay/new',
+      });
+    return h.service.initiate(KG, {
+      invoiceId: INVOICE,
+      amount: 50_000,
+      paymentMode: 'full',
+      provider: 'kaspi_pay',
+      idempotencyKey,
+      payerUserId: PAYER,
+      kaspiPhoneNumber: '77772270088',
+      returnUrl: 'https://app/return',
+    });
+  }
+
+  it('recalls the same payer in-flight Kaspi request and supersedes it', async () => {
+    const h = buildHarness();
+    h.invoiceRepo.rows.set(INVOICE, makeInvoice());
+    h.paymentAccountRepo.put(makeAccount());
+    seedInFlightKaspi(h);
+
+    const result = (await initKaspi(h, 'idem-new')) as {
+      payment: Payment;
+    };
+
+    // Old request cancelled on Kaspi (remote/cancel) with its QrOperationId.
+    expect(h.provider.cancelCalls).toHaveLength(1);
+    expect(h.provider.cancelCalls[0]).toEqual({
+      kindergartenId: KG,
+      providerPaymentId: 'qr-old',
+    });
+    // Old row flipped to failed with the superseded reason.
+    const old = await h.paymentRepo.findById(KG, 'pmt-inflight');
+    expect(old?.status).toBe('failed');
+    expect(old?.providerPayload?.failure_reason).toBe(
+      'superseded_by_new_payment',
+    );
+    // The new request is the only live one.
+    expect(result.payment.id).not.toBe('pmt-inflight');
+    expect(result.payment.status).toBe('processing');
+  });
+
+  it('does NOT recall a different payer in-flight request (two-parent race left for settlement-time detection)', async () => {
+    const h = buildHarness();
+    h.invoiceRepo.rows.set(INVOICE, makeInvoice());
+    h.paymentAccountRepo.put(makeAccount());
+    seedInFlightKaspi(h, { payerUserId: PAYER2 });
+
+    await initKaspi(h, 'idem-new-2');
+
+    expect(h.provider.cancelCalls).toHaveLength(0);
+    const other = await h.paymentRepo.findById(KG, 'pmt-inflight');
+    expect(other?.status).toBe('processing');
+  });
+
+  it('proceeds (best-effort) when the Kaspi recall call itself throws', async () => {
+    const h = buildHarness();
+    h.invoiceRepo.rows.set(INVOICE, makeInvoice());
+    h.paymentAccountRepo.put(makeAccount());
+    seedInFlightKaspi(h);
+    h.provider.cancelPaymentImpl = () =>
+      Promise.reject(new Error('kaspi unreachable'));
+
+    const result = (await initKaspi(h, 'idem-new-3')) as {
+      payment: Payment;
+    };
+
+    // Even though remote/cancel failed, our row is still superseded and the
+    // new request goes live — a stale Kaspi op expires on its own ExpireDate.
+    const old = await h.paymentRepo.findById(KG, 'pmt-inflight');
+    expect(old?.status).toBe('failed');
+    expect(result.payment.status).toBe('processing');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// #5b — two-parent double-pay detection at settlement. When a SECOND payment
+// settles on an invoice that already has a completed payment, the later one is
+// flagged `refund_required` + `duplicate_of_payment_id` (the kept payment) for
+// a MANUAL admin refund. The provider is incidental — detection is provider-
+// agnostic — so the public webhook path (mock) drives applyCompletedPayment.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('PaymentService.processWebhook — double-payment detection (#5b)', () => {
+  function seedFirstCompleted(h: Harness): Payment {
+    const p = Payment.fromState({
+      id: 'pmt-first',
+      kindergartenId: KG,
+      invoiceId: INVOICE,
+      childId: CHILD,
+      payerUserId: PAYER,
+      amount: m(50_000),
+      provider: 'mock',
+      providerTxnId: 'tx_first',
+      idempotencyKey: 'idem-first',
+      status: 'completed',
+      providerPayload: null,
+      paidAt: new Date(NOW.getTime() - 60_000),
+      refundId: null,
+      createdAt: new Date(NOW.getTime() - 60_000),
+      updatedAt: new Date(NOW.getTime() - 60_000),
+    });
+    h.paymentRepo.rows.set(p.id, p);
+    return p;
+  }
+
+  function seedSecondProcessing(h: Harness): Payment {
+    const p = Payment.fromState({
+      id: 'pmt-second',
+      kindergartenId: KG,
+      invoiceId: INVOICE,
+      childId: CHILD,
+      payerUserId: PAYER2,
+      amount: m(50_000),
+      provider: 'mock',
+      providerTxnId: 'tx_second',
+      idempotencyKey: 'idem-second',
+      status: 'processing',
+      providerPayload: null,
+      paidAt: null,
+      refundId: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    h.paymentRepo.rows.set(p.id, p);
+    return p;
+  }
+
+  it('flags the later settlement refund_required + duplicate_of_payment_id, keeps the first untouched', async () => {
+    const h = buildHarness();
+    // Invoice already `paid` by the first guardian's settled payment.
+    h.invoiceRepo.rows.set(INVOICE, makeInvoice({ status: 'paid' }));
+    h.paymentAccountRepo.put(makeAccount());
+    seedFirstCompleted(h);
+    seedSecondProcessing(h);
+    h.provider.verifyWebhookImpl = () =>
+      Promise.resolve({
+        providerPaymentId: 'tx_second',
+        status: 'completed',
+        raw: {},
+      });
+
+    await h.service.processWebhook({
+      provider: 'mock',
+      headers: { 'x-mock-signature': 'valid' },
+      body: {},
+    });
+
+    const second = await h.paymentRepo.findById(KG, 'pmt-second');
+    expect(second?.status).toBe('completed');
+    expect(second?.refundRequired).toBe(true);
+    expect(second?.refundReason).toBe('double_payment');
+    expect(second?.duplicateOfPaymentId).toBe('pmt-first');
+
+    // The first/kept payment is never flagged.
+    const first = await h.paymentRepo.findById(KG, 'pmt-first');
+    expect(first?.refundRequired).toBe(false);
+    expect(first?.duplicateOfPaymentId).toBeNull();
+  });
+
+  it('pings the kg admins with a payment.refund_required event on double-pay', async () => {
+    const h = buildHarness({ adminUserIds: ['admin-1', 'admin-2'] });
+    h.invoiceRepo.rows.set(INVOICE, makeInvoice({ status: 'paid' }));
+    h.paymentAccountRepo.put(makeAccount());
+    seedFirstCompleted(h);
+    seedSecondProcessing(h);
+    h.provider.verifyWebhookImpl = () =>
+      Promise.resolve({
+        providerPaymentId: 'tx_second',
+        status: 'completed',
+        raw: {},
+      });
+
+    await h.service.processWebhook({
+      provider: 'mock',
+      headers: { 'x-mock-signature': 'valid' },
+      body: {},
+    });
+
+    const pings = h.notifier.events.filter(
+      (e) => e.type === 'payment_refund_required',
+    );
+    expect(pings).toHaveLength(1);
+    expect(pings[0].event).toMatchObject({
+      kindergartenId: KG,
+      paymentId: 'pmt-second',
+      duplicateOfPaymentId: 'pmt-first',
+      invoiceId: INVOICE,
+      reason: 'double_payment',
+      recipientUserIds: ['admin-1', 'admin-2'],
+    });
+  });
+
+  it('does not emit the admin ping on a sole settlement', async () => {
+    const h = buildHarness({ adminUserIds: ['admin-1'] });
+    h.invoiceRepo.rows.set(INVOICE, makeInvoice());
+    h.paymentAccountRepo.put(makeAccount());
+    seedSecondProcessing(h);
+    h.provider.verifyWebhookImpl = () =>
+      Promise.resolve({
+        providerPaymentId: 'tx_second',
+        status: 'completed',
+        raw: {},
+      });
+
+    await h.service.processWebhook({
+      provider: 'mock',
+      headers: { 'x-mock-signature': 'valid' },
+      body: {},
+    });
+
+    expect(
+      h.notifier.events.filter((e) => e.type === 'payment_refund_required'),
+    ).toHaveLength(0);
+  });
+
+  it('does NOT flag a sole settlement (no sibling completed payment)', async () => {
+    const h = buildHarness();
+    h.invoiceRepo.rows.set(INVOICE, makeInvoice());
+    h.paymentAccountRepo.put(makeAccount());
+    seedSecondProcessing(h);
+    h.provider.verifyWebhookImpl = () =>
+      Promise.resolve({
+        providerPaymentId: 'tx_second',
+        status: 'completed',
+        raw: {},
+      });
+
+    await h.service.processWebhook({
+      provider: 'mock',
+      headers: { 'x-mock-signature': 'valid' },
+      body: {},
+    });
+
+    const second = await h.paymentRepo.findById(KG, 'pmt-second');
+    expect(second?.status).toBe('completed');
+    expect(second?.refundRequired).toBe(false);
+    expect(second?.duplicateOfPaymentId).toBeNull();
   });
 });

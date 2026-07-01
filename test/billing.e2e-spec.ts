@@ -246,6 +246,48 @@ describe('B13 Billing & Invoices (e2e)', () => {
     });
   }
 
+  // #5b — seed a `payments` row directly (bypass-RLS). Used by the double-
+  // payment scenario to place two payments on one invoice without the
+  // `InvoiceAlreadyPaidError` guard that blocks a second public initiate
+  // (the Mock provider settles synchronously, so the public API cannot
+  // produce two in-flight payments on one invoice).
+  async function seedRawPayment(opts: {
+    kgId: string;
+    invoiceId: string;
+    childId: string;
+    payerUserId: string;
+    amount: number;
+    providerTxnId: string;
+    status: 'processing' | 'completed';
+    createdAt?: Date;
+  }): Promise<string> {
+    const id = randomUUID();
+    await ctx.dataSource.transaction(async (m) => {
+      await m.query(`SET LOCAL app.bypass_rls = 'true'`);
+      await m.query(
+        `INSERT INTO payments
+           (id, kindergarten_id, invoice_id, child_id, payer_user_id, amount,
+            provider, provider_txn_id, idempotency_key, status, paid_at,
+            created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, 'mock', $7, $8, $9, $10, $11, $11)`,
+        [
+          id,
+          opts.kgId,
+          opts.invoiceId,
+          opts.childId,
+          opts.payerUserId,
+          opts.amount,
+          opts.providerTxnId,
+          randomUUID(),
+          opts.status,
+          opts.status === 'completed' ? new Date() : null,
+          opts.createdAt ?? new Date(),
+        ],
+      );
+    });
+    return id;
+  }
+
   // ── billing seeding helpers ────────────────────────────────────────────────
 
   async function createTariffPlan(
@@ -1991,6 +2033,118 @@ describe('B13 Billing & Invoices (e2e)', () => {
           expect(p.status).toBe('completed');
         },
       );
+    });
+  });
+
+  // ── Y2. #5b — two-parent double-payment ─────────────────────────────────────
+
+  describe('Scenario Y2 (#5b): double payment → refund_required flag + admin filter + outbox', () => {
+    it('flags the 2nd settlement, exposes it via ?refund_required=true, and emits payment.refund_required to the admin', async () => {
+      const a = await createKgWithAdmin('bi-y2', '+77020100261');
+      const parentA = await seedUser('+77020100262');
+      const parentB = await seedUser('+77020100263');
+      const childId = await createChild(a.adminToken, {
+        full_name: 'Child Y2',
+        date_of_birth: '2021-05-20',
+      });
+      await seedApprovedGuardian(a.kgId, childId, parentA);
+      await seedApprovedGuardian(a.kgId, childId, parentB, 'secondary');
+
+      const { id: invoiceId } = await createOneOffInvoice(
+        a.adminToken,
+        childId,
+        12000,
+      );
+
+      // Parent A already paid (settled) — seed a completed payment + flip the
+      // invoice to paid, mirroring "the first guardian's payment landed first".
+      const paymentAId = await seedRawPayment({
+        kgId: a.kgId,
+        invoiceId,
+        childId,
+        payerUserId: parentA,
+        amount: 12000,
+        providerTxnId: 'txn-double-A',
+        status: 'completed',
+        createdAt: new Date(Date.now() - 60_000),
+      });
+      await ctx.dataSource.transaction(async (m) => {
+        await m.query(`SET LOCAL app.bypass_rls = 'true'`);
+        await m.query(`UPDATE invoices SET status = 'paid' WHERE id = $1`, [
+          invoiceId,
+        ]);
+      });
+
+      // Parent B's payment is still in flight (processing) — seed it, then
+      // settle it via the Mock webhook so the REAL applyCompletedPayment path
+      // runs the duplicate detection + admin outbox emit.
+      const paymentBId = await seedRawPayment({
+        kgId: a.kgId,
+        invoiceId,
+        childId,
+        payerUserId: parentB,
+        amount: 12000,
+        providerTxnId: 'txn-double-B',
+        status: 'processing',
+      });
+
+      await request(server)
+        .post('/api/v1/webhooks/payments/mock')
+        .set('x-mock-signature', 'valid')
+        .send({ provider_payment_id: 'txn-double-B', status: 'completed' })
+        .expect(200);
+
+      // The double-payment refund queue surfaces ONLY payment B, with the
+      // flag + a link to the kept payment A.
+      const queueRes = await request(server)
+        .get('/api/v1/admin/payments?refund_required=true')
+        .set('Authorization', `Bearer ${a.adminToken}`)
+        .expect(200);
+
+      const queue = queueRes.body as Array<{
+        id: string;
+        refund_required: boolean;
+        refund_reason: string | null;
+        duplicate_of_payment_id: string | null;
+      }>;
+      expect(queue).toHaveLength(1);
+      expect(queue[0].id).toBe(paymentBId);
+      expect(queue[0].refund_required).toBe(true);
+      expect(queue[0].refund_reason).toBe('double_payment');
+      expect(queue[0].duplicate_of_payment_id).toBe(paymentAId);
+
+      // Payment A is never flagged.
+      const allRes = await request(server)
+        .get('/api/v1/admin/payments?status=completed')
+        .set('Authorization', `Bearer ${a.adminToken}`)
+        .expect(200);
+      const paymentA = (
+        allRes.body as Array<{ id: string; refund_required: boolean }>
+      ).find((p) => p.id === paymentAId);
+      expect(paymentA?.refund_required).toBe(false);
+
+      // An admin outbox ping was enqueued for the double payment, addressed to
+      // the kg admin (#5b notifyPaymentRefundRequired → payment.refund_required).
+      const outboxRows = await ctx.dataSource.transaction(async (m) => {
+        await m.query(`SET LOCAL app.bypass_rls = 'true'`);
+        return (await m.query(
+          `SELECT payload
+             FROM notification_outbox
+            WHERE kindergarten_id = $1
+              AND event_key = 'payment.refund_required'
+              AND payload->>'paymentId' = $2`,
+          [a.kgId, paymentBId],
+        )) as Array<{
+          payload: {
+            paymentId: string;
+            duplicateOfPaymentId: string;
+            recipientUserIds: string[];
+          };
+        }>;
+      });
+      expect(outboxRows).toHaveLength(1);
+      expect(outboxRows[0].payload.duplicateOfPaymentId).toBe(paymentAId);
+      expect(outboxRows[0].payload.recipientUserIds).toContain(a.userId);
     });
   });
 

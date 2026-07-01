@@ -40,6 +40,7 @@ export class MealPlanMapper {
       allergens: row.allergens,
       photoUrl: row.photo_url,
       calories: row.calories,
+      serveTime: row.serve_time,
       position: row.position,
     };
   }
@@ -69,6 +70,7 @@ export class MealPlanMapper {
       allergens: item.allergens,
       photo_url: item.photoUrl,
       calories: item.calories,
+      serve_time: item.serveTime,
       position: item.position,
     };
   }

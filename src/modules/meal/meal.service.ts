@@ -55,6 +55,7 @@ export interface CreateMealItemServiceInput {
   allergens?: string[] | null;
   photoUrl?: string | null;
   calories?: number | null;
+  serveTime?: string | null;
   position?: number;
 }
 
@@ -70,6 +71,7 @@ export interface UpdateMealItemInput {
   allergens?: string[] | null;
   photoUrl?: string | null;
   calories?: number | null;
+  serveTime?: string | null;
   position?: number;
 }
 
@@ -132,6 +134,7 @@ export class MealService {
         allergens: i.allergens,
         photoUrl: i.photoUrl,
         calories: i.calories,
+        serveTime: i.serveTime,
         position: i.position,
       })),
     });
@@ -201,6 +204,7 @@ export class MealService {
         allergens: input.allergens,
         photoUrl: input.photoUrl,
         calories: input.calories,
+        serveTime: input.serveTime,
         position: input.position,
       },
       now,
@@ -227,6 +231,7 @@ export class MealService {
         allergens: input.allergens,
         photoUrl: input.photoUrl,
         calories: input.calories,
+        serveTime: input.serveTime,
         position: input.position,
       },
       this.clock.now(),
@@ -314,6 +319,7 @@ export class MealService {
                 allergens: item.allergens,
                 photo_url: item.photoUrl,
                 calories: item.calories,
+                serve_time: item.serveTime,
                 position: item.position,
               })),
               created_at: plan.createdAt.toISOString(),
@@ -410,6 +416,7 @@ export class MealService {
           allergens: item.allergens,
           photoUrl: item.photoUrl,
           calories: item.calories,
+          serveTime: item.serveTime,
           position: item.position,
         })),
       });

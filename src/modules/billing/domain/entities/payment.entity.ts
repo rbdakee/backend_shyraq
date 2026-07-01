@@ -30,6 +30,15 @@ export interface PaymentState {
   providerPayload: Record<string, unknown> | null;
   paidAt: Date | null;
   refundId: string | null;
+  /**
+   * Double-payment flags (#5b). Set when this (completed) payment is a second
+   * settlement on an invoice that another guardian already paid. Optional so
+   * existing `fromState` call sites (initiate, fakes) need no change; the repo
+   * UPDATE (`markRefundRequired`) and the mapper populate them.
+   */
+  refundRequired?: boolean;
+  refundReason?: string | null;
+  duplicateOfPaymentId?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -120,6 +129,18 @@ export class Payment {
 
   get refundId(): string | null {
     return this.state.refundId;
+  }
+
+  get refundRequired(): boolean {
+    return this.state.refundRequired ?? false;
+  }
+
+  get refundReason(): string | null {
+    return this.state.refundReason ?? null;
+  }
+
+  get duplicateOfPaymentId(): string | null {
+    return this.state.duplicateOfPaymentId ?? null;
   }
 
   get createdAt(): Date {

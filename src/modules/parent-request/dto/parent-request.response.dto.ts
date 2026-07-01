@@ -31,6 +31,15 @@ export class ParentRequestResponseDto {
   @ApiProperty({ example: 'cccccccc-cccc-cccc-cccc-cccccccccccc' })
   child_id!: string;
 
+  @ApiProperty({
+    example: 'Аружан Серикова',
+    nullable: true,
+    description:
+      'Child display name overlay (children.id → full_name within caller kg; ' +
+      'includes archived). Null when missing/cross-tenant.',
+  })
+  child_name!: string | null;
+
   @ApiProperty({ example: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' })
   requester_user_id!: string;
 

@@ -18,6 +18,16 @@ export class AttendanceEventResponseDto {
   @ApiProperty({ example: 'cccccccc-cccc-cccc-cccc-cccccccccccc' })
   childId!: string;
 
+  @ApiPropertyOptional({
+    example: 'Алихан Сериков',
+    nullable: true,
+    description:
+      'Display name of the child (identity overlay: children.id → ' +
+      'children.full_name within the kindergarten; includes archived ' +
+      'children). null when the child row is missing or cross-tenant.',
+  })
+  child_name!: string | null;
+
   @ApiProperty({ enum: ATTENDANCE_EVENT_TYPE_VALUES, example: 'check_in' })
   eventType!: AttendanceEventTypeValue;
 

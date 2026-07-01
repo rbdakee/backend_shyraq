@@ -14,6 +14,16 @@ export class DiagnosticEntryResponseDto {
   @ApiProperty({ example: 'cccccccc-cccc-cccc-cccc-cccccccccccc' })
   child_id!: string;
 
+  @ApiProperty({
+    example: 'Алихан Сериков',
+    nullable: true,
+    description:
+      'Child display name (identity overlay: children.id → children.full_name, ' +
+      'resolved within the caller kindergarten; includes archived children). ' +
+      'Null when the child row is missing or cross-tenant.',
+  })
+  child_name!: string | null;
+
   @ApiProperty({ example: 'aaaaaaaa-1111-1111-1111-aaaaaaaaaaaa' })
   template_id!: string;
 

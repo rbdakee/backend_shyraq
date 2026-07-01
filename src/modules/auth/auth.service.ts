@@ -42,6 +42,7 @@ import { TokenBlocklistPort } from './token-blocklist.port';
 import { NotificationPort } from '@/common/notifications/notification.port';
 import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
 import { ChildGuardianRepository } from '@/modules/child/infrastructure/persistence/child-guardian.repository';
+import { GroupRepository } from '@/modules/group/infrastructure/persistence/group.repository';
 
 const OTP_LOCKED_TTL_SEC = 900;
 const OTP_RESEND_AFTER_SEC = 60;
@@ -163,6 +164,7 @@ export class AuthService implements OnModuleInit {
     private readonly tx: TransactionRunnerPort,
     @Inject(NotificationPort)
     private readonly notifications: NotificationPort,
+    private readonly groups: GroupRepository,
   ) {}
 
   onModuleInit(): void {
@@ -463,6 +465,9 @@ export class AuthService implements OnModuleInit {
           role: selectedRole,
           kindergartenId: selectedKindergartenId,
           groupId: null,
+          // Non-null only for the staff `specialist` role; the parent-select
+          // branch leaves `match` undefined → null.
+          specialistType: match?.specialistType ?? null,
         },
       ],
       kindergartens: [{ id: selectedKindergartenId, name: '', slug: '' }],
@@ -528,7 +533,14 @@ export class AuthService implements OnModuleInit {
       tokenType: 'Bearer',
       expiresIn: access.expiresIn,
       pendingRoleSelect: false,
-      roles: [{ role: user.role, kindergartenId: null, groupId: null }],
+      roles: [
+        {
+          role: user.role,
+          kindergartenId: null,
+          groupId: null,
+          specialistType: null,
+        },
+      ],
     };
   }
 
@@ -574,7 +586,14 @@ export class AuthService implements OnModuleInit {
       tokenType: 'Bearer',
       expiresIn: access.expiresIn,
       pendingRoleSelect: false,
-      roles: [{ role: user.role, kindergartenId: null, groupId: null }],
+      roles: [
+        {
+          role: user.role,
+          kindergartenId: null,
+          groupId: null,
+          specialistType: null,
+        },
+      ],
     };
   }
 
@@ -681,7 +700,12 @@ export class AuthService implements OnModuleInit {
       );
       chosen =
         distinctKgs.size > 1
-          ? { role: 'parent', kindergartenId: null, groupId: null }
+          ? {
+              role: 'parent',
+              kindergartenId: null,
+              groupId: null,
+              specialistType: null,
+            }
           : roles[0];
     } else if (meta.requestedKindergartenId) {
       chosen =
@@ -816,7 +840,14 @@ export class AuthService implements OnModuleInit {
     const allowed = APP_ALLOWED_ROLES[app];
     const roles = allRoles.filter((r) => allowed.has(r.role));
     if (roles.length === 0 && app === 'parent') {
-      return [{ role: 'parent', kindergartenId: null, groupId: null }];
+      return [
+        {
+          role: 'parent',
+          kindergartenId: null,
+          groupId: null,
+          specialistType: null,
+        },
+      ];
     }
     return roles;
   }
@@ -830,15 +861,38 @@ export class AuthService implements OnModuleInit {
     roles: RoleView[];
     kindergartens: { id: string; name: string; slug: string }[];
   }> {
-    const [staffEntries, guardianKindergartenIds] = await Promise.all([
-      this.staff.findAllActiveByUserId(user.id),
-      this.guardians.listApprovedKindergartenIdsByUserId(user.id),
-    ]);
+    const [staffEntries, guardianKindergartenIds, mentorAssignments] =
+      await Promise.all([
+        this.staff.findAllActiveByUserId(user.id),
+        this.guardians.listApprovedKindergartenIdsByUserId(user.id),
+        // Cross-tenant lookup of the user's currently-active mentor
+        // assignments — fetched ONCE here, then indexed by kg below so the
+        // per-entry `.map` stays in-memory (no per-role DB round-trip).
+        this.groups.findActiveMentorAssignmentsByUserIdCrossTenant(user.id),
+      ]);
+
+    // Index the primary active group per kindergarten for the mentor role.
+    // Prefer the assignment flagged `isPrimary`; fall back to the first
+    // active one in that kg when none is flagged.
+    const primaryGroupByKg = new Map<string, string>();
+    for (const a of mentorAssignments) {
+      if (a.isPrimary || !primaryGroupByKg.has(a.kindergartenId)) {
+        primaryGroupByKg.set(a.kindergartenId, a.groupId);
+      }
+    }
 
     const roles: RoleView[] = staffEntries.map((s) => ({
       role: s.role,
       kindergartenId: s.kindergartenId,
-      groupId: null,
+      // Only mentors carry a group; every other role stays null. Falls back
+      // to null when the mentor has no active assignment in that kg.
+      groupId:
+        s.role === 'mentor'
+          ? (primaryGroupByKg.get(s.kindergartenId) ?? null)
+          : null,
+      // Domain invariant: specialistType is non-null only for `specialist`
+      // staff; the getter already returns null for admin/mentor/reception.
+      specialistType: s.specialistType,
     }));
 
     // Append parent rows for kgs where the user has approved guardian links
@@ -849,7 +903,12 @@ export class AuthService implements OnModuleInit {
     const staffKgIds = new Set(staffEntries.map((s) => s.kindergartenId));
     for (const kgId of guardianKindergartenIds) {
       if (!staffKgIds.has(kgId)) {
-        roles.push({ role: 'parent', kindergartenId: kgId, groupId: null });
+        roles.push({
+          role: 'parent',
+          kindergartenId: kgId,
+          groupId: null,
+          specialistType: null,
+        });
       }
     }
 
@@ -857,7 +916,14 @@ export class AuthService implements OnModuleInit {
     // so the caller can still issue a token (legacy parent shape).
     if (roles.length === 0) {
       return {
-        roles: [{ role: 'parent', kindergartenId: null, groupId: null }],
+        roles: [
+          {
+            role: 'parent',
+            kindergartenId: null,
+            groupId: null,
+            specialistType: null,
+          },
+        ],
         kindergartens: [],
       };
     }

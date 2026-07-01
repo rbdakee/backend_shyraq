@@ -504,6 +504,34 @@ export interface NotifyKaspiSessionExpiredInput {
   recipientUserIds: string[];
 }
 
+/**
+ * #5b — emitted by `PaymentService.applyCompletedPayment` when a SECOND
+ * completed payment settles on an invoice that another guardian already paid.
+ * The later payment is flagged `refund_required`; this event pings the kg's
+ * active admins so the manual-refund queue surfaces (not just a flag in the
+ * payments list). Admin-facing — carries the duplicate + kept payment ids so
+ * the admin app can deep-link both, but no parent PII. Recipients are
+ * pre-resolved kg admins (mirrors `kaspi.session_expired`).
+ */
+export interface NotifyPaymentRefundRequiredInput {
+  kindergartenId: string;
+  /** The flagged (later) payment needing a manual refund. */
+  paymentId: string;
+  /** The first/kept payment the duplicate settles against. */
+  duplicateOfPaymentId: string;
+  invoiceId: string;
+  childId: string;
+  amount: number;
+  /** Flag reason — currently always `double_payment`. */
+  reason: string;
+  /**
+   * Pre-resolved admin user_ids. Producer reads these from
+   * `StaffMemberRepository.listByKindergarten({role:'admin', isActive:true})`
+   * before emitting (mirrors `kaspi.session_expired`).
+   */
+  recipientUserIds: string[];
+}
+
 export abstract class NotificationPort {
   abstract notifyGuardianPendingApproval(
     event: GuardianPendingApprovalEvent,
@@ -726,6 +754,16 @@ export abstract class NotificationPort {
    */
   notifyKaspiSessionExpired(
     _event: NotifyKaspiSessionExpiredInput,
+  ): Promise<void> {
+    return Promise.resolve();
+  }
+
+  /**
+   * Fired by `PaymentService` when a double payment is detected at settlement
+   * (#5b). Recipients: the kg's active admins (pre-resolved by the producer).
+   */
+  notifyPaymentRefundRequired(
+    _event: NotifyPaymentRefundRequiredInput,
   ): Promise<void> {
     return Promise.resolve();
   }

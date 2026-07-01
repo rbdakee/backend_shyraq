@@ -186,6 +186,9 @@ export class PaymentRelationalRepository extends PaymentRepository {
     if (filter.childId) {
       qb.andWhere('p.child_id = :child', { child: filter.childId });
     }
+    if (filter.refundRequired) {
+      qb.andWhere('p.refund_required = true');
+    }
     if (filter.fromDate) {
       qb.andWhere('p.created_at >= :from', { from: filter.fromDate });
     }
@@ -322,6 +325,38 @@ export class PaymentRelationalRepository extends PaymentRepository {
       refundId,
       updatedAt: now,
     });
+  }
+
+  async markRefundRequired(
+    kindergartenId: string,
+    id: string,
+    reason: string,
+    duplicateOfPaymentId: string,
+    now: Date,
+  ): Promise<Payment | null> {
+    const m = this.manager();
+    const result = await m
+      .createQueryBuilder()
+      .update(PaymentTypeOrmEntity)
+      .set({
+        refundRequired: true,
+        refundReason: reason,
+        duplicateOfPaymentId,
+        updatedAt: now,
+      })
+      .where('id = :id', { id })
+      .andWhere('kindergarten_id = :kg', { kg: kindergartenId })
+      .returning('*')
+      .execute();
+
+    if (!result.raw?.length) {
+      return null;
+    }
+    // Re-fetch to hydrate via the entity (raw rows are snake_case columns).
+    const row = await m
+      .getRepository(PaymentTypeOrmEntity)
+      .findOne({ where: { id, kindergartenId } });
+    return row ? PaymentMapper.toDomain(row) : null;
   }
 
   /**

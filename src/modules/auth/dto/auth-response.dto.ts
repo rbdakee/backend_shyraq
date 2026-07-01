@@ -13,6 +13,22 @@ export class RoleResponseDto {
 
   @ApiProperty({ example: null, nullable: true, type: String })
   group_id!: string | null;
+
+  @ApiProperty({
+    example: null,
+    nullable: true,
+    type: String,
+    enum: [
+      'psychologist',
+      'speech_therapist',
+      'music_teacher',
+      'physical_ed',
+      'nutritionist',
+    ],
+    description:
+      'Raw specialist-type enum. Non-null only when role === "specialist"; null otherwise. Mobile builds its own i18n label map.',
+  })
+  specialist_type!: string | null;
 }
 
 export class KindergartenSummaryResponseDto {

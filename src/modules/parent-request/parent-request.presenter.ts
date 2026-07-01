@@ -27,6 +27,7 @@ import {
 export interface RequestNameOverlay {
   recipientStaffFullName?: string | null;
   reviewedByFullName?: string | null;
+  childName?: string | null;
 }
 
 export const ParentRequestPresenter = {
@@ -39,6 +40,7 @@ export const ParentRequestPresenter = {
       id: s.id,
       kindergarten_id: s.kindergartenId,
       child_id: s.childId,
+      child_name: overlay.childName ?? null,
       requester_user_id: s.requesterUserId,
       request_type: s.requestType,
       status: s.status,
@@ -67,6 +69,7 @@ export const ParentRequestPresenter = {
   requestWithStaffNames(
     pr: ParentRequest,
     staffNames: Map<string, string | null>,
+    childNames: Map<string, string> = new Map(),
   ): ParentRequestResponseDto {
     return ParentRequestPresenter.request(pr, {
       recipientStaffFullName: pr.recipientStaffId
@@ -75,6 +78,7 @@ export const ParentRequestPresenter = {
       reviewedByFullName: pr.reviewedBy
         ? (staffNames.get(pr.reviewedBy) ?? null)
         : null,
+      childName: pr.childId ? (childNames.get(pr.childId) ?? null) : null,
     });
   },
 
@@ -82,10 +86,15 @@ export const ParentRequestPresenter = {
     items: ParentRequest[],
     nextCursor: string | null,
     staffNames: Map<string, string | null> = new Map(),
+    childNames: Map<string, string> = new Map(),
   ): ParentRequestListResponseDto {
     return {
       items: items.map((pr) =>
-        ParentRequestPresenter.requestWithStaffNames(pr, staffNames),
+        ParentRequestPresenter.requestWithStaffNames(
+          pr,
+          staffNames,
+          childNames,
+        ),
       ),
       next_cursor: nextCursor,
     };

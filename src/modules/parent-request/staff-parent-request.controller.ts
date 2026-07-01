@@ -110,10 +110,12 @@ export class StaffParentRequestController {
       kgId,
       result.items,
     );
+    const childNames = await this.service.resolveChildNames(kgId, result.items);
     return ParentRequestPresenter.list(
       result.items,
       result.nextCursor,
       staffNames,
+      childNames,
     );
   }
 
@@ -135,7 +137,12 @@ export class StaffParentRequestController {
     );
     const pr = await this.service.getByIdForStaff(kgId, caller, id);
     const staffNames = await this.service.resolveRequestStaffNames(kgId, [pr]);
-    return ParentRequestPresenter.requestWithStaffNames(pr, staffNames);
+    const childNames = await this.service.resolveChildNames(kgId, [pr]);
+    return ParentRequestPresenter.requestWithStaffNames(
+      pr,
+      staffNames,
+      childNames,
+    );
   }
 
   // ── Accept / Reject ───────────────────────────────────────────────────
@@ -174,7 +181,12 @@ export class StaffParentRequestController {
       dto.review_note ?? null,
     );
     const staffNames = await this.service.resolveRequestStaffNames(kgId, [pr]);
-    return ParentRequestPresenter.requestWithStaffNames(pr, staffNames);
+    const childNames = await this.service.resolveChildNames(kgId, [pr]);
+    return ParentRequestPresenter.requestWithStaffNames(
+      pr,
+      staffNames,
+      childNames,
+    );
   }
 
   @Post(':id/reject')
@@ -207,7 +219,12 @@ export class StaffParentRequestController {
       dto.review_note ?? null,
     );
     const staffNames = await this.service.resolveRequestStaffNames(kgId, [pr]);
-    return ParentRequestPresenter.requestWithStaffNames(pr, staffNames);
+    const childNames = await this.service.resolveChildNames(kgId, [pr]);
+    return ParentRequestPresenter.requestWithStaffNames(
+      pr,
+      staffNames,
+      childNames,
+    );
   }
 
   // ── Thread ────────────────────────────────────────────────────────────

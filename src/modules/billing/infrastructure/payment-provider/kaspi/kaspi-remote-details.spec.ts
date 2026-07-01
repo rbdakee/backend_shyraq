@@ -43,6 +43,48 @@ describe('parseRemoteDetails', () => {
     }
   });
 
+  // #3 — Kaspi prefixes remote-flow statuses with `RemotePayment`. The live
+  // 2026-06-20 pilot captured a customer-cancel as `RemotePaymentRejected`;
+  // before the fix only the bare `Processed` mapped, so a cancelled payment
+  // fell through to `pending` and polled forever instead of failing.
+  it('maps RemotePaymentRejected (live customer-cancel) to terminal', () => {
+    const r = parseRemoteDetails(200, {
+      Data: { Status: 'RemotePaymentRejected' },
+    });
+    expect(r.kind).toBe('terminal');
+    expect(r.rawStatus).toBe('RemotePaymentRejected');
+  });
+
+  it('maps the other RemotePayment-prefixed terminal forms to terminal', () => {
+    for (const s of [
+      'RemotePaymentCanceled',
+      'RemotePaymentCancelled',
+      'RemotePaymentExpired',
+      'RemotePaymentDeclined',
+      'RemotePaymentError',
+      'RemotePaymentFailed',
+    ]) {
+      const r = parseRemoteDetails(200, { Data: { Status: s } });
+      expect(r.kind).toBe('terminal');
+      expect(r.rawStatus).toBe(s);
+    }
+  });
+
+  it('maps RemotePaymentProcessed to processed', () => {
+    const r = parseRemoteDetails(200, {
+      Data: { Status: 'RemotePaymentProcessed' },
+    });
+    expect(r.kind).toBe('processed');
+  });
+
+  it('maps RemotePaymentWait / RemotePaymentNew to pending', () => {
+    for (const s of ['RemotePaymentWait', 'RemotePaymentNew']) {
+      expect(parseRemoteDetails(200, { Data: { Status: s } }).kind).toBe(
+        'pending',
+      );
+    }
+  });
+
   it('returns session_expired on httpStatus 401', () => {
     const r = parseRemoteDetails(401, { Data: { Status: 'Processed' } });
     expect(r.kind).toBe('session_expired');

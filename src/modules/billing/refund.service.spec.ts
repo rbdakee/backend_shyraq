@@ -259,6 +259,10 @@ class FakePaymentRepo extends PaymentRepository {
     this.rows.set(id, updated);
     return Promise.resolve(updated);
   }
+
+  markRefundRequired(): Promise<Payment | null> {
+    return Promise.resolve(null);
+  }
 }
 
 class FakeInvoiceRepo extends InvoiceRepository {

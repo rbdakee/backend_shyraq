@@ -25,6 +25,7 @@ export interface MealItemState {
   allergens: string[] | null;
   photoUrl: string | null;
   calories: number | null;
+  serveTime: string | null;
   position: number;
 }
 
@@ -37,6 +38,7 @@ export interface CreateMealItemInput {
   allergens?: string[] | null;
   photoUrl?: string | null;
   calories?: number | null;
+  serveTime?: string | null;
   position?: number;
 }
 
@@ -47,6 +49,7 @@ export interface UpdateMealItemPatch {
   allergens?: string[] | null;
   photoUrl?: string | null;
   calories?: number | null;
+  serveTime?: string | null;
   position?: number;
 }
 
@@ -59,6 +62,7 @@ export class MealItem {
   allergens: string[] | null;
   photoUrl: string | null;
   calories: number | null;
+  serveTime: string | null;
   position: number;
 
   private constructor(state: MealItemState) {
@@ -70,6 +74,7 @@ export class MealItem {
     this.allergens = state.allergens;
     this.photoUrl = state.photoUrl;
     this.calories = state.calories;
+    this.serveTime = state.serveTime;
     this.position = state.position;
   }
 
@@ -83,6 +88,7 @@ export class MealItem {
       allergens: input.allergens ?? null,
       photoUrl: input.photoUrl ?? null,
       calories: input.calories ?? null,
+      serveTime: input.serveTime ?? null,
       position: input.position ?? 0,
     });
   }
@@ -98,6 +104,7 @@ export class MealItem {
     if (patch.allergens !== undefined) this.allergens = patch.allergens;
     if (patch.photoUrl !== undefined) this.photoUrl = patch.photoUrl;
     if (patch.calories !== undefined) this.calories = patch.calories;
+    if (patch.serveTime !== undefined) this.serveTime = patch.serveTime;
     if (patch.position !== undefined) this.position = patch.position;
   }
 
@@ -111,6 +118,7 @@ export class MealItem {
       allergens: this.allergens,
       photoUrl: this.photoUrl,
       calories: this.calories,
+      serveTime: this.serveTime,
       position: this.position,
     };
   }

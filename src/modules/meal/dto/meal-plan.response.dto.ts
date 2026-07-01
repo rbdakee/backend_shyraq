@@ -27,6 +27,9 @@ export class MealItemResponseDto {
   @ApiPropertyOptional({ example: 350 })
   calories: number | null;
 
+  @ApiPropertyOptional({ example: '08:30' })
+  serve_time: string | null;
+
   @ApiProperty({ example: 0 })
   position: number;
 
@@ -39,6 +42,7 @@ export class MealItemResponseDto {
     dto.allergens = item.allergens;
     dto.photo_url = item.photoUrl;
     dto.calories = item.calories;
+    dto.serve_time = item.serveTime;
     dto.position = item.position;
     return dto;
   }

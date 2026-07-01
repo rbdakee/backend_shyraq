@@ -124,15 +124,17 @@ export class ParentAttendanceController {
         offset: q.offset,
       },
     );
-    const [recordedByNames, pickupNames] = await Promise.all([
+    const [recordedByNames, pickupNames, childNames] = await Promise.all([
       this.attendanceService.resolveRecordedByNames(kgId, events),
       this.attendanceService.resolvePickupUserNames(events),
+      this.attendanceService.resolveChildNames(kgId, events),
     ]);
     return events.map((e) =>
       AttendancePresenter.event(
         e,
         e.recordedBy ? (recordedByNames.get(e.recordedBy) ?? null) : null,
         e.pickupUserId ? (pickupNames.get(e.pickupUserId) ?? null) : null,
+        childNames.get(e.childId) ?? null,
       ),
     );
   }

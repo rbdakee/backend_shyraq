@@ -23,17 +23,24 @@ export class DiagnosticEntryPresenter {
    * identity fallback + `specialist_type`). Defaults to null so existing
    * callers that don't thread the overlay still compile and render `null`
    * for both fields.
+   *
+   * `childName` is the identity overlay for `child_id` — resolved by
+   * `DiagnosticEntryService.resolveChildNames` (children.id → full_name,
+   * incl. archived). Defaults to null so callers that don't thread it render
+   * `child_name` as null.
    */
   static one(
     entry: DiagnosticEntry,
     templateLookup?: Map<string, TemplateLookup>,
     specialist: SpecialistOverlay | null = null,
+    childName: string | null = null,
   ): DiagnosticEntryResponseDto {
     const lookup = templateLookup?.get(entry.templateId);
     const dto = new DiagnosticEntryResponseDto();
     dto.id = entry.id;
     dto.kindergarten_id = entry.kindergartenId;
     dto.child_id = entry.childId;
+    dto.child_name = childName;
     dto.template_id = entry.templateId;
     dto.template_name = lookup?.name ?? '';
     dto.template_version = lookup?.version ?? 0;
@@ -56,12 +63,16 @@ export class DiagnosticEntryPresenter {
    * keyed by `specialist_id` (see
    * `DiagnosticEntryService.resolveSpecialists`). Optional so callers that
    * don't thread the overlay still render `null` for both fields.
+   *
+   * `childNames` is the per-entry `child_name` overlay keyed by `child_id`
+   * (see `DiagnosticEntryService.resolveChildNames`). Optional → `null`.
    */
   static list(
     items: DiagnosticEntry[],
     nextCursor: string | null,
     templateLookup?: Map<string, TemplateLookup>,
     specialists?: Map<string, SpecialistOverlay>,
+    childNames?: Map<string, string>,
   ): DiagnosticEntryListResponseDto {
     const dto = new DiagnosticEntryListResponseDto();
     dto.items = items.map((e) =>
@@ -69,6 +80,7 @@ export class DiagnosticEntryPresenter {
         e,
         templateLookup,
         specialists?.get(e.specialistId) ?? null,
+        childNames?.get(e.childId) ?? null,
       ),
     );
     dto.next_cursor = nextCursor;

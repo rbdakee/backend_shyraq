@@ -83,6 +83,20 @@ export interface AttendanceFlowResult {
   timelineEntry: TimelineEntry;
 }
 
+/**
+ * Aggregate donut counts for one calendar day. Mirrors the dashboard
+ * attendance-today shape and adds the `late` bucket (sourced from the
+ * `child_daily_status` histogram, which already groups by every status).
+ */
+export interface AttendanceDaySummaryResult {
+  in_kindergarten: number;
+  checked_out: number;
+  absent: number;
+  on_vacation: number;
+  sick: number;
+  late: number;
+}
+
 export interface PatchEventOpts {
   isAdmin: boolean;
 }
@@ -573,6 +587,59 @@ export class AttendanceService {
     );
   }
 
+  // ── B-DASH — attendance-today aggregate (shared with DashboardService) ──
+
+  /**
+   * Aggregate donut counts for one Asia/Almaty calendar day, scoped to the
+   * kindergarten (optionally a single group). This is the single source of
+   * truth behind both the admin dashboard (`DashboardService.getAttendanceToday`
+   * delegates here) and the staff `GET /staff/attendance/today` endpoint.
+   *
+   * `in_kindergarten` / `checked_out` come from the per-child last-event-of-day
+   * buckets; `absent` (with the no-check_in exclusion), `on_vacation`, `sick`
+   * and `late` come from the `child_daily_status` histogram. Both repo methods
+   * resolve their own tenant-scoped EntityManager so RLS stays intact; they run
+   * in parallel via `Promise.all`.
+   *
+   * Day boundaries are the half-open UTC instant window for the Asia/Almaty
+   * calendar `date` ([day 00:00 Almaty, next-day 00:00 Almaty)), computed by
+   * the module-local `almatyDayStartUtc` helper — identical math to
+   * `DashboardService`.
+   */
+  async getDaySummary(
+    kindergartenId: string,
+    opts: { groupId?: string; date?: string } = {},
+  ): Promise<AttendanceDaySummaryResult> {
+    const date = opts.date ?? almatyToday(this.clock.now());
+    const dayStartIso = almatyDayStartUtc(date).toISOString();
+    const dayEndExclusiveIso = almatyDayStartUtc(date, 1).toISOString();
+
+    const [statusCounts, eventBuckets] = await Promise.all([
+      this.dailyStatusRepo.countByStatusForDate(
+        kindergartenId,
+        date,
+        dayStartIso,
+        dayEndExclusiveIso,
+        opts.groupId,
+      ),
+      this.eventRepo.lastEventBucketsForDate(
+        kindergartenId,
+        dayStartIso,
+        dayEndExclusiveIso,
+        opts.groupId,
+      ),
+    ]);
+
+    return {
+      in_kindergarten: eventBuckets.inKindergarten,
+      checked_out: eventBuckets.checkedOut,
+      absent: statusCounts['absent'] ?? 0,
+      on_vacation: statusCounts['on_vacation'] ?? 0,
+      sick: statusCounts['sick'] ?? 0,
+      late: statusCounts['late'] ?? 0,
+    };
+  }
+
   // ── identity overlays ──────────────────────────────────────────────────
 
   /**
@@ -660,6 +727,25 @@ export class AttendanceService {
     );
   }
 
+  /**
+   * `child_name` overlay for attendance events — resolves each event's
+   * `child_id` to `children.full_name` (INCLUDING archived children) within
+   * the caller kg, batched + deduped. Reuses the already-injected
+   * `ChildRepository.findFullNamesByIds` (the same batch resolver the
+   * diagnostics / parent-request `child_name` overlays consume). Returns a
+   * `Map<childId, full_name>`; ids missing from the map (missing /
+   * cross-tenant child rows) render `child_name` as null.
+   */
+  async resolveChildNames(
+    kindergartenId: string,
+    events: { childId: string }[],
+  ): Promise<Map<string, string>> {
+    return this.childRepo.findFullNamesByIds(
+      kindergartenId,
+      events.map((e) => e.childId),
+    );
+  }
+
   /** `set_by` overlay for daily-status rows (staff names). */
   async resolveSetByNames(
     kindergartenId: string,
@@ -732,4 +818,32 @@ export class AttendanceService {
  */
 function formatLocalIsoDate(d: Date, timeZone: string): string {
   return d.toLocaleDateString('en-CA', { timeZone });
+}
+
+/**
+ * Asia/Almaty is UTC+5 with no DST, so a local civil date is just the UTC
+ * instant shifted by +5h; a local midnight is the UTC instant shifted back by
+ * −5h. Identical constant + math to `DashboardService` — kept in sync so both
+ * the dashboard and the staff attendance-today endpoint resolve the same day
+ * boundaries.
+ */
+const ALMATY_OFFSET_MS = 5 * 60 * 60 * 1000;
+
+/** Asia/Almaty civil date (`YYYY-MM-DD`) for the given UTC instant. */
+function almatyToday(nowUtc: Date): string {
+  const shifted = new Date(nowUtc.getTime() + ALMATY_OFFSET_MS);
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return `${shifted.getUTCFullYear()}-${pad(
+    shifted.getUTCMonth() + 1,
+  )}-${pad(shifted.getUTCDate())}`;
+}
+
+/**
+ * UTC instant of an Asia/Almaty-local midnight for the given calendar date
+ * (`YYYY-MM-DD`), optionally offset by whole days. `addDays = 1` on the range
+ * `to` yields the exclusive upper bound of an inclusive day range.
+ */
+function almatyDayStartUtc(dateStr: string, addDays = 0): Date {
+  const [y, m, d] = dateStr.split('-').map((p) => Number(p));
+  return new Date(Date.UTC(y, m - 1, d + addDays) - ALMATY_OFFSET_MS);
 }

@@ -162,6 +162,7 @@ export class MealPlanRelationalRepository extends MealPlanRepository {
             allergens: item.allergens,
             photo_url: item.photoUrl,
             calories: item.calories,
+            serve_time: item.serveTime,
             position: item.position,
           },
         );
@@ -317,6 +318,7 @@ export class MealPlanRelationalRepository extends MealPlanRepository {
       allergens: item.allergens,
       photo_url: item.photoUrl,
       calories: item.calories,
+      serve_time: item.serveTime,
       position: item.position,
     };
   }

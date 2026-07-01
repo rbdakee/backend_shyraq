@@ -55,6 +55,7 @@ import { OtpRateLimitedError } from '@/modules/auth/domain/errors/otp-rate-limit
 import { OtpStorePort, StoredOtp } from '@/modules/auth/otp-store.port';
 import { SmsPort } from '@/modules/auth/sms.port';
 import { Child } from '@/modules/child/domain/entities/child.entity';
+import { ChildService } from '@/modules/child/child.service';
 import { ChildGuardian } from '@/modules/child/domain/entities/child-guardian.entity';
 import { ChildGuardianRepository } from '@/modules/child/infrastructure/persistence/child-guardian.repository';
 import {
@@ -134,6 +135,7 @@ import {
   ParentRequestMessageRepository,
 } from './parent-request-message.repository';
 import { ParentRequestService } from './parent-request.service';
+import { ParentRequestPresenter } from './parent-request.presenter';
 import { InvariantViolationError } from '@/shared-kernel/domain/errors';
 
 // ── Constants ────────────────────────────────────────────────────────────
@@ -1071,6 +1073,29 @@ class StubStaffService {
   };
 }
 
+/**
+ * In-memory stub of ChildService — only `resolveChildNames` is exercised by
+ * ParentRequestService's `child_name` identity overlay. Backed by the same
+ * FakeChildRepo the harness wires in, so it resolves names (incl. archived
+ * children) directly from the seeded child rows. Ids without a row simply do
+ * not land in the map (caller renders null).
+ */
+class StubChildService {
+  constructor(private readonly children: FakeChildRepo) {}
+
+  resolveChildNames = (
+    _kgId: string,
+    ids: string[],
+  ): Promise<Map<string, string>> => {
+    const out = new Map<string, string>();
+    for (const id of [...new Set(ids)]) {
+      const c = this.children.byId.get(id);
+      if (c) out.set(id, c.toState().fullName);
+    }
+    return Promise.resolve(out);
+  };
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────
 
 function makeChild(opts: { id?: string; groupId?: string | null } = {}): Child {
@@ -1178,6 +1203,7 @@ function buildHarness() {
   const userRepo = new FakeUserRepo();
   const kgRepo = new FakeKindergartenRepo();
   const staffService = new StubStaffService(userRepo);
+  const childService = new StubChildService(childRepo);
 
   // Default permission set (primary): create_requests=true.
   const PRIMARY_PERMS = {}; // empty — defaults for primary include create_requests=true.
@@ -1286,6 +1312,7 @@ function buildHarness() {
     userRepo,
     kgRepo,
     staffService as unknown as StaffService,
+    childService as unknown as ChildService,
   );
 
   return {
@@ -1307,6 +1334,7 @@ function buildHarness() {
     userRepo,
     kgRepo,
     staffService,
+    childService,
     PRIMARY_PERMS,
     NANNY_PERMS,
   };
@@ -2774,6 +2802,59 @@ describe('ParentRequestService', () => {
       const pr = makeRequest({ recipientStaffId: BLANK_STAFF });
       const names = await h.service.resolveRequestStaffNames(KG, [pr]);
       expect(names.get(BLANK_STAFF)).toBeNull();
+    });
+  });
+
+  describe('resolveChildNames', () => {
+    function makeRequestFor(childId: string): ParentRequest {
+      return ParentRequest.fromState({
+        id: `pr-child-overlay-${Math.random()}`,
+        kindergartenId: KG,
+        childId,
+        requesterUserId: PARENT_USER,
+        requestType: 'open_request',
+        status: 'pending',
+        dateFrom: null,
+        dateTo: null,
+        details: {},
+        recipientType: 'mentor',
+        recipientStaffId: null,
+        reviewedBy: null,
+        reviewedAt: null,
+        reviewNote: null,
+        invoiceId: null,
+        createdAt: NOW,
+        updatedAt: NOW,
+      });
+    }
+
+    it('resolves child_name from the child overlay (children.id → full_name)', async () => {
+      const h = buildHarness();
+      // makeChild() seeds CHILD with full_name='Test Child' in the harness.
+      const pr = makeRequestFor(CHILD);
+      const names = await h.service.resolveChildNames(KG, [pr]);
+      expect(names.get(CHILD)).toBe('Test Child');
+      // Presenter threads the overlay onto the wire DTO.
+      const dto = ParentRequestPresenter.requestWithStaffNames(
+        pr,
+        new Map(),
+        names,
+      );
+      expect(dto.child_name).toBe('Test Child');
+    });
+
+    it('renders child_name null when the child id is absent from the map', async () => {
+      const h = buildHarness();
+      const MISSING_CHILD = 'cccccccc-9999-9999-9999-cccccccccccc';
+      const pr = makeRequestFor(MISSING_CHILD);
+      const names = await h.service.resolveChildNames(KG, [pr]);
+      expect(names.has(MISSING_CHILD)).toBe(false);
+      const dto = ParentRequestPresenter.requestWithStaffNames(
+        pr,
+        new Map(),
+        names,
+      );
+      expect(dto.child_name).toBeNull();
     });
   });
 

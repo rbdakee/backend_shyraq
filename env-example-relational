@@ -10,8 +10,6 @@ APP_NAME="Shyraq API"
 API_PREFIX=api
 APP_FALLBACK_LANGUAGE=kk
 APP_HEADER_LANGUAGE=x-custom-lang
-FRONTEND_DOMAIN=http://localhost:3000
-BACKEND_DOMAIN=http://localhost:3000
 
 # --- PostgreSQL ---
 # DATABASE_USERNAME / PASSWORD must be a non-superuser role (e.g. `shyraq_app`,
@@ -35,6 +33,8 @@ DATABASE_MIGRATION_PASSWORD=shyraq
 DATABASE_BYPASS_ROLE_CHECK=
 DATABASE_NAME=shyraq
 DATABASE_SYNCHRONIZE=false
+# Disable TypeORM query logging in CI/e2e; set to true locally when debugging SQL.
+DATABASE_LOGGING=false
 DATABASE_MAX_CONNECTIONS=100
 DATABASE_SSL_ENABLED=false
 DATABASE_REJECT_UNAUTHORIZED=false

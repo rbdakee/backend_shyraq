@@ -24,6 +24,7 @@
     "docker:prod:logs": "docker compose -p balam-prod --env-file .env.production -f docker-compose.yml -f docker-compose.prod.yml logs -f",
     "prebuild": "rimraf dist",
     "build": "nest build",
+    "build:swc": "nest build -b swc",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start",
     "start:dev": "nest start --watch",
@@ -32,6 +33,7 @@
     "start:prod": "node dist/main",
     "start:worker": "env-cmd -- ts-node -r tsconfig-paths/register src/main.worker.ts",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\"",
+    "typecheck": "tsc --noEmit",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
@@ -135,7 +137,7 @@
     ],
     "coverageDirectory": "../coverage",
     "testEnvironment": "node",
-    "maxWorkers": 2,
+    "maxWorkers": 3,
     "workerIdleMemoryLimit": "512MB"
   },
   "engines": {

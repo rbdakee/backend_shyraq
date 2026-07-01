@@ -59,6 +59,7 @@ import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { TimelineEntry } from './domain/entities/timeline-entry.entity';
 import { InvalidAttendanceTimestampError } from './domain/errors/invalid-attendance-timestamp.error';
 import { InvalidTimelineEntryTypeError } from './domain/errors/invalid-timeline-entry-type.error';
+import { InvalidTimelineMetadataError } from './domain/errors/invalid-timeline-metadata.error';
 import { MentorScopeViolatedError } from './domain/errors/mentor-scope-violated.error';
 import { TimelineEntryNotAuthorError } from './domain/errors/timeline-entry-not-author.error';
 import { TimelineEntryNotFoundError } from './domain/errors/timeline-entry-not-found.error';
@@ -658,6 +659,91 @@ describe('TimelineService — service-unit', () => {
           { isAdmin: false },
         ),
       ).rejects.toBeInstanceOf(InvalidAttendanceTimestampError);
+    });
+  });
+
+  // ── BR-013 — mood/meal metadata shape validation ──────────────────────────
+
+  describe('metadata validation (BR-013)', () => {
+    it('returns the entry when mood metadata is a valid value', async () => {
+      const w = wire();
+      const entry = await w.service.createEntry(KG, CHILD, STAFF_USER, {
+        entryType: 'mood',
+        metadata: { mood: 'happy' },
+      });
+      expect(entry.entryType.value).toBe('mood');
+      expect(w.timelineRepo.rows.size).toBe(1);
+    });
+
+    it('rejects createEntry when mood metadata is out of range', async () => {
+      const w = wire();
+      await expect(
+        w.service.createEntry(KG, CHILD, STAFF_USER, {
+          entryType: 'mood',
+          metadata: { mood: 'ecstatic' },
+        }),
+      ).rejects.toBeInstanceOf(InvalidTimelineMetadataError);
+      expect(w.timelineRepo.rows.size).toBe(0);
+    });
+
+    it('returns the entry when meal metadata is a valid value', async () => {
+      const w = wire();
+      const entry = await w.service.createEntry(KG, CHILD, STAFF_USER, {
+        entryType: 'meal',
+        metadata: { ate: 'all' },
+      });
+      expect(entry.entryType.value).toBe('meal');
+      expect(w.timelineRepo.rows.size).toBe(1);
+    });
+
+    it('rejects createEntry when meal metadata is out of range', async () => {
+      const w = wire();
+      await expect(
+        w.service.createEntry(KG, CHILD, STAFF_USER, {
+          entryType: 'meal',
+          metadata: { ate: 'most' },
+        }),
+      ).rejects.toBeInstanceOf(InvalidTimelineMetadataError);
+      expect(w.timelineRepo.rows.size).toBe(0);
+    });
+
+    it('returns the entry for non-mood/meal types regardless of metadata keys', async () => {
+      // `note` carries no structured schema — mood-shaped keys are not checked.
+      const w = wire();
+      const entry = await w.service.createEntry(KG, CHILD, STAFF_USER, {
+        entryType: 'note',
+        metadata: { mood: 'x' },
+      });
+      expect(entry.entryType.value).toBe('note');
+      expect(w.timelineRepo.rows.size).toBe(1);
+    });
+
+    it('returns the entry when metadata is present but omits the typed key', async () => {
+      // Extra/unrelated keys are ignored; only mood/ate is range-checked.
+      const w = wire();
+      const entry = await w.service.createEntry(KG, CHILD, STAFF_USER, {
+        entryType: 'mood',
+        metadata: { note: 'no mood key here' },
+      });
+      expect(entry.entryType.value).toBe('mood');
+      expect(w.timelineRepo.rows.size).toBe(1);
+    });
+
+    it('rejects updateEntry when patched mood metadata is out of range', async () => {
+      const w = wire();
+      const entry = await w.service.createEntry(KG, CHILD, STAFF_USER, {
+        entryType: 'mood',
+        metadata: { mood: 'happy' },
+      });
+      await expect(
+        w.service.updateEntry(
+          KG,
+          entry.id,
+          STAFF_USER,
+          { metadata: { mood: 'bad' } },
+          { isAdmin: false },
+        ),
+      ).rejects.toBeInstanceOf(InvalidTimelineMetadataError);
     });
   });
 

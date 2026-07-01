@@ -5,6 +5,7 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  Matches,
   Min,
   ValidateNested,
 } from 'class-validator';
@@ -49,6 +50,11 @@ export class UpdateMealItemDto {
   @IsInt()
   @Min(0)
   calories?: number;
+
+  @ApiPropertyOptional({ example: '08:30', description: 'Serve time HH:mm' })
+  @IsOptional()
+  @Matches(/^([01]\d|2[0-3]):[0-5]\d$/, { message: 'serve_time must be HH:mm' })
+  serve_time?: string;
 
   @ApiPropertyOptional({ example: 1 })
   @IsOptional()

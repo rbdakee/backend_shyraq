@@ -20,6 +20,11 @@ services:
       retries: 10
 
   api:
+    # api builds the shared image; worker reuses it (identical Dockerfile, only
+    # the command differs). The per-mode image name is set in the dev/prod
+    # override so dev and prod stay isolated on the shared host. Building once
+    # instead of two parallel builds roughly halves deploy time on the dev box.
+    image: balam-backend
     build:
       context: .
       dockerfile: Dockerfile
@@ -49,9 +54,9 @@ services:
              npm run start:prod"
 
   worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    # Reuses the image api builds — no second build, just a different command
+    # (node dist/main.worker). The per-mode image name comes from the override.
+    image: balam-backend
     restart: unless-stopped
     environment:
       REDIS_HOST: redis

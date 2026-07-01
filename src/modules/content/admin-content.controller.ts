@@ -34,6 +34,7 @@ import {
 } from '@nestjs/swagger';
 import { Roles } from '@/common/decorators/roles.decorator';
 import { RolesGuard } from '@/common/guards/roles.guard';
+import { SkipMediaSign } from '@/common/decorators/skip-media-sign.decorator';
 import { CurrentUser } from '@/common/decorators/current-user.decorator';
 import type { JwtPayload } from '@/common/types/jwt-payload';
 import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-context';
@@ -570,6 +571,10 @@ export class AdminContentController {
 
   @Post('upload-media')
   @HttpCode(HttpStatus.OK)
+  // Returns the CANONICAL `/api/v1/media/<key>` URL + key so the client can
+  // persist it into a post's media_urls. Must NOT be presigned — a signed
+  // (expiring) URL stored in the DB would break after the TTL.
+  @SkipMediaSign()
   @ApiOperation({
     summary:
       'Upload a single media file. Returns URL + key for use in create/update body. Accepts image/* and video/* (≤10 MB / ≤100 MB).',

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Logger } from '@nestjs/common';
 import { InMemoryNotificationAdapter } from '@/common/notifications/in-memory-notification.adapter';
 import { ChildRepository } from '@/modules/child/infrastructure/persistence/child.repository';
+import { ChildService } from '@/modules/child/child.service';
 import { ChildNotFoundError } from '@/modules/child/domain/errors/child-not-found.error';
 import { StaffMember } from '@/modules/staff/domain/entities/staff-member.entity';
 import { SpecialistType } from '@/modules/staff/domain/value-objects/specialist-type.vo';
@@ -10,6 +11,7 @@ import { StaffService } from '@/modules/staff/staff.service';
 import { OptimisticLockError } from '@/shared-kernel/domain/errors';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { DiagnosticEntryService } from './diagnostic-entry.service';
+import { DiagnosticEntryPresenter } from './diagnostic-entry.presenter';
 import {
   DiagnosticEntryListResult,
   DiagnosticEntryRepository,
@@ -117,6 +119,31 @@ class FakeChildRepo {
   findById(kgId: string, id: string): Promise<unknown> {
     const row = this.rows.get(`${kgId}:${id}`);
     return Promise.resolve(row ? { id: row.id } : null);
+  }
+}
+
+/**
+ * Thin in-memory stand-in for ChildService.resolveChildNames — the real
+ * children.id → full_name batch (incl. archived) is exercised in
+ * child.service.spec; here we only assert DiagnosticEntryService's
+ * batching/fail-closed orchestration + the presenter wiring. Backed by a
+ * small id → full_name fixture.
+ */
+class FakeChildService {
+  names = new Map<string, string>();
+  put(id: string, fullName: string): void {
+    this.names.set(id, fullName);
+  }
+  resolveChildNames(
+    _kgId: string,
+    ids: string[],
+  ): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    for (const id of [...new Set(ids)]) {
+      const name = this.names.get(id);
+      if (name !== undefined) out.set(id, name);
+    }
+    return Promise.resolve(out);
   }
 }
 
@@ -784,6 +811,66 @@ describe('DiagnosticEntryService', () => {
       // ports — overlay resolution must degrade to an empty map, never throw.
       const tmpl = buildTemplate();
       const map = await service.resolveSpecialists(KG, [buildEntry(tmpl)]);
+      expect(map.size).toBe(0);
+    });
+  });
+
+  describe('resolveChildNames', () => {
+    let childService: FakeChildService;
+    let resolvingService: DiagnosticEntryService;
+
+    beforeEach(() => {
+      childService = new FakeChildService();
+      resolvingService = new DiagnosticEntryService(
+        templates,
+        entries,
+        children as unknown as ChildRepository,
+        notification,
+        clock,
+        undefined, // staffMembers — unused by this overlay
+        undefined, // childGuardians — unused
+        undefined, // staffService — unused
+        childService as unknown as ChildService,
+      );
+    });
+
+    it('resolves child_name from the child overlay (children.id → full_name)', async () => {
+      childService.put(CHILD, 'Алихан Сериков');
+      const tmpl = buildTemplate();
+      // Two entries for the same child → a single map entry (deduped).
+      const entryList = [buildEntry(tmpl), buildEntry(tmpl)];
+      const map = await resolvingService.resolveChildNames(KG, entryList);
+      expect(map.get(CHILD)).toBe('Алихан Сериков');
+      // Presenter threads the resolved name onto the wire DTO.
+      const dto = DiagnosticEntryPresenter.one(
+        entryList[0],
+        undefined,
+        null,
+        map.get(entryList[0].childId) ?? null,
+      );
+      expect(dto.child_name).toBe('Алихан Сериков');
+    });
+
+    it('renders child_name null when the child id is absent from the map', async () => {
+      const tmpl = buildTemplate();
+      const entry = buildEntry(tmpl);
+      // No name seeded for CHILD → not in the map → presenter renders null.
+      const map = await resolvingService.resolveChildNames(KG, [entry]);
+      expect(map.has(CHILD)).toBe(false);
+      const dto = DiagnosticEntryPresenter.one(
+        entry,
+        undefined,
+        null,
+        map.get(entry.childId) ?? null,
+      );
+      expect(dto.child_name).toBeNull();
+    });
+
+    it('fails closed with an empty map when the child port is not wired', async () => {
+      // `service` (top-level) is constructed without the ChildService port —
+      // overlay resolution must degrade to an empty map, never throw.
+      const tmpl = buildTemplate();
+      const map = await service.resolveChildNames(KG, [buildEntry(tmpl)]);
       expect(map.size).toBe(0);
     });
   });

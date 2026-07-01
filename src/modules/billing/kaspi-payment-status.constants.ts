@@ -15,6 +15,15 @@ export const KASPI_PAYMENT_STATUS_JOB = 'kaspi-poll';
 export interface KaspiPaymentStatusJobData {
   kindergartenId: string;
   paymentId: string;
+  /**
+   * Monotonic tick counter, part of the jobId (`kaspi-poll-<paymentId>-<tick>`).
+   * The initial enqueue is tick 0; each reschedule increments it. A per-tick
+   * jobId is REQUIRED: BullMQ refuses to re-add a job whose id matches one that
+   * is still active/queued, so a fixed jobId would silently drop the reschedule
+   * and the poll chain would die after one tick. Tick 0 still dedups a
+   * double-initiate of the same payment (single-lived chain intent preserved).
+   */
+  tick?: number;
 }
 
 /**

@@ -66,6 +66,11 @@ export const CANONICAL_EVENT_KEYS = [
   'payment.completed',
   'payment.failed',
   'payment.refunded',
+  // #5b — admin-facing alert when a SECOND payment settles on an invoice
+  // another guardian already paid (double payment). The later one is flagged
+  // `refund_required`; recipients are kg admins (pre-resolved into the payload
+  // by the producer). Admins refund the duplicate manually.
+  'payment.refund_required',
   'refund.processed',
   // ── B13 / T11 H6 — admin-visible signal when first-invoice generation
   // skipped on enrollment.card_created because no tariff_assignment was

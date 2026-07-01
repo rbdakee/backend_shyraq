@@ -176,6 +176,16 @@ export class ListPaymentsQueryDto {
   child_id?: string;
 
   @ApiProperty({
+    example: 'true',
+    description:
+      'Pass "true" to return only payments flagged as needing a manual refund (double payments).',
+    required: false,
+  })
+  @IsOptional()
+  @IsString()
+  refund_required?: string;
+
+  @ApiProperty({
     example: '2026-06-01',
     description: 'Return payments with paid_at or created_at >= this date.',
     required: false,
@@ -274,6 +284,29 @@ export class PaymentResponseDto {
     description: 'Linked refund id if the payment was refunded.',
   })
   refund_id!: string | null;
+
+  @ApiProperty({
+    example: false,
+    description:
+      'True when this completed payment is a duplicate (another guardian already paid the same invoice) and needs a manual admin refund. Show "Нужен возврат" in the admin app.',
+  })
+  refund_required!: boolean;
+
+  @ApiProperty({
+    example: 'double_payment',
+    nullable: true,
+    description:
+      'Why a refund is required (e.g. double_payment). Null otherwise.',
+  })
+  refund_reason!: string | null;
+
+  @ApiProperty({
+    example: 'pa1b2c3d-0006-0006-0006-000000000006',
+    nullable: true,
+    description:
+      'The FIRST (kept) payment this one duplicates — link to it in the admin app ("Двойная оплата, см. оплату <id>"). Null when not a duplicate.',
+  })
+  duplicate_of_payment_id!: string | null;
 
   @ApiProperty({ example: '2026-06-10T11:55:00.000Z' })
   created_at!: string;
