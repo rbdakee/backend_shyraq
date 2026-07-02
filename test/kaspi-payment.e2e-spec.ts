@@ -164,6 +164,7 @@ describe('B24 Kaspi parent-pay (e2e)', () => {
   let saAccess: string;
   let saUserId: string;
   let prevProvider: string | undefined;
+  let prevProviders: string | undefined;
 
   // ── auth + seed helpers (mirror billing.e2e) ─────────────────────────────
 
@@ -343,6 +344,8 @@ describe('B24 Kaspi parent-pay (e2e)', () => {
 
   beforeAll(async () => {
     prevProvider = process.env.PAYMENT_PROVIDER;
+    prevProviders = process.env.PAYMENT_PROVIDERS;
+    delete process.env.PAYMENT_PROVIDERS;
     process.env.PAYMENT_PROVIDER = 'kaspi';
     process.env.KASPI_ENCRYPTION_KEY = TEST_KASPI_KEY_HEX;
     fakeHttp = new FakeKaspiHttpClient();
@@ -388,6 +391,11 @@ describe('B24 Kaspi parent-pay (e2e)', () => {
       delete process.env.PAYMENT_PROVIDER;
     } else {
       process.env.PAYMENT_PROVIDER = prevProvider;
+    }
+    if (prevProviders === undefined) {
+      delete process.env.PAYMENT_PROVIDERS;
+    } else {
+      process.env.PAYMENT_PROVIDERS = prevProviders;
     }
     delete process.env.KASPI_ENCRYPTION_KEY;
   });
