@@ -13,11 +13,10 @@ import {
  * HalykPaymentProvider — placeholder. Phase B / B14 will implement real
  * Halyk ePay redirect + webhook verification with the merchant credentials
  * supplied via `HALYK_*` env vars. Until then every method throws so a
- * misconfigured `PAYMENT_PROVIDER=halyk` deployment fails loudly instead of
+ * misconfigured `PAYMENT_PROVIDERS=halyk` deployment fails loudly instead of
  * silently dropping payments.
  *
- * The adapter is only constructed when `PAYMENT_PROVIDER=halyk` — see the
- * `useFactory` branch in `BillingModule`.
+ * The adapter is registered in `BillingModule` and selected by the registry.
  */
 @Injectable()
 export class HalykPaymentProvider extends PaymentProviderPort {
@@ -38,7 +37,7 @@ export class HalykPaymentProvider extends PaymentProviderPort {
   private notImplemented(method: string): Error {
     this.logger.error(`[Halyk] ${method} not implemented (B14)`);
     return new Error(
-      'Halyk ePay adapter not implemented; configure PAYMENT_PROVIDER=mock or implement adapter (B14)',
+      'Halyk ePay adapter not implemented; remove halyk from PAYMENT_PROVIDERS or implement adapter (B14)',
     );
   }
 }

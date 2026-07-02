@@ -688,7 +688,7 @@ Table payments {
   payer_user_id    uuid              [ref: > users.id]
   amount           decimal(12,2)     [not null]
   provider         varchar           [not null]
-  // CHECK provider IN ('mock','halyk_epay','kaspi_pay','tiptoppay','freedom_pay','cash')
+  // CHECK provider IN ('mock','halyk_epay','kaspi_pay','tiptoppay','freedom_pay','bcc','cash')
   // 'mock'        — MockPaymentProvider (B13 default, dev/CI/demo)
   // 'halyk_epay'  — Halyk Bank ePay (Phase B — B14)
   // 'kaspi_pay'   — Kaspi Pay API (Kaspi.kz)

@@ -29,6 +29,7 @@ const KNOWN_PROVIDERS: ReadonlyArray<PaymentProvider> = [
   'kaspi_pay',
   'tiptoppay',
   'freedom_pay',
+  'bcc',
   'cash',
 ] as const;
 
@@ -75,7 +76,7 @@ export class PaymentWebhookController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
-      'Unified webhook endpoint. provider ∈ mock|halyk_epay|kaspi_pay|tiptoppay|freedom_pay. Returns 200 for known business outcomes (success / duplicate / unknown invoice). Returns 400 webhook_signature_invalid when the provider port rejects the signature so misconfiguration fires provider-side alerts.',
+      'Unified webhook endpoint. provider ∈ mock|halyk_epay|kaspi_pay|tiptoppay|freedom_pay|bcc. Returns 200 for known business outcomes (success / duplicate / unknown invoice). Returns 400 webhook_signature_invalid when the provider port rejects the signature so misconfiguration fires provider-side alerts.',
   })
   @ApiBody({ type: PaymentWebhookDto })
   @ApiOkResponse({ type: WebhookAckDto })

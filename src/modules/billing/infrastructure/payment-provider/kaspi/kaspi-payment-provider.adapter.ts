@@ -41,7 +41,7 @@ const KASPI_LOCALE = 'ru-RU';
 
 /**
  * KaspiPaymentProvider — the `PaymentProviderPort` adapter for
- * `PAYMENT_PROVIDER=kaspi` (alias `kaspi_pay`). B24 / K6.
+ * `PAYMENT_PROVIDERS` key `kaspi` (alias `kaspi_pay`). B24 / K6.
  *
  * A faithful port of `kaspi_pay_test/src/routes/invoice.js#create` +
  * `refund.js#create`, adapted to the multi-tenant backend:

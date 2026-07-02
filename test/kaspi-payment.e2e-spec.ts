@@ -1,8 +1,8 @@
 /**
  * B24 / K9 — Kaspi parent-pay happy-path (e2e).
  *
- * Boots the app with `PAYMENT_PROVIDER='kaspi'` so the live `KaspiPaymentProvider`
- * is the active `PaymentProviderPort`, and overrides the Kaspi HTTP boundary
+ * Boots the app with legacy `PAYMENT_PROVIDER='kaspi'` so the registry enables
+ * the live `KaspiPaymentProvider`, and overrides the Kaspi HTTP boundary
  * (`KaspiHttpClient`) with a URL-routing fake:
  *
  *   POST /remote/create  → { Data: { QrOperationId, RecreateDeepLink } }
@@ -19,7 +19,7 @@
  *     `KaspiPaymentStatusPollerService.pollOnce` (no BullMQ timing) → invoice
  *     `paid`, payment `completed`.
  *   - Negative: provider:'mock' while PAYMENT_PROVIDER=kaspi → 400
- *     payment_provider_mismatch.
+ *     payment_provider_unavailable.
  *   - Negative: provider:'kaspi_pay' without kaspi_phone_number → 422
  *     kaspi_phone_required.
  *
@@ -468,7 +468,7 @@ describe('B24 Kaspi parent-pay (e2e)', () => {
 
   // ── negatives ─────────────────────────────────────────────────────────────
 
-  it('rejects provider:mock while PAYMENT_PROVIDER=kaspi → 400 payment_provider_mismatch', async () => {
+  it('rejects provider:mock while PAYMENT_PROVIDER=kaspi → 400 payment_provider_unavailable', async () => {
     const a = await createKgWithAdmin('kaspi-mismatch', '+77020200011');
     await seedActiveKaspiSession(a.kgId, a.userId);
     const parentId = await seedUser('+77020200012');
@@ -495,7 +495,7 @@ describe('B24 Kaspi parent-pay (e2e)', () => {
         return_url: 'https://app.shyraq.kz/payment/return',
       })
       .expect(400);
-    expect(res.body.message).toBe('payment_provider_mismatch');
+    expect(res.body.message).toBe('payment_provider_unavailable');
   });
 
   it('rejects provider:kaspi_pay without kaspi_phone_number → 422 validation', async () => {

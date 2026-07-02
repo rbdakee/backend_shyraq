@@ -25,6 +25,7 @@ const PAYMENT_PROVIDERS: PaymentProvider[] = [
   'kaspi_pay',
   'tiptoppay',
   'freedom_pay',
+  'bcc',
   'cash',
 ];
 

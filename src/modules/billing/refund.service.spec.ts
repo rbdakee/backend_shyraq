@@ -37,6 +37,7 @@ import {
   VerifyWebhookInput,
   VerifyWebhookResult,
 } from './infrastructure/payment-provider/payment-provider.port';
+import { PaymentProviderRegistry } from './infrastructure/payment-provider/payment-provider.registry';
 import { InvoiceRepository } from './infrastructure/persistence/invoice.repository';
 import { PaymentAccountRepository } from './infrastructure/persistence/payment-account.repository';
 import { PaymentRepository } from './infrastructure/persistence/payment.repository';
@@ -506,7 +507,13 @@ function buildHarness(): Harness {
     invoiceRepo,
     invoiceService,
     accountService,
-    provider,
+    new PaymentProviderRegistry(
+      [
+        { provider: 'mock', adapter: provider },
+        { provider: 'kaspi_pay', adapter: provider },
+      ],
+      ['mock', 'kaspi_pay'],
+    ),
     notifier,
     clock,
   );

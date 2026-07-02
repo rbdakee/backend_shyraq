@@ -57,6 +57,7 @@ import { PaymentTypeOrmEntity } from './infrastructure/persistence/relational/en
 import { TariffAssignmentTypeOrmEntity } from './infrastructure/persistence/relational/entities/tariff-assignment.typeorm.entity';
 import { TariffPlanTypeOrmEntity } from './infrastructure/persistence/relational/entities/tariff-plan.typeorm.entity';
 import { MockPaymentProvider } from './infrastructure/payment-provider/mock-payment-provider.adapter';
+import { PaymentProviderRegistry } from './infrastructure/payment-provider/payment-provider.registry';
 import { HolidayService } from './holiday.service';
 import { InvoiceService } from './invoice.service';
 import { PaymentService } from './payment.service';
@@ -185,7 +186,10 @@ describeIntegration('PaymentService — race-integration', () => {
       invoiceRepo,
       invoiceService,
       paymentAccountService,
-      provider,
+      new PaymentProviderRegistry(
+        [{ provider: 'mock', adapter: provider }],
+        ['mock'],
+      ),
       fiscal,
       notifier,
       clock,

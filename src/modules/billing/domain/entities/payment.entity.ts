@@ -7,6 +7,7 @@ export type PaymentProvider =
   | 'kaspi_pay'
   | 'tiptoppay'
   | 'freedom_pay'
+  | 'bcc'
   | 'cash';
 
 export type PaymentStatus =

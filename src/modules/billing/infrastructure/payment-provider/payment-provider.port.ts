@@ -3,7 +3,7 @@
  *
  * Business code (`payment.service`, controllers, DTOs) imports only this
  * port. Vendor SDKs (Halyk ePay, Kaspi, FreedomPay, TipTopPay) live behind
- * adapter classes selected via `PAYMENT_PROVIDER` env at module bootstrap.
+ * adapter classes selected per operation by `PaymentProviderRegistry`.
  *
  * Contract notes:
  *   - `createPayment` is invoked from `payment.service.initiate`. The Mock

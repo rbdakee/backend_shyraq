@@ -179,7 +179,7 @@ Almaty = UTC+5, без DST — границу дня/месяца считать
   - `by_provider` — **платежи** (только у них есть `provider`):
     `GROUP BY provider`, `status='completed'`, `paid_at ∈ [from,to]`,
     `count` + `SUM(amount)`. `provider` ∈
-    `('mock','halyk_epay','kaspi_pay','tiptoppay','freedom_pay','cash')`
+    `('mock','halyk_epay','kaspi_pay','tiptoppay','freedom_pay','bcc','cash')`
     (CHECK-констрейнт, см. миграцию `1777886401000-B13BillingAndInvoices.ts`).
 - Ошибки: 400 (валидация дат), 401, 403.
 

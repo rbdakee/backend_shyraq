@@ -29,13 +29,14 @@ export type BenefitCategory =
  * Payment method codes that can appear in a `payment_method` condition.
  *
  * NB: distinct from the broader `PaymentProvider` enum on the Payment
- * aggregate (`mock | halyk_epay | kaspi_pay | tiptoppay | freedom_pay |
+ * aggregate (`mock | halyk_epay | kaspi_pay | tiptoppay | freedom_pay | bcc |
  * cash`). The catalogue intentionally exposes a narrower, user-facing
  * set; extend deliberately when a new method becomes user-visible.
  */
 export type PaymentMethodCode =
   | 'kaspi_pay'
   | 'halyk_epay'
+  | 'bcc'
   | 'cash'
   | 'bank_transfer';
 
@@ -142,6 +143,7 @@ const KNOWN_BENEFIT_CATEGORIES: ReadonlySet<string> = new Set([
 const KNOWN_PAYMENT_METHODS: ReadonlySet<string> = new Set([
   'kaspi_pay',
   'halyk_epay',
+  'bcc',
   'cash',
   'bank_transfer',
 ]);
