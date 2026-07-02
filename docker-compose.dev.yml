@@ -16,7 +16,7 @@ services:
     ports:
       # Host access for psql / adminer. Host 5432/5433 are taken by host PG,
       # so map 55432 (CLAUDE.md §6).
-      - "55432:5432"
+      - "127.0.0.1:55432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -30,6 +30,9 @@ services:
     image: balam-dev-backend
     env_file:
       - .env.development
+    # Caddy is the only public entry point in development.
+    ports: !override
+      - "127.0.0.1:${APP_PORT}:${APP_PORT}"
     depends_on:
       postgres:
         condition: service_healthy

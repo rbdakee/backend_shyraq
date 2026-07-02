@@ -8,6 +8,9 @@ services:
     image: balam-prod-backend
     env_file:
       - .env.production
+    # Caddy is the only public entry point in production.
+    ports: !override
+      - "127.0.0.1:${APP_PORT}:${APP_PORT}"
 
   worker:
     image: balam-prod-backend
