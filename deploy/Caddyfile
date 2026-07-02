@@ -1,0 +1,11 @@
+{
+	email shared.md04@gmail.com
+}
+
+balam-api-dev.innodev.kz {
+	reverse_proxy 127.0.0.1:5678
+}
+
+balam-api.innodev.kz {
+	reverse_proxy 127.0.0.1:3000
+}
