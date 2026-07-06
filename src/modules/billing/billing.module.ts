@@ -16,6 +16,7 @@ import { KaspiVersionProbeService } from './kaspi-version-probe.service';
 import { KaspiVersionHealthService } from './kaspi-version-health.service';
 import { KaspiHttpClient } from './infrastructure/payment-provider/kaspi/kaspi-http.client';
 import { BccHttpClient } from './infrastructure/payment-provider/bcc/bcc-http.client';
+import { BccPaymentProvider } from './infrastructure/payment-provider/bcc/bcc-payment-provider.adapter';
 import { KaspiConnectService } from './kaspi-connect.service';
 import { KaspiMerchantSessionRepository } from './infrastructure/persistence/kaspi-merchant-session.repository';
 import { KaspiMerchantSessionRelationalRepository } from './infrastructure/persistence/relational/repositories/kaspi-merchant-session.relational.repository';
@@ -30,6 +31,8 @@ import { KaspiOnboardingStorePort } from './infrastructure/onboarding/kaspi-onbo
 import { RedisKaspiOnboardingStoreAdapter } from './infrastructure/onboarding/redis-kaspi-onboarding-store.adapter';
 import { AdminKaspiConnectController } from './admin-kaspi-connect.controller';
 import { SaasKaspiConfigController } from './saas-kaspi-config.controller';
+import { SaasBccAccountController } from './saas-bcc-account.controller';
+import { BccMerchantOnboardingService } from './bcc-merchant-onboarding.service';
 import { CustomDiscountService } from './custom-discount.service';
 import { DiscountTargetResolver } from './discount-target-resolver';
 import {
@@ -109,6 +112,7 @@ import { RefundService } from './refund.service';
 import { SaasBillingController } from './saas-billing.controller';
 import { TariffAssignmentService } from './tariff-assignment.service';
 import { TariffPlanService } from './tariff-plan.service';
+import { PaymentMethodAvailabilityService } from './payment-method-availability.service';
 
 /**
  * Registers every implemented adapter and enables one or more of them for new
@@ -118,17 +122,24 @@ import { TariffPlanService } from './tariff-plan.service';
 function paymentProviderRegistryProvider(): Provider {
   return {
     provide: PaymentProviderRegistry,
-    inject: [MockPaymentProvider, HalykPaymentProvider, KaspiPaymentProvider],
+    inject: [
+      MockPaymentProvider,
+      HalykPaymentProvider,
+      KaspiPaymentProvider,
+      BccPaymentProvider,
+    ],
     useFactory: (
       mock: MockPaymentProvider,
       halyk: HalykPaymentProvider,
       kaspi: KaspiPaymentProvider,
+      bcc: BccPaymentProvider,
     ) =>
       new PaymentProviderRegistry(
         [
           { provider: 'mock', adapter: mock },
           { provider: 'halyk_epay', adapter: halyk },
           { provider: 'kaspi_pay', adapter: kaspi },
+          { provider: 'bcc', adapter: bcc },
         ],
         configuredPaymentProviders(),
       ),
@@ -240,6 +251,7 @@ function fiscalReceiptProvider(): Provider {
     SaasBillingController,
     // B24 Kaspi Pay global config (SuperAdminScope + RolesGuard@super_admin/support).
     SaasKaspiConfigController,
+    SaasBccAccountController,
     // B24 Kaspi Pay merchant onboarding (admin SMS flow, §2.25).
     AdminKaspiConnectController,
     // T7b: parent-side surface (JwtAuthGuard + Roles@parent + per-route
@@ -258,6 +270,7 @@ function fiscalReceiptProvider(): Provider {
     MockPaymentProvider,
     HalykPaymentProvider,
     KaspiPaymentProvider,
+    BccPaymentProvider,
     paymentProviderRegistryProvider(),
     { provide: DiscountEnginePort, useClass: MockDiscountEngine },
     fiscalReceiptProvider(),
@@ -303,6 +316,8 @@ function fiscalReceiptProvider(): Provider {
     KaspiVersionHealthService,
     KaspiHttpClient,
     BccHttpClient,
+    BccMerchantOnboardingService,
+    PaymentMethodAvailabilityService,
     // B24 Kaspi Pay — merchant onboarding (K5).
     {
       provide: KaspiMerchantSessionRepository,
@@ -362,6 +377,8 @@ function fiscalReceiptProvider(): Provider {
     KaspiGlobalConfigService,
     KaspiHttpClient,
     BccHttpClient,
+    BccMerchantOnboardingService,
+    PaymentMethodAvailabilityService,
     // K5 onboarding surface — consumed by the K8 poller.
     KaspiMerchantSessionRepository,
     KaspiConnectService,

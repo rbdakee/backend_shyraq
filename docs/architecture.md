@@ -170,7 +170,7 @@ Repository-port — `abstract class` в `infrastructure/persistence/<x>.reposito
 ### 2.4 BCC payment data boundaries
 
 - `bcc_merchant_accounts` — tenant-scoped + `FORCE ROW LEVEL SECURITY`. Обычный runtime-код читает account только в pinned tenant; provisioning выполняет super-admin, а входящий callback использует отдельный минимальный bypass-RLS lookup только по SHA-256 hash случайного callback token.
-- Итоговый BCC MAC key хранится только в AES-256-GCM ciphertext через `CryptoCipherPort`. Две исходные key components XOR'ятся в памяти и не сохраняются. Callback password хранится только как bcrypt hash.
+- Итоговый BCC MAC key хранится только в AES-256-GCM ciphertext через `CryptoCipherPort`. Две исходные key components XOR'ятся в памяти и не сохраняются. Callback password хранится только как bcrypt hash. Callback token дополнительно хранится как AES-GCM ciphertext только для построения server-owned `NOTIFY_URL`; plaintext возвращается лишь при создании/ротации и никогда через GET.
 - `user_payment_profiles` — provider-neutral private row, глобальный по `user_id`, потому что parent JWT может обслуживать детей из разных tenant. Таблица без tenant RLS; repository API owner-scoped и не экспортируется в admin/super-admin listing. `billing_phone` не является `users.phone`.
 - PAN, expiry и CVC никогда не проходят через Shyraq API, БД или логи. Их ввод разрешён только на hosted BCC page внутри WebView.
 - Checkout state не хранится в таблице: random token и payment→token reverse key лежат в Redis с TTL 900 секунд. Атомарное consume (`GETDEL` либо Lua-equivalent) гарантирует one-time semantics; reverse key позволяет идемпотентному повтору `/pay` вернуть тот же URL пока session жива. Значения не логируются.

@@ -16,6 +16,7 @@ export class BccMerchantAccountMapper {
       environment: row.environment,
       status: row.status,
       callbackTokenHash: row.callbackTokenHash,
+      callbackTokenEnc: row.callbackTokenEnc,
       notifyUsername: row.notifyUsername,
       notifyPasswordHash: row.notifyPasswordHash,
       lastConnectionCheckedAt: row.lastConnectionCheckedAt,

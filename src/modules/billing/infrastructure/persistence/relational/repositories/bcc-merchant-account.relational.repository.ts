@@ -53,10 +53,24 @@ export class BccMerchantAccountRelationalRepository extends BccMerchantAccountRe
   }
 
   async save(account: BccMerchantAccount): Promise<BccMerchantAccount> {
+    return this.saveWithManager(account, this.manager());
+  }
+
+  async saveBypassRls(
+    account: BccMerchantAccount,
+  ): Promise<BccMerchantAccount> {
+    return this.dataSource.transaction(async (manager) => {
+      await manager.query(`SELECT set_config('app.bypass_rls', 'true', true)`);
+      return this.saveWithManager(account, manager);
+    });
+  }
+
+  private async saveWithManager(
+    account: BccMerchantAccount,
+    manager: EntityManager,
+  ): Promise<BccMerchantAccount> {
     const state = account.toState();
-    const repository = this.manager().getRepository(
-      BccMerchantAccountTypeOrmEntity,
-    );
+    const repository = manager.getRepository(BccMerchantAccountTypeOrmEntity);
 
     await repository.upsert(
       {
@@ -69,6 +83,7 @@ export class BccMerchantAccountRelationalRepository extends BccMerchantAccountRe
         environment: state.environment,
         status: state.status,
         callbackTokenHash: state.callbackTokenHash,
+        callbackTokenEnc: state.callbackTokenEnc,
         notifyUsername: state.notifyUsername,
         notifyPasswordHash: state.notifyPasswordHash,
         lastConnectionCheckedAt: state.lastConnectionCheckedAt,

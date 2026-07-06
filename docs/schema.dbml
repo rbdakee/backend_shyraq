@@ -817,6 +817,7 @@ Table bcc_merchant_accounts {
   environment                varchar     [not null, default: 'test']
   status                     varchar     [not null, default: 'draft']
   callback_token_hash        char(64)    [not null, unique] // SHA-256; plaintext appears only in one-time setup response
+  callback_token_enc         text        [not null] // AES-256-GCM; decrypted only to build server-owned NOTIFY_URL
   notify_username            varchar     [not null]
   notify_password_hash       varchar     [not null] // bcrypt; plaintext appears only in one-time setup/rotation response
   last_connection_checked_at timestamptz

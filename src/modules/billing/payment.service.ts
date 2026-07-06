@@ -29,6 +29,7 @@ import {
   PaymentProviderError,
   PaymentStatusInvalidError,
 } from './domain/errors';
+import { BccNotConnectedError } from './domain/errors/bcc-not-connected.error';
 import { FiscalReceiptPort } from './infrastructure/fiscal-receipt/fiscal-receipt.port';
 import {
   VerifyWebhookInput,
@@ -48,6 +49,7 @@ import {
   KaspiPaymentStatusJobData,
 } from './kaspi-payment-status.constants';
 import { PaymentAccountService } from './payment-account.service';
+import { PaymentMethodAvailabilityService } from './payment-method-availability.service';
 
 export type PaymentInitiationMode = 'full' | 'partial';
 
@@ -158,6 +160,8 @@ export class PaymentService {
     // skipped (the row is still flagged + visible in the admin list).
     @Optional()
     private readonly staffRepo?: StaffMemberRepository,
+    @Optional()
+    private readonly paymentMethodAvailability?: PaymentMethodAvailabilityService,
   ) {}
 
   assertProviderEnabled(provider: PaymentProvider): void {
@@ -249,6 +253,12 @@ export class PaymentService {
     }
 
     const paymentProvider = this.paymentProviders.forInitiation(input.provider);
+    if (input.provider === 'bcc') {
+      if (!this.paymentMethodAvailability) {
+        throw new BccNotConnectedError();
+      }
+      await this.paymentMethodAvailability.assertBccActive(kindergartenId);
+    }
 
     // Validate invoice + remaining amount before reaching out to the
     // provider so the provider-side budget is not consumed by a doomed

@@ -40,6 +40,9 @@ export class BccMerchantAccountTypeOrmEntity {
   @Column({ name: 'callback_token_hash', type: 'char', length: 64 })
   callbackTokenHash!: string;
 
+  @Column({ name: 'callback_token_enc', type: 'text' })
+  callbackTokenEnc!: string;
+
   @Column({ name: 'notify_username', type: 'varchar' })
   notifyUsername!: string;
 

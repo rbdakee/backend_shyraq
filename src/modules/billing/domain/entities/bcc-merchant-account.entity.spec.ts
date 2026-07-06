@@ -19,6 +19,7 @@ function makeState(
     environment: 'test',
     status: 'draft',
     callbackTokenHash: 'a'.repeat(64),
+    callbackTokenEnc: 'encrypted-callback-token',
     notifyUsername: 'bcc-notify',
     notifyPasswordHash: '$2b$12$hash',
     lastConnectionCheckedAt: null,

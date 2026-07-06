@@ -81,6 +81,10 @@ import {
 } from '@/modules/billing/domain/errors/kaspi-connect.errors';
 import { KaspiRefundHistoryAckRequiredError } from '@/modules/billing/domain/errors/kaspi-refund-history-ack-required.error';
 import {
+  BccConnectionCheckFailedError,
+  BccGatewayUnavailableError,
+} from '@/modules/billing/domain/errors/bcc-connection-check.error';
+import {
   FileStorageMalformedKeyError,
   FileStorageNotFoundError,
   FileStorageTransientError,
@@ -222,6 +226,12 @@ export class DomainErrorFilter implements ExceptionFilter {
     if (err instanceof PaymentProviderError) return HttpStatus.BAD_GATEWAY;
     if (err instanceof PaymentProviderUnavailableError)
       return HttpStatus.BAD_REQUEST;
+    if (
+      err instanceof BccGatewayUnavailableError ||
+      err instanceof BccConnectionCheckFailedError
+    ) {
+      return HttpStatus.BAD_GATEWAY;
+    }
     // B24 Kaspi onboarding (§2.25). 409/404 fall through to the Conflict/
     // NotFound base branches below; these three need explicit mappings.
     if (err instanceof KaspiUnknownProcessError) return HttpStatus.BAD_REQUEST;

@@ -27,6 +27,8 @@ export interface BccMerchantAccountState {
   status: BccMerchantAccountStatus;
   /** Lowercase SHA-256 hex. The plaintext token is never persisted. */
   callbackTokenHash: string;
+  /** AES-GCM ciphertext, decrypted only to construct server-owned NOTIFY_URL. */
+  callbackTokenEnc: string;
   notifyUsername: string;
   /** One-way password hash. The plaintext password is never persisted. */
   notifyPasswordHash: string;
@@ -105,6 +107,10 @@ export class BccMerchantAccount {
     return this.state.callbackTokenHash;
   }
 
+  get callbackTokenEnc(): string {
+    return this.state.callbackTokenEnc;
+  }
+
   get notifyUsername(): string {
     return this.state.notifyUsername;
   }
@@ -141,6 +147,51 @@ export class BccMerchantAccount {
 
   isActive(): boolean {
     return this.state.status === 'active';
+  }
+
+  updateDraftConfiguration(
+    input: {
+      merchantId: string;
+      terminalId: string;
+      merchantName: string | null;
+      macKeyEnc: string;
+      environment: BccEnvironment;
+    },
+    now: Date,
+    updatedBy: string,
+  ): void {
+    if (this.state.status === 'active') {
+      throw new BccMerchantAccountStatusInvalidError('active', 'update');
+    }
+    this.state.merchantId = input.merchantId;
+    this.state.terminalId = input.terminalId;
+    this.state.merchantName = input.merchantName;
+    this.state.macKeyEnc = input.macKeyEnc;
+    this.state.environment = input.environment;
+    this.resetToDraft(now, updatedBy);
+  }
+
+  rotateMacKey(macKeyEnc: string, now: Date, updatedBy: string): void {
+    this.state.macKeyEnc = macKeyEnc;
+    this.resetToDraft(now, updatedBy);
+  }
+
+  rotateCallbackCredentials(
+    input: {
+      callbackTokenHash: string;
+      callbackTokenEnc: string;
+      notifyUsername: string;
+      notifyPasswordHash: string;
+    },
+    now: Date,
+    updatedBy: string,
+  ): void {
+    this.state.callbackTokenHash = input.callbackTokenHash;
+    this.state.callbackTokenEnc = input.callbackTokenEnc;
+    this.state.notifyUsername = input.notifyUsername;
+    this.state.notifyPasswordHash = input.notifyPasswordHash;
+    this.state.updatedBy = updatedBy;
+    this.state.updatedAt = now;
   }
 
   recordConnectionCheck(
@@ -183,6 +234,15 @@ export class BccMerchantAccount {
 
     this.state.status = 'disabled';
     this.state.disabledAt = now;
+    this.state.updatedBy = updatedBy;
+    this.state.updatedAt = now;
+  }
+
+  private resetToDraft(now: Date, updatedBy: string): void {
+    this.state.status = 'draft';
+    this.state.lastConnectionCheckedAt = null;
+    this.state.lastConnectionResult = null;
+    this.state.disabledAt = null;
     this.state.updatedBy = updatedBy;
     this.state.updatedAt = now;
   }

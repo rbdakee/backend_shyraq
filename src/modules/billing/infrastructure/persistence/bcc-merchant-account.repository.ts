@@ -22,4 +22,13 @@ export abstract class BccMerchantAccountRepository {
   ): Promise<BccMerchantAccount | null>;
 
   abstract save(account: BccMerchantAccount): Promise<BccMerchantAccount>;
+
+  /**
+   * Persists in a fresh bypass-RLS transaction. Connection-check failures use
+   * this path so sanitized diagnostics commit even though the HTTP request
+   * subsequently returns a 502 and its ambient transaction rolls back.
+   */
+  abstract saveBypassRls(
+    account: BccMerchantAccount,
+  ): Promise<BccMerchantAccount>;
 }

@@ -163,6 +163,7 @@ describeIntegration('BCC Gate B persistence and RLS', () => {
       environment: 'test',
       status: 'draft',
       callbackTokenHash,
+      callbackTokenEnc: 'encrypted-callback-token',
       notifyUsername: `notify-${kindergartenId.slice(0, 8)}`,
       notifyPasswordHash: '$2b$12$not-a-real-password-hash',
       lastConnectionCheckedAt: null,
