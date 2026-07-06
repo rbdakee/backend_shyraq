@@ -15,10 +15,17 @@ import { KaspiGlobalConfigService } from './kaspi-global-config.service';
 import { KaspiVersionProbeService } from './kaspi-version-probe.service';
 import { KaspiVersionHealthService } from './kaspi-version-health.service';
 import { KaspiHttpClient } from './infrastructure/payment-provider/kaspi/kaspi-http.client';
+import { BccHttpClient } from './infrastructure/payment-provider/bcc/bcc-http.client';
 import { KaspiConnectService } from './kaspi-connect.service';
 import { KaspiMerchantSessionRepository } from './infrastructure/persistence/kaspi-merchant-session.repository';
 import { KaspiMerchantSessionRelationalRepository } from './infrastructure/persistence/relational/repositories/kaspi-merchant-session.relational.repository';
 import { KaspiMerchantSessionTypeOrmEntity } from './infrastructure/persistence/relational/entities/kaspi-merchant-session.typeorm.entity';
+import { BccMerchantAccountRepository } from './infrastructure/persistence/bcc-merchant-account.repository';
+import { UserPaymentProfileRepository } from './infrastructure/persistence/user-payment-profile.repository';
+import { BccMerchantAccountRelationalRepository } from './infrastructure/persistence/relational/repositories/bcc-merchant-account.relational.repository';
+import { UserPaymentProfileRelationalRepository } from './infrastructure/persistence/relational/repositories/user-payment-profile.relational.repository';
+import { BccMerchantAccountTypeOrmEntity } from './infrastructure/persistence/relational/entities/bcc-merchant-account.typeorm.entity';
+import { UserPaymentProfileTypeOrmEntity } from './infrastructure/persistence/relational/entities/user-payment-profile.typeorm.entity';
 import { KaspiOnboardingStorePort } from './infrastructure/onboarding/kaspi-onboarding-store.port';
 import { RedisKaspiOnboardingStoreAdapter } from './infrastructure/onboarding/redis-kaspi-onboarding-store.adapter';
 import { AdminKaspiConnectController } from './admin-kaspi-connect.controller';
@@ -180,6 +187,9 @@ function fiscalReceiptProvider(): Provider {
       // ── B24 Kaspi Pay ──────────────────────────────────────────────
       KaspiGlobalConfigTypeOrmEntity,
       KaspiMerchantSessionTypeOrmEntity,
+      // ── BCC e-Commerce Gate B ──────────────────────────────────────
+      BccMerchantAccountTypeOrmEntity,
+      UserPaymentProfileTypeOrmEntity,
     ]),
     // BullMQ queue for the monthly billing cron + manual super-admin
     // trigger. The recurring schedule is registered by
@@ -292,6 +302,7 @@ function fiscalReceiptProvider(): Provider {
     // the worker. Surfaced on `/health/ready` as `checks.kaspi`.
     KaspiVersionHealthService,
     KaspiHttpClient,
+    BccHttpClient,
     // B24 Kaspi Pay — merchant onboarding (K5).
     {
       provide: KaspiMerchantSessionRepository,
@@ -302,6 +313,15 @@ function fiscalReceiptProvider(): Provider {
       useClass: RedisKaspiOnboardingStoreAdapter,
     },
     KaspiConnectService,
+    // ── BCC e-Commerce Gate B ─────────────────────────────────────────
+    {
+      provide: BccMerchantAccountRepository,
+      useClass: BccMerchantAccountRelationalRepository,
+    },
+    {
+      provide: UserPaymentProfileRepository,
+      useClass: UserPaymentProfileRelationalRepository,
+    },
     InvoiceService,
     TariffPlanService,
     TariffAssignmentService,
@@ -341,9 +361,12 @@ function fiscalReceiptProvider(): Provider {
     KaspiGlobalConfigRepository,
     KaspiGlobalConfigService,
     KaspiHttpClient,
+    BccHttpClient,
     // K5 onboarding surface — consumed by the K8 poller.
     KaspiMerchantSessionRepository,
     KaspiConnectService,
+    BccMerchantAccountRepository,
+    UserPaymentProfileRepository,
     // K8 — Kaspi status poller (worker pulls it via BillingModule import).
     KaspiPaymentStatusPollerService,
     InvoiceService,

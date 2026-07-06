@@ -173,6 +173,13 @@ SMS_PROVIDER=mock
 # Comma-separated, for example: kaspi,bcc. The legacy singular
 # PAYMENT_PROVIDER remains supported as a fallback during deployment migration.
 PAYMENT_PROVIDERS=mock
+# BCC gateway transport only. Merchant/TID/MAC/callback credentials are
+# per-tenant and must never be stored in environment variables.
+BCC_HTTP_TIMEOUT_MS=10000
+# Extra attempts for idempotent TRTYPE=90/800 only. TRTYPE=14 is never
+# auto-retried after an ambiguous transport failure.
+BCC_HTTP_IDEMPOTENT_RETRIES=1
+BCC_HTTP_RETRY_DELAY_MS=200
 # Halyk ePay: requires merchant credentials when PAYMENT_PROVIDERS includes halyk.
 # HALYK_MERCHANT_ID=
 # HALYK_API_KEY=

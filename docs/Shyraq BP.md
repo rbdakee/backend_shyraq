@@ -248,6 +248,7 @@
 ### Payment Options
 
 - **`Kaspi Pay API`** — Kaspi.kz (не статичный QR, а нативный API). **Основной метод оплаты — реализуется первым (B24).** Родитель вводит номер телефона → садик выставляет удалённый счёт (`remote/create`) → родитель платит в приложении Kaspi.
+- **`BCC e-Commerce WEBVIEW`** — оплата картой на hosted-странице BCC внутри WebView. Телефон и billing address подтверждаются до перехода; PAN/CVC никогда не попадают в Shyraq backend.
 - **`Halyk ePay`** — Halyk Bank, любые карты (Phase B, после Kaspi)
 - **`TipTopPay`** ИЛИ **`Freedom Pay`** — для карт других банков (финальный выбор провайдера — до интеграции)
 
@@ -280,7 +281,7 @@
 - **Ежемесячная генерация:** cron `billing:invoice-generate` 1-го числа месяца (02:00 Asia/Almaty, BullMQ repeatable) проходит по активным `tariff_assignments` и создаёт `invoices` + `invoice_line_items`. Ручной триггер для super-admin: `POST /saas/billing/monthly-run`.
 - **Custom скидки (новая подсистема):** админ настраивает скидку с условиями и таргетингом — см. подраздел `4.1 Custom Discounts` ниже.
 - **Статус-машина инвойсов:** `pending → {partial, paid, overdue, refunded, cancelled}`. `partial` — когда сумма поступивших платежей > 0 но < `amount_after_discount`; `paid` — полное покрытие; `overdue` — cron переводит при `now > due_date AND status IN ('pending','partial')`; `refunded` — после обработки полного возврата; `cancelled` — admin или система.
-- **Статус-машина платежей** (`payments` таблица): `initiated → {processing, completed, failed, refunded}`. Переход `completed` — через webhook от провайдера; `failed` — при ошибке провайдера или ручном admin-cancel; `refunded` — после обработки `refunds`.
+- **Статус-машина платежей** (`payments` таблица): `initiated → {processing, completed, failed, refunded}`. Переход в terminal state выполняется только доверенным provider callback либо внутренним reconciliation/poller; browser redirect/BACKREF сам по себе статус не меняет. `refunded` — после обработки `refunds`.
 - **Провайдер-агностичность (B13):** платёжные провайдеры скрыты за `PaymentProviderPort` и выбираются по операции через `PaymentProviderRegistry`. Несколько адаптеров можно включить одновременно (`PAYMENT_PROVIDERS=kaspi,bcc`; legacy `PAYMENT_PROVIDER` поддерживается как fallback). В B13 реализован `MockPaymentProvider`; реальные адаптеры подключаются без изменений бизнес-логики. Аналогично `FiscalReceiptPort` + `MockFiscalReceiptAdapter` (B13); реальный OFD — B15.
 - **Хук enrollment → первый инвойс:** при переходе enrollment в `card_created` (BP §1) система автоматически вызывает `BillingService.generateFirstInvoice(kgId, childId, enrollmentDate)` в ambient TX. Закрывает `TODO(B13)` в `EnrollmentService.transition()`.
 - **Хук late_pickup → инвойс:** при `accept` заявки типа `late_pickup` (BP §6) система вызывает `BillingService.generateLatePickupInvoice(kgId, childId, parentRequestId)` и проставляет `parent_requests.invoice_id`. Закрывает `TODO(B13)` в `ParentRequestService.accept()`.
@@ -297,6 +298,35 @@ Kaspi Pay подключается как новый адаптер `PaymentProv
 - **Версионный гейт.** Kaspi блокирует устаревший **билд** (`OldVersionToUpdate` по `app_build`, строка версии игнорируется). Конфиг `app_build` живёт в `kaspi_global_config` (single-row, правит суперадмин без передеплоя, endpoints §1.8) + cron health-check (SMS-free probe → алерт суперадмину заранее).
 - **Сессия и продление.** Сессия живёт долго; при истечении поллер сперва пробует `/refresh` (SignInLite, без SMS), при неудаче — `status=expired` + нотификация админу на переподключение. TOTP-MAC подписи требуют **точных часов сервера (NTP)** — дрейф ломает подпись.
 - **ToS / антифрод риск.** Неофициальный клиент против реального кассирского аккаунта — формально нарушает условия Kaspi; аккаунт теоретически могут пометить. Осознанное решение владельца (взвесить vs. официальный договор с банком для прод-объёмов).
+
+#### BCC e-Commerce WEBVIEW (Phase B)
+
+BCC подключается как `PaymentProviderPort` с ключом `bcc` и работает одновременно с Kaspi (`PAYMENT_PROVIDERS=kaspi,bcc`). У каждого садика собственный `bcc_merchant_accounts`; новые оплаты разрешены только при `status='active'`.
+
+**Certification gate.** Сначала полный применимый flow проходит на опубликованных BCC test TID/MAC/cards, а результаты кейсов отправляются банку. Production TID и две боевые MAC components банк выдаёт только после проверки отчёта; внутренние unit/e2e тесты Shyraq этот банковский отчёт не заменяют.
+
+**Подключение садика.**
+
+1. Super-admin указывает BCC merchant/terminal и две MAC key components для выбранного садика.
+2. Backend XOR'ит компоненты, сохраняет только зашифрованный итоговый ключ и генерирует callback URL + Basic Auth credentials.
+3. Callback параметры передаются BCC support: URL с явным `:443`, `POST`, Basic Auth, TLS 1.2 и virtual host.
+4. `TRTYPE=800` connection check переводит account из `draft` в `active`. Disable запрещает только новые BCC-платежи; callback, reconciliation и refund старых операций продолжают работать.
+
+**Оплата родителем.**
+
+1. Экран оплаты показывает BCC только если provider глобально включён и account выбранного садика active.
+2. Перед оплатой единая форма подтверждает `billing_phone` и `billing_address`. Телефон впервые подставляется из подтверждённого `users.phone`; редактирование billing phone не меняет login phone.
+3. При явном выборе «сохранить» оба значения атомарно записываются в приватный provider-neutral `user_payment_profiles`. Их можно позже изменить или удалить; tenant admin адрес родителя не видит.
+4. `/parent/invoices/:id/pay` создаёт payment и случайную одноразовую checkout-session на 15 минут. Идемпотентный повтор возвращает тот же checkout URL, пока session жива.
+5. Parent App открывает Shyraq bridge в WebView. Bridge добавляет размеры экрана, формирует `M_INFO` (`mobilePhone`, `billAddrLine1`) и POST'ит подписанную форму в BCC. Карта вводится только на странице BCC.
+6. При переходе на dev `BACKREF` `https://balam-api-dev.innodev.kz:443/api/v1/payments/bcc/return` приложение закрывает WebView и показывает `processing`. Позже URL заменяется на Universal Link/App Link.
+7. Только BCC callback либо reconciliation переводит payment в `completed`/`failed`; успешный settlement обновляет invoice и запускает обычные receipt/outbox эффекты.
+
+**Reconciliation и ручная проверка.** Если callback потерян и BCC payment остаётся `processing`, первый `TRTYPE=90` выполняется через 5 минут, затем запросы повторяются с bounded backoff до возраста 24 часа. После 24 часов polling прекращается, payment не помечается `failed`, а передаётся на ручную проверку. Поздний success обрабатывается тем же идемпотентным settlement service.
+
+**Возвраты.** Первая версия поддерживает полный и частичный refund через `TRTYPE=14`. Операция `TRTYPE=22` не входит в scope. Ошибка BCC не переводит локальный refund в `processed`.
+
+**Открытые protocol checks по месту реализации.** На WEBVIEW gate подтверждается, что BCC сам показывает hosted card form; на callback gate — точные payload/P_SIGN/ACK/retry правила. До production onboarding отдельно уточняется, сертифицируется платформа один раз или каждый tenant.
 
 ### 4.1 Custom Discounts (праздничные и спец. скидки)
 

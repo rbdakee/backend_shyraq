@@ -167,6 +167,14 @@ Repository-port — `abstract class` в `infrastructure/persistence/<x>.reposito
 
 Все репозитории принимают `kindergarten_id` явным первым аргументом (`findById(kgId, id)`, `list(kgId, filters, page)`) — IDE-навигация и явная intent. RLS на DB-стороне — defense-in-depth, не replacement читаемости.
 
+### 2.4 BCC payment data boundaries
+
+- `bcc_merchant_accounts` — tenant-scoped + `FORCE ROW LEVEL SECURITY`. Обычный runtime-код читает account только в pinned tenant; provisioning выполняет super-admin, а входящий callback использует отдельный минимальный bypass-RLS lookup только по SHA-256 hash случайного callback token.
+- Итоговый BCC MAC key хранится только в AES-256-GCM ciphertext через `CryptoCipherPort`. Две исходные key components XOR'ятся в памяти и не сохраняются. Callback password хранится только как bcrypt hash.
+- `user_payment_profiles` — provider-neutral private row, глобальный по `user_id`, потому что parent JWT может обслуживать детей из разных tenant. Таблица без tenant RLS; repository API owner-scoped и не экспортируется в admin/super-admin listing. `billing_phone` не является `users.phone`.
+- PAN, expiry и CVC никогда не проходят через Shyraq API, БД или логи. Их ввод разрешён только на hosted BCC page внутри WebView.
+- Checkout state не хранится в таблице: random token и payment→token reverse key лежат в Redis с TTL 900 секунд. Атомарное consume (`GETDEL` либо Lua-equivalent) гарантирует one-time semantics; reverse key позволяет идемпотентному повтору `/pay` вернуть тот же URL пока session жива. Значения не логируются.
+
 ---
 
 ## 3. Multi-tenancy (Row Level Security + explicit passing)
@@ -356,6 +364,7 @@ Naming convention — `it('returns ...')` / `it('throws ...')` / `it('rejects ..
 | `story-cleanup` | worker (repeatable) | ежечасно | B17: удаляет истёкшие `group_stories` (`expires_at <= NOW()`), вызывает `FileStoragePort.delete` |
 | `content-publish` | worker (repeatable) | каждые 5 минут | B17: условный UPDATE `content_posts` `scheduled → published` для `scheduled_for <= NOW()` |
 | `lifecycle` / `lifecycle:pro-rata-refund` | worker (on-demand) | Triggered by archive action | B21: ProRataRefundProcessor — рассчитывает pro-rata refund при архивировании ребёнка посреди billing-period. Payload: `{kindergartenId, childId, archivedAt}`. Idempotency: `pg_advisory_xact_lock(hashtext('pro-rata:'||childId))` + existing-refund check. Retry: exp-backoff 3×(1m, 2m, 4m). Создаёт `refunds(status='pending', reason='pro_rata_archive')`. File: `src/modules/billing/infrastructure/processors/pro-rata-refund.processor.ts`. Queue registered via `BullModule.registerQueue({ name: 'lifecycle' })`. |
+| `bcc-payment-reconciliation` | worker (delayed jobs) | первый check через 5 мин, затем bounded backoff | `TRTYPE=90` только для BCC payments в `processing`. Повторы прекращаются при terminal state либо возрасте 24h; после 24h выставляется `manual_review_required_at`, но не `failed`. Late success использует общий settlement service. |
 
 `@nestjs/schedule` удаляется в B9 (заменён BullMQ). BullMQ даёт бесплатный distributed lock через Redis `BZPOPMIN` — только один worker-инстанс выполняет job в момент времени.
 
@@ -459,6 +468,27 @@ Event keys зарезервированы в `src/modules/notification/event-key
 Будущие event-ключи (добавляются по мере батчей): `payment.upcoming`, `payment.overdue`, `payment.receipt_issued` (B14), `face.enrolled` (B19).
 
 **Nanny-policy:** guardian с `role='nanny'` получает только `attendance.*` и `pickup.*` — остальные ключи (`request.*`, `payment.*`, etc.) отбрасываются в `NotificationDispatcher` до send.
+
+### 6.6 BCC checkout, callback and settlement
+
+```text
+Parent /pay
+  → active tenant BCC account
+  → payment(processing) + Redis checkout token (15 min)
+  → Shyraq bridge in WebView
+  → POST signed form + M_INFO to BCC hosted page
+  → BACKREF closes WebView and shows processing
+
+BCC NOTIFY callback ─┐
+                     ├→ one idempotent settlement service → payment/invoice/outbox
+TRTYPE=90 worker ────┘
+```
+
+`BACKREF` is UX navigation, never a payment verdict. The mobile client intercepts the configured HTTPS URL; later it may become an app Universal Link/App Link. Success/failure is accepted only from an authenticated, validated callback or reconciliation response.
+
+The bridge is an API-process route because it must atomically consume Redis state and render a short-lived form. It returns `Cache-Control: no-store`, strict CSP and escaped dynamic values, then browser JS adds screen dimensions to Base64 `M_INFO`. Billing phone/address were confirmed before initiation and are included only in `M_INFO`.
+
+Callback routing is account-first, not tenant-from-request: `callbackToken` hash identifies exactly one merchant account under a narrowly scoped bypass, then the service pins that account's `kindergarten_id` before touching payment/invoice rows. Basic Auth, terminal/merchant/order/amount checks precede settlement. Exact BCC callback signature/ACK/retry details remain a Gate F protocol question and must be confirmed before declaring the endpoint production-ready.
 
 ### 6.1 Edge stack (B18.5+)
 
