@@ -291,7 +291,7 @@ WS/BullMQ (B9), QR-scan (B10), Pickup OTP (B11), Face ID (B19).
 
 ### 4.3 OTP flow
 
-`POST /auth/otp/request` → `OtpStorePort.create(phone, code, ttl)` (Redis-hash с attempts=0). SMS-отправка через `SmsPort` (mock логирует код). `OTP_TEST_PHONES` whitelist — bypass real SMS, возвращает `OTP_TEST_CODE` для test-сценариев.
+`POST /auth/otp/request` → `OtpStorePort.create(phone, code, ttl)` (Redis-hash с attempts=0). SMS-отправка через `SmsPort` (mock логирует код). `TEST_PHONES` whitelist — bypass real SMS, возвращает `OTP_TEST_CODE` для test-сценариев.
 
 `POST /auth/otp/verify` → `OtpStorePort.verify(phone, code)`:
 - При несоответствии — `incrementAttempts()` (EXISTS pre-check защищает от TTL-edge: naked HINCRBY на expired hash создал бы запись с attempts=1 и обнулил lockout).

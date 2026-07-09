@@ -177,21 +177,24 @@ export class AuthService implements OnModuleInit {
         .filter((s) => s.length > 0),
     );
 
-    if (process.env.NODE_ENV === 'production') {
-      if (parsed.size > 0) {
-        this.logger.warn(
-          `OTP test backdoor IGNORED (NODE_ENV=production); refusing to honour OTP_TEST_PHONES`,
-        );
-      }
-      // Treat as empty set in production — backdoor is never active.
-      this.testPhones = new Set();
-      return;
+    const nodeEnv = process.env.NODE_ENV ?? 'unknown';
+    if (nodeEnv === 'production' && parsed.size > 1) {
+      throw new Error('TEST_PHONES may contain only one phone in production');
+    }
+    if (
+      nodeEnv === 'production' &&
+      parsed.size === 1 &&
+      this.testCode() === '000000'
+    ) {
+      throw new Error(
+        'OTP_TEST_CODE must be explicitly set to a non-default code in production',
+      );
     }
 
     this.testPhones = parsed;
     if (parsed.size > 0) {
       this.logger.warn(
-        `OTP test backdoor active for ${parsed.size} phone(s) (NODE_ENV=${process.env.NODE_ENV ?? 'unknown'})`,
+        `OTP test backdoor active for ${parsed.size} phone(s) (NODE_ENV=${nodeEnv})`,
       );
     }
   }

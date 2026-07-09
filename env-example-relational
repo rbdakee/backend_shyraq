@@ -77,8 +77,8 @@ SUPER_ADMIN_SEED_PASSWORD=admin123
 
 # --- OTP test backdoor ---
 # CSV of phone numbers that bypass real SMS send and accept OTP_TEST_CODE.
-# Leave empty in production. Active when non-empty.
-OTP_TEST_PHONES=
+# Production accepts at most one phone and requires a non-default OTP_TEST_CODE.
+TEST_PHONES=
 OTP_TEST_CODE=000000
 
 # --- Rate limiting ---

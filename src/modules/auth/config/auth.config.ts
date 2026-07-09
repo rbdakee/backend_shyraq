@@ -64,7 +64,7 @@ class EnvironmentVariablesValidator {
 
   @IsString()
   @IsOptional()
-  OTP_TEST_PHONES: string;
+  TEST_PHONES: string;
 
   @IsString()
   @IsOptional()
@@ -235,7 +235,7 @@ export default registerAs<AuthConfig>('auth', () => {
     rateLimitParentLinkWindowSec: process.env.RATE_LIMIT_PARENT_LINK_WINDOW_SEC
       ? parseInt(process.env.RATE_LIMIT_PARENT_LINK_WINDOW_SEC, 10)
       : 3600,
-    otpTestPhones: process.env.OTP_TEST_PHONES || '',
+    otpTestPhones: process.env.TEST_PHONES || '',
     otpTestCode: process.env.OTP_TEST_CODE || '000000',
   };
 });
