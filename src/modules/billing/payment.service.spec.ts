@@ -40,6 +40,7 @@ import {
   VerifyWebhookInput,
   VerifyWebhookResult,
 } from './infrastructure/payment-provider/payment-provider.port';
+import { PaymentProviderRegistry } from './infrastructure/payment-provider/payment-provider.registry';
 import {
   InvoiceRepository,
   ListInvoicesFilter,
@@ -601,7 +602,14 @@ function buildHarness(opts?: {
     invoiceRepo,
     invoiceService,
     accountService,
-    provider,
+    new PaymentProviderRegistry(
+      [
+        { provider: 'mock', adapter: provider },
+        { provider: 'halyk_epay', adapter: provider },
+        { provider: 'kaspi_pay', adapter: provider },
+      ],
+      ['mock', 'halyk_epay', 'kaspi_pay'],
+    ),
     fiscal,
     notifier,
     clock,

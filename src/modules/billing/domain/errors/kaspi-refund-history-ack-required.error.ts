@@ -23,7 +23,7 @@ import { DomainError } from '@/shared-kernel/domain/errors';
  *
  * Extends `DomainError` directly with an explicit `DomainErrorFilter` branch →
  * HTTP 400 (matching the sibling `KaspiPhoneRequiredError` style and the
- * `payment_provider_mismatch` 400 of the K9 parent-pay guard).
+ * `payment_provider_unavailable` 400 of the parent-pay guard).
  */
 export class KaspiRefundHistoryAckRequiredError extends DomainError {
   constructor() {

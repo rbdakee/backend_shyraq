@@ -29,12 +29,13 @@ import {
   PaymentProviderError,
   PaymentStatusInvalidError,
 } from './domain/errors';
+import { BccNotConnectedError } from './domain/errors/bcc-not-connected.error';
 import { FiscalReceiptPort } from './infrastructure/fiscal-receipt/fiscal-receipt.port';
 import {
-  PaymentProviderPort,
   VerifyWebhookInput,
   VerifyWebhookResult,
 } from './infrastructure/payment-provider/payment-provider.port';
+import { PaymentProviderRegistry } from './infrastructure/payment-provider/payment-provider.registry';
 import { InvoiceRepository } from './infrastructure/persistence/invoice.repository';
 import {
   ListPaymentsFilter,
@@ -48,6 +49,7 @@ import {
   KaspiPaymentStatusJobData,
 } from './kaspi-payment-status.constants';
 import { PaymentAccountService } from './payment-account.service';
+import { PaymentMethodAvailabilityService } from './payment-method-availability.service';
 
 export type PaymentInitiationMode = 'full' | 'partial';
 
@@ -127,8 +129,7 @@ export class PaymentService {
     private readonly invoiceRepo: InvoiceRepository,
     private readonly invoiceService: InvoiceService,
     private readonly paymentAccountService: PaymentAccountService,
-    @Inject(PaymentProviderPort)
-    private readonly paymentProvider: PaymentProviderPort,
+    private readonly paymentProviders: PaymentProviderRegistry,
     @Inject(FiscalReceiptPort)
     private readonly fiscalReceiptPort: FiscalReceiptPort,
     private readonly notificationPort: NotificationPort,
@@ -159,7 +160,13 @@ export class PaymentService {
     // skipped (the row is still flagged + visible in the admin list).
     @Optional()
     private readonly staffRepo?: StaffMemberRepository,
+    @Optional()
+    private readonly paymentMethodAvailability?: PaymentMethodAvailabilityService,
   ) {}
+
+  assertProviderEnabled(provider: PaymentProvider): void {
+    this.paymentProviders.forInitiation(provider);
+  }
 
   /**
    * Build the payer-visible payment purpose for the provider Comment. Only
@@ -243,6 +250,14 @@ export class PaymentService {
         redirectUrl: redirect.redirectUrl,
         deeplink: redirect.deeplink,
       };
+    }
+
+    const paymentProvider = this.paymentProviders.forInitiation(input.provider);
+    if (input.provider === 'bcc') {
+      if (!this.paymentMethodAvailability) {
+        throw new BccNotConnectedError();
+      }
+      await this.paymentMethodAvailability.assertBccActive(kindergartenId);
     }
 
     // Validate invoice + remaining amount before reaching out to the
@@ -354,7 +369,7 @@ export class PaymentService {
       // rounding) so sub-tenge tiyn can appear here. The adapter's rounding is
       // the last-resort guard; no money is created or destroyed — any sub-tenge
       // fraction in an invoice is a rounding artefact from percentage discounts.
-      providerResult = await this.paymentProvider.createPayment({
+      providerResult = await paymentProvider.createPayment({
         kindergartenId,
         invoiceId: invoice.id,
         amountKzt: payment.amount.toNumber(),
@@ -479,7 +494,10 @@ export class PaymentService {
       body: input.body,
       rawBody: input.rawBody,
     };
-    const verified = await this.paymentProvider.verifyWebhook(verifyInput);
+    const paymentProvider = this.paymentProviders.forExistingOperation(
+      input.provider,
+    );
+    const verified = await paymentProvider.verifyWebhook(verifyInput);
 
     // 2. Cross-tenant lookup by (provider, provider_txn_id). Bypass-RLS
     //    is scoped to a fresh TX inside the repo so it does not leak
@@ -642,10 +660,12 @@ export class PaymentService {
       }
       if (prev.providerTxnId) {
         try {
-          await this.paymentProvider.cancelPayment({
-            kindergartenId,
-            providerPaymentId: prev.providerTxnId,
-          });
+          await this.paymentProviders
+            .forExistingOperation(prev.provider)
+            .cancelPayment({
+              kindergartenId,
+              providerPaymentId: prev.providerTxnId,
+            });
         } catch (err) {
           // Best-effort: the op may already be terminal, or Kaspi may be
           // unreachable. We still fail our row so the new request is the only

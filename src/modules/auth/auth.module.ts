@@ -113,6 +113,7 @@ import {
     TokenBlocklistEventsPort,
     JwtModule,
     SmsPort,
+    PasswordHasherPort,
     OtpStorePort,
     RefreshTokenRepository,
   ],

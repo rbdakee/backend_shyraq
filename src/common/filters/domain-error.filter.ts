@@ -69,6 +69,7 @@ import { InvalidEventKeyError } from '@/modules/notification/domain/errors/inval
 import { NotificationNotFoundError } from '@/modules/notification/domain/errors/notification-not-found.error';
 import { PushTokenNotFoundError } from '@/modules/notification/domain/errors/push-token-not-found.error';
 import { PaymentProviderError } from '@/modules/billing/domain/errors/payment-provider.error';
+import { PaymentProviderUnavailableError } from '@/modules/billing/domain/errors/payment-provider-unavailable.error';
 import {
   KaspiAppVersionOutdatedError,
   KaspiFinishFailedError,
@@ -79,6 +80,10 @@ import {
   KaspiWebhookUnsupportedError,
 } from '@/modules/billing/domain/errors/kaspi-connect.errors';
 import { KaspiRefundHistoryAckRequiredError } from '@/modules/billing/domain/errors/kaspi-refund-history-ack-required.error';
+import {
+  BccConnectionCheckFailedError,
+  BccGatewayUnavailableError,
+} from '@/modules/billing/domain/errors/bcc-connection-check.error';
 import {
   FileStorageMalformedKeyError,
   FileStorageNotFoundError,
@@ -219,6 +224,14 @@ export class DomainErrorFilter implements ExceptionFilter {
     // PaymentProviderError → 502 Bad Gateway; the raw provider reason is
     // intentionally NOT propagated to the response body (only `details.provider`).
     if (err instanceof PaymentProviderError) return HttpStatus.BAD_GATEWAY;
+    if (err instanceof PaymentProviderUnavailableError)
+      return HttpStatus.BAD_REQUEST;
+    if (
+      err instanceof BccGatewayUnavailableError ||
+      err instanceof BccConnectionCheckFailedError
+    ) {
+      return HttpStatus.BAD_GATEWAY;
+    }
     // B24 Kaspi onboarding (§2.25). 409/404 fall through to the Conflict/
     // NotFound base branches below; these three need explicit mappings.
     if (err instanceof KaspiUnknownProcessError) return HttpStatus.BAD_REQUEST;
@@ -231,7 +244,7 @@ export class DomainErrorFilter implements ExceptionFilter {
     // K9 — refusal to process a kaspi_pay refund without an explicit
     // "I checked the Kaspi history" acknowledgement (Kaspi has no idempotency
     // key, so a blind retry may double-refund). → 400, matching the K9
-    // parent-pay `payment_provider_mismatch` 400.
+    // parent-pay `payment_provider_unavailable` 400.
     if (err instanceof KaspiRefundHistoryAckRequiredError)
       return HttpStatus.BAD_REQUEST;
     // kaspi_webhook_unsupported → 501 (Kaspi has no inbound callback; settlement

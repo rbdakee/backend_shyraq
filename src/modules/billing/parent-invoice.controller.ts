@@ -32,8 +32,10 @@ import {
   ListInvoicesQueryDto,
   PaymentCalendarResponseDto,
 } from './dto/invoice.dto';
+import { PaymentMethodsResponseDto } from './dto/payment-method.dto';
 import { InvoicePresenter } from './invoice.presenter';
 import { InvoiceService } from './invoice.service';
+import { PaymentMethodAvailabilityService } from './payment-method-availability.service';
 
 const TENANT_REQUIRED = 'tenant_required';
 
@@ -73,7 +75,10 @@ function requireTenant(t: TenantContext): string {
 @UseGuards(JwtAuthGuard, PendingRoleSelectGuard, RolesGuard)
 @Roles('parent')
 export class ParentInvoiceController {
-  constructor(private readonly service: InvoiceService) {}
+  constructor(
+    private readonly service: InvoiceService,
+    private readonly paymentMethods: PaymentMethodAvailabilityService,
+  ) {}
 
   @Get('children/:childId/invoices')
   @UseGuards(ChildAccessGuard)
@@ -133,6 +138,40 @@ export class ParentInvoiceController {
     );
     const lineItems = await this.service.listLineItems(kgId, id);
     return InvoicePresenter.one(invoice, lineItems);
+  }
+
+  @Get('invoices/:id/payment-methods')
+  @UseGuards(InvoiceAccessGuard)
+  @ApiOperation({
+    summary:
+      'List globally enabled payment providers that are active for the invoice kindergarten.',
+  })
+  @ApiOkResponse({ type: PaymentMethodsResponseDto })
+  @ApiUnauthorizedResponse({ description: 'Bearer missing/invalid/revoked.' })
+  @ApiForbiddenResponse({
+    description: 'not_a_guardian / nanny_cannot_view_invoice.',
+  })
+  @ApiNotFoundResponse({ description: 'invoice_not_found.' })
+  async listPaymentMethods(
+    @Tenant() t: TenantContext,
+    @CurrentUser() user: JwtPayload,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<PaymentMethodsResponseDto> {
+    const kgId = requireTenant(t);
+    const invoice = await this.service.get(kgId, id);
+    await this.service.assertNonNannyGuardianForRead(
+      kgId,
+      user.sub,
+      invoice.childId,
+    );
+    const methods = await this.paymentMethods.availableForKindergarten(kgId);
+    return {
+      providers: methods.map((method) => ({
+        provider: method.provider,
+        kind: method.kind,
+        display_name: method.displayName,
+      })),
+    };
   }
 
   @Get('children/:childId/payment-calendar')

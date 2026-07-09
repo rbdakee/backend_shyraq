@@ -10,6 +10,7 @@ export { PaymentNotFoundError } from './payment-not-found.error';
 export { PaymentIdempotencyConflictError } from './payment-idempotency-conflict.error';
 export { PaymentStatusInvalidError } from './payment-status-invalid.error';
 export { PaymentProviderError } from './payment-provider.error';
+export { PaymentProviderUnavailableError } from './payment-provider-unavailable.error';
 export { RefundNotFoundError } from './refund-not-found.error';
 export { RefundAlreadyProcessedError } from './refund-already-processed.error';
 export { KaspiRefundHistoryAckRequiredError } from './kaspi-refund-history-ack-required.error';

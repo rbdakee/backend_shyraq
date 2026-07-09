@@ -836,10 +836,14 @@ describe('AuthService', () => {
     });
   });
 
-  describe('onModuleInit — OTP_TEST_PHONES production guard', () => {
+  describe('onModuleInit — TEST_PHONES', () => {
     const TEST_PHONE = '+77099999999';
 
-    function buildWithTestPhone(nodeEnv: string | undefined): AuthDeps {
+    function buildWithTestPhone(
+      nodeEnv: string | undefined,
+      testPhones = TEST_PHONE,
+      testCode = '654321',
+    ): AuthDeps {
       const users = new FakeUserRepo();
       const saasUsers = new FakeSaasUserRepo();
       const refresh = new FakeRefreshRepo();
@@ -865,8 +869,8 @@ describe('AuthService', () => {
           rateLimitOtpRequestWindowSec: 3600,
           rateLimitSuperAdminLoginLimit: 10,
           rateLimitSuperAdminLoginWindowSec: 3600,
-          otpTestPhones: TEST_PHONE,
-          otpTestCode: '000000',
+          otpTestPhones: testPhones,
+          otpTestCode: testCode,
         },
       });
       const service = new AuthService(
@@ -893,11 +897,14 @@ describe('AuthService', () => {
       } else {
         process.env.NODE_ENV = nodeEnv;
       }
-      service.onModuleInit();
-      if (saved === undefined) {
-        delete process.env.NODE_ENV;
-      } else {
-        process.env.NODE_ENV = saved;
+      try {
+        service.onModuleInit();
+      } finally {
+        if (saved === undefined) {
+          delete process.env.NODE_ENV;
+        } else {
+          process.env.NODE_ENV = saved;
+        }
       }
       return {
         service,
@@ -917,14 +924,14 @@ describe('AuthService', () => {
       };
     }
 
-    it('honours OTP_TEST_PHONES in development (no real SMS sent)', async () => {
+    it('honours TEST_PHONES in development (no real SMS sent)', async () => {
       const { service, otpStore, sms } = buildWithTestPhone('development');
       await service.requestOtp(TEST_PHONE, 'parent');
       // Test phone → no SMS dispatched
       expect(sms.sent).toHaveLength(0);
       const stored = await otpStore.readCode(TEST_PHONE);
       // Fixed test code from config
-      expect(stored?.code).toBe('000000');
+      expect(stored?.code).toBe('654321');
     });
 
     it('sends a real random code for non-test phone in development', async () => {
@@ -934,14 +941,26 @@ describe('AuthService', () => {
       expect(sms.sent).toHaveLength(1);
     });
 
-    it('ignores OTP_TEST_PHONES in production and sends real SMS', async () => {
+    it('honours one TEST_PHONES entry in production', async () => {
       const { service, otpStore, sms } = buildWithTestPhone('production');
       await service.requestOtp(TEST_PHONE, 'parent');
-      // Production: backdoor disabled → real SMS dispatched
-      expect(sms.sent).toHaveLength(1);
+      expect(sms.sent).toHaveLength(0);
       const stored = await otpStore.readCode(TEST_PHONE);
-      // Production code is random, not the fixed test code
-      expect(stored?.code).not.toBe('000000');
+      expect(stored?.code).toBe('654321');
+    });
+
+    it('rejects multiple TEST_PHONES entries in production', () => {
+      expect(() =>
+        buildWithTestPhone('production', `${TEST_PHONE},+77088888888`),
+      ).toThrow('TEST_PHONES may contain only one phone in production');
+    });
+
+    it('rejects the default test code in production', () => {
+      expect(() =>
+        buildWithTestPhone('production', TEST_PHONE, '000000'),
+      ).toThrow(
+        'OTP_TEST_CODE must be explicitly set to a non-default code in production',
+      );
     });
   });
 

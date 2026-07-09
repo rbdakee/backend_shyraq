@@ -273,6 +273,21 @@ Table users {
   }
 }
 
+// BCC checkout (provider-neutral) — one optional saved billing profile per user.
+// This is NOT the login identity: changing billing_phone never changes users.phone.
+// No RLS because the profile is global across all kindergartens; application access
+// is strictly owner-scoped (user_id = authenticated user). Tenant admins and
+// cross-tenant operator listings must not expose these fields.
+Table user_payment_profiles {
+  user_id         uuid        [pk, ref: > users.id]
+  billing_phone   varchar(20) [not null]
+  billing_address text        [not null]
+  created_at      timestamptz [not null, default: `now()`]
+  updated_at      timestamptz [not null, default: `now()`]
+
+  Note: 'Provider-neutral private billing profile. Row absence means no saved profile; DELETE removes both billing fields atomically. Values must not be logged or included in diagnostic snapshots.'
+}
+
 Table refresh_tokens {
   id              uuid        [pk, default: `gen_random_uuid()`]
   user_id         uuid        [not null, ref: > users.id]
@@ -688,7 +703,7 @@ Table payments {
   payer_user_id    uuid              [ref: > users.id]
   amount           decimal(12,2)     [not null]
   provider         varchar           [not null]
-  // CHECK provider IN ('mock','halyk_epay','kaspi_pay','tiptoppay','freedom_pay','cash')
+  // CHECK provider IN ('mock','halyk_epay','kaspi_pay','tiptoppay','freedom_pay','bcc','cash')
   // 'mock'        — MockPaymentProvider (B13 default, dev/CI/demo)
   // 'halyk_epay'  — Halyk Bank ePay (Phase B — B14)
   // 'kaspi_pay'   — Kaspi Pay API (Kaspi.kz)
@@ -701,12 +716,18 @@ Table payments {
   provider_payload jsonb
   paid_at          timestamptz
   refund_id        uuid              [ref: > refunds.id] // если был возврат
+  reconciliation_attempts       int         [not null, default: 0]
+  last_reconciled_at            timestamptz
+  next_reconciliation_at        timestamptz
+  manual_review_required_at     timestamptz
   created_at       timestamptz       [not null, default: `now()`]
   updated_at       timestamptz       [not null, default: `now()`]
 
   indexes {
     (provider, provider_txn_id)
     (kindergarten_id, status)
+    (provider, status, next_reconciliation_at)
+    (provider, manual_review_required_at)
   }
 
   Note: 'FORCE ROW LEVEL SECURITY — tenant_isolation policy: kindergarten_id = current_setting(app.kindergarten_id)::uuid OR current_setting(app.bypass_rls) = true'
@@ -775,6 +796,43 @@ Table kaspi_global_config {
   qrpay_url     varchar     [not null]         // https://qrpay.kaspi.kz
   updated_by    uuid        [ref: > users.id]  // суперадмин-аудит
   updated_at    timestamptz [not null, default: `now()`]
+}
+
+// ─────────────────────────────────────────
+// BCC E-COMMERCE WEBVIEW
+// ─────────────────────────────────────────
+// One BCC merchant account per kindergarten. Super-admin provisions and rotates
+// credentials; the tenant admin never receives MAC or callback secrets.
+// ENUM-like varchar constraints in migration:
+//   environment IN ('test','live')
+//   status IN ('draft','active','disabled')
+// Activation requires a successful TRTYPE=800 connection check.
+Table bcc_merchant_accounts {
+  id                         uuid        [pk, default: `gen_random_uuid()`]
+  kindergarten_id            uuid        [not null, unique, ref: > kindergartens.id]
+  merchant_id                varchar     [not null]
+  terminal_id                varchar     [not null]
+  merchant_name              varchar
+  mac_key_enc                text        [not null] // final XOR-derived MAC key, AES-256-GCM encrypted
+  environment                varchar     [not null, default: 'test']
+  status                     varchar     [not null, default: 'draft']
+  callback_token_hash        char(64)    [not null, unique] // SHA-256; plaintext appears only in one-time setup response
+  callback_token_enc         text        [not null] // AES-256-GCM; decrypted only to build server-owned NOTIFY_URL
+  notify_username            varchar     [not null]
+  notify_password_hash       varchar     [not null] // bcrypt; plaintext appears only in one-time setup/rotation response
+  last_connection_checked_at timestamptz
+  last_connection_result     jsonb       // sanitized TRTYPE=800 result; no keys/passwords/full payload
+  disabled_at                timestamptz
+  updated_by                 uuid        [not null, ref: > saas_users.id]
+  created_at                 timestamptz [not null, default: `now()`]
+  updated_at                 timestamptz [not null, default: `now()`]
+
+  indexes {
+    (kindergarten_id, status)
+    (terminal_id, merchant_id)
+  }
+
+  Note: 'FORCE ROW LEVEL SECURITY — tenant_isolation policy on kindergarten_id with explicit bypass for super-admin provisioning and narrowly scoped callback-token lookup. Runtime role has REVOKE TRUNCATE.'
 }
 
 // ─────────────────────────────────────────

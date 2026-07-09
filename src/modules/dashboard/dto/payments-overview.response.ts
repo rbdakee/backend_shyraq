@@ -25,7 +25,7 @@ export class ProviderRowDto {
   @ApiProperty({
     example: 'kaspi_pay',
     description:
-      "Payment provider — one of 'mock','halyk_epay','kaspi_pay','tiptoppay','freedom_pay','cash'.",
+      "Payment provider — one of 'mock','halyk_epay','kaspi_pay','tiptoppay','freedom_pay','bcc','cash'.",
   })
   provider!: string;
 

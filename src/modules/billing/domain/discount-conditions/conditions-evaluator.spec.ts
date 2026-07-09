@@ -235,10 +235,13 @@ describe('conditions evaluator', () => {
     it('returns true when method matches', () => {
       const cond: ConditionsRoot = {
         type: 'payment_method',
-        in: ['kaspi_pay', 'cash'],
+        in: ['kaspi_pay', 'bcc', 'cash'],
       };
       expect(
         evaluateConditions(cond, makeCtx({ payment: { method: 'kaspi_pay' } })),
+      ).toBe(true);
+      expect(
+        evaluateConditions(cond, makeCtx({ payment: { method: 'bcc' } })),
       ).toBe(true);
     });
 

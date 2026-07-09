@@ -12,7 +12,7 @@ import {
 } from './payment-provider.port';
 
 /**
- * MockPaymentProvider — default `PAYMENT_PROVIDER=mock` adapter.
+ * MockPaymentProvider — default `PAYMENT_PROVIDERS=mock` adapter.
  *
  * Synchronously completes payments (no async webhook step required) so the
  * dev/test/demo flow can exercise the full happy-path without mocking the

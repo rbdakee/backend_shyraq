@@ -13,7 +13,7 @@ import {
   RefundAlreadyProcessedError,
   RefundNotFoundError,
 } from './domain/errors';
-import { PaymentProviderPort } from './infrastructure/payment-provider/payment-provider.port';
+import { PaymentProviderRegistry } from './infrastructure/payment-provider/payment-provider.registry';
 import { InvoiceRepository } from './infrastructure/persistence/invoice.repository';
 import { PaymentRepository } from './infrastructure/persistence/payment.repository';
 import {
@@ -89,8 +89,7 @@ export class RefundService {
     private readonly invoiceRepo: InvoiceRepository,
     private readonly invoiceService: InvoiceService,
     private readonly paymentAccountService: PaymentAccountService,
-    @Inject(PaymentProviderPort)
-    private readonly paymentProvider: PaymentProviderPort,
+    private readonly paymentProviders: PaymentProviderRegistry,
     private readonly notificationPort: NotificationPort,
     @Inject(ClockPort) private readonly clock: ClockPort,
   ) {}
@@ -260,13 +259,15 @@ export class RefundService {
     // local provider-call ledger). See IMPLEMENTATION_PLAN.md §5.
     let providerResult;
     try {
-      providerResult = await this.paymentProvider.refund({
-        kindergartenId,
-        providerPaymentId: payment.providerTxnId ?? payment.id,
-        amountKzt: refund.amount.toNumber(),
-        reason: refund.reason,
-        idempotencyKey: `refund:${refund.id}`,
-      });
+      providerResult = await this.paymentProviders
+        .forExistingOperation(payment.provider)
+        .refund({
+          kindergartenId,
+          providerPaymentId: payment.providerTxnId ?? payment.id,
+          amountKzt: refund.amount.toNumber(),
+          reason: refund.reason,
+          idempotencyKey: `refund:${refund.id}`,
+        });
     } catch (err) {
       const reason = err instanceof Error ? err.message : 'provider_failure';
       this.logger.warn(

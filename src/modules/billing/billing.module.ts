@@ -15,14 +15,24 @@ import { KaspiGlobalConfigService } from './kaspi-global-config.service';
 import { KaspiVersionProbeService } from './kaspi-version-probe.service';
 import { KaspiVersionHealthService } from './kaspi-version-health.service';
 import { KaspiHttpClient } from './infrastructure/payment-provider/kaspi/kaspi-http.client';
+import { BccHttpClient } from './infrastructure/payment-provider/bcc/bcc-http.client';
+import { BccPaymentProvider } from './infrastructure/payment-provider/bcc/bcc-payment-provider.adapter';
 import { KaspiConnectService } from './kaspi-connect.service';
 import { KaspiMerchantSessionRepository } from './infrastructure/persistence/kaspi-merchant-session.repository';
 import { KaspiMerchantSessionRelationalRepository } from './infrastructure/persistence/relational/repositories/kaspi-merchant-session.relational.repository';
 import { KaspiMerchantSessionTypeOrmEntity } from './infrastructure/persistence/relational/entities/kaspi-merchant-session.typeorm.entity';
+import { BccMerchantAccountRepository } from './infrastructure/persistence/bcc-merchant-account.repository';
+import { UserPaymentProfileRepository } from './infrastructure/persistence/user-payment-profile.repository';
+import { BccMerchantAccountRelationalRepository } from './infrastructure/persistence/relational/repositories/bcc-merchant-account.relational.repository';
+import { UserPaymentProfileRelationalRepository } from './infrastructure/persistence/relational/repositories/user-payment-profile.relational.repository';
+import { BccMerchantAccountTypeOrmEntity } from './infrastructure/persistence/relational/entities/bcc-merchant-account.typeorm.entity';
+import { UserPaymentProfileTypeOrmEntity } from './infrastructure/persistence/relational/entities/user-payment-profile.typeorm.entity';
 import { KaspiOnboardingStorePort } from './infrastructure/onboarding/kaspi-onboarding-store.port';
 import { RedisKaspiOnboardingStoreAdapter } from './infrastructure/onboarding/redis-kaspi-onboarding-store.adapter';
 import { AdminKaspiConnectController } from './admin-kaspi-connect.controller';
 import { SaasKaspiConfigController } from './saas-kaspi-config.controller';
+import { SaasBccAccountController } from './saas-bcc-account.controller';
+import { BccMerchantOnboardingService } from './bcc-merchant-onboarding.service';
 import { CustomDiscountService } from './custom-discount.service';
 import { DiscountTargetResolver } from './discount-target-resolver';
 import {
@@ -37,7 +47,10 @@ import { MockFiscalReceiptAdapter } from './infrastructure/fiscal-receipt/mock-f
 import { HalykPaymentProvider } from './infrastructure/payment-provider/halyk-payment-provider.adapter';
 import { KaspiPaymentProvider } from './infrastructure/payment-provider/kaspi/kaspi-payment-provider.adapter';
 import { MockPaymentProvider } from './infrastructure/payment-provider/mock-payment-provider.adapter';
-import { PaymentProviderPort } from './infrastructure/payment-provider/payment-provider.port';
+import {
+  configuredPaymentProviders,
+  PaymentProviderRegistry,
+} from './infrastructure/payment-provider/payment-provider.registry';
 import { InvoiceRepository } from './infrastructure/persistence/invoice.repository';
 import { InvoiceLineItemRepository } from './infrastructure/persistence/invoice-line-item.repository';
 import { KindergartenHolidayRepository } from './infrastructure/persistence/kindergarten-holiday.repository';
@@ -99,38 +112,37 @@ import { RefundService } from './refund.service';
 import { SaasBillingController } from './saas-billing.controller';
 import { TariffAssignmentService } from './tariff-assignment.service';
 import { TariffPlanService } from './tariff-plan.service';
+import { PaymentMethodAvailabilityService } from './payment-method-availability.service';
 
 /**
- * Picks the payment-provider adapter based on `process.env.PAYMENT_PROVIDER`.
- * Defaults to `mock`. `halyk` resolves to the B14 stub which throws on every
- * call — running with `PAYMENT_PROVIDER=halyk` is intentionally loud so a
- * misconfigured deployment fails before silently dropping payments.
- *
- * `kaspi` (alias `kaspi_pay`, B24/K6) resolves the live Kaspi adapter. The
- * concrete `KaspiPaymentProvider` is registered as its OWN singleton provider
- * (K8 — the status poller injects it directly for `getPaymentStatus`), and this
- * factory injects + RETURNS that same singleton for the kaspi branch so there
- * is exactly ONE instance. The mock/halyk branches ignore the injected adapter.
+ * Registers every implemented adapter and enables one or more of them for new
+ * payments. PAYMENT_PROVIDERS is comma-separated; the singular
+ * PAYMENT_PROVIDER remains a backwards-compatible fallback.
  */
-function paymentProviderProvider(): Provider {
+function paymentProviderRegistryProvider(): Provider {
   return {
-    provide: PaymentProviderPort,
-    inject: [KaspiPaymentProvider],
-    useFactory: (kaspi: KaspiPaymentProvider) => {
-      const provider = (process.env.PAYMENT_PROVIDER ?? 'mock').toLowerCase();
-      if (provider === 'kaspi' || provider === 'kaspi_pay') {
-        return kaspi;
-      }
-      if (provider === 'halyk') {
-        return new HalykPaymentProvider();
-      }
-      if (provider !== 'mock') {
-        throw new Error(
-          `Unknown PAYMENT_PROVIDER=${provider}; valid: mock|halyk|kaspi`,
-        );
-      }
-      return new MockPaymentProvider();
-    },
+    provide: PaymentProviderRegistry,
+    inject: [
+      MockPaymentProvider,
+      HalykPaymentProvider,
+      KaspiPaymentProvider,
+      BccPaymentProvider,
+    ],
+    useFactory: (
+      mock: MockPaymentProvider,
+      halyk: HalykPaymentProvider,
+      kaspi: KaspiPaymentProvider,
+      bcc: BccPaymentProvider,
+    ) =>
+      new PaymentProviderRegistry(
+        [
+          { provider: 'mock', adapter: mock },
+          { provider: 'halyk_epay', adapter: halyk },
+          { provider: 'kaspi_pay', adapter: kaspi },
+          { provider: 'bcc', adapter: bcc },
+        ],
+        configuredPaymentProviders(),
+      ),
   };
 }
 
@@ -186,6 +198,9 @@ function fiscalReceiptProvider(): Provider {
       // ── B24 Kaspi Pay ──────────────────────────────────────────────
       KaspiGlobalConfigTypeOrmEntity,
       KaspiMerchantSessionTypeOrmEntity,
+      // ── BCC e-Commerce Gate B ──────────────────────────────────────
+      BccMerchantAccountTypeOrmEntity,
+      UserPaymentProfileTypeOrmEntity,
     ]),
     // BullMQ queue for the monthly billing cron + manual super-admin
     // trigger. The recurring schedule is registered by
@@ -236,6 +251,7 @@ function fiscalReceiptProvider(): Provider {
     SaasBillingController,
     // B24 Kaspi Pay global config (SuperAdminScope + RolesGuard@super_admin/support).
     SaasKaspiConfigController,
+    SaasBccAccountController,
     // B24 Kaspi Pay merchant onboarding (admin SMS flow, §2.25).
     AdminKaspiConnectController,
     // T7b: parent-side surface (JwtAuthGuard + Roles@parent + per-route
@@ -249,11 +265,13 @@ function fiscalReceiptProvider(): Provider {
     // cross-tenant from the URL `:id` and pins `req.tenant` (tenant from
     // resource, not token). Depends on InvoiceRepository (provided below).
     InvoiceAccessGuard,
-    // B24 K8 — register the concrete Kaspi adapter as its OWN singleton so the
-    // status poller can inject it directly; `paymentProviderProvider()` then
-    // returns this same instance for the kaspi branch (one instance total).
+    // Concrete adapters are singleton instances shared by the registry.
+    // Kaspi is also injected directly by its status poller.
+    MockPaymentProvider,
+    HalykPaymentProvider,
     KaspiPaymentProvider,
-    paymentProviderProvider(),
+    BccPaymentProvider,
+    paymentProviderRegistryProvider(),
     { provide: DiscountEnginePort, useClass: MockDiscountEngine },
     fiscalReceiptProvider(),
     { provide: InvoiceRepository, useClass: InvoiceRelationalRepository },
@@ -297,6 +315,9 @@ function fiscalReceiptProvider(): Provider {
     // the worker. Surfaced on `/health/ready` as `checks.kaspi`.
     KaspiVersionHealthService,
     KaspiHttpClient,
+    BccHttpClient,
+    BccMerchantOnboardingService,
+    PaymentMethodAvailabilityService,
     // B24 Kaspi Pay — merchant onboarding (K5).
     {
       provide: KaspiMerchantSessionRepository,
@@ -307,6 +328,15 @@ function fiscalReceiptProvider(): Provider {
       useClass: RedisKaspiOnboardingStoreAdapter,
     },
     KaspiConnectService,
+    // ── BCC e-Commerce Gate B ─────────────────────────────────────────
+    {
+      provide: BccMerchantAccountRepository,
+      useClass: BccMerchantAccountRelationalRepository,
+    },
+    {
+      provide: UserPaymentProfileRepository,
+      useClass: UserPaymentProfileRelationalRepository,
+    },
     InvoiceService,
     TariffPlanService,
     TariffAssignmentService,
@@ -329,7 +359,7 @@ function fiscalReceiptProvider(): Provider {
     ProRataRefundProcessor,
   ],
   exports: [
-    PaymentProviderPort,
+    PaymentProviderRegistry,
     DiscountEnginePort,
     FiscalReceiptPort,
     InvoiceRepository,
@@ -346,9 +376,14 @@ function fiscalReceiptProvider(): Provider {
     KaspiGlobalConfigRepository,
     KaspiGlobalConfigService,
     KaspiHttpClient,
+    BccHttpClient,
+    BccMerchantOnboardingService,
+    PaymentMethodAvailabilityService,
     // K5 onboarding surface — consumed by the K8 poller.
     KaspiMerchantSessionRepository,
     KaspiConnectService,
+    BccMerchantAccountRepository,
+    UserPaymentProfileRepository,
     // K8 — Kaspi status poller (worker pulls it via BillingModule import).
     KaspiPaymentStatusPollerService,
     InvoiceService,

@@ -77,8 +77,8 @@ SUPER_ADMIN_SEED_PASSWORD=admin123
 
 # --- OTP test backdoor ---
 # CSV of phone numbers that bypass real SMS send and accept OTP_TEST_CODE.
-# Leave empty in production. Active when non-empty.
-OTP_TEST_PHONES=
+# Production accepts at most one phone and requires a non-default OTP_TEST_CODE.
+TEST_PHONES=
 OTP_TEST_CODE=000000
 
 # --- Rate limiting ---
@@ -169,12 +169,18 @@ SMS_PROVIDER=mock
 # WHATSAPP_DEV_RECIPIENT_OVERRIDE=
 
 # --- Billing & payments (B13) ---
-# PAYMENT_PROVIDER selects the payment-provider adapter wired into BillingModule.
-# Default 'mock' — synchronous in-memory mock for dev/test/demo. Real providers
-# (Halyk ePay, Kaspi, FreedomPay, TipTopPay) come in B14 / Phase B; configure
-# their credentials below.
-PAYMENT_PROVIDER=mock
-# Halyk ePay: requires merchant credentials when PAYMENT_PROVIDER=halyk.
+# PAYMENT_PROVIDERS enables one or more adapters for new payments.
+# Comma-separated, for example: kaspi,bcc. The legacy singular
+# PAYMENT_PROVIDER remains supported as a fallback during deployment migration.
+PAYMENT_PROVIDERS=mock
+# BCC gateway transport only. Merchant/TID/MAC/callback credentials are
+# per-tenant and must never be stored in environment variables.
+BCC_HTTP_TIMEOUT_MS=10000
+# Extra attempts for idempotent TRTYPE=90/800 only. TRTYPE=14 is never
+# auto-retried after an ambiguous transport failure.
+BCC_HTTP_IDEMPOTENT_RETRIES=1
+BCC_HTTP_RETRY_DELAY_MS=200
+# Halyk ePay: requires merchant credentials when PAYMENT_PROVIDERS includes halyk.
 # HALYK_MERCHANT_ID=
 # HALYK_API_KEY=
 
