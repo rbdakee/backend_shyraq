@@ -69,9 +69,9 @@
     // role:'mentor' → group_id = id основной (is_primary) активной группы из
     // group_mentors (fallback: первая активная); если назначений нет — null.
     // Все прочие роли (parent/admin/specialist/reception/superadmin) → group_id: null.
-    // specialist_type → raw enum (psychologist|speech_therapist|music_teacher|
-    // physical_ed|nutritionist) ТОЛЬКО при role:'specialist'; иначе null.
-    // Мобилка строит i18n-карту enum→label сама.
+    // specialist_type → код из справочника specialist_types (§2.6) ТОЛЬКО при
+    // role:'specialist'; иначе null. Метки (name_i18n) отдаёт бэкенд —
+    // GET /admin/specialist-types; мобилка больше не хардкодит enum→label.
   ],
   "kindergartens": [
     { "id": "uuid", "name": "Солнышко", "slug": "sunshine" }
@@ -411,25 +411,44 @@ Email + password (не OTP). Access-токен — тот же JWT HS256 (`JWT_A
 
 | Метод | Путь | Назначение |
 |---|---|---|
-| GET | `/admin/kindergarten` | Настройки своего садика (subset — без sensitive fiscal keys). |
-| PATCH | `/admin/kindergarten` | Обновить name, address, phone, `settings` (кроме fiscal — только super_admin). |
+| GET | `/kindergartens/me` | Свой садик. Объект несёт `logo_url: string\|null` (presigned media-URL, как контент-медиа). |
+| PATCH | `/kindergartens/me/settings` | Обновить `settings` (кроме fiscal — только super_admin). |
+| POST | `/admin/kindergartens/me/logo` | Загрузить/заменить логотип. `multipart/form-data`, поле `file`, `image/*` ≤ 5 МБ. Заменяет предыдущий (best-effort удаление старого файла). Ответ `{ logo_url }` (presigned). 400 `logo_required`/`logo_type_invalid`/`logo_too_large`. |
+| DELETE | `/admin/kindergartens/me/logo` | Сбросить логотип (`logo_url=null` + best-effort удаление файла). Идемпотентно. Ответ `{ logo_url: null }`. |
+
+**Логотип (§2.1).** `kindergartens.logo_url` хранит канонический media-ключ (`/api/v1/media/<kgId>/<yyyy-mm>/<uuid>.<ext>`), НЕ presigned-URL. Глобальный `MediaSignInterceptor` подписывает его на выходе в любом ответе (Admin/Parent/Staff), поэтому клиент получает готовый к рендеру `<img src>`. Аддитивно, nullable — старые клиенты игнорируют.
 
 ### 2.2 Staff Management
 
 | Метод | Путь | Назначение |
 |---|---|---|
 | GET | `/admin/staff` | Список сотрудников (фильтр по `role`, `is_active`, `specialist_type`). |
-| POST | `/admin/staff` | Создать сотрудника: body `{full_name, phone, role, specialist_type?, group_id?, hired_at?}`. В одной TX: find-or-create `users` по phone (reuse если существует — паттерн B2 D10 L3, имя/локаль не меняются); insert `staff_members(role, is_active=true, specialist_type?, hired_at?)`; если `role=mentor` и передан `group_id` — в той же TX insert `group_mentors(is_primary = не-exists active primary)`. После commit — best-effort welcome-SMS «Ваш аккаунт в "<kg_name>" готов. Войдите в Staff App по номеру <phone>» через `SmsPort` (не откатывает TX, logged on fail). **Никакого invite-токена / magic-link** — активация через обычный OTP §0.1. 400 `invalid_specialist_type`, 400 `role_not_assignable` (например `reception` с `group_id`, или `role=specialist` без `specialist_type`), 404 `group_not_found`, 409 `staff_phone_conflict` (уже active staff в этом садике), 409 `mentor_one_active_group_violation` (гонка partial idx). |
+| POST | `/admin/staff` | Создать сотрудника: body `{full_name, phone, role, specialist_type?, group_id?, hired_at?}`. В одной TX: find-or-create `users` по phone (reuse если существует — паттерн B2 D10 L3, имя/локаль не меняются); insert `staff_members(role, is_active=true, specialist_type?, hired_at?)`; если `role=mentor` и передан `group_id` — в той же TX insert `group_mentors(is_primary = не-exists active primary)`. После commit — best-effort welcome-SMS «Ваш аккаунт в "<kg_name>" готов. Войдите в Staff App по номеру <phone>» через `SmsPort` (не откатывает TX, logged on fail). **Никакого invite-токена / magic-link** — активация через обычный OTP §0.1. `specialist_type` — код из справочника §2.6 (валидируется против **активного** справочника): unknown/inactive → 400 `specialist_type_unknown`. 400 `role_not_assignable` (например `reception` с `group_id`, или `role=specialist` без `specialist_type`), 404 `group_not_found`, 409 `staff_phone_conflict` (уже active staff в этом садике), 409 `mentor_one_active_group_violation` (гонка partial idx). |
 | GET | `/admin/staff/:id` | Детали сотрудника + активные группы (для mentor'ов — `assigned_groups[]` с `is_primary`). 404 `staff_not_found`. |
-| PATCH | `/admin/staff/:id` | Обновить `full_name?`, `role?`, `specialist_type?`, `hired_at?`, `fired_at?`. Валидация role×specialist_type matrix (D4 whitelist `psychologist`/`speech_therapist`/`music_teacher`/`physical_ed`/`nutritionist`): `role=mentor` → `specialist_type=null`; `role=specialist` → `specialist_type` обязателен и в whitelist; `role=admin`/`reception` → `specialist_type=null`. Если текущая `role=mentor` и новая `role != mentor` — в той же TX `UPDATE group_mentors SET unassigned_at=NOW() WHERE staff_member_id=? AND unassigned_at IS NULL` (**D5** auto-close, история сохраняется). 404 `staff_not_found`, 400 `invalid_specialist_type`, 400 `role_not_assignable`. |
+| PATCH | `/admin/staff/:id` | Обновить `full_name?`, `role?`, `specialist_type?`, `hired_at?`, `fired_at?`. Валидация role×specialist_type matrix: `role=mentor`/`admin`/`reception` → `specialist_type=null`; `role=specialist` → `specialist_type` обязателен и должен быть **активным** кодом справочника §2.6 (re-валидация только когда меняется `role` или `specialist_type`). Если текущая `role=mentor` и новая `role != mentor` — в той же TX `UPDATE group_mentors SET unassigned_at=NOW() WHERE staff_member_id=? AND unassigned_at IS NULL` (**D5** auto-close, история сохраняется). 404 `staff_not_found`, 400 `specialist_type_unknown`, 400 `role_not_assignable`. |
 | POST | `/admin/staff/:id/deactivate` | В одной TX: `is_active=false` + `UPDATE group_mentors SET unassigned_at=NOW() WHERE staff_member_id=? AND unassigned_at IS NULL` + `UPDATE refresh_tokens SET revoked_at=NOW() WHERE user_id=? AND kindergarten_id=? AND revoked_at IS NULL`. Idempotent: повторный вызов при уже inactive → 409 `staff_inactive`. 404 `staff_not_found`. |
 | POST | `/admin/staff/:id/activate` | Симметричная операция: `is_active=true`. **НЕ восстанавливает прошлые `group_mentors`** — admin заново делает assign через `/groups/assign`. Idempotent для уже active (200). 404 `staff_not_found`. |
 | POST | `/admin/staff/:id/groups/assign` | Body `{group_id}`. Назначить mentor на группу. Validate: staff `role=mentor` + `is_active=true`, group `is_active=true`, `staff.kindergarten_id == group.kindergarten_id`. В TX: close active assignment (`UPDATE group_mentors SET unassigned_at=NOW()`) → определить `is_primary` (true если в группе нет активного primary) → insert `group_mentors(is_primary, assigned_at=NOW())`. Partial idx `idx_group_mentors_one_active` защищает инвариант «один mentor — одна активная группа»; при гонке `P2002` → retry 1 раз в use-case, иначе 409 `mentor_one_active_group_violation`. 404 `staff_not_found`/`group_not_found`, 400 `role_not_assignable` (staff не mentor), 409 `staff_inactive`. |
 | POST | `/admin/staff/:id/groups/:groupId/primary` | Сменить primary mentor группы. Validate: staff `role=mentor` + `is_active=true`, group `is_active=true`, staff уже активно назначен в этой группе. В TX: снять `is_primary=false` у текущего primary → `is_primary=true` у целевого. Partial idx `idx_group_mentors_one_primary_per_group` защищает инвариант; при гонке P2002 → 409 `group_primary_conflict`. 404 `staff_not_found`/`group_not_found`, 400 `role_not_assignable`, 409 `staff_inactive`. |
 
-**Error codes (§2.2):** `staff_not_found`(404), `staff_phone_conflict`(409), `staff_inactive`(409), `invalid_specialist_type`(400), `role_not_assignable`(400), `mentor_one_active_group_violation`(409), `group_primary_conflict`(409), `group_not_found`(404).
+**Error codes (§2.2):** `staff_not_found`(404), `staff_phone_conflict`(409), `staff_inactive`(409), `specialist_type_unknown`(400 — код вне активного справочника §2.6), `role_not_assignable`(400), `mentor_one_active_group_violation`(409), `group_primary_conflict`(409), `group_not_found`(404).
 
 **Welcome-SMS (§2.2).** Отправляется best-effort после успешного `POST /admin/staff`, не откатывает транзакцию (аналог B2 D10 L2). `SmsPort.send` — тот же mock-провайдер, что для OTP, real-provider подключится в Active `SMS_PROVIDER`. Текст локализуется по `users.locale` (`kk`/`ru`/`en`). Staff-член активируется обычным OTP-flow `/auth/otp/request` → `/auth/otp/verify`; JWT выдаёт текущую `role` + `kindergarten_id` (single-role path) или `pending_role_select=true` (multi-role, B1 D2) если у телефона активны staff-записи в нескольких садиках.
+
+### 2.6 Specialist Types (справочник специальностей, per-садик)
+
+Admin-managed справочник — **AUTHORITY** для `staff_members.specialist_type` и `diagnostic_templates.specialist_type` (soft-ссылки на `code`, без hard-FK). Метки (`name_i18n`) отдаёт бэкенд — фронт не хардкодит i18n-мапу. Каждый садик стартует с 6 **системных** (`is_system=true`, неудаляемых) строк: `psychologist`, `speech_therapist`, `music_teacher`, `physical_ed`, `nutritionist` («Диетолог»), `doctor_nutritionist` («Врач Нутрициолог»). Системные строки нельзя удалить, но можно переименовать / деактивировать / переупорядочить. `code` иммутабелен.
+
+| Метод | Путь | Назначение |
+|---|---|---|
+| GET | `/admin/specialist-types` | Список. По умолчанию только `is_active=true` (набор для дропдаунов staff/diagnostics). `?include_inactive=true` — полный список для CRUD-экрана. Сортировка `sort_order`, затем `code`. |
+| POST | `/admin/specialist-types` | Создать кастомную специальность: body `{ code, name_i18n, is_active?, sort_order? }`. `code` — lowercase snake_case, letter-led, 2–64. `name_i18n` — минимум одно из `ru`/`kk` непустое. 400 `specialist_type_code_invalid`/`specialist_type_name_required`, 409 `specialist_type_code_taken`. |
+| PATCH | `/admin/specialist-types/:id` | Обновить `name_i18n?`, `is_active?`, `sort_order?` (в т.ч. для системных). `code` не меняется. 404 `specialist_type_not_found`. |
+| DELETE | `/admin/specialist-types/:id` | Удалить кастомную. 409 `specialist_type_system_immutable` (системная — деактивируй вместо удаления), 409 `specialist_type_in_use` (`details.usage` = кол-во ссылок из staff/diagnostics — деактивируй вместо удаления), 404 `specialist_type_not_found`. |
+
+**Объект specialist_type:** `{ id, code, name_i18n: {ru,kk,...}, is_system, is_active, sort_order, created_at, updated_at }`.
+
+**Backward-compat.** Новые садики получают те же 6 системных строк через seed-hook в `POST /saas/kindergartens` (в той же TX). Миграция засидила 6 строк для всех существующих садиков, поэтому любое ранее сохранённое значение `specialist_type` остаётся валидным.
 
 ### 2.3 Groups
 
@@ -963,7 +982,7 @@ Qundylyq реализуется как `content_posts` с `content_type='qundyly
 | Метод | Путь | Назначение |
 |---|---|---|
 | GET | `/admin/diagnostic-templates` | Список шаблонов. Query: `specialist_type?`, `is_active?`. |
-| POST | `/admin/diagnostic-templates` | Создать: body `{specialist_type, name, description?, schema}`. Schema JSONB: `{sections: [{title, fields: [{key, label, type, required, options?, min?, max?}]}]}`. `type`: `text\|number\|boolean\|select\|multiselect\|date\|scale`. |
+| POST | `/admin/diagnostic-templates` | Создать: body `{specialist_type, name, description?, schema}`. `specialist_type` — активный код справочника §2.6 (иначе 400 `specialist_type_unknown`). Schema JSONB: `{sections: [{title, fields: [{key, label, type, required, options?, min?, max?}]}]}`. `type`: `text\|number\|boolean\|select\|multiselect\|date\|scale`. |
 | GET | `/admin/diagnostic-templates/:id` | Подробности. |
 | PATCH | `/admin/diagnostic-templates/:id` | Обновить (auto-bump `version` при изменении `schema`). **B22a T7 (H12):** schema PATCH блокируется → 409 `template_has_entries`, если уже есть `diagnostic_entries` против шаблона (mutating schema invalidates persisted `data` payloads). Patch только `name`/`description`/`is_active` — допустим в любое время. |
 | POST | `/admin/diagnostic-templates/:id/deactivate` | `is_active=false`. Существующие записи против этого шаблона сохраняются. |

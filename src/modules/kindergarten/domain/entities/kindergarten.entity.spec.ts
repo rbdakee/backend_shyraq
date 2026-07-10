@@ -10,6 +10,7 @@ function freshKg(): Kindergarten {
     slug: 'sunshine',
     address: null,
     phone: null,
+    logoUrl: null,
     plan: 'standard',
     settings: {},
     isActive: true,
@@ -56,5 +57,34 @@ describe('Kindergarten domain', () => {
     expect(() => kg.updateSettings([] as any, new Date())).toThrow(
       InvariantViolationError,
     );
+  });
+
+  it('setLogo() sets and clears the logo URL, bumping updatedAt', () => {
+    const kg = freshKg();
+    const t1 = new Date('2026-05-02T10:00:00.000Z');
+    kg.setLogo('/api/v1/media/kg-1/2026-05/abc.png', t1);
+    expect(kg.logoUrl).toBe('/api/v1/media/kg-1/2026-05/abc.png');
+    expect(kg.updatedAt).toEqual(t1);
+
+    const t2 = new Date('2026-05-03T10:00:00.000Z');
+    kg.setLogo(null, t2);
+    expect(kg.logoUrl).toBeNull();
+    expect(kg.updatedAt).toEqual(t2);
+  });
+
+  it('setLogo() throws KindergartenArchivedError on archived kg', () => {
+    const kg = freshKg();
+    kg.archive(new Date());
+    expect(() => kg.setLogo('/api/v1/media/x.png', new Date())).toThrow(
+      KindergartenArchivedError,
+    );
+  });
+
+  it('toState()/hydrate round-trips logoUrl', () => {
+    const kg = freshKg();
+    kg.setLogo('/api/v1/media/kg-1/2026-05/abc.png', new Date());
+    const state = kg.toState();
+    expect(state.logoUrl).toBe('/api/v1/media/kg-1/2026-05/abc.png');
+    expect(Kindergarten.hydrate(state).logoUrl).toBe(state.logoUrl);
   });
 });

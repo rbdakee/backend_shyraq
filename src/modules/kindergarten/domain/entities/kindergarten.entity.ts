@@ -14,6 +14,7 @@ export interface KindergartenState {
   slug: string;
   address: string | null;
   phone: string | null;
+  logoUrl: string | null;
   plan: string;
   settings: KindergartenSettings;
   isActive: boolean;
@@ -37,6 +38,7 @@ export class Kindergarten {
     readonly slug: string,
     private _address: string | null,
     private _phone: string | null,
+    private _logoUrl: string | null,
     private _plan: string,
     private _settings: KindergartenSettings,
     private _isActive: boolean,
@@ -52,6 +54,7 @@ export class Kindergarten {
       state.slug,
       state.address,
       state.phone,
+      state.logoUrl,
       state.plan,
       state.settings,
       state.isActive,
@@ -69,6 +72,9 @@ export class Kindergarten {
   }
   get phone(): string | null {
     return this._phone;
+  }
+  get logoUrl(): string | null {
+    return this._logoUrl;
   }
   get plan(): string {
     return this._plan;
@@ -113,6 +119,20 @@ export class Kindergarten {
   }
 
   /**
+   * Sets (or clears, when `url` is null) the branding logo reference. Throws
+   * KindergartenArchivedError if the caller tries to mutate a soft-deleted row.
+   * `url` is the CANONICAL storage reference, never a presigned URL.
+   */
+  setLogo(url: string | null, now: Date): Kindergarten {
+    if (this._archivedAt !== null) {
+      throw new KindergartenArchivedError(this.id);
+    }
+    this._logoUrl = url;
+    this._updatedAt = now;
+    return this;
+  }
+
+  /**
    * Replaces settings wholesale. Throws KindergartenArchivedError if the
    * caller tries to mutate a soft-deleted row.
    */
@@ -135,6 +155,7 @@ export class Kindergarten {
       slug: this.slug,
       address: this._address,
       phone: this._phone,
+      logoUrl: this._logoUrl,
       plan: this._plan,
       settings: this._settings,
       isActive: this._isActive,

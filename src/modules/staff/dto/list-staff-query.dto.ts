@@ -1,10 +1,7 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import { IsBoolean, IsEnum, IsOptional, IsString } from 'class-validator';
-import {
-  SPECIALIST_TYPES,
-  SpecialistType,
-} from '../domain/value-objects/specialist-type.vo';
+import { SpecialistType } from '../domain/value-objects/specialist-type.vo';
 import { StaffRole } from '../domain/entities/staff-member.entity';
 
 const STAFF_ROLES: readonly StaffRole[] = [
@@ -30,9 +27,13 @@ export class ListStaffQueryDto {
   @IsBoolean()
   is_active?: boolean;
 
-  @ApiPropertyOptional({ enum: SPECIALIST_TYPES })
+  @ApiPropertyOptional({
+    example: 'psychologist',
+    description:
+      'Filter by specialist-type code (any directory code — no enum constraint).',
+  })
   @IsOptional()
-  @IsEnum(SPECIALIST_TYPES)
+  @IsString()
   specialist_type?: SpecialistType;
 
   @ApiPropertyOptional({

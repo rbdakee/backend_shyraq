@@ -1,8 +1,5 @@
 import { InvariantViolationError } from '@/shared-kernel/domain/errors';
-import {
-  isSpecialistType,
-  SpecialistType,
-} from '../value-objects/specialist-type.vo';
+import { SpecialistType } from '../value-objects/specialist-type.vo';
 
 export type StaffRole = 'admin' | 'mentor' | 'specialist' | 'reception';
 
@@ -86,8 +83,11 @@ export class StaffMember {
   }
 
   /**
-   * Enforces the role × specialist_type matrix.
-   *   - role=specialist must carry a whitelisted specialist_type.
+   * Enforces the role × specialist_type PRESENCE matrix. Whether a given code
+   * is *valid* is decided by the per-kindergarten directory at the service
+   * layer (`SpecialistTypeService.assertUsableCode`) — the domain only knows
+   * that a specialist must carry some code and a non-specialist must not.
+   *   - role=specialist must carry a non-empty specialist_type.
    *   - role∈{admin, mentor, reception} must carry specialist_type=null.
    */
   static validateRoleMatrix(
@@ -95,14 +95,13 @@ export class StaffMember {
     specialistType: SpecialistType | null | undefined,
   ): void {
     if (role === 'specialist') {
-      if (specialistType === null || specialistType === undefined) {
+      if (
+        specialistType === null ||
+        specialistType === undefined ||
+        specialistType.trim().length === 0
+      ) {
         throw new InvariantViolationError(
           `role=specialist requires specialist_type`,
-        );
-      }
-      if (!isSpecialistType(specialistType)) {
-        throw new InvariantViolationError(
-          `invalid specialist_type: ${String(specialistType)}`,
         );
       }
       return;

@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ChildModule } from '@/modules/child/child.module';
 import { StaffModule } from '@/modules/staff/staff.module';
+import { SpecialistTypeModule } from '@/modules/specialist-type/specialist-type.module';
 import { AdminDiagnosticTemplateController } from './admin-diagnostic-template.controller';
 import { DiagnosticEntryService } from './diagnostic-entry.service';
 import { DiagnosticEntryRepository } from './diagnostic-entry.repository';
@@ -55,6 +56,7 @@ import { ProgressNoteRelationalRepository } from './infrastructure/persistence/r
     ]),
     ChildModule,
     StaffModule,
+    SpecialistTypeModule,
   ],
   controllers: [
     AdminDiagnosticTemplateController,

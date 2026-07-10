@@ -8,10 +8,7 @@ import {
   MinLength,
   ValidateIf,
 } from 'class-validator';
-import {
-  SPECIALIST_TYPES,
-  SpecialistType,
-} from '../domain/value-objects/specialist-type.vo';
+import { SpecialistType } from '../domain/value-objects/specialist-type.vo';
 import { StaffRole } from '../domain/entities/staff-member.entity';
 
 const STAFF_ROLES: readonly StaffRole[] = [
@@ -35,13 +32,14 @@ export class UpdateStaffDto {
   role?: StaffRole;
 
   @ApiPropertyOptional({
-    enum: SPECIALIST_TYPES,
     example: 'psychologist',
     nullable: true,
+    description:
+      'Specialist-type code (null to clear). When set on a role=specialist member, must be an ACTIVE directory code (GET /admin/specialist-types) — else 400 specialist_type_unknown.',
   })
   @IsOptional()
   @ValidateIf((_o, v) => v !== null)
-  @IsEnum(SPECIALIST_TYPES)
+  @IsString()
   specialist_type?: SpecialistType | null;
 
   @ApiPropertyOptional({ example: '2026-04-24', nullable: true })

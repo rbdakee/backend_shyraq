@@ -45,6 +45,7 @@ export class KindergartenRelationalRepository extends KindergartenRepository {
         slug: input.slug,
         address: input.address,
         phone: input.phone,
+        logo_url: null,
         plan: input.plan,
         settings: input.settings,
         is_active: true,
@@ -128,6 +129,7 @@ export class KindergartenRelationalRepository extends KindergartenRepository {
     if (changes.name !== undefined) data.name = changes.name;
     if (changes.address !== undefined) data.address = changes.address;
     if (changes.phone !== undefined) data.phone = changes.phone;
+    if (changes.logoUrl !== undefined) data.logo_url = changes.logoUrl;
     if (changes.plan !== undefined) data.plan = changes.plan;
     if (changes.settings !== undefined) {
       data.settings = changes.settings as KindergartenEntity['settings'];

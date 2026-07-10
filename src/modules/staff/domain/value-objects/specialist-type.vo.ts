@@ -1,32 +1,16 @@
-import { InvariantViolationError } from '@/shared-kernel/domain/errors';
-
 /**
- * D4 specialist-type whitelist. The DB column stays `varchar(64)`; this VO
- * is defense-in-depth behind the DTO-level `@IsEnum`. Add a new value =
- * one-line tuple extension; nothing else needs to change.
+ * Specialist-type code.
+ *
+ * Historically a hard-coded enum (`psychologist | speech_therapist | …`). It is
+ * now a plain `string` because the per-kindergarten `specialist_types`
+ * directory (see `@/modules/specialist-type`) is the AUTHORITY on which codes
+ * are valid. `staff_members.specialist_type` and
+ * `diagnostic_templates.specialist_type` hold the code as a SOFT reference,
+ * validated at the service layer via `SpecialistTypeService.assertUsableCode`
+ * against the active directory.
+ *
+ * The domain (`StaffMember.validateRoleMatrix`) only enforces the presence
+ * matrix (role=specialist ⇒ non-empty code; otherwise null). The seeded system
+ * default codes live in `@/modules/specialist-type/domain/system-defaults`.
  */
-export const SPECIALIST_TYPES = [
-  'psychologist',
-  'speech_therapist',
-  'music_teacher',
-  'physical_ed',
-  'nutritionist',
-] as const;
-
-export type SpecialistType = (typeof SPECIALIST_TYPES)[number];
-
-export function isSpecialistType(input: unknown): input is SpecialistType {
-  return (
-    typeof input === 'string' &&
-    (SPECIALIST_TYPES as readonly string[]).includes(input)
-  );
-}
-
-export function parseSpecialistType(input: unknown): SpecialistType {
-  if (!isSpecialistType(input)) {
-    throw new InvariantViolationError(
-      `invalid specialist_type: ${String(input)}`,
-    );
-  }
-  return input;
-}
+export type SpecialistType = string;

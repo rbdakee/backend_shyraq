@@ -34,6 +34,7 @@ import { GroupModule } from './modules/group/group.module';
 import { IdentityQrModule } from './modules/identity-qr/identity-qr.module';
 import { KindergartenModule } from './modules/kindergarten/kindergarten.module';
 import { ParentKindergartenModule } from './modules/kindergarten/parent-kindergarten.module';
+import { SpecialistTypeModule } from './modules/specialist-type/specialist-type.module';
 import { LocationModule } from './modules/location/location.module';
 import { NotificationModule } from './modules/notification/notification.module';
 import { PickupModule } from './modules/pickup/pickup.module';
@@ -137,6 +138,7 @@ const resolveI18nPath = (): string => {
     AuthModule,
     StaffModule,
     KindergartenModule,
+    SpecialistTypeModule,
     LocationModule,
     GroupModule,
     CameraModule,

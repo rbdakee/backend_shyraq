@@ -766,6 +766,7 @@ function makeKindergarten(): Kindergarten {
     slug: 'sunshine',
     address: null,
     phone: null,
+    logoUrl: null,
     plan: 'basic',
     settings: {} as never,
     isActive: true,

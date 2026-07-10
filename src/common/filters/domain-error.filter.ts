@@ -34,6 +34,7 @@ import { FiscalSettingsForbiddenError } from '@/modules/kindergarten/domain/erro
 import { KindergartenArchivedError } from '@/modules/kindergarten/domain/errors/kindergarten-archived.error';
 import { KindergartenNotFoundError } from '@/modules/kindergarten/domain/errors/kindergarten-not-found.error';
 import { KindergartenSlugTakenError } from '@/modules/kindergarten/domain/errors/kindergarten-slug-taken.error';
+import { SpecialistTypeNotFoundError } from '@/modules/specialist-type/domain/errors/specialist-type-not-found.error';
 import { AdminAlreadyExistsError } from '@/modules/staff/domain/errors/admin-already-exists.error';
 import { StaffAlreadyExistsError } from '@/modules/staff/domain/errors/staff-already-exists.error';
 import { ArchiveReasonRequiredError } from '@/modules/child/domain/errors/archive-reason-required.error';
@@ -266,6 +267,7 @@ export class DomainErrorFilter implements ExceptionFilter {
     if (err instanceof FileStorageTransientError)
       return HttpStatus.SERVICE_UNAVAILABLE;
     if (err instanceof KindergartenNotFoundError) return HttpStatus.NOT_FOUND;
+    if (err instanceof SpecialistTypeNotFoundError) return HttpStatus.NOT_FOUND;
     if (err instanceof NotFoundError) return HttpStatus.NOT_FOUND;
     if (err instanceof ConflictError) return HttpStatus.CONFLICT;
     if (err instanceof GoneError) return HttpStatus.GONE;

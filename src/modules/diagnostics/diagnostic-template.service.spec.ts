@@ -1,7 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { Logger } from '@nestjs/common';
-import { OptimisticLockError } from '@/shared-kernel/domain/errors';
+import {
+  InvariantViolationError,
+  OptimisticLockError,
+} from '@/shared-kernel/domain/errors';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { SpecialistTypeService } from '@/modules/specialist-type/specialist-type.service';
 import { DiagnosticTemplateService } from './diagnostic-template.service';
 import {
   DiagnosticTemplateListResult,
@@ -223,6 +227,37 @@ describe('DiagnosticTemplateService', () => {
           STAFF,
         ),
       ).rejects.toMatchObject({ code: 'diagnostic_template_schema_invalid' });
+    });
+
+    it('validates specialist_type against the directory when wired', async () => {
+      const specialistTypes = {
+        assertUsableCode: (_kg: string, code: string) =>
+          code === 'psychologist'
+            ? Promise.resolve()
+            : Promise.reject(
+                new InvariantViolationError('specialist_type_unknown'),
+              ),
+      } as unknown as SpecialistTypeService;
+      const guarded = new DiagnosticTemplateService(
+        repo,
+        clock,
+        undefined,
+        specialistTypes,
+      );
+      await expect(
+        guarded.create(
+          KG,
+          { specialistType: 'no_such_code', name: 'X', schema: validSchema },
+          STAFF,
+        ),
+      ).rejects.toMatchObject({ code: 'specialist_type_unknown' });
+      // a known code still creates
+      const ok = await guarded.create(
+        KG,
+        { specialistType: 'psychologist', name: 'OK', schema: validSchema },
+        STAFF,
+      );
+      expect(ok.specialistType).toBe('psychologist');
     });
   });
 

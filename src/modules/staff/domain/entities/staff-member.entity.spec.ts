@@ -59,4 +59,32 @@ describe('StaffMember domain', () => {
     expect(s.isActive).toBe(true);
     expect(s.firedAt).toBeNull();
   });
+
+  describe('validateRoleMatrix (directory is the code authority)', () => {
+    it('role=specialist requires a non-empty code (any string — no static whitelist)', () => {
+      expect(() => StaffMember.validateRoleMatrix('specialist', null)).toThrow(
+        InvariantViolationError,
+      );
+      expect(() => StaffMember.validateRoleMatrix('specialist', '   ')).toThrow(
+        InvariantViolationError,
+      );
+      // a brand-new custom code passes the domain matrix — validity is the
+      // service/directory's job, not the domain's.
+      expect(() =>
+        StaffMember.validateRoleMatrix('specialist', 'doctor_nutritionist'),
+      ).not.toThrow();
+      expect(() =>
+        StaffMember.validateRoleMatrix('specialist', 'brand_new_code'),
+      ).not.toThrow();
+    });
+
+    it('non-specialist roles forbid a specialist_type', () => {
+      expect(() =>
+        StaffMember.validateRoleMatrix('mentor', 'psychologist'),
+      ).toThrow(InvariantViolationError);
+      expect(() =>
+        StaffMember.validateRoleMatrix('mentor', null),
+      ).not.toThrow();
+    });
+  });
 });

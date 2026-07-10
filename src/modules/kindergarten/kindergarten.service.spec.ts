@@ -1,4 +1,6 @@
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { FileStoragePort } from '@/shared-kernel/storage/file-storage.port';
+import { SpecialistTypeService } from '@/modules/specialist-type/specialist-type.service';
 import { InvariantViolationError } from '@/shared-kernel/domain/errors';
 import { SmsPort, SmsSendResult } from '@/modules/auth/sms.port';
 import { User } from '@/modules/users/domain/entities/user.entity';
@@ -60,6 +62,7 @@ class FakeKindergartenRepo extends KindergartenRepository {
       slug: input.slug,
       address: input.address,
       phone: input.phone,
+      logoUrl: null,
       plan: input.plan,
       settings: input.settings,
       isActive: true,
@@ -125,6 +128,7 @@ class FakeKindergartenRepo extends KindergartenRepository {
       name: changes.name ?? state.name,
       address: changes.address !== undefined ? changes.address : state.address,
       phone: changes.phone !== undefined ? changes.phone : state.phone,
+      logoUrl: changes.logoUrl !== undefined ? changes.logoUrl : state.logoUrl,
       plan: changes.plan ?? state.plan,
       settings: changes.settings ?? state.settings,
       isActive:
@@ -416,6 +420,48 @@ class FixedClock extends ClockPort {
   }
 }
 
+/**
+ * In-memory FileStoragePort fake. Records uploads + deletes so logo tests can
+ * assert the canonical URL was stored and the previous file was cleaned up.
+ */
+class FakeFileStorage extends FileStoragePort {
+  uploads: { key: string; bytes: number }[] = [];
+  deleted: string[] = [];
+
+  upload(input: {
+    buffer: Buffer;
+    key: string;
+    contentType: string;
+    maxBytes?: number;
+  }): Promise<{ url: string; key: string; bytes: number }> {
+    this.uploads.push({ key: input.key, bytes: input.buffer.length });
+    return Promise.resolve({
+      url: `/api/v1/media/${input.key}`,
+      key: input.key,
+      bytes: input.buffer.length,
+    });
+  }
+  download(): Promise<Buffer> {
+    return Promise.resolve(Buffer.from(''));
+  }
+  delete(key: string): Promise<void> {
+    this.deleted.push(key);
+    return Promise.resolve();
+  }
+  getSignedUrl(key: string): Promise<string> {
+    return Promise.resolve(`/api/v1/media/${key}`);
+  }
+}
+
+/** Records which kindergartens got their system specialist types seeded. */
+class FakeSpecialistTypeService {
+  seeded: string[] = [];
+  seedSystemDefaults(kindergartenId: string): Promise<void> {
+    this.seeded.push(kindergartenId);
+    return Promise.resolve();
+  }
+}
+
 // ── Suite ──────────────────────────────────────────────────────────────────
 
 function buildService(
@@ -425,6 +471,8 @@ function buildService(
     users?: FakeUserRepo;
     sms?: FakeSms;
     clock?: ClockPort;
+    fileStorage?: FakeFileStorage;
+    specialistTypes?: FakeSpecialistTypeService;
   } = {},
 ): {
   service: KindergartenService;
@@ -432,6 +480,8 @@ function buildService(
   staff: FakeStaffRepo;
   users: FakeUserRepo;
   sms: FakeSms;
+  fileStorage: FakeFileStorage;
+  specialistTypes: FakeSpecialistTypeService;
 } {
   const kindergartens = overrides.kindergartens ?? new FakeKindergartenRepo();
   const staff = overrides.staff ?? new FakeStaffRepo();
@@ -439,20 +489,34 @@ function buildService(
   const sms = overrides.sms ?? new FakeSms();
   const clock =
     overrides.clock ?? new FixedClock(new Date('2026-04-28T12:00:00.000Z'));
+  const fileStorage = overrides.fileStorage ?? new FakeFileStorage();
+  const specialistTypes =
+    overrides.specialistTypes ?? new FakeSpecialistTypeService();
   const service = new KindergartenService(
     kindergartens,
     staff,
     users,
     sms,
     clock,
+    fileStorage,
+    specialistTypes as unknown as SpecialistTypeService,
   );
-  return { service, kindergartens, staff, users, sms };
+  return {
+    service,
+    kindergartens,
+    staff,
+    users,
+    sms,
+    fileStorage,
+    specialistTypes,
+  };
 }
 
 describe('KindergartenService', () => {
   describe('createKindergarten', () => {
-    it('happy path inserts kg + first admin staff + sends best-effort welcome SMS', async () => {
-      const { service, kindergartens, staff, users, sms } = buildService();
+    it('happy path inserts kg + first admin staff + seeds specialist types + sends best-effort welcome SMS', async () => {
+      const { service, kindergartens, staff, users, sms, specialistTypes } =
+        buildService();
       const result = await service.createKindergarten({
         name: 'Солнышко',
         slug: 'solnyshko',
@@ -462,6 +526,8 @@ describe('KindergartenService', () => {
           locale: 'ru',
         },
       });
+      // New tenant gets its system specialist-type directory seeded in-tx.
+      expect(specialistTypes.seeded).toContain(result.kindergarten.id);
       expect(result.kindergarten.slug).toBe('solnyshko');
       expect(result.staffMember.role).toBe<StaffRole>('admin');
       expect(result.staffMember.kindergartenId).toBe(result.kindergarten.id);
@@ -1032,6 +1098,112 @@ describe('KindergartenService', () => {
       });
       expect(res.staffMember.role).toBe<StaffRole>('admin');
       expect(res.inviteSmsSent).toBe(false);
+    });
+  });
+
+  describe('logo', () => {
+    async function gardenForLogo(): Promise<{
+      service: KindergartenService;
+      kindergartens: FakeKindergartenRepo;
+      fileStorage: FakeFileStorage;
+      kgId: string;
+    }> {
+      const { service, kindergartens, fileStorage } = buildService();
+      const created = await service.createKindergarten({
+        name: 'Logo Garden',
+        slug: 'logo-garden',
+        admin: { fullName: 'Owner', phone: '+77010000020' },
+      });
+      return {
+        service,
+        kindergartens,
+        fileStorage,
+        kgId: created.kindergarten.id,
+      };
+    }
+
+    const png = (): {
+      buffer: Buffer;
+      mimetype: string;
+      originalname: string;
+    } => ({
+      buffer: Buffer.from('fake-png-bytes'),
+      mimetype: 'image/png',
+      originalname: 'logo.png',
+    });
+
+    it('setLogo uploads the file and stores the canonical media URL', async () => {
+      const { service, fileStorage, kgId } = await gardenForLogo();
+      const updated = await service.setLogo(kgId, png());
+      expect(fileStorage.uploads).toHaveLength(1);
+      // canonical /api/v1/media/<kgId>/<yyyy-mm>/<uuid>.png form, never presigned
+      expect(updated.logoUrl).toMatch(
+        new RegExp(`^/api/v1/media/${kgId}/\\d{4}-\\d{2}/[0-9a-f-]+\\.png$`),
+      );
+    });
+
+    it('setLogo best-effort-deletes the previous file on replace', async () => {
+      const { service, fileStorage, kgId } = await gardenForLogo();
+      const first = await service.setLogo(kgId, png());
+      const firstKey = first.logoUrl!.replace('/api/v1/media/', '');
+      await service.setLogo(kgId, png());
+      expect(fileStorage.deleted).toContain(firstKey);
+    });
+
+    it('setLogo rejects a non-image with logo_type_invalid (400)', async () => {
+      const { service, kgId } = await gardenForLogo();
+      await expect(
+        service.setLogo(kgId, {
+          buffer: Buffer.from('x'),
+          mimetype: 'application/pdf',
+          originalname: 'a.pdf',
+        }),
+      ).rejects.toMatchObject({ code: 'logo_type_invalid' });
+    });
+
+    it('setLogo rejects an oversized file with logo_too_large (400)', async () => {
+      const { service, kgId } = await gardenForLogo();
+      await expect(
+        service.setLogo(kgId, {
+          buffer: Buffer.alloc(5 * 1024 * 1024 + 1),
+          mimetype: 'image/png',
+          originalname: 'big.png',
+        }),
+      ).rejects.toMatchObject({ code: 'logo_too_large' });
+    });
+
+    it('setLogo rejects an empty upload with logo_required (400)', async () => {
+      const { service, kgId } = await gardenForLogo();
+      await expect(
+        service.setLogo(kgId, {
+          buffer: Buffer.alloc(0),
+          mimetype: 'image/png',
+          originalname: 'empty.png',
+        }),
+      ).rejects.toMatchObject({ code: 'logo_required' });
+    });
+
+    it('setLogo throws KindergartenNotFoundError for an unknown kg', async () => {
+      const { service } = await gardenForLogo();
+      await expect(service.setLogo('kg-missing', png())).rejects.toBeInstanceOf(
+        KindergartenNotFoundError,
+      );
+    });
+
+    it('removeLogo clears logo_url and deletes the stored file', async () => {
+      const { service, fileStorage, kgId } = await gardenForLogo();
+      const set = await service.setLogo(kgId, png());
+      const key = set.logoUrl!.replace('/api/v1/media/', '');
+      const cleared = await service.removeLogo(kgId);
+      expect(cleared.logoUrl).toBeNull();
+      expect(fileStorage.deleted).toContain(key);
+    });
+
+    it('removeLogo is idempotent when no logo is set (no storage delete)', async () => {
+      const { service, fileStorage, kgId } = await gardenForLogo();
+      const res = await service.removeLogo(kgId);
+      expect(res.logoUrl).toBeNull();
+      expect(fileStorage.deleted).toHaveLength(0);
     });
   });
 });
