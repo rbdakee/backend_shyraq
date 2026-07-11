@@ -1,7 +1,9 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
+  IsBoolean,
   IsDateString,
+  IsEmpty,
   IsEnum,
   IsInt,
   IsNumber,
@@ -14,6 +16,7 @@ import {
   Min,
   ValidateIf,
 } from 'class-validator';
+import { BCC_BILLING_PHONE_PATTERN } from './payment-profile.dto';
 import type {
   PaymentProvider,
   PaymentStatus,
@@ -82,10 +85,13 @@ export class InitiatePaymentDto {
 
   @ApiProperty({
     example: 'https://app.shyraq.kz/payment/callback',
-    description: 'URL the provider redirects to after the payment page.',
+    required: false,
+    description:
+      'Redirect URL for non-BCC providers. BCC rejects this field and uses the server-owned BACKREF.',
   })
+  @ValidateIf((o: InitiatePaymentDto) => o.provider !== 'bcc')
   @IsUrl()
-  return_url!: string;
+  return_url?: string;
 
   @ApiProperty({
     example: '77011234567',
@@ -97,6 +103,52 @@ export class InitiatePaymentDto {
   @IsString()
   @Matches(/^7\d{10}$/, { message: 'invalid_phone_format' })
   kaspi_phone_number?: string;
+
+  @ApiProperty({
+    example: '+77011234567',
+    required: false,
+    description: 'Required together with billing_address for provider=bcc.',
+  })
+  @IsOptional()
+  @IsString()
+  @Matches(BCC_BILLING_PHONE_PATTERN, {
+    message: 'invalid_billing_phone_format',
+  })
+  billing_phone?: string;
+
+  @ApiProperty({
+    example: 'г. Алматы, ул. Абая, 10',
+    required: false,
+    description: 'Required together with billing_phone for provider=bcc.',
+  })
+  @IsOptional()
+  @IsString()
+  billing_address?: string;
+
+  @ApiProperty({
+    example: false,
+    required: false,
+    description:
+      'When true for BCC, atomically saves both confirmed billing fields for future payments.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  save_billing_profile?: boolean;
+
+  @IsEmpty({ message: 'card_data_not_accepted' })
+  pan?: never;
+
+  @IsEmpty({ message: 'card_data_not_accepted' })
+  card?: never;
+
+  @IsEmpty({ message: 'card_data_not_accepted' })
+  expiry?: never;
+
+  @IsEmpty({ message: 'card_data_not_accepted' })
+  cvc?: never;
+
+  @IsEmpty({ message: 'card_data_not_accepted' })
+  cvc2?: never;
 }
 
 export class InitiatePrepaymentDto {
@@ -127,10 +179,13 @@ export class InitiatePrepaymentDto {
 
   @ApiProperty({
     example: 'https://app.shyraq.kz/payment/prepayment/callback',
-    description: 'Redirect URL after provider payment page.',
+    required: false,
+    description:
+      'Redirect URL for non-BCC providers. BCC uses the server-owned BACKREF.',
   })
+  @ValidateIf((o: InitiatePrepaymentDto) => o.provider !== 'bcc')
   @IsUrl()
-  return_url!: string;
+  return_url?: string;
 
   @ApiProperty({
     example: '77011234567',
@@ -142,6 +197,52 @@ export class InitiatePrepaymentDto {
   @IsString()
   @Matches(/^7\d{10}$/, { message: 'invalid_phone_format' })
   kaspi_phone_number?: string;
+
+  @ApiProperty({
+    example: '+77011234567',
+    required: false,
+    description: 'Required together with billing_address for provider=bcc.',
+  })
+  @IsOptional()
+  @IsString()
+  @Matches(BCC_BILLING_PHONE_PATTERN, {
+    message: 'invalid_billing_phone_format',
+  })
+  billing_phone?: string;
+
+  @ApiProperty({
+    example: 'г. Алматы, ул. Абая, 10',
+    required: false,
+    description: 'Required together with billing_phone for provider=bcc.',
+  })
+  @IsOptional()
+  @IsString()
+  billing_address?: string;
+
+  @ApiProperty({
+    example: false,
+    required: false,
+    description:
+      'When true for BCC, atomically saves both confirmed billing fields.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  save_billing_profile?: boolean;
+
+  @IsEmpty({ message: 'card_data_not_accepted' })
+  pan?: never;
+
+  @IsEmpty({ message: 'card_data_not_accepted' })
+  card?: never;
+
+  @IsEmpty({ message: 'card_data_not_accepted' })
+  expiry?: never;
+
+  @IsEmpty({ message: 'card_data_not_accepted' })
+  cvc?: never;
+
+  @IsEmpty({ message: 'card_data_not_accepted' })
+  cvc2?: never;
 }
 
 // ── query DTO ──────────────────────────────────────────────────────────────

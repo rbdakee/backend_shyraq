@@ -77,6 +77,14 @@ export abstract class PaymentRepository {
     invoiceId: string,
   ): Promise<Payment[]>;
 
+  findByProviderTxnId(
+    _kindergartenId: string,
+    _provider: PaymentProvider,
+    _providerTxnId: string,
+  ): Promise<Payment | null> {
+    return Promise.resolve(null);
+  }
+
   abstract list(
     kindergartenId: string,
     filter?: ListPaymentsFilter,
@@ -130,6 +138,15 @@ export abstract class PaymentRepository {
     now: Date,
   ): Promise<Payment | null>;
 
+  updateProviderPayload(
+    _kindergartenId: string,
+    _id: string,
+    _providerPayload: Record<string, unknown>,
+    _now: Date,
+  ): Promise<Payment | null> {
+    return Promise.resolve(null);
+  }
+
   /**
    * Conditional transition `initiated → processing`. Optionally persists the
    * provider txn id (Kaspi QrOperationId) and merges `providerPayload` into the
@@ -165,6 +182,50 @@ export abstract class PaymentRepository {
     duplicateOfPaymentId: string,
     now: Date,
   ): Promise<Payment | null>;
+
+  /**
+   * Initializes the first BCC status check. The relational implementation
+   * only updates a processing BCC row and never revives a terminal payment.
+   */
+  scheduleBccReconciliation(
+    _kindergartenId: string,
+    _id: string,
+    _nextAt: Date,
+    _now: Date,
+  ): Promise<Payment | null> {
+    return Promise.resolve(null);
+  }
+
+  /**
+   * Atomically claims a due BCC status check from a worker without an HTTP
+   * tenant context. `leaseUntil` prevents a duplicate BullMQ delivery from
+   * issuing the same status request concurrently.
+   */
+  claimBccReconciliationCrossTenant(
+    _kindergartenId: string,
+    _id: string,
+    _now: Date,
+    _leaseUntil: Date,
+  ): Promise<Payment | null> {
+    return Promise.resolve(null);
+  }
+
+  rescheduleBccReconciliationCrossTenant(
+    _kindergartenId: string,
+    _id: string,
+    _nextAt: Date,
+    _now: Date,
+  ): Promise<boolean> {
+    return Promise.resolve(false);
+  }
+
+  markBccManualReviewCrossTenant(
+    _kindergartenId: string,
+    _id: string,
+    _now: Date,
+  ): Promise<boolean> {
+    return Promise.resolve(false);
+  }
 
   // ── B-DASH — Dashboard revenue aggregate ──────────────────────────────
 

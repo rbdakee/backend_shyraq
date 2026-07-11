@@ -606,6 +606,55 @@ describe('RefundService.create', () => {
       }),
     ).rejects.toBeInstanceOf(InvariantViolationError);
   });
+
+  it('rejects a BCC refund past the 30-day window', async () => {
+    const h = buildHarness(); // clock NOW = 2026-06-15
+    h.paymentRepo.rows.set(
+      PAYMENT,
+      makePayment({
+        provider: 'bcc',
+        paidAt: new Date('2026-05-01T09:00:00.000Z'), // 45 days before NOW
+      }),
+    );
+    await expect(
+      h.service.create(KG, { paymentId: PAYMENT, amount: 50000, reason: 'x' }),
+    ).rejects.toMatchObject({ code: 'bcc_refund_window_expired' });
+    expect(h.refundRepo.rows.size).toBe(0);
+  });
+
+  it('allows a BCC refund within the 30-day window', async () => {
+    const h = buildHarness();
+    h.paymentRepo.rows.set(
+      PAYMENT,
+      makePayment({
+        provider: 'bcc',
+        paidAt: new Date('2026-06-01T09:00:00.000Z'), // 14 days before NOW
+      }),
+    );
+    const refund = await h.service.create(KG, {
+      paymentId: PAYMENT,
+      amount: 50000,
+      reason: 'x',
+    });
+    expect(refund.status).toBe('pending');
+  });
+
+  it('does not apply the 30-day window to non-BCC providers', async () => {
+    const h = buildHarness();
+    h.paymentRepo.rows.set(
+      PAYMENT,
+      makePayment({
+        provider: 'kaspi_pay',
+        paidAt: new Date('2026-01-01T09:00:00.000Z'), // >5 months before NOW
+      }),
+    );
+    const refund = await h.service.create(KG, {
+      paymentId: PAYMENT,
+      amount: 50000,
+      reason: 'x',
+    });
+    expect(refund.status).toBe('pending');
+  });
 });
 
 describe('RefundService.approve', () => {

@@ -29,6 +29,7 @@ import { RolesGuard } from '@/common/guards/roles.guard';
 import type { JwtPayload } from '@/common/types/jwt-payload';
 import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-context';
 import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
+import { BccBillingDetailsRequiredError } from './domain/errors/bcc-billing-details-required.error';
 import {
   InitiatePaymentDto,
   InitiatePaymentResponseDto,
@@ -38,6 +39,7 @@ import {
 import { InvoicePresenter } from './invoice.presenter';
 import { InvoiceService } from './invoice.service';
 import { PaymentService } from './payment.service';
+import { UserPaymentProfileService } from './user-payment-profile.service';
 
 const TENANT_REQUIRED = 'tenant_required';
 
@@ -72,6 +74,7 @@ export class ParentPaymentController {
   constructor(
     private readonly invoiceService: InvoiceService,
     private readonly paymentService: PaymentService,
+    private readonly paymentProfiles: UserPaymentProfileService,
   ) {}
 
   @Post(':id/pay')
@@ -114,6 +117,7 @@ export class ParentPaymentController {
     if (dto.provider === 'kaspi_pay' && !dto.kaspi_phone_number) {
       throw new BadRequestException('kaspi_phone_required');
     }
+    const billing = await this.prepareBccBillingDetails(user.sub, dto);
 
     const amount =
       dto.payment_mode === 'full'
@@ -129,6 +133,8 @@ export class ParentPaymentController {
       payerUserId: user.sub,
       returnUrl: dto.return_url,
       kaspiPhoneNumber: dto.kaspi_phone_number,
+      billingPhone: billing?.phone,
+      billingAddress: billing?.address,
     });
 
     return {
@@ -173,6 +179,7 @@ export class ParentPaymentController {
     if (dto.provider === 'kaspi_pay' && !dto.kaspi_phone_number) {
       throw new BadRequestException('kaspi_phone_required');
     }
+    const billing = await this.prepareBccBillingDetails(user.sub, dto);
 
     const prepaymentInvoice = await this.invoiceService.prepayInvoice(
       kgId,
@@ -189,6 +196,8 @@ export class ParentPaymentController {
       payerUserId: user.sub,
       returnUrl: dto.return_url,
       kaspiPhoneNumber: dto.kaspi_phone_number,
+      billingPhone: billing?.phone,
+      billingAddress: billing?.address,
     });
 
     const presented = InvoicePresenter.one(prepaymentInvoice);
@@ -207,5 +216,29 @@ export class ParentPaymentController {
         },
       },
     };
+  }
+
+  private async prepareBccBillingDetails(
+    userId: string,
+    dto: {
+      provider: string;
+      return_url?: string;
+      billing_phone?: string;
+      billing_address?: string;
+      save_billing_profile?: boolean;
+    },
+  ): Promise<{ phone: string; address: string } | null> {
+    if (dto.provider !== 'bcc') return null;
+    if (dto.return_url !== undefined) {
+      throw new BadRequestException('bcc_return_url_not_allowed');
+    }
+    const phone = dto.billing_phone?.trim();
+    const address = dto.billing_address?.trim();
+    if (!phone || !address) throw new BccBillingDetailsRequiredError();
+
+    if (dto.save_billing_profile === true) {
+      await this.paymentProfiles.save(userId, phone, address);
+    }
+    return { phone, address };
   }
 }

@@ -23,6 +23,13 @@ import {
 import { InvoiceService } from './invoice.service';
 import { PaymentAccountService } from './payment-account.service';
 
+/**
+ * BCC declines `TRTYPE=14` beyond a documented 30-calendar-day window from the
+ * original purchase. We reject at refund-create time so the operator gets a
+ * clean 422 instead of approving a refund that the bank will later decline.
+ */
+const BCC_REFUND_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+
 export interface CreateRefundInput {
   paymentId: string;
   amount: number;
@@ -119,6 +126,15 @@ export class RefundService {
     }
 
     const now = this.clock.now();
+    if (
+      payment.provider === 'bcc' &&
+      payment.paidAt &&
+      now.getTime() - payment.paidAt.getTime() > BCC_REFUND_WINDOW_MS
+    ) {
+      // Provider-specific, like the Kaspi history-ack gate in process().
+      throw new InvariantViolationError('bcc_refund_window_expired');
+    }
+
     const state: RefundState = {
       id: randomUUID(),
       kindergartenId,
@@ -267,6 +283,11 @@ export class RefundService {
           amountKzt: refund.amount.toNumber(),
           reason: refund.reason,
           idempotencyKey: `refund:${refund.id}`,
+          // BCC's TRTYPE=14 needs the original purchase total (ORG_AMOUNT) plus
+          // the RRN/INT_REF its callback/reconciliation persisted on the
+          // payment payload. Provider-agnostic — other adapters ignore both.
+          originalAmountKzt: payment.amount.toNumber(),
+          originalProviderData: payment.providerPayload,
         });
     } catch (err) {
       const reason = err instanceof Error ? err.message : 'provider_failure';

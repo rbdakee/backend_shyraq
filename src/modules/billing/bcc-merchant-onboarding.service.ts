@@ -25,6 +25,7 @@ import {
   combineBccMacKeyComponents,
 } from './infrastructure/payment-provider/bcc/bcc-crypto';
 import { BccHttpClient } from './infrastructure/payment-provider/bcc/bcc-http.client';
+import { buildBccBackendUrl } from './infrastructure/payment-provider/bcc/bcc-url';
 import { BccMerchantAccountRepository } from './infrastructure/persistence/bcc-merchant-account.repository';
 
 export interface UpsertBccAccountInput {
@@ -298,25 +299,14 @@ export class BccMerchantOnboardingService {
   }
 
   private notifyUrl(token: string): string {
-    return this.backendUrl(
+    return buildBccBackendUrl(
+      this.config,
       `webhooks/payments/bcc/${encodeURIComponent(token)}`,
     );
   }
 
   private backrefUrl(): string {
-    return this.backendUrl('payments/bcc/return');
-  }
-
-  private backendUrl(route: string): string {
-    const origin = this.config.getOrThrow('app.backendDomain', {
-      infer: true,
-    });
-    const prefix = this.config.getOrThrow('app.apiPrefix', { infer: true });
-    const base = origin.endsWith('/') ? origin : `${origin}/`;
-    return new URL(
-      `${prefix.replace(/^\/|\/$/g, '')}/v1/${route}`,
-      base,
-    ).toString();
+    return buildBccBackendUrl(this.config, 'payments/bcc/return');
   }
 }
 

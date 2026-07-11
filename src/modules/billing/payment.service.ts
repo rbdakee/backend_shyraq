@@ -1,4 +1,10 @@
 import {
+  BCC_RECONCILIATION_INITIAL_DELAY_MS,
+  BCC_RECONCILIATION_JOB,
+  BCC_RECONCILIATION_QUEUE,
+  BccReconciliationJobData,
+} from './bcc-reconciliation.constants';
+import {
   ForbiddenException,
   Inject,
   Injectable,
@@ -22,6 +28,7 @@ import {
   PaymentState,
 } from './domain/entities/payment.entity';
 import {
+  BccCallbackInvalidError,
   InvoiceAlreadyPaidError,
   InvoiceStatusInvalidError,
   PaymentIdempotencyConflictError,
@@ -62,12 +69,15 @@ export interface InitiatePaymentInput {
   /** Client-supplied UUID. Repeated `initiate` calls with the same key MUST resolve to the same payment row. */
   idempotencyKey: string;
   payerUserId?: string | null;
-  returnUrl: string;
+  returnUrl?: string | null;
   /**
    * Payer phone in Kaspi format (7XXXXXXXXXX). Required when provider=kaspi_pay.
    * The controller enforces the 400 `kaspi_phone_required` guard before calling `initiate`.
    */
   kaspiPhoneNumber?: string | null;
+  /** Confirmed BCC pre-checkout details. Never persisted in provider payload. */
+  billingPhone?: string | null;
+  billingAddress?: string | null;
 }
 
 export interface InitiatePaymentResult {
@@ -81,11 +91,12 @@ export interface ProcessWebhookInput {
   headers: Record<string, string | string[] | undefined>;
   body: unknown;
   rawBody?: Buffer;
+  callbackToken?: string;
 }
 
 export interface ProcessWebhookResult {
   paymentId: string;
-  status: 'completed' | 'failed';
+  status: 'processing' | 'completed' | 'failed';
 }
 
 /**
@@ -162,6 +173,9 @@ export class PaymentService {
     private readonly staffRepo?: StaffMemberRepository,
     @Optional()
     private readonly paymentMethodAvailability?: PaymentMethodAvailabilityService,
+    @Optional()
+    @InjectQueue(BCC_RECONCILIATION_QUEUE)
+    private readonly bccReconciliationQueue?: Queue,
   ) {}
 
   assertProviderEnabled(provider: PaymentProvider): void {
@@ -244,6 +258,19 @@ export class PaymentService {
       input.idempotencyKey,
     );
     if (existing) {
+      if (existing.provider === 'bcc') {
+        const continuation = await this.paymentProviders
+          .forExistingOperation('bcc')
+          .getExistingPaymentContinuation({
+            kindergartenId,
+            paymentId: existing.id,
+          });
+        return {
+          payment: existing,
+          redirectUrl: continuation?.redirectUrl,
+          deeplink: continuation?.deeplink,
+        };
+      }
       const redirect = readRedirectFromPayload(existing);
       return {
         payment: existing,
@@ -370,13 +397,16 @@ export class PaymentService {
       // the last-resort guard; no money is created or destroyed — any sub-tenge
       // fraction in an invoice is a rounding artefact from percentage discounts.
       providerResult = await paymentProvider.createPayment({
+        paymentId: payment.id,
         kindergartenId,
         invoiceId: invoice.id,
         amountKzt: payment.amount.toNumber(),
         currency: 'KZT',
-        returnUrl: input.returnUrl,
+        returnUrl: input.returnUrl ?? '',
         payerUserId: input.payerUserId ?? undefined,
         phoneNumber: input.kaspiPhoneNumber ?? undefined,
+        billingPhone: input.billingPhone ?? undefined,
+        billingAddress: input.billingAddress ?? undefined,
         comment: await this.buildPaymentComment(kindergartenId, input.provider),
         idempotencyKey: input.idempotencyKey,
       });
@@ -395,10 +425,16 @@ export class PaymentService {
     // Stash redirect/deeplink hints into provider_payload so a later
     // idempotent retry can return them without re-calling the provider.
     const redirectPayload: Record<string, unknown> = {};
-    if (providerResult.redirectUrl)
+    // BCC's redirect contains a short-lived bearer checkout token. Keep that
+    // capability only in Redis; idempotent retries recover it through
+    // getExistingPaymentContinuation instead of persisting it in PostgreSQL.
+    if (providerResult.redirectUrl && input.provider !== 'bcc')
       redirectPayload.redirect_url = providerResult.redirectUrl;
     if (providerResult.deeplink)
       redirectPayload.deeplink = providerResult.deeplink;
+    if (providerResult.providerPayload) {
+      Object.assign(redirectPayload, providerResult.providerPayload);
+    }
 
     if (providerResult.status === 'completed') {
       // Synchronous-completion path (Mock + cash). Funnel through the
@@ -472,6 +508,38 @@ export class PaymentService {
             );
           });
       }
+      if (input.provider === 'bcc') {
+        const firstAt = new Date(
+          payment.createdAt.getTime() + BCC_RECONCILIATION_INITIAL_DELAY_MS,
+        );
+        const scheduled = await this.paymentRepo.scheduleBccReconciliation(
+          kindergartenId,
+          payment.id,
+          firstAt,
+          updatedNow,
+        );
+        if (scheduled) payment = scheduled;
+        if (this.bccReconciliationQueue) {
+          const jobData: BccReconciliationJobData = {
+            kindergartenId,
+            paymentId: payment.id,
+            tick: 0,
+          };
+          await this.bccReconciliationQueue
+            .add(BCC_RECONCILIATION_JOB, jobData, {
+              jobId: `bcc-reconcile-${payment.id}-0`,
+              attempts: 1,
+              delay: Math.max(0, firstAt.getTime() - updatedNow.getTime()),
+              removeOnComplete: { count: 100 },
+              removeOnFail: { count: 100 },
+            })
+            .catch((err) => {
+              this.logger.warn(
+                `bcc-reconciliation enqueue failed payment=${payment.id}: ${err instanceof Error ? err.message : err}`,
+              );
+            });
+        }
+      }
     }
 
     return {
@@ -493,6 +561,7 @@ export class PaymentService {
       headers: input.headers,
       body: input.body,
       rawBody: input.rawBody,
+      callbackToken: input.callbackToken,
     };
     const paymentProvider = this.paymentProviders.forExistingOperation(
       input.provider,
@@ -502,10 +571,17 @@ export class PaymentService {
     // 2. Cross-tenant lookup by (provider, provider_txn_id). Bypass-RLS
     //    is scoped to a fresh TX inside the repo so it does not leak
     //    into the ambient TX of any caller.
-    const found = await this.paymentRepo.findByProviderTxnIdCrossTenant(
-      input.provider,
-      verified.providerPaymentId,
-    );
+    const callbackKgId = verified.callbackContext?.kindergartenId;
+    const found = callbackKgId
+      ? await this.findBccCallbackPayment(
+          callbackKgId,
+          input.provider,
+          verified,
+        )
+      : await this.paymentRepo.findByProviderTxnIdCrossTenant(
+          input.provider,
+          verified.providerPaymentId,
+        );
     if (!found) {
       throw new PaymentNotFoundError(verified.providerPaymentId);
     }
@@ -525,6 +601,8 @@ export class PaymentService {
         async () => {
           if (verified.status === 'failed') {
             await this.applyFailedPayment(kgId, found.id, verified);
+          } else if (verified.status === 'processing') {
+            await this.applyProviderObservation(kgId, found.id, verified.raw);
           } else {
             await this.applyCompletedPayment(kgId, found.id, verified);
           }
@@ -573,6 +651,14 @@ export class PaymentService {
       );
     });
     return { paymentId, status: terminal.status };
+  }
+
+  async settleFromBccReconciliation(
+    kindergartenId: string,
+    paymentId: string,
+    terminal: VerifyWebhookResult,
+  ): Promise<ProcessWebhookResult> {
+    return this.settleFromKaspiPoller(kindergartenId, paymentId, terminal);
   }
 
   /**
@@ -713,7 +799,14 @@ export class PaymentService {
       throw new PaymentNotFoundError(paymentId);
     }
     if (reread.status === 'completed' || reread.status === 'refunded') {
-      return reread;
+      return (
+        (await this.paymentRepo.updateProviderPayload(
+          kindergartenId,
+          paymentId,
+          mergeMissingProviderFields(reread.providerPayload, verified.raw),
+          this.clock.now(),
+        )) ?? reread
+      );
     }
 
     const now = this.clock.now();
@@ -722,7 +815,7 @@ export class PaymentService {
       paymentId,
       verified.providerPaymentId,
       now,
-      verified.raw,
+      { ...(reread.providerPayload ?? {}), ...verified.raw },
       now,
     );
     if (!updated) {
@@ -969,7 +1062,7 @@ export class PaymentService {
       kindergartenId,
       paymentId,
       verified.failureReason ?? 'webhook_failed',
-      verified.raw,
+      { ...(reread.providerPayload ?? {}), ...verified.raw },
       now,
     );
     if (!updated) {
@@ -990,6 +1083,66 @@ export class PaymentService {
     });
     return updated;
   }
+
+  private async applyProviderObservation(
+    kindergartenId: string,
+    paymentId: string,
+    raw: Record<string, unknown>,
+  ): Promise<Payment> {
+    const payment = await this.paymentRepo.findById(kindergartenId, paymentId);
+    if (!payment) throw new PaymentNotFoundError(paymentId);
+    await this.paymentRepo.acquirePaymentAdvisoryLock(
+      kindergartenId,
+      payment.invoiceId,
+    );
+    const reread = await this.paymentRepo.findById(kindergartenId, paymentId);
+    if (!reread) throw new PaymentNotFoundError(paymentId);
+    if (reread.status !== 'initiated' && reread.status !== 'processing') {
+      return reread;
+    }
+    return (
+      (await this.paymentRepo.updateProviderPayload(
+        kindergartenId,
+        paymentId,
+        { ...(reread.providerPayload ?? {}), ...raw },
+        this.clock.now(),
+      )) ?? reread
+    );
+  }
+
+  private async findBccCallbackPayment(
+    kindergartenId: string,
+    provider: PaymentProvider,
+    verified: VerifyWebhookResult,
+  ): Promise<Payment | null> {
+    if (provider !== 'bcc' || !verified.callbackContext) return null;
+    return this.tx.run(async (em) => {
+      await em.query(`SELECT set_config('app.kindergarten_id', $1, true)`, [
+        kindergartenId,
+      ]);
+      return tenantStorage.run(
+        { kgId: kindergartenId, bypass: false, entityManager: em },
+        async () => {
+          const payment = await this.paymentRepo.findByProviderTxnId(
+            kindergartenId,
+            'bcc',
+            verified.providerPaymentId,
+          );
+          if (!payment) return null;
+          if (
+            verified.callbackContext!.currency !== '398' ||
+            !payment.amount.equals(
+              MoneyKzt.fromKzt(verified.callbackContext!.amountKzt),
+            )
+          ) {
+            throw new BccCallbackInvalidError();
+          }
+          await this.invoiceService.get(kindergartenId, payment.invoiceId);
+          return payment;
+        },
+      );
+    });
+  }
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────
@@ -1007,4 +1160,17 @@ function readRedirectFromPayload(payment: Payment): {
     result.deeplink = payload.deeplink;
   }
   return result;
+}
+
+function mergeMissingProviderFields(
+  current: Record<string, unknown> | null,
+  observation: Record<string, unknown>,
+): Record<string, unknown> {
+  const merged = { ...(current ?? {}) };
+  for (const [key, value] of Object.entries(observation)) {
+    if (merged[key] === null || merged[key] === undefined) {
+      merged[key] = value;
+    }
+  }
+  return merged;
 }

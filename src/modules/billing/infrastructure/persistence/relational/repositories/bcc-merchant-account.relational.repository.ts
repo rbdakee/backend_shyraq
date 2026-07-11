@@ -40,6 +40,18 @@ export class BccMerchantAccountRelationalRepository extends BccMerchantAccountRe
     return row ? BccMerchantAccountMapper.toDomain(row) : null;
   }
 
+  async findByKindergartenIdBypassRls(
+    kindergartenId: string,
+  ): Promise<BccMerchantAccount | null> {
+    return this.dataSource.transaction(async (manager) => {
+      await manager.query(`SELECT set_config('app.bypass_rls', 'true', true)`);
+      const row = await manager
+        .getRepository(BccMerchantAccountTypeOrmEntity)
+        .findOne({ where: { kindergartenId } });
+      return row ? BccMerchantAccountMapper.toDomain(row) : null;
+    });
+  }
+
   async findByCallbackTokenHashBypassRls(
     callbackTokenHash: string,
   ): Promise<BccMerchantAccount | null> {

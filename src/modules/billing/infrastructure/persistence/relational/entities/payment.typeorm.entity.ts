@@ -79,6 +79,26 @@ export class PaymentTypeOrmEntity {
   @Column({ name: 'refund_id', type: 'uuid', nullable: true })
   refundId!: string | null;
 
+  @Column({ name: 'reconciliation_attempts', type: 'integer', default: 0 })
+  reconciliationAttempts!: number;
+
+  @Column({ name: 'last_reconciled_at', type: 'timestamptz', nullable: true })
+  lastReconciledAt!: Date | null;
+
+  @Column({
+    name: 'next_reconciliation_at',
+    type: 'timestamptz',
+    nullable: true,
+  })
+  nextReconciliationAt!: Date | null;
+
+  @Column({
+    name: 'manual_review_required_at',
+    type: 'timestamptz',
+    nullable: true,
+  })
+  manualReviewRequiredAt!: Date | null;
+
   @Column({ name: 'refund_required', type: 'boolean', default: false })
   refundRequired!: boolean;
 

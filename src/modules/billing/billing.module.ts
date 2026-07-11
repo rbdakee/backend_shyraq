@@ -6,6 +6,7 @@ import { ChildModule } from '@/modules/child/child.module';
 import { LIFECYCLE_QUEUE } from '@/modules/child/lifecycle-queue.constants';
 import { StaffModule } from '@/modules/staff/staff.module';
 import { KindergartenModule } from '@/modules/kindergarten/kindergarten.module';
+import { UsersModule } from '@/modules/users/users.module';
 import { CustomDiscountRepository } from './custom-discount.repository';
 import { CustomDiscountApplicationRepository } from './custom-discount-application.repository';
 import { KaspiGlobalConfigRepository } from './infrastructure/persistence/kaspi-global-config.repository';
@@ -17,6 +18,8 @@ import { KaspiVersionHealthService } from './kaspi-version-health.service';
 import { KaspiHttpClient } from './infrastructure/payment-provider/kaspi/kaspi-http.client';
 import { BccHttpClient } from './infrastructure/payment-provider/bcc/bcc-http.client';
 import { BccPaymentProvider } from './infrastructure/payment-provider/bcc/bcc-payment-provider.adapter';
+import { BccCheckoutStorePort } from './infrastructure/checkout/bcc-checkout-store.port';
+import { RedisBccCheckoutStoreAdapter } from './infrastructure/checkout/redis-bcc-checkout-store.adapter';
 import { KaspiConnectService } from './kaspi-connect.service';
 import { KaspiMerchantSessionRepository } from './infrastructure/persistence/kaspi-merchant-session.repository';
 import { KaspiMerchantSessionRelationalRepository } from './infrastructure/persistence/relational/repositories/kaspi-merchant-session.relational.repository';
@@ -89,6 +92,8 @@ import { AdminTariffAssignmentController } from './admin-tariff-assignment.contr
 import { AdminTariffPlanController } from './admin-tariff-plan.controller';
 import { ParentInvoiceController } from './parent-invoice.controller';
 import { ParentPaymentController } from './parent-payment.controller';
+import { ParentPaymentProfileController } from './parent-payment-profile.controller';
+import { BccCheckoutController } from './bcc-checkout.controller';
 import { PaymentWebhookController } from './payment-webhook.controller';
 import { HolidayService } from './holiday.service';
 import { InvoiceService } from './invoice.service';
@@ -113,6 +118,12 @@ import { SaasBillingController } from './saas-billing.controller';
 import { TariffAssignmentService } from './tariff-assignment.service';
 import { TariffPlanService } from './tariff-plan.service';
 import { PaymentMethodAvailabilityService } from './payment-method-availability.service';
+import { UserPaymentProfileService } from './user-payment-profile.service';
+import { BccCheckoutService } from './bcc-checkout.service';
+import { BccCallbackController } from './bcc-callback.controller';
+import { BCC_RECONCILIATION_QUEUE } from './bcc-reconciliation.constants';
+import { BccReconciliationService } from './bcc-reconciliation.service';
+import { BccReconciliationProcessor } from './bcc-reconciliation.processor';
 
 /**
  * Registers every implemented adapter and enables one or more of them for new
@@ -225,6 +236,7 @@ function fiscalReceiptProvider(): Provider {
     // `PaymentService.initiate` enqueues the first delayed job; the processor
     // (hosted on the worker via BillingModule) re-enqueues each next tick.
     BullModule.registerQueue({ name: KASPI_PAYMENT_STATUS_QUEUE }),
+    BullModule.registerQueue({ name: BCC_RECONCILIATION_QUEUE }),
     // T7b: ChildModule re-exports `ChildGuardianRepository` so the parent
     // controllers can re-check guardian-of-child links + nanny role gate.
     ChildModule,
@@ -235,6 +247,7 @@ function fiscalReceiptProvider(): Provider {
     // PaymentService can build the human-readable Kaspi payment Comment
     // (kindergarten name) shown to the payer.
     KindergartenModule,
+    UsersModule,
   ],
   controllers: [
     // Admin-side surface (KindergartenScopeGuard + RolesGuard@admin).
@@ -258,6 +271,9 @@ function fiscalReceiptProvider(): Provider {
     // guardian re-check) + cross-tenant payment webhook (@Public).
     ParentInvoiceController,
     ParentPaymentController,
+    ParentPaymentProfileController,
+    BccCheckoutController,
+    BccCallbackController,
     PaymentWebhookController,
   ],
   providers: [
@@ -318,6 +334,8 @@ function fiscalReceiptProvider(): Provider {
     BccHttpClient,
     BccMerchantOnboardingService,
     PaymentMethodAvailabilityService,
+    BccCheckoutService,
+    UserPaymentProfileService,
     // B24 Kaspi Pay — merchant onboarding (K5).
     {
       provide: KaspiMerchantSessionRepository,
@@ -337,6 +355,10 @@ function fiscalReceiptProvider(): Provider {
       provide: UserPaymentProfileRepository,
       useClass: UserPaymentProfileRelationalRepository,
     },
+    {
+      provide: BccCheckoutStorePort,
+      useClass: RedisBccCheckoutStoreAdapter,
+    },
     InvoiceService,
     TariffPlanService,
     TariffAssignmentService,
@@ -352,6 +374,8 @@ function fiscalReceiptProvider(): Provider {
     // B24 K8 — Kaspi status poller orchestration + self-rescheduling processor.
     KaspiPaymentStatusPollerService,
     KaspiPaymentStatusProcessor,
+    BccReconciliationService,
+    BccReconciliationProcessor,
     DiscountExpireProcessor,
     DiscountExpireScheduler,
     OverdueInvoiceProcessor,
@@ -384,6 +408,9 @@ function fiscalReceiptProvider(): Provider {
     KaspiConnectService,
     BccMerchantAccountRepository,
     UserPaymentProfileRepository,
+    UserPaymentProfileService,
+    BccCheckoutStorePort,
+    BccCheckoutService,
     // K8 — Kaspi status poller (worker pulls it via BillingModule import).
     KaspiPaymentStatusPollerService,
     InvoiceService,

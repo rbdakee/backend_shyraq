@@ -86,6 +86,10 @@ import {
   BccGatewayUnavailableError,
 } from '@/modules/billing/domain/errors/bcc-connection-check.error';
 import {
+  BccCallbackInvalidError,
+  BccCallbackUnauthorizedError,
+} from '@/modules/billing/domain/errors/bcc-callback.error';
+import {
   FileStorageMalformedKeyError,
   FileStorageNotFoundError,
   FileStorageTransientError,
@@ -233,6 +237,9 @@ export class DomainErrorFilter implements ExceptionFilter {
     ) {
       return HttpStatus.BAD_GATEWAY;
     }
+    if (err instanceof BccCallbackUnauthorizedError)
+      return HttpStatus.UNAUTHORIZED;
+    if (err instanceof BccCallbackInvalidError) return HttpStatus.BAD_REQUEST;
     // B24 Kaspi onboarding (§2.25). 409/404 fall through to the Conflict/
     // NotFound base branches below; these three need explicit mappings.
     if (err instanceof KaspiUnknownProcessError) return HttpStatus.BAD_REQUEST;
