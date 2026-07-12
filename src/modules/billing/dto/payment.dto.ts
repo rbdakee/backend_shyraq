@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   IsBoolean,
   IsDateString,
@@ -32,6 +32,26 @@ const PAYMENT_PROVIDERS: PaymentProvider[] = [
   'cash',
 ];
 
+// Legacy/short client spellings normalized to their canonical PaymentProvider
+// value BEFORE `@IsEnum` runs, so a client that sends `kaspi` (instead of
+// `kaspi_pay`) is accepted. Mirrors the CONFIG_ALIASES map on the registry
+// (env) side: the config side was normalized but the request side was not, so
+// `provider: "kaspi"` reached `forInitiation("kaspi")` and failed the enabled
+// set (which only ever holds canonical `kaspi_pay`) → `payment_provider_unavailable`.
+const PROVIDER_REQUEST_ALIASES: Readonly<Record<string, PaymentProvider>> = {
+  kaspi: 'kaspi_pay',
+  halyk: 'halyk_epay',
+  freedompay: 'freedom_pay',
+};
+
+// class-transformer runs this during transform (ValidationPipe transform:true),
+// i.e. before class-validator, so the normalized value is what `@IsEnum`,
+// `@ValidateIf`, the controller `=== 'kaspi_pay'` guard and the registry all see.
+const normalizeProvider = ({ value }: { value: unknown }): unknown =>
+  typeof value === 'string' && value.toLowerCase() in PROVIDER_REQUEST_ALIASES
+    ? PROVIDER_REQUEST_ALIASES[value.toLowerCase()]
+    : value;
+
 const PAYMENT_STATUSES: PaymentStatus[] = [
   'initiated',
   'processing',
@@ -48,8 +68,10 @@ export class InitiatePaymentDto {
     enum: PAYMENT_PROVIDERS,
     example: 'mock',
     description:
-      'Payment provider. Use "mock" for dev/test; "cash" is admin-only.',
+      'Payment provider. Use "mock" for dev/test; "cash" is admin-only. ' +
+      'Legacy alias "kaspi" is accepted and normalized to "kaspi_pay".',
   })
+  @Transform(normalizeProvider)
   @IsEnum(PAYMENT_PROVIDERS)
   provider!: PaymentProvider;
 
@@ -165,8 +187,11 @@ export class InitiatePrepaymentDto {
   @ApiProperty({
     enum: PAYMENT_PROVIDERS,
     example: 'mock',
-    description: 'Payment provider for the prepayment.',
+    description:
+      'Payment provider for the prepayment. Legacy alias "kaspi" is accepted ' +
+      'and normalized to "kaspi_pay".',
   })
+  @Transform(normalizeProvider)
   @IsEnum(PAYMENT_PROVIDERS)
   provider!: PaymentProvider;
 
@@ -251,10 +276,12 @@ export class ListPaymentsQueryDto {
   @ApiProperty({
     enum: PAYMENT_PROVIDERS,
     example: 'halyk_epay',
-    description: 'Filter by payment provider.',
+    description:
+      'Filter by payment provider. Legacy alias "kaspi" → "kaspi_pay".',
     required: false,
   })
   @IsOptional()
+  @Transform(normalizeProvider)
   @IsEnum(PAYMENT_PROVIDERS)
   provider?: PaymentProvider;
 
