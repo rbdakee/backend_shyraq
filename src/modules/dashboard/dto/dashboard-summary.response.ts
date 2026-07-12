@@ -6,7 +6,7 @@ import { ApiProperty } from '@nestjs/swagger';
  * Field semantics (locked product decisions, see DASHBOARD_BACKEND_PLAN §0):
  *  - active_children            child.status = 'active'
  *  - enrollments_in_processing  enrollment.status IN ('new','in_processing','waitlist')
- *  - invoices_overdue_*         due_date < today(Asia/Almaty) AND status IN ('pending','partial')
+ *  - invoices_overdue_*         due_date < today(Asia/Almaty) AND status IN ('pending','partial','overdue')
  *  - mtd_revenue / ytd_revenue  GROSS SUM(payments.amount) status='completed',
  *                               paid_at within calendar month/year in Asia/Almaty
  *                               (refunds NOT subtracted — see payments-overview)
@@ -33,7 +33,7 @@ export class DashboardSummaryResponseDto {
   @ApiProperty({
     example: 4,
     description:
-      "Invoices with due_date < today (Asia/Almaty) AND status IN ('pending','partial').",
+      "Invoices with due_date < today (Asia/Almaty) AND status IN ('pending','partial','overdue'). 'overdue' is included so rows already flipped by the nightly cron still count (no false zeros).",
   })
   invoices_overdue_count!: number;
 

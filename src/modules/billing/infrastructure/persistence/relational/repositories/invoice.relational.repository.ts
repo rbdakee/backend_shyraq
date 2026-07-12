@@ -418,13 +418,20 @@ export class InvoiceRelationalRepository extends InvoiceRepository {
     kindergartenId: string,
     today: string,
   ): Promise<{ count: number; amount: number }> {
+    // Locked decision §0#4: overdue is computed by due_date, NOT by
+    // status='overdue'. `'overdue'` is included in the status set precisely
+    // BECAUSE the nightly pending/partial → overdue flip (markOverdueBatch)
+    // may already have run: without it, every flipped invoice would drop out
+    // of this aggregate and the card would read a false zero (the bug this
+    // filter set is guarding against). `paid`/`cancelled`/`refunded` are the
+    // settled/void states and stay excluded.
     const result = await this.manager().query(
       `SELECT COUNT(*)::text AS count,
               COALESCE(SUM(amount_after_discount), 0)::text AS amount
          FROM invoices
         WHERE kindergarten_id = $1
           AND due_date < $2::date
-          AND status IN ('pending', 'partial')`,
+          AND status IN ('pending', 'partial', 'overdue')`,
       [kindergartenId, today],
     );
     return {
@@ -444,6 +451,12 @@ export class InvoiceRelationalRepository extends InvoiceRepository {
     overdue: { count: number; amount: number };
     refunded: { count: number; amount: number };
   }> {
+    // §0#4: the overdue bucket keys off due_date, not status. It includes
+    // `'overdue'` so rows already flipped by the nightly markOverdueBatch cron
+    // still count (otherwise → false zeros once the cron has run). The pending
+    // bucket stays IN ('pending','partial') on purpose: an `'overdue'` row is
+    // by definition past its due_date, and pending requires due_date >= today,
+    // so it can never leak across.
     const result = await this.manager().query(
       `SELECT
          COUNT(*) FILTER (WHERE status = 'paid')::text AS paid_count,
@@ -455,10 +468,10 @@ export class InvoiceRelationalRepository extends InvoiceRepository {
            WHERE status IN ('pending', 'partial') AND due_date >= $4::date
          ), 0)::text AS pending_amount,
          COUNT(*) FILTER (
-           WHERE status IN ('pending', 'partial') AND due_date < $4::date
+           WHERE status IN ('pending', 'partial', 'overdue') AND due_date < $4::date
          )::text AS overdue_count,
          COALESCE(SUM(amount_after_discount) FILTER (
-           WHERE status IN ('pending', 'partial') AND due_date < $4::date
+           WHERE status IN ('pending', 'partial', 'overdue') AND due_date < $4::date
          ), 0)::text AS overdue_amount,
          COUNT(*) FILTER (WHERE status = 'refunded')::text AS refunded_count,
          COALESCE(SUM(amount_after_discount) FILTER (WHERE status = 'refunded'), 0)::text AS refunded_amount

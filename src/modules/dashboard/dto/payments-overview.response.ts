@@ -56,7 +56,7 @@ export class PaymentsOverviewResponseDto {
   @ApiProperty({
     type: PaymentBucketDto,
     description:
-      "Invoices with due_date < today (Asia/Almaty) AND status IN ('pending','partial').",
+      "Invoices with due_date < today (Asia/Almaty) AND status IN ('pending','partial','overdue'). 'overdue' is included so rows already flipped by the nightly cron still count (no false zeros).",
   })
   overdue!: PaymentBucketDto;
 
