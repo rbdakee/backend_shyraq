@@ -8,9 +8,11 @@ import {
 } from './domain/entities/bcc-merchant-account.entity';
 import { UserPaymentProfile } from './domain/entities/user-payment-profile.entity';
 import { BccMerchantAccountTypeOrmEntity } from './infrastructure/persistence/relational/entities/bcc-merchant-account.typeorm.entity';
+import { PaymentTypeOrmEntity } from './infrastructure/persistence/relational/entities/payment.typeorm.entity';
 import { UserPaymentProfileTypeOrmEntity } from './infrastructure/persistence/relational/entities/user-payment-profile.typeorm.entity';
 import { BccMerchantAccountRelationalRepository } from './infrastructure/persistence/relational/repositories/bcc-merchant-account.relational.repository';
 import { UserPaymentProfileRelationalRepository } from './infrastructure/persistence/relational/repositories/user-payment-profile.relational.repository';
+import { PaymentRelationalRepository } from './infrastructure/persistence/relational/repositories/payment.relational.repository';
 
 const SHOULD_RUN = process.env.INTEGRATION_DB === '1';
 const describeIntegration = SHOULD_RUN ? describe : describe.skip;
@@ -21,6 +23,7 @@ describeIntegration('BCC Gate B persistence and RLS', () => {
   let dataSource: DataSource;
   let accountRepository: BccMerchantAccountRelationalRepository;
   let profileRepository: UserPaymentProfileRelationalRepository;
+  let paymentRepository: PaymentRelationalRepository;
   let kgA: string;
   let kgB: string;
   let saasUserId: string;
@@ -39,6 +42,7 @@ describeIntegration('BCC Gate B persistence and RLS', () => {
       entities: [
         BccMerchantAccountTypeOrmEntity,
         UserPaymentProfileTypeOrmEntity,
+        PaymentTypeOrmEntity,
       ],
       synchronize: false,
       logging: false,
@@ -51,6 +55,10 @@ describeIntegration('BCC Gate B persistence and RLS', () => {
     );
     profileRepository = new UserPaymentProfileRelationalRepository(
       dataSource.getRepository(UserPaymentProfileTypeOrmEntity),
+    );
+    paymentRepository = new PaymentRelationalRepository(
+      dataSource,
+      dataSource.getRepository(PaymentTypeOrmEntity),
     );
 
     kgA = randomUUID();
@@ -256,6 +264,105 @@ describeIntegration('BCC Gate B persistence and RLS', () => {
       [accountA.id, accountB.id],
     )) as Array<{ id: string }>;
     expect(rowsWithoutScope).toHaveLength(0);
+    await expect(
+      accountRepository.findByKindergartenIdBypassRls(kgB),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        id: accountB.id,
+        kindergartenId: kgB,
+      }),
+    );
+  });
+
+  it('atomically claims one due reconciliation without crossing tenants', async () => {
+    const childId = randomUUID();
+    const accountId = randomUUID();
+    const invoiceId = randomUUID();
+    const paymentId = randomUUID();
+    const now = new Date('2026-07-06T08:05:00.000Z');
+    const leaseUntil = new Date('2026-07-06T09:05:00.000Z');
+
+    try {
+      await withBypass(async (manager) => {
+        await manager.query(
+          `INSERT INTO children
+             (id, kindergarten_id, full_name, date_of_birth)
+           VALUES ($1, $2, 'BCC Reconciliation Child', '2021-01-01')`,
+          [childId, kgA],
+        );
+        await manager.query(
+          `INSERT INTO payment_accounts
+             (id, kindergarten_id, child_id, balance)
+           VALUES ($1, $2, $3, 0)`,
+          [accountId, kgA, childId],
+        );
+        await manager.query(
+          `INSERT INTO invoices
+             (id, kindergarten_id, child_id, payment_account_id, invoice_type,
+              period_start, period_end, amount_due, amount_after_discount,
+              status, due_date)
+           VALUES ($1, $2, $3, $4, 'other', '2026-07-01', '2026-07-31',
+                   350, 350, 'pending', '2026-07-10')`,
+          [invoiceId, kgA, childId, accountId],
+        );
+        await manager.query(
+          `INSERT INTO payments
+             (id, kindergarten_id, invoice_id, child_id, amount, provider,
+              provider_txn_id, idempotency_key, status,
+              next_reconciliation_at)
+           VALUES ($1, $2, $3, $4, 350, 'bcc', '1234567890123', $5,
+                   'processing', $6)`,
+          [
+            paymentId,
+            kgA,
+            invoiceId,
+            childId,
+            randomUUID(),
+            new Date('2026-07-06T08:04:00.000Z'),
+          ],
+        );
+      });
+
+      const [first, second, wrongTenant] = await Promise.all([
+        paymentRepository.claimBccReconciliationCrossTenant(
+          kgA,
+          paymentId,
+          now,
+          leaseUntil,
+        ),
+        paymentRepository.claimBccReconciliationCrossTenant(
+          kgA,
+          paymentId,
+          now,
+          leaseUntil,
+        ),
+        paymentRepository.claimBccReconciliationCrossTenant(
+          kgB,
+          paymentId,
+          now,
+          leaseUntil,
+        ),
+      ]);
+      expect([first, second].filter(Boolean)).toHaveLength(1);
+      expect(first ?? second).toEqual(
+        expect.objectContaining({
+          id: paymentId,
+          kindergartenId: kgA,
+          reconciliationAttempts: 1,
+          nextReconciliationAt: leaseUntil,
+        }),
+      );
+      expect(wrongTenant).toBeNull();
+    } finally {
+      await withBypass(async (manager) => {
+        await manager.query(`DELETE FROM payments WHERE id = $1`, [paymentId]);
+        await manager.query(`DELETE FROM invoices WHERE id = $1`, [invoiceId]);
+        await manager.query(`DELETE FROM payment_accounts WHERE id = $1`, [
+          accountId,
+        ]);
+        await manager.query(`DELETE FROM children WHERE id = $1`, [childId]);
+      });
+    }
   });
 
   it('upserts and deletes one owner-scoped payment profile', async () => {

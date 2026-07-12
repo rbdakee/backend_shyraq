@@ -63,4 +63,26 @@ describe('PaymentProviderRegistry', () => {
       'PAYMENT_PROVIDERS enables "bcc", but no adapter is registered',
     );
   });
+
+  it('boots with kaspi and bcc enabled together (Gate H)', () => {
+    expect(
+      configuredPaymentProviders({
+        PAYMENT_PROVIDERS: 'kaspi,bcc',
+      } as NodeJS.ProcessEnv),
+    ).toEqual(['kaspi_pay', 'bcc']);
+
+    const kaspi = adapter();
+    const bcc = adapter();
+    const registry = new PaymentProviderRegistry(
+      [
+        { provider: 'kaspi_pay', adapter: kaspi },
+        { provider: 'bcc', adapter: bcc },
+      ],
+      ['kaspi_pay', 'bcc'],
+    );
+
+    expect(registry.forInitiation('kaspi_pay')).toBe(kaspi);
+    expect(registry.forInitiation('bcc')).toBe(bcc);
+    expect(registry.enabledProviders()).toEqual(['kaspi_pay', 'bcc']);
+  });
 });

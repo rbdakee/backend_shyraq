@@ -180,6 +180,18 @@ BCC_HTTP_TIMEOUT_MS=10000
 # auto-retried after an ambiguous transport failure.
 BCC_HTTP_IDEMPOTENT_RETRIES=1
 BCC_HTTP_RETRY_DELAY_MS=200
+# BCC TRTYPE=90 reconciliation. Initial delay is clamped to at least 5 min;
+# exponential backoff is capped and automatic checks stop after 24 hours.
+BCC_RECONCILIATION_INITIAL_DELAY_MS=300000
+BCC_RECONCILIATION_BASE_DELAY_MS=300000
+BCC_RECONCILIATION_MAX_DELAY_MS=3600000
+BCC_RECONCILIATION_HARD_CAP_MS=86400000
+# One-time WEBVIEW checkout state. The encrypted Redis payload and its
+# payment→token reverse key expire together; allowed range is 60..1800 seconds.
+BCC_CHECKOUT_TTL_SECONDS=900
+# Number of reverse proxies trusted when deriving BCC CLIENT_IP from
+# X-Forwarded-For. Keep 0 for direct local access; production Caddy uses 1.
+BCC_TRUSTED_PROXY_HOPS=0
 # Halyk ePay: requires merchant credentials when PAYMENT_PROVIDERS includes halyk.
 # HALYK_MERCHANT_ID=
 # HALYK_API_KEY=

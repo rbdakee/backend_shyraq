@@ -31,6 +31,10 @@ export interface PaymentState {
   providerPayload: Record<string, unknown> | null;
   paidAt: Date | null;
   refundId: string | null;
+  reconciliationAttempts?: number;
+  lastReconciledAt?: Date | null;
+  nextReconciliationAt?: Date | null;
+  manualReviewRequiredAt?: Date | null;
   /**
    * Double-payment flags (#5b). Set when this (completed) payment is a second
    * settlement on an invoice that another guardian already paid. Optional so
@@ -130,6 +134,22 @@ export class Payment {
 
   get refundId(): string | null {
     return this.state.refundId;
+  }
+
+  get reconciliationAttempts(): number {
+    return this.state.reconciliationAttempts ?? 0;
+  }
+
+  get lastReconciledAt(): Date | null {
+    return this.state.lastReconciledAt ?? null;
+  }
+
+  get nextReconciliationAt(): Date | null {
+    return this.state.nextReconciliationAt ?? null;
+  }
+
+  get manualReviewRequiredAt(): Date | null {
+    return this.state.manualReviewRequiredAt ?? null;
   }
 
   get refundRequired(): boolean {

@@ -16,6 +16,16 @@ export class KindergartenDto {
   @ApiProperty({ example: '+77272221100', nullable: true, type: String })
   phone!: string | null;
 
+  @ApiProperty({
+    example:
+      'https://balam-media.object.pscloud.io/7c2c2b6a/2026-07/9f2c….png?X-Amz-…',
+    nullable: true,
+    type: String,
+    description:
+      'Branding logo. Short-lived presigned media URL (or null when unset) — the stored value is a canonical media key, signed on the way out by MediaSignInterceptor. Upload/replace via POST /admin/kindergartens/me/logo.',
+  })
+  logo_url!: string | null;
+
   @ApiProperty({ example: 'standard' })
   plan!: string;
 
@@ -41,6 +51,18 @@ export class KindergartenDto {
 
   @ApiProperty({ example: '2026-04-24T10:00:00.000Z' })
   updated_at!: string;
+}
+
+export class KindergartenLogoResponseDto {
+  @ApiProperty({
+    example:
+      'https://balam-media.object.pscloud.io/7c2c2b6a/2026-07/9f2c….png?X-Amz-…',
+    nullable: true,
+    type: String,
+    description:
+      'Presigned, ready-to-render logo URL after upload (or null after DELETE). Also surfaced as `logo_url` on the kindergarten object.',
+  })
+  logo_url!: string | null;
 }
 
 export class CreatedKindergartenStaffDto {

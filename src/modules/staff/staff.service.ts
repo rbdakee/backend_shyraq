@@ -6,6 +6,7 @@ import { SmsPort } from '@/modules/auth/sms.port';
 import { GroupRepository } from '@/modules/group/infrastructure/persistence/group.repository';
 import { KindergartenRepository } from '@/modules/kindergarten/infrastructure/persistence/kindergarten.repository';
 import { UserRepository } from '@/modules/users/infrastructure/persistence/user.repository';
+import { SpecialistTypeService } from '@/modules/specialist-type/specialist-type.service';
 import { StaffMember, StaffRole } from './domain/entities/staff-member.entity';
 import { SpecialistType } from './domain/value-objects/specialist-type.vo';
 import { StaffNotFoundError } from './domain/errors/staff-not-found.error';
@@ -81,6 +82,11 @@ export class StaffService {
     // falls back to the caller-supplied `options.kindergartenName`.
     @Inject(forwardRef(() => KindergartenRepository))
     private readonly kindergartens?: KindergartenRepository,
+    // Directory authority for `specialist_type` codes. Optional so legacy spec
+    // wiring that constructs StaffService standalone keeps passing; when wired
+    // (HTTP pipeline) create/update validate the code against the ACTIVE
+    // directory (`specialist_type_unknown` → 400 otherwise).
+    private readonly specialistTypes?: SpecialistTypeService,
   ) {}
 
   // ── reads ────────────────────────────────────────────────────────────────
@@ -138,6 +144,13 @@ export class StaffService {
   ): Promise<StaffMember> {
     const phone = Phone.parse(input.phone).toString();
     StaffMember.validateRoleMatrix(input.role, input.specialistType ?? null);
+    // Directory validation: a specialist must reference an ACTIVE code.
+    if (input.role === 'specialist' && input.specialistType) {
+      await this.specialistTypes?.assertUsableCode(
+        kindergartenId,
+        input.specialistType,
+      );
+    }
 
     // Find-or-create user. Existing user's full_name/locale are NOT
     // overwritten — staff_members carries its own full_name copy now.
@@ -205,6 +218,19 @@ export class StaffService {
         ? patch.specialistType
         : current.specialistType;
     StaffMember.validateRoleMatrix(mergedRole, mergedSpecialist);
+    // Re-validate against the directory only when the role or the code is
+    // actually changing — an unrelated patch (e.g. rename) must not fail just
+    // because a previously-valid code was later deactivated.
+    if (
+      mergedRole === 'specialist' &&
+      mergedSpecialist &&
+      (patch.specialistType !== undefined || patch.role !== undefined)
+    ) {
+      await this.specialistTypes?.assertUsableCode(
+        kindergartenId,
+        mergedSpecialist,
+      );
+    }
 
     const updated = await this.staff.update(kindergartenId, id, patch);
     if (!updated) throw new StaffNotFoundError(id);

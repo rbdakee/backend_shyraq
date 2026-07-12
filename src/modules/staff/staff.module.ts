@@ -2,6 +2,7 @@ import { forwardRef, Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { GroupModule } from '@/modules/group/group.module';
 import { KindergartenModule } from '@/modules/kindergarten/kindergarten.module';
+import { SpecialistTypeModule } from '@/modules/specialist-type/specialist-type.module';
 import { UsersModule } from '@/modules/users/users.module';
 import { StaffMemberEntity } from './infrastructure/persistence/relational/entities/staff-member.entity';
 import { StaffMemberRelationalRepository } from './infrastructure/persistence/relational/repositories/staff-member.repository';
@@ -32,6 +33,7 @@ import { StaffService } from './staff.service';
     UsersModule,
     forwardRef(() => KindergartenModule),
     forwardRef(() => GroupModule),
+    SpecialistTypeModule,
   ],
   controllers: [StaffController],
   providers: [

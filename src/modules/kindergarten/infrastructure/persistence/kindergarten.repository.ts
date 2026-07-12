@@ -32,6 +32,7 @@ export interface KindergartenUpdateInput {
   name?: string;
   address?: string | null;
   phone?: string | null;
+  logoUrl?: string | null;
   plan?: string;
   settings?: KindergartenSettings;
   isActive?: boolean;

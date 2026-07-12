@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
 import { StaffMember } from '@/modules/staff/domain/entities/staff-member.entity';
+import { SpecialistTypeService } from '@/modules/specialist-type/specialist-type.service';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import {
   DiagnosticTemplateListResult,
@@ -43,6 +44,10 @@ export class DiagnosticTemplateService {
     // `findStaffMemberByUserIdOrThrow` is called by every staff/admin
     // controller — failing closed (NotFoundException) when missing.
     private readonly staffMembers?: StaffMemberRepository,
+    // Directory authority for `specialist_type`. Optional for the same
+    // legacy-spec reason; when wired, `create` validates the template's
+    // specialist_type against the ACTIVE directory.
+    private readonly specialistTypes?: SpecialistTypeService,
   ) {}
 
   /**
@@ -84,6 +89,10 @@ export class DiagnosticTemplateService {
     input: CreateDiagnosticTemplateInput,
     createdByStaffMemberId: string,
   ): Promise<DiagnosticTemplate> {
+    // The template's specialist_type must be an ACTIVE directory code — this
+    // is what "scopes diagnostics by type" references (specialist_type_unknown
+    // → 400 otherwise).
+    await this.specialistTypes?.assertUsableCode(kgId, input.specialistType);
     const now = this.clock.now();
     const state: DiagnosticTemplateState = {
       id: randomUUID(),

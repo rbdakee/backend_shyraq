@@ -1,8 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import {
-  SPECIALIST_TYPES,
-  SpecialistType,
-} from '@/modules/staff/domain/value-objects/specialist-type.vo';
+import { SpecialistType } from '@/modules/staff/domain/value-objects/specialist-type.vo';
 
 export class DiagnosticEntryResponseDto {
   @ApiProperty({ example: 'eeeeeeee-5555-5555-5555-eeeeeeeeeeee' })
@@ -56,12 +53,12 @@ export class DiagnosticEntryResponseDto {
   @ApiProperty({
     example: 'speech_therapist',
     nullable: true,
-    enum: SPECIALIST_TYPES,
+    type: String,
     description:
-      'Specialist type resolved from staff_members.specialist_type (D4 ' +
-      'whitelist: psychologist | speech_therapist | music_teacher | ' +
-      'physical_ed | nutritionist). Null when the staff row is missing or ' +
-      'the member is not a specialist.',
+      'Specialist-type code resolved from staff_members.specialist_type. A ' +
+      'code from the per-kindergarten specialist_types directory (GET ' +
+      '/admin/specialist-types). Null when the staff row is missing or the ' +
+      'member is not a specialist.',
   })
   specialist_type!: SpecialistType | null;
 

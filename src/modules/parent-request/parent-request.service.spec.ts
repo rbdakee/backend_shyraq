@@ -1242,6 +1242,7 @@ function buildHarness() {
       slug: 'balapan',
       address: null,
       phone: null,
+      logoUrl: null,
       plan: 'basic',
       settings: {} as never,
       isActive: true,

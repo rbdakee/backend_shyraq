@@ -162,7 +162,7 @@ describe('BccMerchantOnboardingService', () => {
     expect(created.account.status).toBe('draft');
     expect(created.callbackCredentials).toEqual({
       notifyUrl: expect.stringMatching(
-        /^https:\/\/api\.example\.test\/api\/v1\/webhooks\/payments\/bcc\//,
+        /^https:\/\/api\.example\.test:443\/api\/v1\/webhooks\/payments\/bcc\//,
       ),
       notifyUsername: expect.stringMatching(/^bcc_[0-9a-f]{24}$/),
       notifyPassword: expect.any(String),
@@ -195,10 +195,10 @@ describe('BccMerchantOnboardingService', () => {
       expect.objectContaining({
         TERMINAL: '88888881',
         TRTYPE: '800',
-        BACKREF: 'https://api.example.test/api/v1/payments/bcc/return',
+        BACKREF: 'https://api.example.test:443/api/v1/payments/bcc/return',
         LANG: 'ru',
         NOTIFY_URL: expect.stringMatching(
-          /^https:\/\/api\.example\.test\/api\/v1\/webhooks\/payments\/bcc\//,
+          /^https:\/\/api\.example\.test:443\/api\/v1\/webhooks\/payments\/bcc\//,
         ),
       }),
     );

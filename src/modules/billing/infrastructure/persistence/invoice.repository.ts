@@ -265,12 +265,15 @@ export abstract class InvoiceRepository {
 
   /**
    * Overdue aggregate for the dashboard summary. Locked decision §0#4:
-   * computed by due_date, NOT by `status='overdue'` (a background
-   * pending→overdue flip may not have run yet → false zeros).
+   * computed by due_date, NOT by `status='overdue'`. The status set spans
+   * every unpaid state — pending, partial AND overdue — precisely so the
+   * background pending/partial→overdue flip (markOverdueBatch) can't strip
+   * already-flipped rows out of the aggregate (→ false zeros). `paid`,
+   * `cancelled` and `refunded` are excluded as settled/void.
    *
    *   COUNT(*) + COALESCE(SUM(amount_after_discount),0)
    *   WHERE kindergarten_id=$1 AND due_date < $today::date
-   *         AND status IN ('pending','partial')
+   *         AND status IN ('pending','partial','overdue')
    *
    * `today` is the Asia/Almaty calendar date `YYYY-MM-DD`. Default stub so
    * older in-memory test fakes compile; the relational impl overrides.
@@ -287,7 +290,7 @@ export abstract class InvoiceRepository {
    * INVOICES, amount = SUM(amount_after_discount)). One query:
    *   - paid     = status='paid'
    *   - pending  = status IN ('pending','partial') AND due_date >= today
-   *   - overdue  = status IN ('pending','partial') AND due_date < today (§0#4)
+   *   - overdue  = status IN ('pending','partial','overdue') AND due_date < today (§0#4)
    *   - refunded = status='refunded'
    * Period filter: `period_start` ∈ [from, to] (calendar dates, inclusive).
    * `today` is the Asia/Almaty calendar date `YYYY-MM-DD`.

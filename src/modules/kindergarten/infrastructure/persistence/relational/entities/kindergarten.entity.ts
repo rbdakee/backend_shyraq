@@ -23,6 +23,14 @@ export class KindergartenEntity {
   @Column({ type: 'varchar', nullable: true })
   phone!: string | null;
 
+  /**
+   * Canonical media reference for the branding logo (e.g.
+   * `/api/v1/media/<kgId>/<yyyy-mm>/<uuid>.png`). NOT a presigned URL — the
+   * global `MediaSignInterceptor` signs it on the way out. Null when unset.
+   */
+  @Column({ type: 'varchar', length: 1024, nullable: true })
+  logo_url!: string | null;
+
   @Column({ type: 'jsonb', default: () => `'{}'::jsonb` })
   settings!: Record<string, unknown>;
 

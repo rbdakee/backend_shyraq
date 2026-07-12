@@ -17,6 +17,12 @@ export abstract class BccMerchantAccountRepository {
     kindergartenId: string,
   ): Promise<BccMerchantAccount | null>;
 
+  findByKindergartenIdBypassRls(
+    _kindergartenId: string,
+  ): Promise<BccMerchantAccount | null> {
+    return Promise.resolve(null);
+  }
+
   abstract findByCallbackTokenHashBypassRls(
     callbackTokenHash: string,
   ): Promise<BccMerchantAccount | null>;

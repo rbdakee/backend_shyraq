@@ -8,10 +8,7 @@ import {
   MaxLength,
   MinLength,
 } from 'class-validator';
-import {
-  SPECIALIST_TYPES,
-  SpecialistType,
-} from '../domain/value-objects/specialist-type.vo';
+import { SpecialistType } from '../domain/value-objects/specialist-type.vo';
 import { StaffRole } from '../domain/entities/staff-member.entity';
 
 const STAFF_ROLES: readonly StaffRole[] = [
@@ -37,9 +34,13 @@ export class CreateStaffDto {
   @IsEnum(STAFF_ROLES)
   role!: StaffRole;
 
-  @ApiPropertyOptional({ enum: SPECIALIST_TYPES, example: 'psychologist' })
+  @ApiPropertyOptional({
+    example: 'psychologist',
+    description:
+      'Specialist-type code. Required when role=specialist; forbidden otherwise. Must be an ACTIVE code from the kindergarten directory (GET /admin/specialist-types) — else 400 specialist_type_unknown.',
+  })
   @IsOptional()
-  @IsEnum(SPECIALIST_TYPES)
+  @IsString()
   specialist_type?: SpecialistType;
 
   @ApiPropertyOptional({ example: '2026-04-24' })

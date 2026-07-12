@@ -1,5 +1,9 @@
+import { randomUUID } from 'node:crypto';
+import { extname } from 'node:path';
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import { InvariantViolationError } from '@/shared-kernel/domain/errors';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { FileStoragePort } from '@/shared-kernel/storage/file-storage.port';
 import { Locale } from '@/shared-kernel/domain/value-objects/locale.vo';
 import { Phone } from '@/shared-kernel/domain/value-objects/phone.vo';
 import { UserRepository } from '@/modules/users/infrastructure/persistence/user.repository';
@@ -8,6 +12,7 @@ import { StaffMember } from '@/modules/staff/domain/entities/staff-member.entity
 import { AdminAlreadyExistsError } from '@/modules/staff/domain/errors/admin-already-exists.error';
 import { StaffAlreadyExistsError } from '@/modules/staff/domain/errors/staff-already-exists.error';
 import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
+import { SpecialistTypeService } from '@/modules/specialist-type/specialist-type.service';
 import {
   Kindergarten,
   KindergartenSettings,
@@ -60,6 +65,20 @@ export interface AddAdminInput {
 }
 
 /**
+ * Raw logo file handed by the controller after multipart parsing + HTTP-edge
+ * validation (presence / `image/*` / size). The service re-guards defensively
+ * before touching storage.
+ */
+export interface UploadLogoInput {
+  buffer: Buffer;
+  mimetype: string;
+  originalname: string;
+}
+
+/** Max logo size — kept in sync with the controller's multer cap. */
+export const MAX_LOGO_BYTES = 5 * 1024 * 1024; // 5 MB
+
+/**
  * One row of `GET /saas/kindergartens/:id/admins`. `fullName`/`phone`/
  * `locale` come from the linked `users` row — the kg-admin staff row is
  * created without denormalising those identity fields.
@@ -109,6 +128,8 @@ export class KindergartenService {
     private readonly users: UserRepository,
     private readonly sms: SmsPort,
     @Inject(ClockPort) private readonly clock: ClockPort,
+    @Inject(FileStoragePort) private readonly fileStorage: FileStoragePort,
+    private readonly specialistTypes: SpecialistTypeService,
   ) {}
 
   // -------------------------------------------------------------- create
@@ -157,6 +178,11 @@ export class KindergartenService {
       hiredAt: this.clock.now(),
     });
 
+    // Seed the six system specialist types for the new tenant, in the SAME
+    // transaction — a kindergarten must never exist with an empty directory
+    // (the staff/diagnostics dropdowns would be blank). Idempotent insert.
+    await this.specialistTypes.seedSystemDefaults(kg.id);
+
     // Best-effort welcome SMS — never rolls back, never throws.
     void this.sendBestEffortSms(
       () => this.sms.sendAdminInvite(adminPhone.toString(), kg.name),
@@ -202,6 +228,86 @@ export class KindergartenService {
     const kg = await this.kindergartens.findById(kindergartenId);
     if (!kg) throw new KindergartenNotFoundError(kindergartenId);
     return kg;
+  }
+
+  // ------------------------------------------------------------------ logo
+
+  /**
+   * Uploads a new branding logo, persists its CANONICAL media reference on
+   * `kindergartens.logo_url`, and best-effort-deletes the previously stored
+   * file. Returns the updated aggregate — the controller's response is then
+   * presigned by the global `MediaSignInterceptor`, so the client receives a
+   * ready-to-render `<img src>` URL.
+   *
+   * The `logo_url` we store is the canonical `/api/v1/media/<key>` (local) or
+   * bucket URL (S3) — NEVER a presigned URL, so it never goes stale in the DB.
+   * File presence / MIME / size are validated at the HTTP edge; we re-guard
+   * empty buffers here as defense-in-depth.
+   */
+  async setLogo(
+    kindergartenId: string,
+    file: UploadLogoInput,
+  ): Promise<Kindergarten> {
+    const existing = await this.kindergartens.findById(kindergartenId);
+    if (!existing) throw new KindergartenNotFoundError(kindergartenId);
+    if (existing.isArchived)
+      throw new KindergartenArchivedError(kindergartenId);
+
+    if (!file.buffer || file.buffer.length === 0) {
+      throw new InvariantViolationError('logo_required');
+    }
+    const mt = (file.mimetype ?? '').toLowerCase();
+    if (!mt.startsWith('image/')) {
+      throw new InvariantViolationError('logo_type_invalid');
+    }
+    if (file.buffer.length > MAX_LOGO_BYTES) {
+      throw new InvariantViolationError('logo_too_large');
+    }
+
+    const now = this.clock.now();
+    const yyyy = now.getUTCFullYear().toString().padStart(4, '0');
+    const mm = (now.getUTCMonth() + 1).toString().padStart(2, '0');
+    const rawExt = (extname(file.originalname || '') || '').toLowerCase();
+    const safeExt = /^\.[a-z0-9]{1,8}$/.test(rawExt) ? rawExt : '';
+    const key = `${kindergartenId}/${yyyy}-${mm}/${randomUUID()}${safeExt}`;
+
+    const uploaded = await this.fileStorage.upload({
+      buffer: file.buffer,
+      key,
+      contentType: mt,
+      maxBytes: MAX_LOGO_BYTES,
+    });
+
+    const previous = existing.logoUrl;
+    const updated = await this.kindergartens.update(kindergartenId, {
+      logoUrl: uploaded.url,
+    });
+
+    // Best-effort cleanup of the replaced file — never blocks the update.
+    if (previous && previous !== uploaded.url) {
+      await this.bestEffortDeleteMedia(previous);
+    }
+    return updated;
+  }
+
+  /**
+   * Clears the branding logo (sets `logo_url = null`) and best-effort-deletes
+   * the underlying file. Idempotent — a kindergarten with no logo returns
+   * unchanged.
+   */
+  async removeLogo(kindergartenId: string): Promise<Kindergarten> {
+    const existing = await this.kindergartens.findById(kindergartenId);
+    if (!existing) throw new KindergartenNotFoundError(kindergartenId);
+    if (existing.isArchived)
+      throw new KindergartenArchivedError(kindergartenId);
+    const previous = existing.logoUrl;
+    if (previous === null) return existing; // idempotent — nothing to clear
+
+    const updated = await this.kindergartens.update(kindergartenId, {
+      logoUrl: null,
+    });
+    await this.bestEffortDeleteMedia(previous);
+    return updated;
   }
 
   async listKindergartens(
@@ -393,6 +499,27 @@ export class KindergartenService {
   }
 
   // ----------------------------------------------------------------- private
+
+  /**
+   * Best-effort delete of a previously-stored logo file. `storedUrl` is the
+   * canonical `/api/v1/media/<key>` reference; we strip the prefix to recover
+   * the storage key. Storage failures are logged, never thrown — a stale
+   * orphan file is preferable to a failed logo replace/clear.
+   */
+  private async bestEffortDeleteMedia(storedUrl: string): Promise<void> {
+    const m = storedUrl.match(/^\/api\/v1\/media\/(.+)$/);
+    const key = m ? m[1].split('?')[0] : null;
+    if (!key) return;
+    try {
+      await this.fileStorage.delete(key);
+    } catch (err) {
+      this.logger.warn(
+        `logo_media_delete_failed key=${key}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
 
   private async sendBestEffortSms(
     send: () => Promise<unknown>,

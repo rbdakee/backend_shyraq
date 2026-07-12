@@ -26,6 +26,7 @@ export const KindergartenPresenter = {
       slug: s.slug,
       address: s.address,
       phone: s.phone,
+      logo_url: s.logoUrl,
       plan: s.plan,
       settings: s.settings,
       is_active: s.isActive,
@@ -47,6 +48,7 @@ export const KindergartenPresenter = {
       name: s.name,
       address: s.address,
       phone: s.phone,
+      logo_url: s.logoUrl,
     };
   },
 

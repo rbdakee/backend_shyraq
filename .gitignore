@@ -2,6 +2,9 @@
 /dist
 /node_modules
 
+# Local scratchpad / throwaway scripts (e.g. BCC live-test helper)
+/scratchpad
+
 # Logs
 logs
 *.log
@@ -41,6 +44,7 @@ lerna-debug.log*
 /files
 .env
 .env.production
+.env.production_test
 .env.development
 /ormconfig.json
 .codegpt

@@ -21,6 +21,11 @@
 
 export interface CreatePaymentInput {
   /**
+   * Local payment id. Browser-based providers use it to bind an opaque
+   * checkout session to the exact persisted payment row.
+   */
+  paymentId?: string;
+  /**
    * Owning kindergarten. Required by per-tenant adapters (Kaspi resolves the
    * kindergarten's merchant session + encrypted creds at call time). The Mock
    * and Halyk adapters ignore it — backward-compatible.
@@ -37,6 +42,9 @@ export interface CreatePaymentInput {
    * adapter also guards (throws `KaspiPhoneRequiredError` when absent).
    */
   phoneNumber?: string;
+  /** BCC-only confirmed billing details; never used as the login identity. */
+  billingPhone?: string;
+  billingAddress?: string;
   /**
    * Human-readable payment purpose shown to the payer (Kaspi `remote/create`
    * `Comment` — the line the customer sees in their Kaspi app). Non-PII. When
@@ -51,20 +59,40 @@ export interface CreatePaymentResult {
   providerPaymentId: string;
   redirectUrl?: string;
   deeplink?: string;
+  /** Sanitized identifiers required by later provider operations. */
+  providerPayload?: Record<string, unknown>;
   status: 'initiated' | 'completed' | 'failed';
+}
+
+export interface ExistingPaymentContinuationInput {
+  kindergartenId: string;
+  paymentId: string;
+}
+
+export interface ExistingPaymentContinuation {
+  redirectUrl?: string;
+  deeplink?: string;
 }
 
 export interface VerifyWebhookInput {
   headers: Record<string, string | string[] | undefined>;
   body: unknown;
   rawBody?: Buffer;
+  /** Opaque account-routing token carried only by provider-specific routes. */
+  callbackToken?: string;
 }
 
 export interface VerifyWebhookResult {
   providerPaymentId: string;
-  status: 'completed' | 'failed';
+  status: 'processing' | 'completed' | 'failed';
   failureReason?: string;
   raw: Record<string, unknown>;
+  /** Trusted context established by a provider adapter before DB lookup. */
+  callbackContext?: {
+    kindergartenId: string;
+    amountKzt: number;
+    currency: string;
+  };
 }
 
 export interface RefundInput {
@@ -77,6 +105,21 @@ export interface RefundInput {
   amountKzt: number;
   reason: string;
   idempotencyKey: string;
+  /**
+   * Original captured amount of the payment being refunded. BCC's `TRTYPE=14`
+   * MAC signs over `ORG_AMOUNT` (the full original purchase total) even for a
+   * partial refund. `RefundService` sets it from the payment aggregate;
+   * Mock/Halyk/Kaspi ignore it.
+   */
+  originalAmountKzt?: number;
+  /**
+   * Sanitized provider payload persisted on the ORIGINAL payment. BCC's
+   * settlement (callback + `TRTYPE=90` reconciliation) merges the original
+   * `rrn`/`int_ref` here; the BCC refund reads them to build `TRTYPE=14`.
+   * Never carries PAN/CVC — diagnostic identifiers only. Other adapters
+   * ignore it.
+   */
+  originalProviderData?: Record<string, unknown> | null;
 }
 
 export interface RefundResult {
@@ -99,6 +142,17 @@ export abstract class PaymentProviderPort {
     input: VerifyWebhookInput,
   ): Promise<VerifyWebhookResult>;
   abstract refund(input: RefundInput): Promise<RefundResult>;
+
+  /**
+   * Recovers a still-live provider continuation for an idempotent `/pay`
+   * retry. Browser checkout providers override this to verify that their
+   * short-lived session still exists; others use the persisted payload.
+   */
+  getExistingPaymentContinuation(
+    _input: ExistingPaymentContinuationInput,
+  ): Promise<ExistingPaymentContinuation | null> {
+    return Promise.resolve(null);
+  }
 
   /**
    * Recall a still-pending provider payment so a fresh one can be created

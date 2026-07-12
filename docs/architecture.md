@@ -173,7 +173,8 @@ Repository-port — `abstract class` в `infrastructure/persistence/<x>.reposito
 - Итоговый BCC MAC key хранится только в AES-256-GCM ciphertext через `CryptoCipherPort`. Две исходные key components XOR'ятся в памяти и не сохраняются. Callback password хранится только как bcrypt hash. Callback token дополнительно хранится как AES-GCM ciphertext только для построения server-owned `NOTIFY_URL`; plaintext возвращается лишь при создании/ротации и никогда через GET.
 - `user_payment_profiles` — provider-neutral private row, глобальный по `user_id`, потому что parent JWT может обслуживать детей из разных tenant. Таблица без tenant RLS; repository API owner-scoped и не экспортируется в admin/super-admin listing. `billing_phone` не является `users.phone`.
 - PAN, expiry и CVC никогда не проходят через Shyraq API, БД или логи. Их ввод разрешён только на hosted BCC page внутри WebView.
-- Checkout state не хранится в таблице: random token и payment→token reverse key лежат в Redis с TTL 900 секунд. Атомарное consume (`GETDEL` либо Lua-equivalent) гарантирует one-time semantics; reverse key позволяет идемпотентному повтору `/pay` вернуть тот же URL пока session жива. Значения не логируются.
+- Checkout state не хранится в таблице: random token и payment→token reverse key лежат в Redis с TTL 900 секунд (`BCC_CHECKOUT_TTL_SECONDS`, допустимо 60..1800). Payload с подписанными CARD-step-1 fields и подтверждёнными billing details целиком шифруется через `CryptoCipherPort`; Redis не содержит их plaintext. Атомарное consume (`GETDEL` + compare-and-delete reverse key) гарантирует one-time semantics; reverse key позволяет идемпотентному повтору `/pay` вернуть тот же URL пока session жива. Значения и token не логируются.
+- Bridge определяет BCC `CLIENT_IP` от socket peer и только явно доверенного числа reverse-proxy hops (`BCC_TRUSTED_PROXY_HOPS`; Caddy deployment = `1`). Клиентский `X-Forwarded-For` при значении `0` игнорируется.
 
 ---
 
@@ -488,7 +489,7 @@ TRTYPE=90 worker ────┘
 
 The bridge is an API-process route because it must atomically consume Redis state and render a short-lived form. It returns `Cache-Control: no-store`, strict CSP and escaped dynamic values, then browser JS adds screen dimensions to Base64 `M_INFO`. Billing phone/address were confirmed before initiation and are included only in `M_INFO`.
 
-Callback routing is account-first, not tenant-from-request: `callbackToken` hash identifies exactly one merchant account under a narrowly scoped bypass, then the service pins that account's `kindergarten_id` before touching payment/invoice rows. Basic Auth, terminal/merchant/order/amount checks precede settlement. Exact BCC callback signature/ACK/retry details remain a Gate F protocol question and must be confirmed before declaring the endpoint production-ready.
+Callback routing is account-first, not tenant-from-request: `callbackToken` hash identifies exactly one merchant account under a narrowly scoped bypass, then the service pins that account's `kindergarten_id` before touching payment/invoice rows. Basic Auth, terminal/merchant/order/amount/currency/invoice checks precede settlement. Duplicate callback and `TRTYPE=90` late success enter the same advisory-lock + conditional-update settlement path. The endpoint returns HTTP 200 plain `OK` only after processing, but BCC's public collection still does not define callback `P_SIGN`, ACK body or retry schedule; those three protocol details require written confirmation before production acceptance.
 
 ### 6.1 Edge stack (B18.5+)
 

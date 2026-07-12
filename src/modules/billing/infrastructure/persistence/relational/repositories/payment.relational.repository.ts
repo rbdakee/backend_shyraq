@@ -121,6 +121,10 @@ export class PaymentRelationalRepository extends PaymentRepository {
           providerPayload: s.providerPayload as unknown as undefined,
           paidAt: s.paidAt,
           refundId: s.refundId,
+          reconciliationAttempts: s.reconciliationAttempts ?? 0,
+          lastReconciledAt: s.lastReconciledAt ?? null,
+          nextReconciliationAt: s.nextReconciliationAt ?? null,
+          manualReviewRequiredAt: s.manualReviewRequiredAt ?? null,
           createdAt: s.createdAt,
           updatedAt: s.updatedAt,
         });
@@ -166,6 +170,17 @@ export class PaymentRelationalRepository extends PaymentRepository {
         order: { createdAt: 'DESC' },
       });
     return rows.map(PaymentMapper.toDomain);
+  }
+
+  async findByProviderTxnId(
+    kindergartenId: string,
+    provider: PaymentProvider,
+    providerTxnId: string,
+  ): Promise<Payment | null> {
+    const row = await this.manager()
+      .getRepository(PaymentTypeOrmEntity)
+      .findOne({ where: { kindergartenId, provider, providerTxnId } });
+    return row ? PaymentMapper.toDomain(row) : null;
   }
 
   async list(
@@ -257,6 +272,7 @@ export class PaymentRelationalRepository extends PaymentRepository {
         paidAt,
         // jsonb — cast to satisfy TypeORM QueryDeepPartial.
         providerPayload: providerPayload as unknown as undefined,
+        nextReconciliationAt: null,
         updatedAt: now,
       },
     );
@@ -281,9 +297,31 @@ export class PaymentRelationalRepository extends PaymentRepository {
         status: 'failed',
         // jsonb — cast to satisfy TypeORM QueryDeepPartial.
         providerPayload: mergedPayload as unknown as undefined,
+        nextReconciliationAt: null,
         updatedAt: now,
       },
     );
+  }
+
+  async updateProviderPayload(
+    kindergartenId: string,
+    id: string,
+    providerPayload: Record<string, unknown>,
+    now: Date,
+  ): Promise<Payment | null> {
+    const result = await this.manager()
+      .createQueryBuilder()
+      .update(PaymentTypeOrmEntity)
+      .set({
+        providerPayload: providerPayload as unknown as undefined,
+        updatedAt: now,
+      })
+      .where('id = :id', { id })
+      .andWhere('kindergarten_id = :kg', { kg: kindergartenId })
+      .returning('*')
+      .execute();
+    if (!result.raw?.length) return null;
+    return this.findById(kindergartenId, id);
   }
 
   async markProcessingConditional(
@@ -357,6 +395,108 @@ export class PaymentRelationalRepository extends PaymentRepository {
       .getRepository(PaymentTypeOrmEntity)
       .findOne({ where: { id, kindergartenId } });
     return row ? PaymentMapper.toDomain(row) : null;
+  }
+
+  async scheduleBccReconciliation(
+    kindergartenId: string,
+    id: string,
+    nextAt: Date,
+    now: Date,
+  ): Promise<Payment | null> {
+    const result = await this.manager()
+      .createQueryBuilder()
+      .update(PaymentTypeOrmEntity)
+      .set({ nextReconciliationAt: nextAt, updatedAt: now })
+      .where('id = :id', { id })
+      .andWhere('kindergarten_id = :kg', { kg: kindergartenId })
+      .andWhere(`provider = 'bcc'`)
+      .andWhere(`status = 'processing'`)
+      .andWhere('manual_review_required_at IS NULL')
+      .returning('*')
+      .execute();
+    if (!result.raw?.length) return null;
+    return this.findById(kindergartenId, id);
+  }
+
+  async claimBccReconciliationCrossTenant(
+    kindergartenId: string,
+    id: string,
+    now: Date,
+    leaseUntil: Date,
+  ): Promise<Payment | null> {
+    return this.dataSource.transaction(async (em) => {
+      await em.query(`SELECT set_config('app.bypass_rls', 'true', true)`);
+      const result = await em
+        .createQueryBuilder()
+        .update(PaymentTypeOrmEntity)
+        .set({
+          reconciliationAttempts: () => '"reconciliation_attempts" + 1',
+          lastReconciledAt: now,
+          nextReconciliationAt: leaseUntil,
+          updatedAt: now,
+        })
+        .where('id = :id', { id })
+        .andWhere('kindergarten_id = :kg', { kg: kindergartenId })
+        .andWhere(`provider = 'bcc'`)
+        .andWhere(`status = 'processing'`)
+        .andWhere('manual_review_required_at IS NULL')
+        .andWhere('next_reconciliation_at IS NOT NULL')
+        .andWhere('next_reconciliation_at <= :now', { now })
+        .returning('*')
+        .execute();
+      if (!result.raw?.length) return null;
+      const row = await em
+        .getRepository(PaymentTypeOrmEntity)
+        .findOne({ where: { id, kindergartenId } });
+      return row ? PaymentMapper.toDomain(row) : null;
+    });
+  }
+
+  async rescheduleBccReconciliationCrossTenant(
+    kindergartenId: string,
+    id: string,
+    nextAt: Date,
+    now: Date,
+  ): Promise<boolean> {
+    return this.dataSource.transaction(async (em) => {
+      await em.query(`SELECT set_config('app.bypass_rls', 'true', true)`);
+      const result = await em
+        .createQueryBuilder()
+        .update(PaymentTypeOrmEntity)
+        .set({ nextReconciliationAt: nextAt, updatedAt: now })
+        .where('id = :id', { id })
+        .andWhere('kindergarten_id = :kg', { kg: kindergartenId })
+        .andWhere(`provider = 'bcc'`)
+        .andWhere(`status = 'processing'`)
+        .andWhere('manual_review_required_at IS NULL')
+        .execute();
+      return (result.affected ?? 0) === 1;
+    });
+  }
+
+  async markBccManualReviewCrossTenant(
+    kindergartenId: string,
+    id: string,
+    now: Date,
+  ): Promise<boolean> {
+    return this.dataSource.transaction(async (em) => {
+      await em.query(`SELECT set_config('app.bypass_rls', 'true', true)`);
+      const result = await em
+        .createQueryBuilder()
+        .update(PaymentTypeOrmEntity)
+        .set({
+          manualReviewRequiredAt: now,
+          nextReconciliationAt: null,
+          updatedAt: now,
+        })
+        .where('id = :id', { id })
+        .andWhere('kindergarten_id = :kg', { kg: kindergartenId })
+        .andWhere(`provider = 'bcc'`)
+        .andWhere(`status = 'processing'`)
+        .andWhere('manual_review_required_at IS NULL')
+        .execute();
+      return (result.affected ?? 0) === 1;
+    });
   }
 
   /**

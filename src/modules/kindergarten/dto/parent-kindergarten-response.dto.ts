@@ -19,4 +19,14 @@ export class ParentKindergartenDto {
 
   @ApiProperty({ example: '+77272221100', nullable: true })
   phone!: string | null;
+
+  @ApiProperty({
+    example:
+      'https://balam-media.object.pscloud.io/331faeff/2026-07/9f2c….png?X-Amz-…',
+    nullable: true,
+    type: String,
+    description:
+      'Branding logo. Short-lived presigned media URL (or null when unset). Safe to drop straight into an <img src>. Re-fetch the kindergarten to refresh an expired link.',
+  })
+  logo_url!: string | null;
 }

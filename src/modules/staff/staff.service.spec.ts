@@ -6,6 +6,8 @@
  * active-mentor slot enforced by `idx_group_mentors_one_active`.
  */
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
+import { InvariantViolationError } from '@/shared-kernel/domain/errors';
+import { SpecialistTypeService } from '@/modules/specialist-type/specialist-type.service';
 import { SmsPort, SmsSendResult } from '@/modules/auth/sms.port';
 import { Group } from '@/modules/group/domain/entities/group.entity';
 import { GroupMentor } from '@/modules/group/domain/entities/group-mentor.entity';
@@ -146,17 +148,43 @@ class FakeStaffRepo extends StaffMemberRepository {
 }
 
 class FakeUserRepo extends UserRepository {
-  findById(_id: string): Promise<User | null> {
+  private byId = new Map<string, User>();
+  private seq = 0;
+
+  findById(id: string): Promise<User | null> {
+    return Promise.resolve(this.byId.get(id) ?? null);
+  }
+  findByPhone(phone: string): Promise<User | null> {
+    for (const u of this.byId.values()) {
+      if (u.toState().phone === phone) return Promise.resolve(u);
+    }
     return Promise.resolve(null);
   }
-  findByPhone(_phone: string): Promise<User | null> {
-    return Promise.resolve(null);
+  upsertByPhone(phone: string): Promise<User> {
+    const id = `user-new-${++this.seq}`;
+    const user = User.hydrate({
+      id,
+      phone,
+      fullName: '',
+      avatarUrl: null,
+      iin: null,
+      dateOfBirth: null,
+      locale: 'ru',
+    });
+    this.byId.set(id, user);
+    return Promise.resolve(user);
   }
-  upsertByPhone(_phone: string): Promise<User> {
-    throw new Error('not used');
-  }
-  update(_id: string, _changes: UserUpdateInput): Promise<User> {
-    throw new Error('not used');
+  update(id: string, changes: UserUpdateInput): Promise<User> {
+    const existing = this.byId.get(id);
+    if (!existing) throw new Error(`user ${id} not found`);
+    const s = existing.toState();
+    const next = User.hydrate({
+      ...s,
+      fullName: changes.fullName ?? s.fullName,
+      locale: changes.locale ?? s.locale,
+    });
+    this.byId.set(id, next);
+    return Promise.resolve(next);
   }
 }
 
@@ -347,10 +375,28 @@ function makeMentor(opts: {
   });
 }
 
+/**
+ * Directory-validator fake. `activeCodes` is the set of codes that
+ * `assertUsableCode` accepts; anything else throws
+ * `specialist_type_unknown` (400), matching the real service.
+ */
+class FakeSpecialistTypeService {
+  activeCodes = new Set<string>();
+  assertUsableCode(_kg: string, code: string): Promise<void> {
+    if (!this.activeCodes.has(code)) {
+      return Promise.reject(
+        new InvariantViolationError('specialist_type_unknown'),
+      );
+    }
+    return Promise.resolve();
+  }
+}
+
 interface Wired {
   service: StaffService;
   staffRepo: FakeStaffRepo;
   groupRepo: FakeGroupRepo;
+  specialistTypes: FakeSpecialistTypeService;
 }
 
 function wire(): Wired {
@@ -359,8 +405,17 @@ function wire(): Wired {
   const sms = new FakeSmsPort();
   const clock = new FixedClock(NOW);
   const groupRepo = new FakeGroupRepo();
-  const service = new StaffService(staffRepo, userRepo, sms, clock, groupRepo);
-  return { service, staffRepo, groupRepo };
+  const specialistTypes = new FakeSpecialistTypeService();
+  const service = new StaffService(
+    staffRepo,
+    userRepo,
+    sms,
+    clock,
+    groupRepo,
+    undefined,
+    specialistTypes as unknown as SpecialistTypeService,
+  );
+  return { service, staffRepo, groupRepo, specialistTypes };
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────
@@ -505,6 +560,33 @@ describe('StaffService — F10 mentor-cascade on lifecycle', () => {
       await service.restore(KG, 's1');
 
       expect(groupRepo.cascadeCalls).toHaveLength(0);
+    });
+  });
+
+  describe('specialist_type directory validation', () => {
+    it('rejects creating a specialist with an unknown code (specialist_type_unknown)', async () => {
+      const { service } = wire();
+      await expect(
+        service.create(KG, {
+          fullName: 'Спец',
+          phone: '+77010000099',
+          role: 'specialist',
+          specialistType: 'no_such_code',
+        }),
+      ).rejects.toMatchObject({ code: 'specialist_type_unknown' });
+    });
+
+    it('creates a specialist when the code is active in the directory', async () => {
+      const { service, staffRepo, specialistTypes } = wire();
+      specialistTypes.activeCodes.add('doctor_nutritionist');
+      const created = await service.create(KG, {
+        fullName: 'Врач Нутрициолог',
+        phone: '+77010000098',
+        role: 'specialist',
+        specialistType: 'doctor_nutritionist',
+      });
+      expect(created.specialistType).toBe('doctor_nutritionist');
+      expect(staffRepo.rows).toHaveLength(1);
     });
   });
 });

@@ -34,6 +34,7 @@ import { FiscalSettingsForbiddenError } from '@/modules/kindergarten/domain/erro
 import { KindergartenArchivedError } from '@/modules/kindergarten/domain/errors/kindergarten-archived.error';
 import { KindergartenNotFoundError } from '@/modules/kindergarten/domain/errors/kindergarten-not-found.error';
 import { KindergartenSlugTakenError } from '@/modules/kindergarten/domain/errors/kindergarten-slug-taken.error';
+import { SpecialistTypeNotFoundError } from '@/modules/specialist-type/domain/errors/specialist-type-not-found.error';
 import { AdminAlreadyExistsError } from '@/modules/staff/domain/errors/admin-already-exists.error';
 import { StaffAlreadyExistsError } from '@/modules/staff/domain/errors/staff-already-exists.error';
 import { ArchiveReasonRequiredError } from '@/modules/child/domain/errors/archive-reason-required.error';
@@ -84,6 +85,10 @@ import {
   BccConnectionCheckFailedError,
   BccGatewayUnavailableError,
 } from '@/modules/billing/domain/errors/bcc-connection-check.error';
+import {
+  BccCallbackInvalidError,
+  BccCallbackUnauthorizedError,
+} from '@/modules/billing/domain/errors/bcc-callback.error';
 import {
   FileStorageMalformedKeyError,
   FileStorageNotFoundError,
@@ -232,6 +237,9 @@ export class DomainErrorFilter implements ExceptionFilter {
     ) {
       return HttpStatus.BAD_GATEWAY;
     }
+    if (err instanceof BccCallbackUnauthorizedError)
+      return HttpStatus.UNAUTHORIZED;
+    if (err instanceof BccCallbackInvalidError) return HttpStatus.BAD_REQUEST;
     // B24 Kaspi onboarding (§2.25). 409/404 fall through to the Conflict/
     // NotFound base branches below; these three need explicit mappings.
     if (err instanceof KaspiUnknownProcessError) return HttpStatus.BAD_REQUEST;
@@ -266,6 +274,7 @@ export class DomainErrorFilter implements ExceptionFilter {
     if (err instanceof FileStorageTransientError)
       return HttpStatus.SERVICE_UNAVAILABLE;
     if (err instanceof KindergartenNotFoundError) return HttpStatus.NOT_FOUND;
+    if (err instanceof SpecialistTypeNotFoundError) return HttpStatus.NOT_FOUND;
     if (err instanceof NotFoundError) return HttpStatus.NOT_FOUND;
     if (err instanceof ConflictError) return HttpStatus.CONFLICT;
     if (err instanceof GoneError) return HttpStatus.GONE;

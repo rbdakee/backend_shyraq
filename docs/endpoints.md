@@ -69,9 +69,9 @@
     // role:'mentor' → group_id = id основной (is_primary) активной группы из
     // group_mentors (fallback: первая активная); если назначений нет — null.
     // Все прочие роли (parent/admin/specialist/reception/superadmin) → group_id: null.
-    // specialist_type → raw enum (psychologist|speech_therapist|music_teacher|
-    // physical_ed|nutritionist) ТОЛЬКО при role:'specialist'; иначе null.
-    // Мобилка строит i18n-карту enum→label сама.
+    // specialist_type → код из справочника specialist_types (§2.6) ТОЛЬКО при
+    // role:'specialist'; иначе null. Метки (name_i18n) отдаёт бэкенд —
+    // GET /admin/specialist-types; мобилка больше не хардкодит enum→label.
   ],
   "kindergartens": [
     { "id": "uuid", "name": "Солнышко", "slug": "sunshine" }
@@ -411,25 +411,44 @@ Email + password (не OTP). Access-токен — тот же JWT HS256 (`JWT_A
 
 | Метод | Путь | Назначение |
 |---|---|---|
-| GET | `/admin/kindergarten` | Настройки своего садика (subset — без sensitive fiscal keys). |
-| PATCH | `/admin/kindergarten` | Обновить name, address, phone, `settings` (кроме fiscal — только super_admin). |
+| GET | `/kindergartens/me` | Свой садик. Объект несёт `logo_url: string\|null` (presigned media-URL, как контент-медиа). |
+| PATCH | `/kindergartens/me/settings` | Обновить `settings` (кроме fiscal — только super_admin). |
+| POST | `/admin/kindergartens/me/logo` | Загрузить/заменить логотип. `multipart/form-data`, поле `file`, `image/*` ≤ 5 МБ. Заменяет предыдущий (best-effort удаление старого файла). Ответ `{ logo_url }` (presigned). 400 `logo_required`/`logo_type_invalid`/`logo_too_large`. |
+| DELETE | `/admin/kindergartens/me/logo` | Сбросить логотип (`logo_url=null` + best-effort удаление файла). Идемпотентно. Ответ `{ logo_url: null }`. |
+
+**Логотип (§2.1).** `kindergartens.logo_url` хранит канонический media-ключ (`/api/v1/media/<kgId>/<yyyy-mm>/<uuid>.<ext>`), НЕ presigned-URL. Глобальный `MediaSignInterceptor` подписывает его на выходе в любом ответе (Admin/Parent/Staff), поэтому клиент получает готовый к рендеру `<img src>`. Аддитивно, nullable — старые клиенты игнорируют.
 
 ### 2.2 Staff Management
 
 | Метод | Путь | Назначение |
 |---|---|---|
 | GET | `/admin/staff` | Список сотрудников (фильтр по `role`, `is_active`, `specialist_type`). |
-| POST | `/admin/staff` | Создать сотрудника: body `{full_name, phone, role, specialist_type?, group_id?, hired_at?}`. В одной TX: find-or-create `users` по phone (reuse если существует — паттерн B2 D10 L3, имя/локаль не меняются); insert `staff_members(role, is_active=true, specialist_type?, hired_at?)`; если `role=mentor` и передан `group_id` — в той же TX insert `group_mentors(is_primary = не-exists active primary)`. После commit — best-effort welcome-SMS «Ваш аккаунт в "<kg_name>" готов. Войдите в Staff App по номеру <phone>» через `SmsPort` (не откатывает TX, logged on fail). **Никакого invite-токена / magic-link** — активация через обычный OTP §0.1. 400 `invalid_specialist_type`, 400 `role_not_assignable` (например `reception` с `group_id`, или `role=specialist` без `specialist_type`), 404 `group_not_found`, 409 `staff_phone_conflict` (уже active staff в этом садике), 409 `mentor_one_active_group_violation` (гонка partial idx). |
+| POST | `/admin/staff` | Создать сотрудника: body `{full_name, phone, role, specialist_type?, group_id?, hired_at?}`. В одной TX: find-or-create `users` по phone (reuse если существует — паттерн B2 D10 L3, имя/локаль не меняются); insert `staff_members(role, is_active=true, specialist_type?, hired_at?)`; если `role=mentor` и передан `group_id` — в той же TX insert `group_mentors(is_primary = не-exists active primary)`. После commit — best-effort welcome-SMS «Ваш аккаунт в "<kg_name>" готов. Войдите в Staff App по номеру <phone>» через `SmsPort` (не откатывает TX, logged on fail). **Никакого invite-токена / magic-link** — активация через обычный OTP §0.1. `specialist_type` — код из справочника §2.6 (валидируется против **активного** справочника): unknown/inactive → 400 `specialist_type_unknown`. 400 `role_not_assignable` (например `reception` с `group_id`, или `role=specialist` без `specialist_type`), 404 `group_not_found`, 409 `staff_phone_conflict` (уже active staff в этом садике), 409 `mentor_one_active_group_violation` (гонка partial idx). |
 | GET | `/admin/staff/:id` | Детали сотрудника + активные группы (для mentor'ов — `assigned_groups[]` с `is_primary`). 404 `staff_not_found`. |
-| PATCH | `/admin/staff/:id` | Обновить `full_name?`, `role?`, `specialist_type?`, `hired_at?`, `fired_at?`. Валидация role×specialist_type matrix (D4 whitelist `psychologist`/`speech_therapist`/`music_teacher`/`physical_ed`/`nutritionist`): `role=mentor` → `specialist_type=null`; `role=specialist` → `specialist_type` обязателен и в whitelist; `role=admin`/`reception` → `specialist_type=null`. Если текущая `role=mentor` и новая `role != mentor` — в той же TX `UPDATE group_mentors SET unassigned_at=NOW() WHERE staff_member_id=? AND unassigned_at IS NULL` (**D5** auto-close, история сохраняется). 404 `staff_not_found`, 400 `invalid_specialist_type`, 400 `role_not_assignable`. |
+| PATCH | `/admin/staff/:id` | Обновить `full_name?`, `role?`, `specialist_type?`, `hired_at?`, `fired_at?`. Валидация role×specialist_type matrix: `role=mentor`/`admin`/`reception` → `specialist_type=null`; `role=specialist` → `specialist_type` обязателен и должен быть **активным** кодом справочника §2.6 (re-валидация только когда меняется `role` или `specialist_type`). Если текущая `role=mentor` и новая `role != mentor` — в той же TX `UPDATE group_mentors SET unassigned_at=NOW() WHERE staff_member_id=? AND unassigned_at IS NULL` (**D5** auto-close, история сохраняется). 404 `staff_not_found`, 400 `specialist_type_unknown`, 400 `role_not_assignable`. |
 | POST | `/admin/staff/:id/deactivate` | В одной TX: `is_active=false` + `UPDATE group_mentors SET unassigned_at=NOW() WHERE staff_member_id=? AND unassigned_at IS NULL` + `UPDATE refresh_tokens SET revoked_at=NOW() WHERE user_id=? AND kindergarten_id=? AND revoked_at IS NULL`. Idempotent: повторный вызов при уже inactive → 409 `staff_inactive`. 404 `staff_not_found`. |
 | POST | `/admin/staff/:id/activate` | Симметричная операция: `is_active=true`. **НЕ восстанавливает прошлые `group_mentors`** — admin заново делает assign через `/groups/assign`. Idempotent для уже active (200). 404 `staff_not_found`. |
 | POST | `/admin/staff/:id/groups/assign` | Body `{group_id}`. Назначить mentor на группу. Validate: staff `role=mentor` + `is_active=true`, group `is_active=true`, `staff.kindergarten_id == group.kindergarten_id`. В TX: close active assignment (`UPDATE group_mentors SET unassigned_at=NOW()`) → определить `is_primary` (true если в группе нет активного primary) → insert `group_mentors(is_primary, assigned_at=NOW())`. Partial idx `idx_group_mentors_one_active` защищает инвариант «один mentor — одна активная группа»; при гонке `P2002` → retry 1 раз в use-case, иначе 409 `mentor_one_active_group_violation`. 404 `staff_not_found`/`group_not_found`, 400 `role_not_assignable` (staff не mentor), 409 `staff_inactive`. |
 | POST | `/admin/staff/:id/groups/:groupId/primary` | Сменить primary mentor группы. Validate: staff `role=mentor` + `is_active=true`, group `is_active=true`, staff уже активно назначен в этой группе. В TX: снять `is_primary=false` у текущего primary → `is_primary=true` у целевого. Partial idx `idx_group_mentors_one_primary_per_group` защищает инвариант; при гонке P2002 → 409 `group_primary_conflict`. 404 `staff_not_found`/`group_not_found`, 400 `role_not_assignable`, 409 `staff_inactive`. |
 
-**Error codes (§2.2):** `staff_not_found`(404), `staff_phone_conflict`(409), `staff_inactive`(409), `invalid_specialist_type`(400), `role_not_assignable`(400), `mentor_one_active_group_violation`(409), `group_primary_conflict`(409), `group_not_found`(404).
+**Error codes (§2.2):** `staff_not_found`(404), `staff_phone_conflict`(409), `staff_inactive`(409), `specialist_type_unknown`(400 — код вне активного справочника §2.6), `role_not_assignable`(400), `mentor_one_active_group_violation`(409), `group_primary_conflict`(409), `group_not_found`(404).
 
 **Welcome-SMS (§2.2).** Отправляется best-effort после успешного `POST /admin/staff`, не откатывает транзакцию (аналог B2 D10 L2). `SmsPort.send` — тот же mock-провайдер, что для OTP, real-provider подключится в Active `SMS_PROVIDER`. Текст локализуется по `users.locale` (`kk`/`ru`/`en`). Staff-член активируется обычным OTP-flow `/auth/otp/request` → `/auth/otp/verify`; JWT выдаёт текущую `role` + `kindergarten_id` (single-role path) или `pending_role_select=true` (multi-role, B1 D2) если у телефона активны staff-записи в нескольких садиках.
+
+### 2.6 Specialist Types (справочник специальностей, per-садик)
+
+Admin-managed справочник — **AUTHORITY** для `staff_members.specialist_type` и `diagnostic_templates.specialist_type` (soft-ссылки на `code`, без hard-FK). Метки (`name_i18n`) отдаёт бэкенд — фронт не хардкодит i18n-мапу. Каждый садик стартует с 6 **системных** (`is_system=true`, неудаляемых) строк: `psychologist`, `speech_therapist`, `music_teacher`, `physical_ed`, `nutritionist` («Диетолог»), `doctor_nutritionist` («Врач Нутрициолог»). Системные строки нельзя удалить, но можно переименовать / деактивировать / переупорядочить. `code` иммутабелен.
+
+| Метод | Путь | Назначение |
+|---|---|---|
+| GET | `/admin/specialist-types` | Список. По умолчанию только `is_active=true` (набор для дропдаунов staff/diagnostics). `?include_inactive=true` — полный список для CRUD-экрана. Сортировка `sort_order`, затем `code`. |
+| POST | `/admin/specialist-types` | Создать кастомную специальность: body `{ code, name_i18n, is_active?, sort_order? }`. `code` — lowercase snake_case, letter-led, 2–64. `name_i18n` — минимум одно из `ru`/`kk` непустое. 400 `specialist_type_code_invalid`/`specialist_type_name_required`, 409 `specialist_type_code_taken`. |
+| PATCH | `/admin/specialist-types/:id` | Обновить `name_i18n?`, `is_active?`, `sort_order?` (в т.ч. для системных). `code` не меняется. 404 `specialist_type_not_found`. |
+| DELETE | `/admin/specialist-types/:id` | Удалить кастомную. 409 `specialist_type_system_immutable` (системная — деактивируй вместо удаления), 409 `specialist_type_in_use` (`details.usage` = кол-во ссылок из staff/diagnostics — деактивируй вместо удаления), 404 `specialist_type_not_found`. |
+
+**Объект specialist_type:** `{ id, code, name_i18n: {ru,kk,...}, is_system, is_active, sort_order, created_at, updated_at }`.
+
+**Backward-compat.** Новые садики получают те же 6 системных строк через seed-hook в `POST /saas/kindergartens` (в той же TX). Миграция засидила 6 строк для всех существующих садиков, поэтому любое ранее сохранённое значение `specialist_type` остаётся валидным.
 
 ### 2.3 Groups
 
@@ -963,7 +982,7 @@ Qundylyq реализуется как `content_posts` с `content_type='qundyly
 | Метод | Путь | Назначение |
 |---|---|---|
 | GET | `/admin/diagnostic-templates` | Список шаблонов. Query: `specialist_type?`, `is_active?`. |
-| POST | `/admin/diagnostic-templates` | Создать: body `{specialist_type, name, description?, schema}`. Schema JSONB: `{sections: [{title, fields: [{key, label, type, required, options?, min?, max?}]}]}`. `type`: `text\|number\|boolean\|select\|multiselect\|date\|scale`. |
+| POST | `/admin/diagnostic-templates` | Создать: body `{specialist_type, name, description?, schema}`. `specialist_type` — активный код справочника §2.6 (иначе 400 `specialist_type_unknown`). Schema JSONB: `{sections: [{title, fields: [{key, label, type, required, options?, min?, max?}]}]}`. `type`: `text\|number\|boolean\|select\|multiselect\|date\|scale`. |
 | GET | `/admin/diagnostic-templates/:id` | Подробности. |
 | PATCH | `/admin/diagnostic-templates/:id` | Обновить (auto-bump `version` при изменении `schema`). **B22a T7 (H12):** schema PATCH блокируется → 409 `template_has_entries`, если уже есть `diagnostic_entries` против шаблона (mutating schema invalidates persisted `data` payloads). Patch только `name`/`description`/`is_active` — допустим в любое время. |
 | POST | `/admin/diagnostic-templates/:id/deactivate` | `is_active=false`. Существующие записи против этого шаблона сохраняются. |
@@ -1459,7 +1478,7 @@ Reception может работать с заявками — см. Admin API `/
 
 | Метод | Путь | Назначение |
 |---|---|---|
-| GET | `/payments/bcc/checkout/:token` | Атомарно потребить Redis session и вернуть self-submitting HTML (`Cache-Control: no-store`, строгий CSP). JS добавляет `browserScreenHeight`/`browserScreenWidth`, собирает Base64 JSON `M_INFO` с подтверждёнными `mobilePhone` и `billAddrLine1`, затем POST'ит `application/x-www-form-urlencoded` на allowlisted BCC gateway. Все динамические значения HTML-escaped. Истёкший/повторный/cross-tenant token → 410 `bcc_checkout_expired`. |
+| GET | `/payments/bcc/checkout/:token` | Атомарно потребить зашифрованную Redis session и вернуть self-submitting HTML (`Cache-Control: no-store`, строгий nonce-CSP). JS добавляет `browserScreenHeight`/`browserScreenWidth`, собирает Base64 JSON `M_INFO` с подтверждёнными `mobilePhone` и `billAddrLine1`, затем POST'ит `application/x-www-form-urlencoded` на allowlisted BCC gateway. `CLIENT_IP` берётся от socket peer либо из явно настроенного доверенного proxy chain (`BCC_TRUSTED_PROXY_HOPS`), а не из произвольного header. Все динамические значения HTML-escaped. Истёкший/повторный/cross-tenant token → 410 `bcc_checkout_expired`. |
 | GET | `/payments/bcc/return` | Dev `BACKREF`: `https://balam-api-dev.innodev.kz:443/api/v1/payments/bcc/return`. Mobile WebView перехватывает навигацию, закрывается и открывает экран статуса payment. Если не перехвачено — route показывает нейтральный `processing` экран; никогда не помечает платёж успешным. Позже URL заменяется на Universal Link/App Link приложения. |
 
 Bridge получает gateway и BACKREF только из server config/allowlist; произвольный клиентский `return_url` запрещён. Первый WEBVIEW test должен подтвердить, что BCC сам показывает hosted card form и проводит 3DS; если опубликованный flow требует клиентской передачи CARD/EXP/CVC2, реализация останавливается до уточнения у BCC — backend эти поля не принимает.
@@ -1475,13 +1494,13 @@ Bridge получает gateway и BACKREF только из server config/allow
 | Метод | Путь | Назначение |
 |---|---|---|
 | POST | `/webhooks/payments/:provider` | Unified webhook endpoint для `mock\|halyk_epay\|kaspi_pay\|tiptoppay\|freedom_pay`. Body: провайдер-специфичный JSON payload. Headers: провайдер-специфичная подпись. Response: 200 всегда (кроме 400 `webhook_signature_invalid`). BCC использует отдельный tokenized route ниже. |
-| POST | `/webhooks/payments/bcc/:callbackToken` | BCC `NOTIFY_URL`, без JWT. Только `application/x-www-form-urlencoded` + Basic Auth. Account ищется cross-tenant исключительно по `SHA-256(callbackToken)`, пароль сравнивается с hash, затем проверяются `TERMINAL`, `MERCHANT`, `ORDER`, amount/currency и result codes. Повторный callback идемпотентен. Сохраняются только безопасные `ACTION`, `RC`, `RC_TEXT`, `RRN`, `INT_REF`; секреты и карточные данные не логируются. Точная форма ACK, callback `P_SIGN` и retry policy фиксируются на Gate F после подтверждения BCC; до этого endpoint не считается protocol-complete. |
+| POST | `/webhooks/payments/bcc/:callbackToken` | BCC `NOTIFY_URL`, без JWT. Только `application/x-www-form-urlencoded` + Basic Auth. Account ищется cross-tenant исключительно по `SHA-256(callbackToken)`, username сравнивается constant-time, пароль — bcrypt, затем до settlement проверяются `TERMINAL`, `MERCHANT`, tenant-scoped `ORDER`, amount=`payment.amount`, currency=`398` и существование invoice. `ACTION=0/RC=00` проходит через единый идемпотентный settlement; документированные intermediate ACTION остаются processing; terminal decline переводит payment в failed. Повтор/late callback безопасен. Сохраняются только безопасные `ACTION`, `RC`, `RC_TEXT`, `RRN`, `INT_REF`; `P_SIGN`, Basic credentials, token, billing/card fields не сохраняются и не логируются. ACK реализации: HTTP 200 `text/plain` body `OK` только после успешной обработки/идемпотентного no-op; 401 `bcc_callback_unauthorized`, 400 `bcc_callback_invalid`, 404 для неизвестного `ORDER`. Официальная BCC collection не публикует callback MAC/ACK/retry contract, поэтому `P_SIGN` намеренно не считается проверяемой подписью до письменного подтверждения банка. |
 
 **Предыдущие vendor-specific paths** (`/payments/webhook/halyk`, `/kaspi`, `/tiptoppay`, `/freedom-pay`) — задокументированы для будущих Phase B адаптеров; маршрутизируются через `/webhooks/payments/:provider` в B13+ или остаются как aliases в B14+.
 
 > **⚠️ `kaspi_pay` НЕ использует webhooks (B24).** У Kaspi-клиента нет входящего callback'а. `verifyWebhook` для `provider=kaspi_pay` бросает `kaspi_webhook_unsupported`; завершение оплаты выполняет внутренний BullMQ-поллер `kaspi-payment-status` (cross-tenant, `remote/details` по `QrOperationId` → `Processed`→settle). См. §4.7 и IMPLEMENTATION_PLAN B24/K8.
 
-**BCC reconciliation (`TRTYPE=90`).** Для BCC payment, который остаётся `processing`, первый status check запускается через 5 минут. Далее worker повторяет запросы с ограниченным конфигурируемым backoff до возраста платежа 24 часа. Terminal state назад не переводится; late success проходит через тот же settlement service, что callback. После 24 часов автоматические запросы прекращаются, `failed` не выставляется, а `manual_review_required_at` помечает платёж для ручной проверки. Метрики: pending age, callback failures и reconciliation outcomes.
+**BCC reconciliation (`TRTYPE=90`).** Для BCC payment, который остаётся `processing`, первый status check запускается не раньше чем через 5 минут (`BCC_RECONCILIATION_INITIAL_DELAY_MS`, clamp ≥300000). Далее worker использует атомарный DB claim и конфигурируемый exponential backoff (`BASE_DELAY_MS`, `MAX_DELAY_MS`) до возраста 24 часа (`HARD_CAP_MS`). Terminal state назад не переводится; late success проходит через тот же settlement service, что callback. После 24 часов автоматические запросы прекращаются, `failed` не выставляется, а `manual_review_required_at` помечает платёж для ручной проверки. В безопасных логах фиксируются outcome и pending age без request/response payload.
 
 **Error map (§4.5):**
 

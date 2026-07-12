@@ -3,7 +3,13 @@ import { randomUUID } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import request from 'supertest';
 import { BccHttpClient } from '@/modules/billing/infrastructure/payment-provider/bcc/bcc-http.client';
-import { createTestApp, flushRedis, TestApp, truncateAll } from './helpers/app';
+import {
+  closeCleanupDataSource,
+  createTestApp,
+  flushRedis,
+  TestApp,
+  truncateAll,
+} from './helpers/app';
 
 const SUPER_ADMIN_EMAIL = 'bcc-onboarding@shyraq.test';
 const SUPER_ADMIN_PASSWORD = 'admin12345';
@@ -43,6 +49,7 @@ describe('BCC merchant onboarding (e2e)', () => {
     await truncateAll(ctx.dataSource);
     await flushRedis(ctx.redis);
     await ctx.app.close();
+    await closeCleanupDataSource();
     if (previousEncryptionKey === undefined) {
       delete process.env.KASPI_ENCRYPTION_KEY;
     } else {
@@ -74,7 +81,7 @@ describe('BCC merchant onboarding (e2e)', () => {
         terminal_id: '88888881',
         environment: 'test',
         notify_url: expect.stringMatching(
-          /^https:\/\/api\.example\.test\/api\/v1\/webhooks\/payments\/bcc\//,
+          /^https:\/\/api\.example\.test:443\/api\/v1\/webhooks\/payments\/bcc\//,
         ),
         notify_username: expect.any(String),
         notify_password: expect.any(String),
