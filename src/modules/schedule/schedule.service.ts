@@ -17,7 +17,10 @@ import { ActivityEventNotFoundError } from './domain/errors/activity-event-not-f
 import { EventNotDeletableError } from './domain/errors/event-not-deletable.error';
 import { EventTransitionConflictError } from './domain/errors/event-transition-conflict.error';
 import { ScheduleTemplateNotFoundError } from './domain/errors/schedule-template-not-found.error';
-import { isoWeekdayOf } from '@/shared-kernel/domain/value-objects/day-of-week.vo';
+import {
+  combineDateAndTimeInTimezone,
+  isoWeekdayOf,
+} from '@/shared-kernel/domain/value-objects/day-of-week.vo';
 import { ActivityEventStatusValue } from './domain/value-objects/activity-event-status.vo';
 import {
   ActivityEventRepository,
@@ -92,6 +95,15 @@ export interface CopyWeekResult {
   skippedGroups: number;
   totalEvents: number;
   snapshots: ScheduleWeekSnapshot[];
+}
+
+export interface RematerializeResult {
+  /** Distinct (group, week) pairs re-projected — one per snapshot in range. */
+  rebuiltWeeks: number;
+  /** Stale `origin='template'` scheduled future events removed. */
+  deletedEvents: number;
+  /** Fresh events written from the current template definitions. */
+  insertedEvents: number;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -190,7 +202,13 @@ export class ScheduleService {
   ): Promise<ScheduleTemplate> {
     const template = await this.requireTemplate(kindergartenId, templateId);
     template.update(patch);
-    return await this.templateRepo.save(kindergartenId, template);
+    const saved = await this.templateRepo.save(kindergartenId, template);
+    // `isActive` / `validUntil` change which templates apply to a week, and
+    // `name` is cosmetic — but re-syncing unconditionally keeps one rule.
+    await this.rematerializeFutureWeeks(kindergartenId, {
+      groupId: saved.groupId,
+    });
+    return saved;
   }
 
   async getTemplate(
@@ -211,8 +229,15 @@ export class ScheduleService {
     kindergartenId: string,
     templateId: string,
   ): Promise<void> {
-    await this.requireTemplate(kindergartenId, templateId);
+    // Read the groupId BEFORE the delete — afterwards the row is gone and we
+    // would have nothing to scope the re-sync to.
+    const template = await this.requireTemplate(kindergartenId, templateId);
     await this.templateRepo.delete(kindergartenId, templateId);
+    // The projection now legitimately yields zero events from this template, so
+    // its future events are swept. That is the intended outcome.
+    await this.rematerializeFutureWeeks(kindergartenId, {
+      groupId: template.groupId,
+    });
   }
 
   // ── Slots ────────────────────────────────────────────────────────────────
@@ -233,7 +258,11 @@ export class ScheduleService {
       locationId: input.locationId ?? null,
       description: input.description ?? null,
     });
-    return await this.templateRepo.save(kindergartenId, template);
+    const saved = await this.templateRepo.save(kindergartenId, template);
+    await this.rematerializeFutureWeeks(kindergartenId, {
+      groupId: saved.groupId,
+    });
+    return saved;
   }
 
   async updateSlot(
@@ -244,7 +273,11 @@ export class ScheduleService {
   ): Promise<ScheduleTemplate> {
     const template = await this.requireTemplate(kindergartenId, templateId);
     template.updateSlot(slotId, patch);
-    return await this.templateRepo.save(kindergartenId, template);
+    const saved = await this.templateRepo.save(kindergartenId, template);
+    await this.rematerializeFutureWeeks(kindergartenId, {
+      groupId: saved.groupId,
+    });
+    return saved;
   }
 
   async removeSlot(
@@ -254,7 +287,14 @@ export class ScheduleService {
   ): Promise<ScheduleTemplate> {
     const template = await this.requireTemplate(kindergartenId, templateId);
     template.removeSlot(slotId);
-    return await this.templateRepo.save(kindergartenId, template);
+    // Order matters: `save()` DELETEs the dropped slot row first, the FK
+    // (ON DELETE SET NULL) NULLs `template_slot_id` on any already-materialized
+    // event, and only THEN do we sweep — by `origin`, which the FK cannot erase.
+    const saved = await this.templateRepo.save(kindergartenId, template);
+    await this.rematerializeFutureWeeks(kindergartenId, {
+      groupId: saved.groupId,
+    });
+    return saved;
   }
 
   // ── Activity events ─────────────────────────────────────────────────────
@@ -271,6 +311,7 @@ export class ScheduleService {
         kindergartenId,
         groupId: input.groupId,
         templateSlotId: null,
+        origin: 'adhoc',
         activityName: input.activityName,
         category: input.category ?? null,
         locationId: input.locationId ?? null,
@@ -495,6 +536,7 @@ export class ScheduleService {
                 kindergartenId,
                 groupId: group.id,
                 templateSlotId: slot.id,
+                origin: 'template',
                 activityName: slot.activityName,
                 category: slot.category,
                 locationId: slot.locationId,
@@ -541,6 +583,144 @@ export class ScheduleService {
     }
 
     return { copiedGroups, skippedGroups, totalEvents, snapshots };
+  }
+
+  /**
+   * Re-project templates onto every week that has ALREADY been materialized and
+   * is not yet over. This is the missing bridge between a template *definition*
+   * and the materialized `activity_events` parents actually read.
+   *
+   * The problem it solves: `copyWeekToNext` is idempotent per (group, week) via
+   * `schedule_week_snapshots`, so a week is materialized exactly ONCE. Every
+   * later template edit was therefore invisible to parents — they stayed pinned
+   * to whatever the template looked like at materialization time, forever. Worse,
+   * `activity_events.template_slot_id` is ON DELETE SET NULL, so slots dropped by
+   * a template edit left their already-materialized events behind as orphans with
+   * stale names and a NULLed FK. `origin` (write-once, immutable) is what makes
+   * those orphans reachable: they are still `origin='template'` even after the FK
+   * is gone, which is exactly what distinguishes them from genuine ad-hoc events.
+   *
+   * @param opts.groupId narrows to a single group. `null`/omitted means every
+   *   group — a kg-wide template (`groupId === null`) affects all of them.
+   *
+   * Window: weeks whose snapshot `week_start_date >= startOfIsoWeek(now)`. This
+   * deliberately INCLUDES the current, in-flight week, and only ever touches
+   * events with `starts_at > now`. That guard is the whole design — it rebuilds
+   * the *remainder* of the current week while leaving everything already past
+   * untouched, so an admin's edit today fixes the parents' view today instead of
+   * in two weeks.
+   *
+   * Preserved by construction:
+   *   - past weeks — no snapshot in range, never visited;
+   *   - already started/finished/cancelled events — `status != 'scheduled'`;
+   *   - events earlier today than `now` — `starts_at <= now`;
+   *   - ad-hoc events — `origin = 'adhoc'`, never deleted and never recreated.
+   *
+   * This method never creates snapshots and never touches a week that has no
+   * snapshot: the cron owns the forward materialization horizon, we only re-sync
+   * weeks it already claimed. A template whose slots now project to nothing for a
+   * group (e.g. after `deleteTemplate`) correctly ends up with zero events.
+   *
+   * Atomicity: like the rest of this service we do NOT open our own transaction —
+   * the ambient per-request TX from `TenantContextInterceptor` (or, on the cron
+   * path, the per-kg TX opened by `WeeklyRolloutService`) already wraps us, so the
+   * delete+insert per week cannot be observed half-done and the repo's
+   * `manager()` keeps every statement inside the transaction that issued
+   * `SET LOCAL app.kindergarten_id` (RLS stays enforced).
+   */
+  async rematerializeFutureWeeks(
+    kindergartenId: string,
+    opts: { groupId?: string | null },
+  ): Promise<RematerializeResult> {
+    const now = this.clock.now();
+    const currentWeekMonday = startOfIsoWeek(now);
+
+    // `null` (kg-wide template) means "every group" → no groupId filter at all.
+    const snapshots = await this.snapshotRepo.list(kindergartenId, {
+      groupId: opts.groupId ?? undefined,
+      from: currentWeekMonday,
+    });
+
+    let rebuiltWeeks = 0;
+    let deletedEvents = 0;
+    let insertedEvents = 0;
+
+    // Templates depend only on the week, not the group — cache per week so N
+    // groups sharing a week cost one `listActiveValidOn` instead of N.
+    const templatesByWeek = new Map<number, ScheduleTemplate[]>();
+
+    for (const snapshot of snapshots) {
+      const weekStart = normalizeSnapshotWeekStart(snapshot.weekStartDate);
+      // Sweep window is the UTC-anchored week, matching how copyWeekToNext
+      // anchors the week it materializes. Caveat: since slot times are now
+      // resolved in Asia/Almaty (UTC+5), a Monday slot authored before 05:00
+      // local projects to the *previous* Sunday in UTC and therefore falls
+      // outside this window — such an event would be re-inserted without its
+      // stale copy being swept. Kindergarten slots are daytime (07:00–19:00
+      // local), so this cannot trigger on real data; revisit the bound here if
+      // pre-dawn slots ever become legitimate.
+      const weekEnd = new Date(weekStart.getTime() + 7 * DAY_MS);
+
+      let templates = templatesByWeek.get(weekStart.getTime());
+      if (templates === undefined) {
+        templates = await this.templateRepo.listActiveValidOn(
+          kindergartenId,
+          weekStart,
+        );
+        templatesByWeek.set(weekStart.getTime(), templates);
+      }
+
+      // Same applicability rule as copyWeekToNext: kg-wide + this group's own.
+      const applicable = templates.filter(
+        (t) => t.groupId === null || t.groupId === snapshot.groupId,
+      );
+
+      const events: ActivityEvent[] = [];
+      for (const template of applicable) {
+        for (const slot of template.slots) {
+          const isoDay = ISO_DAY_FOR_VALUE[slot.dayOfWeek];
+          const eventDate = new Date(
+            weekStart.getTime() + (isoDay - 1) * DAY_MS,
+          );
+          const startsAt = combineDateAndTime(eventDate, slot.startTime);
+          // Never re-create what the DELETE below deliberately spares.
+          if (startsAt.getTime() <= now.getTime()) continue;
+          events.push(
+            ActivityEvent.createScheduled(
+              {
+                id: randomUUID(),
+                kindergartenId,
+                groupId: snapshot.groupId,
+                templateSlotId: slot.id,
+                origin: 'template',
+                activityName: slot.activityName,
+                category: slot.category,
+                locationId: slot.locationId,
+                startsAt,
+                endsAt: combineDateAndTime(eventDate, slot.endTime),
+                notes: null,
+              },
+              this.clock,
+            ),
+          );
+        }
+      }
+
+      deletedEvents += await this.eventRepo.deleteTemplateScheduledInRange(
+        kindergartenId,
+        snapshot.groupId,
+        weekStart,
+        weekEnd,
+        now,
+      );
+      if (events.length > 0) {
+        await this.eventRepo.createMany(kindergartenId, events);
+        insertedEvents += events.length;
+      }
+      rebuiltWeeks += 1;
+    }
+
+    return { rebuiltWeeks, deletedEvents, insertedEvents };
   }
 
   // ── identity overlay: location display name ─────────────────────────────
@@ -685,21 +865,47 @@ function startOfIsoWeek(d: Date): Date {
 }
 
 /**
- * Build a UTC timestamp from a UTC date and a time string ("HH:MM" or
- * "HH:MM:SS"). The slot times are stored without timezone — we treat them
- * as UTC for the projection so the relative order of events is preserved.
+ * Normalize a `schedule_week_snapshots.week_start_date` that was read back from
+ * PG into the UTC-midnight instant of the Monday it names.
+ *
+ * Why this is not simply `startOfIsoWeek(d)`: `week_start_date` is a PG `date`,
+ * and node-postgres parses a bare date into a *local-midnight* JS Date
+ * (`new Date(y, m - 1, d)`). On a UTC server that already IS UTC midnight, but
+ * on a server east of Greenwich — the dev box runs UTC+5 — '2026-05-04' comes
+ * back as `2026-05-03T19:00:00Z`, i.e. a Sunday. `startOfIsoWeek` would then
+ * snap it to the *previous* Monday and we would rebuild the wrong week.
+ *
+ * The stored value is always a Monday by construction (`copyWeekToNext` only
+ * ever writes `nextMonday`), and every plausible parse of it lands within ±24h
+ * of that Monday's UTC midnight. Snapping to the *nearest* Monday therefore
+ * recovers the intended week under both the local-midnight and the UTC-midnight
+ * reading, without depending on the process timezone.
+ */
+function normalizeSnapshotWeekStart(d: Date): Date {
+  const mondayAtOrBefore = startOfIsoWeek(d);
+  const followingMonday = new Date(mondayAtOrBefore.getTime() + 7 * DAY_MS);
+  const distanceBack = d.getTime() - mondayAtOrBefore.getTime();
+  const distanceForward = followingMonday.getTime() - d.getTime();
+  return distanceBack <= distanceForward ? mondayAtOrBefore : followingMonday;
+}
+
+/**
+ * Build the UTC instant for a slot's wall-clock `time` ("HH:MM" or "HH:MM:SS")
+ * on the calendar day of `date`.
+ *
+ * `schedule_template_slots.start_time` / `end_time` are PG `time` columns — a
+ * naive wall clock authored by the kindergarten, with no zone attached. They
+ * are therefore interpreted in the kindergarten's timezone (Asia/Almaty, UTC+5,
+ * no DST), NOT in UTC: a slot authored as 08:00 is 08:00 *local* → 03:00Z. The
+ * previous `Date.UTC(...)` spelling declared the wall clock to *be* UTC, which
+ * shifted every projected event +5h and made the apps render an 08:00 slot at
+ * 13:00.
+ *
+ * Callers pass `date` as the UTC-midnight instant of the target day
+ * (`nextMonday + (isoDay - 1) * DAY_MS`). At 00:00Z the Asia/Almaty calendar day
+ * is already the same day (05:00 local), so the helper's "calendar day rendered
+ * in the zone" semantics agree with the caller's intent.
  */
 function combineDateAndTime(date: Date, time: string): Date {
-  const [hh, mm, ss] = time.split(':');
-  return new Date(
-    Date.UTC(
-      date.getUTCFullYear(),
-      date.getUTCMonth(),
-      date.getUTCDate(),
-      parseInt(hh, 10),
-      parseInt(mm, 10),
-      ss ? parseInt(ss, 10) : 0,
-      0,
-    ),
-  );
+  return combineDateAndTimeInTimezone(date, time);
 }

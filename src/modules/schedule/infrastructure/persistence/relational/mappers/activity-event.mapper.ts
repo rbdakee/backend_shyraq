@@ -8,6 +8,7 @@ export class ActivityEventMapper {
       kindergartenId: row.kindergarten_id,
       groupId: row.group_id,
       templateSlotId: row.template_slot_id,
+      origin: row.origin,
       activityName: row.activity_name,
       category: row.category,
       locationId: row.location_id,

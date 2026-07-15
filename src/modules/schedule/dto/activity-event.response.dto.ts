@@ -1,5 +1,9 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  ACTIVITY_EVENT_ORIGIN_VALUES,
+  ActivityEventOriginValue,
+} from '../domain/value-objects/activity-event-origin.vo';
+import {
   ACTIVITY_EVENT_STATUS_VALUES,
   ActivityEventStatusValue,
 } from '../domain/value-objects/activity-event-status.vo';
@@ -21,9 +25,18 @@ export class ActivityEventResponseDto {
   @ApiPropertyOptional({
     example: 'b1a2c3d4-0000-0000-0000-000000000001',
     nullable: true,
-    description: 'null = ad-hoc event',
+    description:
+      'Originating template slot. Nullable, and null does NOT imply ad-hoc: the FK is ON DELETE SET NULL, so editing a template clears it on events already projected from the deleted slot. Read `origin` to tell provenance.',
   })
   templateSlotId!: string | null;
+
+  @ApiProperty({
+    enum: ACTIVITY_EVENT_ORIGIN_VALUES,
+    example: 'template',
+    description:
+      "Durable provenance, set once at creation. 'template' = projected from a schedule template slot; 'adhoc' = created directly by staff. Unlike `templateSlotId` this survives deletion of the originating slot, so `origin='template'` with `templateSlotId=null` identifies an orphaned event whose template slot is gone.",
+  })
+  origin!: ActivityEventOriginValue;
 
   @ApiProperty({ example: 'Утренний круг' })
   activityName!: string;

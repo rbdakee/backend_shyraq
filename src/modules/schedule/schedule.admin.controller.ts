@@ -42,6 +42,10 @@ import { CreateSlotDto } from './dto/create-slot.dto';
 import { ListActivityEventsQuery } from './dto/list-activity-events.query';
 import { ListSchedulesTemplatesQuery } from './dto/list-templates.query';
 import { ListWeekSnapshotsQuery } from './dto/list-week-snapshots.query';
+import {
+  RebuildWeekSnapshotsDto,
+  RematerializeSummaryDto,
+} from './dto/rebuild-week-snapshots.dto';
 import { ScheduleTemplateResponseDto } from './dto/schedule-template.response.dto';
 import { UpdateActivityEventDto } from './dto/update-activity-event.dto';
 import { UpdateScheduleTemplateDto } from './dto/update-schedule-template.dto';
@@ -413,6 +417,35 @@ export class ScheduleAdminController {
       copiedGroups: result.copiedGroups,
       skippedGroups: result.skippedGroups,
       totalEvents: result.totalEvents,
+    };
+  }
+
+  @Post('week-snapshots/rebuild')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Force re-projection of active templates onto every already-materialized week from the current ISO week forward.',
+    description:
+      'Template edits normally re-sync themselves — every template/slot mutation calls this same routine. This endpoint is the manual escape hatch for one-off data repair (e.g. weeks materialized before the auto-resync existed, which parents still see as stale ghost slots).\n\nOnly rewrites events with `origin=template`, `status=scheduled` and `starts_at > now`: ad-hoc events, events already started/completed/cancelled, and anything earlier today are all preserved. Weeks without a snapshot are NOT materialized here — the weekly cron owns that horizon. Safe to re-run; running it twice in a row is a no-op the second time.',
+  })
+  @ApiOkResponse({ type: RematerializeSummaryDto })
+  @ApiBadRequestResponse({
+    description: 'Validation error (groupId is not a UUID) / tenant_required.',
+  })
+  @ApiUnauthorizedResponse({ description: 'Bearer missing/invalid/revoked.' })
+  @ApiForbiddenResponse({ description: 'Caller is not admin.' })
+  async rebuildWeekSnapshots(
+    @Tenant() t: TenantContext,
+    @Body() dto: RebuildWeekSnapshotsDto,
+  ): Promise<RematerializeSummaryDto> {
+    const kgId = requireTenant(t);
+    const result = await this.service.rematerializeFutureWeeks(kgId, {
+      groupId: dto.groupId ?? null,
+    });
+    return {
+      rebuiltWeeks: result.rebuiltWeeks,
+      deletedEvents: result.deletedEvents,
+      insertedEvents: result.insertedEvents,
     };
   }
 }

@@ -1,5 +1,6 @@
 import { InvariantViolationError } from '@/shared-kernel/domain/errors';
 import { InvalidEventTransitionError } from '../errors/invalid-event-transition.error';
+import { ActivityEventOriginValue } from '../value-objects/activity-event-origin.vo';
 import {
   ActivityEventStatus,
   ActivityEventStatusValue,
@@ -19,6 +20,12 @@ export interface ActivityEventState {
   kindergartenId: string;
   groupId: string;
   templateSlotId: string | null;
+  /**
+   * Durable provenance. Unlike `templateSlotId` (ON DELETE SET NULL, so a
+   * template edit erases it) this survives slot deletion — a 'template' event
+   * with `templateSlotId === null` is an orphan, not an ad-hoc event.
+   */
+  origin: ActivityEventOriginValue;
   activityName: string;
   /** Slot type for day-view colouring — copied from the slot at projection. */
   category: SlotCategoryValue;
@@ -37,6 +44,12 @@ export interface CreateActivityEventInput {
   kindergartenId: string;
   groupId: string;
   templateSlotId?: string | null;
+  /**
+   * Required, with no default on purpose: a silent fallback is exactly the
+   * ambiguity this field exists to remove. Callers state provenance explicitly
+   * ('adhoc' from createAdHocEvent, 'template' from copyWeekToNext).
+   */
+  origin: ActivityEventOriginValue;
   activityName: string;
   category?: string | null;
   locationId?: string | null;
@@ -101,6 +114,7 @@ export class ActivityEvent {
     readonly kindergartenId: string,
     readonly groupId: string,
     private _templateSlotId: string | null,
+    private readonly _origin: ActivityEventOriginValue,
     private _activityName: string,
     private _category: SlotCategoryValue,
     private _locationId: string | null,
@@ -124,6 +138,7 @@ export class ActivityEvent {
       input.kindergartenId,
       input.groupId,
       input.templateSlotId ?? null,
+      input.origin,
       input.activityName,
       normalizeCategory(input.category),
       input.locationId ?? null,
@@ -143,6 +158,7 @@ export class ActivityEvent {
       state.kindergartenId,
       state.groupId,
       state.templateSlotId,
+      state.origin,
       state.activityName,
       state.category,
       state.locationId,
@@ -160,6 +176,10 @@ export class ActivityEvent {
 
   get templateSlotId(): string | null {
     return this._templateSlotId;
+  }
+  /** Write-once provenance — no setter; not erased by a slot delete. */
+  get origin(): ActivityEventOriginValue {
+    return this._origin;
   }
   get activityName(): string {
     return this._activityName;
@@ -260,6 +280,7 @@ export class ActivityEvent {
       kindergartenId: this.kindergartenId,
       groupId: this.groupId,
       templateSlotId: this._templateSlotId,
+      origin: this._origin,
       activityName: this._activityName,
       category: this._category,
       locationId: this._locationId,

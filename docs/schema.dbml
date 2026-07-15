@@ -673,7 +673,14 @@ Table activity_events {
   kindergarten_id  uuid                   [not null, ref: > kindergartens.id]
   group_id         uuid                   [not null, ref: > groups.id]
   template_slot_id uuid                   [ref: > schedule_template_slots.id]
-  // null = ad-hoc event created by staff outside template
+  // FK объявлен ON DELETE SET NULL → обнуляется, когда слот удаляют правкой шаблона.
+  // ВНИМАНИЕ: null НЕ означает ad-hoc. Осиротевшее событие от удалённого слота тоже
+  // имеет null. Для происхождения используй `origin` — он переживает удаление слота.
+  origin           varchar                [not null, default: 'template']
+  // varchar(20) + CHECK ('template','adhoc') — не PG enum, как recurrence/source.
+  // 'template' = спроецировано из слота (week copy / rematerialize); 'adhoc' = создано руками.
+  // Immutable после вставки. Пересборка сносит только origin='template', поэтому ad-hoc
+  // события переживают правку шаблона, а призраки от удалённых слотов — нет.
   activity_name    varchar                [not null]
   category         slot_category          [not null, default: 'activity']
   // копируется из слота при проекции (week copy); ad-hoc события → 'activity' по умолчанию
