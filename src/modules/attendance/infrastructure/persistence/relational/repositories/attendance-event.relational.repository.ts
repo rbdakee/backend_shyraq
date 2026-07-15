@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { EntityManager, Repository } from 'typeorm';
+import { EntityManager, IsNull, Repository } from 'typeorm';
 import { tenantStorage } from '@/database/tenant-storage';
 import { AttendanceEvent } from '../../../../domain/entities/attendance-event.entity';
 import {
@@ -42,6 +42,7 @@ export class AttendanceEventRelationalRepository extends AttendanceEventReposito
       notes: state.notes,
       recorded_at: state.recordedAt,
       created_at: state.createdAt,
+      deleted_at: state.deletedAt,
     });
     const row = await m.getRepository(AttendanceEventTypeOrmEntity).findOne({
       where: { id: state.id, kindergarten_id: kindergartenId },
@@ -54,16 +55,33 @@ export class AttendanceEventRelationalRepository extends AttendanceEventReposito
     return AttendanceEventMapper.toDomain(row);
   }
 
+  /**
+   * Live rows only — a soft-deleted event reads as absent, so patch/delete of
+   * an already-deleted id surfaces `attendance_event_not_found` rather than
+   * silently mutating a tombstone.
+   */
   async findById(
     kindergartenId: string,
     eventId: string,
   ): Promise<AttendanceEvent | null> {
     const row = await this.manager()
       .getRepository(AttendanceEventTypeOrmEntity)
-      .findOne({ where: { id: eventId, kindergarten_id: kindergartenId } });
+      .findOne({
+        where: {
+          id: eventId,
+          kindergarten_id: kindergartenId,
+          deleted_at: IsNull(),
+        },
+      });
     return row ? AttendanceEventMapper.toDomain(row) : null;
   }
 
+  /**
+   * Persists every mutable field, including the admin-only child_id /
+   * event_type corrections and the soft-delete tombstone. `method`,
+   * `recorded_by` and `created_at` are deliberately absent — they are
+   * immutable on the domain entity.
+   */
   async update(
     kindergartenId: string,
     event: AttendanceEvent,
@@ -73,9 +91,13 @@ export class AttendanceEventRelationalRepository extends AttendanceEventReposito
     await m.getRepository(AttendanceEventTypeOrmEntity).update(
       { id: state.id, kindergarten_id: kindergartenId },
       {
+        child_id: state.childId,
+        event_type: state.eventType,
         recorded_at: state.recordedAt,
         notes: state.notes,
         pickup_user_id: state.pickupUserId,
+        pickup_request_id: state.pickupRequestId,
+        deleted_at: state.deletedAt,
       },
     );
     const row = await m.getRepository(AttendanceEventTypeOrmEntity).findOne({
@@ -98,6 +120,7 @@ export class AttendanceEventRelationalRepository extends AttendanceEventReposito
       .getRepository(AttendanceEventTypeOrmEntity)
       .createQueryBuilder('e')
       .where('e.kindergarten_id = :kg', { kg: kindergartenId })
+      .andWhere('e.deleted_at IS NULL')
       .andWhere('e.child_id = :cid', { cid: childId });
     if (filter.from !== undefined) {
       qb.andWhere('e.recorded_at >= :from', { from: filter.from });
@@ -122,7 +145,8 @@ export class AttendanceEventRelationalRepository extends AttendanceEventReposito
     const qb = this.manager()
       .getRepository(AttendanceEventTypeOrmEntity)
       .createQueryBuilder('e')
-      .where('e.kindergarten_id = :kg', { kg: kindergartenId });
+      .where('e.kindergarten_id = :kg', { kg: kindergartenId })
+      .andWhere('e.deleted_at IS NULL');
     if (filter.from !== undefined) {
       qb.andWhere('e.recorded_at >= :from', { from: filter.from });
     }
@@ -152,6 +176,7 @@ export class AttendanceEventRelationalRepository extends AttendanceEventReposito
       .createQueryBuilder('e')
       .innerJoin('children', 'c', 'c.id = e.child_id')
       .where('e.kindergarten_id = :kg', { kg: kindergartenId })
+      .andWhere('e.deleted_at IS NULL')
       .andWhere('c.current_group_id = :gid', { gid: filter.groupId });
     if (filter.from !== undefined) {
       qb.andWhere('e.recorded_at >= :from', { from: filter.from });
@@ -187,11 +212,15 @@ export class AttendanceEventRelationalRepository extends AttendanceEventReposito
       groupWhere = `AND c.current_group_id = $${params.length}`;
     }
     const rows = await this.manager().query(
+      // `ae.deleted_at IS NULL` must sit INSIDE the CTE: filtering after the
+      // DISTINCT ON would let a deleted row win the last-event race and then
+      // vanish, leaving the child uncounted in both buckets.
       `WITH last_ev AS (
          SELECT DISTINCT ON (ae.child_id) ae.child_id, ae.event_type
            FROM attendance_events ae
            ${groupJoin}
           WHERE ae.kindergarten_id = $1
+            AND ae.deleted_at IS NULL
             AND ae.recorded_at >= $2
             AND ae.recorded_at < $3
             ${groupWhere}

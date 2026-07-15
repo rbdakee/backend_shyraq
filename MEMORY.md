@@ -114,7 +114,7 @@ npm run start:dev
 # → /api/v1/...
 ```
 
-Migrations создаются: `npm run migration:create -- --name=<name>` или auto-generate из entity diff: `npm run migration:generate -- src/database/migrations/<Name>`.
+Migrations создаются: `npm run migration:create -- src/database/migrations/<Name>` или auto-generate из entity diff: `npm run migration:generate -- src/database/migrations/<Name>`. Обе команды принимают **позиционный путь** — флага `--name` у TypeORM CLI 0.3 нет.
 
 `saas_users` пустая после миграций — `npm run seed:super-admin` (`src/database/seeds/seed-super-admin.ts`) идемпотентно upsert'ит супер-админа из `SUPER_ADMIN_SEED_*`. Запускать на каждом деплое после миграций.
 

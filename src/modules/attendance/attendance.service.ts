@@ -1,5 +1,7 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
+import { toAuditSnapshot } from '@/modules/audit/domain/entities/audit-log-entry.entity';
+import { AuditService } from '@/modules/audit/audit.service';
 import { NotificationPort } from '@/common/notifications/notification.port';
 import { ChildNotFoundError } from '@/modules/child/domain/errors/child-not-found.error';
 import { ChildGuardianRepository } from '@/modules/child/infrastructure/persistence/child-guardian.repository';
@@ -9,7 +11,10 @@ import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistenc
 import { StaffService } from '@/modules/staff/staff.service';
 import { UserRepository } from '@/modules/users/infrastructure/persistence/user.repository';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
-import { AttendanceEvent } from './domain/entities/attendance-event.entity';
+import {
+  AttendanceEvent,
+  AttendanceEventState,
+} from './domain/entities/attendance-event.entity';
 import { ChildDailyStatus } from './domain/entities/child-daily-status.entity';
 import { TimelineEntry } from './domain/entities/timeline-entry.entity';
 import { AttendanceEditWindowExpiredError } from './domain/errors/attendance-edit-window-expired.error';
@@ -17,6 +22,11 @@ import { AttendanceEventNotFoundError } from './domain/errors/attendance-event-n
 import { InvalidAttendancePickupError } from './domain/errors/invalid-attendance-pickup.error';
 import { InvalidAttendanceTimestampError } from './domain/errors/invalid-attendance-timestamp.error';
 import { PickupUserNotAllowedError } from './domain/errors/pickup-user-not-allowed.error';
+import { AttendanceCorrectionAdminOnlyError } from './domain/errors/attendance-correction-admin-only.error';
+import {
+  AttendanceEventType,
+  AttendanceEventTypeValue,
+} from './domain/value-objects/attendance-event-type.vo';
 import { AttendanceMethod } from './domain/value-objects/attendance-method.vo';
 import { ChildIntradayStatus } from './domain/value-objects/child-intraday-status.vo';
 import { TimelineEntryType } from './domain/value-objects/timeline-entry-type.vo';
@@ -40,12 +50,25 @@ function nonBlankOrNull(value: string | null | undefined): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-export interface CheckInOpts {
+/**
+ * Suppresses the parent-facing push/WS notification for this write. Default
+ * (undefined) is `true` — the staff flow always notifies, unchanged.
+ *
+ * The admin flow passes `false` when back-filling a past day: a parent should
+ * not get a "your child just arrived" push at 22:00 because the admin is
+ * closing yesterday's register. The attendance row, timeline entry and audit
+ * entry are still written — only the notification is skipped.
+ */
+interface NotifyOpt {
+  notify?: boolean;
+}
+
+export interface CheckInOpts extends NotifyOpt {
   recordedAt?: Date;
   notes?: string | null;
 }
 
-export interface CheckOutOpts {
+export interface CheckOutOpts extends NotifyOpt {
   recordedAt?: Date;
   notes?: string | null;
   /**
@@ -67,6 +90,13 @@ export interface PatchAttendanceEventInput {
   recordedAt?: Date;
   notes?: string | null;
   pickupUserId?: string;
+  /**
+   * Admin-only. Re-points the event at another child (filed against the wrong
+   * kid). Non-admin callers get `attendance_correction_admin_only`.
+   */
+  childId?: string;
+  /** Admin-only. Flips check_in ⇄ check_out (mis-pressed button). */
+  eventType?: AttendanceEventTypeValue;
 }
 
 export interface SetDailyStatusInput {
@@ -97,8 +127,29 @@ export interface AttendanceDaySummaryResult {
   late: number;
 }
 
+/**
+ * The caller's authority over a patch, split into the two independent things
+ * it actually governs.
+ *
+ * These were one `isAdmin` flag. That was already imprecise — it only ever
+ * meant "skip the edit window", and `reception` gets that through the admin
+ * route by design. Once child_id / event_type became patchable, the single
+ * flag would have handed reception the structural corrections too, so the two
+ * concerns are now named separately and granted separately.
+ */
 export interface PatchEventOpts {
-  isAdmin: boolean;
+  /**
+   * Skips the same-calendar-day (Asia/Almaty) edit window. True on the admin
+   * route for both admin and reception — front-desk staff correcting an
+   * earlier day is the point of that route.
+   */
+  skipEditWindow: boolean;
+  /**
+   * Permits the `child_id` / `event_type` corrections. Admin only: they
+   * re-point the row onto another child or flip its direction, cascading into
+   * daily_status and the parent-visible timeline.
+   */
+  allowStructuralCorrection: boolean;
 }
 
 /**
@@ -123,16 +174,31 @@ export interface PatchEventOpts {
  *   too — no phantom events. The worker process later fans the outbox row
  *   out to WS + push.
  *
+ * Audit trail:
+ *   Every mutation writes an `audit_log` row through `AuditService` inside the
+ *   same ambient TX, carrying actor + before/after snapshots. This is what
+ *   permits child_id / event_type to be editable at all (see
+ *   `AttendanceEvent`'s docblock) — history lives in audit_log, not in the
+ *   row's immutability. Do not add a mutation path here without an audit
+ *   write.
+ *
  * Per-method side-effects:
  *   checkIn         — INSERT event + timeline; UPSERT daily_status if
- *                     promotable (absent | late → present); notify.
+ *                     promotable (absent | late → present); audit(create);
+ *                     notify unless opts.notify === false.
  *   checkOut        — validate pickup; INSERT event + timeline; daily_status
- *                     UNCHANGED (per spec); notify.
- *   patchEvent      — UPDATE event in place (recorded_at | notes | pickup);
- *                     non-admin must be inside same calendar day in
- *                     Asia/Almaty. No notification (silent edit).
- *   setDailyStatus  — UPSERT daily_status; notify.
- *   listEventsBy*   — read-only.
+ *                     UNCHANGED (per spec); audit(create); notify unless
+ *                     opts.notify === false.
+ *   patchEvent      — UPDATE event in place (recorded_at | notes | pickup,
+ *                     plus admin-only child_id | event_type); cascades to the
+ *                     paired timeline entry and recomputes daily_status for
+ *                     every affected (child, day); audit(update). Non-admin
+ *                     must be inside same calendar day in Asia/Almaty. No
+ *                     notification (silent edit).
+ *   deleteEvent     — admin-only soft-delete; removes the paired timeline
+ *                     entry; recomputes daily_status; audit(delete). Silent.
+ *   setDailyStatus  — UPSERT daily_status; audit(create|update); notify.
+ *   listEventsBy*   — read-only; live rows only (see the repository port).
  */
 @Injectable()
 export class AttendanceService {
@@ -146,6 +212,11 @@ export class AttendanceService {
     @Inject(ClockPort) private readonly clock: ClockPort,
     @Inject(NotificationPort)
     private readonly notifications: NotificationPort,
+    // Required, NOT @Optional — an unwired audit port must fail loudly at
+    // boot rather than silently drop the mutation trail. That is also why it
+    // sits before the optional overlay deps (TS forbids a required parameter
+    // after an optional one).
+    private readonly audit: AuditService,
     // Identity-overlay deps. Optional + appended last so the existing
     // service-unit wiring (positional `new AttendanceService(...)`) keeps
     // compiling. Resolvers fail closed (empty map / null) when undefined.
@@ -193,7 +264,8 @@ export class AttendanceService {
       ),
     );
 
-    // 2) timeline_entries
+    // 2) timeline_entries — linked back to the event so an admin correction
+    //    (delete / re-point onto another child) can cascade to this row.
     const timeline = await this.timelineRepo.create(
       kindergartenId,
       TimelineEntry.createNew(
@@ -205,6 +277,7 @@ export class AttendanceService {
           title: 'Check-in',
           recordedBy: staff,
           entryTime: recordedAt,
+          sourceEventId: event.id,
         },
         this.clock,
       ),
@@ -261,22 +334,35 @@ export class AttendanceService {
       dailyStatus = current ?? existing;
     }
 
-    // 4) outbox notification — atomic with the attendance write (same TX).
-    await this.notifications.notifyAttendanceCheckIn({
+    // 4) audit trail — atomic with the write (same TX).
+    await this.audit.record({
       kindergartenId,
-      childId,
-      eventId: event.id,
-      recordedAt: event.recordedAt,
-      recordedByStaffMemberId: event.recordedBy,
+      entityType: 'attendance_event',
+      entityId: event.id,
+      action: 'create',
+      actorUserId: callerUserId,
+      actorStaffId: staff,
+      after: toAuditSnapshot(event.toState()),
     });
-    await this.notifications.notifyTimelineEntryCreated({
-      kindergartenId,
-      childId,
-      entryId: timeline.id,
-      entryType: timeline.entryType.value,
-      entryTime: timeline.entryTime,
-      recordedByStaffMemberId: timeline.recordedBy,
-    });
+
+    // 5) outbox notification — atomic with the attendance write (same TX).
+    if (opts.notify !== false) {
+      await this.notifications.notifyAttendanceCheckIn({
+        kindergartenId,
+        childId,
+        eventId: event.id,
+        recordedAt: event.recordedAt,
+        recordedByStaffMemberId: event.recordedBy,
+      });
+      await this.notifications.notifyTimelineEntryCreated({
+        kindergartenId,
+        childId,
+        entryId: timeline.id,
+        entryType: timeline.entryType.value,
+        entryTime: timeline.entryTime,
+        recordedByStaffMemberId: timeline.recordedBy,
+      });
+    }
 
     return { event, dailyStatus, timelineEntry: timeline };
   }
@@ -345,6 +431,7 @@ export class AttendanceService {
           title: 'Check-out',
           recordedBy: staff,
           entryTime: recordedAt,
+          sourceEventId: event.id,
         },
         this.clock,
       ),
@@ -353,23 +440,35 @@ export class AttendanceService {
     // Per spec: check_out does NOT mutate child_daily_status. The intra-day
     // status only flips on check_in or via explicit setDailyStatus.
 
-    await this.notifications.notifyAttendanceCheckOut({
+    await this.audit.record({
       kindergartenId,
-      childId,
-      eventId: event.id,
-      recordedAt: event.recordedAt,
-      recordedByStaffMemberId: event.recordedBy,
-      pickupUserId,
-      pickupRequestId,
+      entityType: 'attendance_event',
+      entityId: event.id,
+      action: 'create',
+      actorUserId: callerUserId,
+      actorStaffId: staff,
+      after: toAuditSnapshot(event.toState()),
     });
-    await this.notifications.notifyTimelineEntryCreated({
-      kindergartenId,
-      childId,
-      entryId: timeline.id,
-      entryType: timeline.entryType.value,
-      entryTime: timeline.entryTime,
-      recordedByStaffMemberId: timeline.recordedBy,
-    });
+
+    if (opts.notify !== false) {
+      await this.notifications.notifyAttendanceCheckOut({
+        kindergartenId,
+        childId,
+        eventId: event.id,
+        recordedAt: event.recordedAt,
+        recordedByStaffMemberId: event.recordedBy,
+        pickupUserId,
+        pickupRequestId,
+      });
+      await this.notifications.notifyTimelineEntryCreated({
+        kindergartenId,
+        childId,
+        entryId: timeline.id,
+        entryType: timeline.entryType.value,
+        entryTime: timeline.entryTime,
+        recordedByStaffMemberId: timeline.recordedBy,
+      });
+    }
 
     return { event, dailyStatus: null, timelineEntry: timeline };
   }
@@ -383,9 +482,10 @@ export class AttendanceService {
     patch: PatchAttendanceEventInput,
     opts: PatchEventOpts,
   ): Promise<AttendanceEvent> {
-    // Resolve staff member to ensure the caller has a valid active record
-    // in this tenant (defence-in-depth — RolesGuard already gate-keeps).
-    await this.resolveCallerStaffMemberId(kindergartenId, callerUserId);
+    const staff = await this.resolveCallerStaffMemberId(
+      kindergartenId,
+      callerUserId,
+    );
 
     if (patch.recordedAt !== undefined) {
       this.assertNotFuture(patch.recordedAt);
@@ -396,7 +496,18 @@ export class AttendanceService {
       throw new AttendanceEventNotFoundError(eventId);
     }
 
-    if (!opts.isAdmin) {
+    // child_id / event_type are structural corrections, not ordinary edits:
+    // they cascade into daily_status and the parent-visible timeline.
+    if (!opts.allowStructuralCorrection) {
+      if (patch.childId !== undefined) {
+        throw new AttendanceCorrectionAdminOnlyError(eventId, 'child_id');
+      }
+      if (patch.eventType !== undefined) {
+        throw new AttendanceCorrectionAdminOnlyError(eventId, 'event_type');
+      }
+    }
+
+    if (!opts.skipEditWindow) {
       // TODO(B22): make window configurable per kindergarten settings.
       const now = this.clock.now();
       const recordedDay = formatLocalIsoDate(event.recordedAt, KG_TZ);
@@ -410,18 +521,50 @@ export class AttendanceService {
       }
     }
 
-    if (patch.pickupUserId !== undefined) {
-      // Disallow patching a pickup user onto a check-in row.
-      if (event.eventType.value === 'check_in') {
-        throw new InvalidAttendancePickupError(
-          `cannot set pickup_user_id on a check_in event (${eventId})`,
-        );
-      }
-      if (patch.pickupUserId !== event.pickupUserId) {
+    // Snapshot BEFORE any mutation — this is what audit_log.before carries,
+    // and what tells us which (child, date) buckets need recomputing.
+    const before = event.toState();
+
+    // Resolve the post-patch shape up front so every validation below reasons
+    // about the row as it will END UP, not as it currently is. Patching
+    // `pickupUserId` onto a row that is simultaneously flipped to check_out is
+    // legal; onto one that stays check_in is not.
+    const nextChildId = patch.childId ?? before.childId;
+    const nextEventType =
+      patch.eventType !== undefined
+        ? AttendanceEventType.from(patch.eventType)
+        : event.eventType;
+    const nextPickupUserId =
+      patch.pickupUserId !== undefined
+        ? patch.pickupUserId
+        : before.pickupUserId;
+
+    if (patch.childId !== undefined && patch.childId !== before.childId) {
+      await this.assertChildExists(kindergartenId, patch.childId);
+    }
+
+    if (
+      patch.pickupUserId !== undefined &&
+      nextEventType.value === 'check_in'
+    ) {
+      throw new InvalidAttendancePickupError(
+        `cannot set pickup_user_id on a check_in event (${eventId})`,
+      );
+    }
+
+    // Re-validate the (child, pickup user) pair whenever either side moves.
+    // Re-pointing a check_out at another child MUST re-check the pickup
+    // guardian — otherwise the row would claim child B was collected by
+    // someone only approved for child A.
+    if (nextEventType.value === 'check_out' && nextPickupUserId !== null) {
+      const pairChanged =
+        nextChildId !== before.childId ||
+        nextPickupUserId !== before.pickupUserId;
+      if (pairChanged) {
         await this.assertPickupAllowed(
           kindergartenId,
-          event.childId,
-          patch.pickupUserId,
+          nextChildId,
+          nextPickupUserId,
         );
       }
     }
@@ -430,9 +573,284 @@ export class AttendanceService {
       recordedAt: patch.recordedAt,
       notes: patch.notes,
       pickupUserId: patch.pickupUserId,
+      childId: patch.childId,
+      eventType: patch.eventType !== undefined ? nextEventType : undefined,
     });
 
-    return await this.eventRepo.update(kindergartenId, event);
+    const updated = await this.eventRepo.update(kindergartenId, event);
+
+    await this.cascadeTimeline(kindergartenId, before, updated);
+    await this.recomputeAffectedDailyStatuses(
+      kindergartenId,
+      before,
+      updated.toState(),
+      staff,
+    );
+
+    await this.audit.record({
+      kindergartenId,
+      entityType: 'attendance_event',
+      entityId: eventId,
+      action: 'update',
+      actorUserId: callerUserId,
+      actorStaffId: staff,
+      before: toAuditSnapshot(before),
+      after: toAuditSnapshot(updated.toState()),
+    });
+
+    return updated;
+  }
+
+  // ── DELETE event ───────────────────────────────────────────────────────
+
+  /**
+   * Soft-deletes an event filed by mistake, and unwinds its side-effects in
+   * the same transaction: the paired timeline entry is removed (it is a mirror
+   * of the event, not an independent record) and the affected child's
+   * daily_status is recomputed.
+   *
+   * Authorization is the caller's: the only HTTP route in is
+   * `DELETE /admin/attendance-events/:eventId`, which carries a method-level
+   * `@Roles('admin')`. `audit_log.before` keeps the full pre-delete snapshot,
+   * so the row remains reconstructible.
+   */
+  async deleteEvent(
+    kindergartenId: string,
+    eventId: string,
+    callerUserId: string,
+  ): Promise<void> {
+    const staff = await this.resolveCallerStaffMemberId(
+      kindergartenId,
+      callerUserId,
+    );
+
+    const event = await this.eventRepo.findById(kindergartenId, eventId);
+    if (event === null) {
+      // Already soft-deleted rows read as absent — re-deleting is a 404, not
+      // a silent no-op.
+      throw new AttendanceEventNotFoundError(eventId);
+    }
+
+    const before = event.toState();
+
+    event.softDelete(this.clock.now());
+    await this.eventRepo.update(kindergartenId, event);
+
+    const entry = await this.timelineRepo.findBySourceEventId(
+      kindergartenId,
+      eventId,
+    );
+    if (entry !== null) {
+      await this.timelineRepo.delete(kindergartenId, entry.id);
+    }
+
+    await this.recomputeDailyStatus(
+      kindergartenId,
+      before.childId,
+      formatLocalIsoDate(before.recordedAt, KG_TZ),
+      staff,
+    );
+
+    await this.audit.record({
+      kindergartenId,
+      entityType: 'attendance_event',
+      entityId: eventId,
+      action: 'delete',
+      actorUserId: callerUserId,
+      actorStaffId: staff,
+      before: toAuditSnapshot(before),
+    });
+  }
+
+  /**
+   * True when `recordedAt` falls on a calendar day other than today in
+   * Asia/Almaty. The admin controller uses it to suppress the parent push on
+   * a back-fill — see `NotifyOpt`. `undefined` (i.e. "now") is never
+   * backdated.
+   */
+  isBackdated(recordedAt?: Date): boolean {
+    if (recordedAt === undefined) return false;
+    return (
+      formatLocalIsoDate(recordedAt, KG_TZ) !==
+      formatLocalIsoDate(this.clock.now(), KG_TZ)
+    );
+  }
+
+  // ── Correction cascade ─────────────────────────────────────────────────
+
+  /**
+   * Realigns the timeline entry mirroring a corrected event.
+   *
+   * A changed child or recorded_at is a simple re-point. A flipped event_type
+   * is not: `TimelineEntry.entryType` is immutable by design, so the entry is
+   * replaced rather than mutated — the old row is deleted and a fresh one
+   * created with the correct type, carrying the ORIGINAL author forward. That
+   * keeps "an entry's type never changes" true while still producing the right
+   * timeline. Note the replacement gets a new `id`, so a client holding a
+   * deep-link to the old entry will 404.
+   *
+   * Entries predating `source_event_id` (or which the migration backfill could
+   * not match) resolve to null; the correction proceeds without a cascade
+   * rather than failing.
+   */
+  private async cascadeTimeline(
+    kindergartenId: string,
+    before: AttendanceEventState,
+    updated: AttendanceEvent,
+  ): Promise<void> {
+    const entry = await this.timelineRepo.findBySourceEventId(
+      kindergartenId,
+      updated.id,
+    );
+    if (entry === null) return;
+
+    const after = updated.toState();
+    const typeFlipped = before.eventType !== after.eventType;
+
+    if (!typeFlipped) {
+      if (
+        before.childId === after.childId &&
+        before.recordedAt.getTime() === after.recordedAt.getTime()
+      ) {
+        return;
+      }
+      entry.applyPatch({
+        childId: after.childId,
+        entryTime: after.recordedAt,
+      });
+      await this.timelineRepo.update(kindergartenId, entry);
+      return;
+    }
+
+    await this.timelineRepo.delete(kindergartenId, entry.id);
+    const entryType =
+      after.eventType === 'check_in'
+        ? TimelineEntryType.CHECK_IN
+        : TimelineEntryType.CHECK_OUT;
+    await this.timelineRepo.create(
+      kindergartenId,
+      TimelineEntry.createNew(
+        {
+          id: randomUUID(),
+          kindergartenId,
+          childId: after.childId,
+          entryType,
+          title: after.eventType === 'check_in' ? 'Check-in' : 'Check-out',
+          // The ORIGINAL author, not the admin doing the correcting. The entry
+          // still records who was at the door; who fixed the paperwork is
+          // audit_log's job. Using the corrector here would silently diverge
+          // the entry's author from the event's immutable `recorded_by`.
+          recordedBy: entry.recordedBy,
+          entryTime: after.recordedAt,
+          sourceEventId: updated.id,
+        },
+        this.clock,
+      ),
+    );
+  }
+
+  /**
+   * Recomputes every (child, day) bucket a correction could have touched —
+   * the one the event left and the one it landed in. They collapse to a
+   * single recompute when neither child nor day moved.
+   */
+  private async recomputeAffectedDailyStatuses(
+    kindergartenId: string,
+    before: AttendanceEventState,
+    after: AttendanceEventState,
+    staff: string,
+  ): Promise<void> {
+    const buckets = new Map<string, { childId: string; date: string }>();
+    for (const s of [before, after]) {
+      const date = formatLocalIsoDate(s.recordedAt, KG_TZ);
+      buckets.set(`${s.childId}|${date}`, { childId: s.childId, date });
+    }
+    for (const b of buckets.values()) {
+      await this.recomputeDailyStatus(kindergartenId, b.childId, b.date, staff);
+    }
+  }
+
+  /**
+   * Re-derives one (child, date) daily_status from the surviving check_in
+   * events for that day.
+   *
+   * Promotion mirrors `checkIn`: `absent|late → present` only.
+   *
+   * Demotion is deliberately narrow — `present → absent` ONLY when no live
+   * check_in remains. Explicit operator decisions (`sick`, `on_vacation`,
+   * `late`, `early_pickup`) are never overwritten: they outrank anything
+   * inferred from the event log. The documented trade-off: a `present` that
+   * staff set by hand WITHOUT a check-in is indistinguishable from one the
+   * check-in produced, so deleting an unrelated event on that day demotes it
+   * to `absent`.
+   */
+  private async recomputeDailyStatus(
+    kindergartenId: string,
+    childId: string,
+    isoDate: string,
+    staff: string,
+  ): Promise<void> {
+    const from = almatyDayStartUtc(isoDate);
+    const to = almatyDayStartUtc(isoDate, 1);
+    // Soft-deleted rows are already filtered out by the repository, so this
+    // only ever sees live check-ins.
+    const liveCheckIns = await this.eventRepo.listByChild(
+      kindergartenId,
+      childId,
+      { from, to, eventType: 'check_in', limit: 1 },
+    );
+    const existing = await this.dailyStatusRepo.findByChildAndDate(
+      kindergartenId,
+      childId,
+      isoDate,
+    );
+
+    if (liveCheckIns.length > 0) {
+      if (existing === null) {
+        await this.dailyStatusRepo.upsert(
+          kindergartenId,
+          ChildDailyStatus.createNew(
+            {
+              id: randomUUID(),
+              kindergartenId,
+              childId,
+              date: isoDate,
+              status: ChildIntradayStatus.PRESENT,
+              note: null,
+              setBy: staff,
+            },
+            this.clock,
+          ),
+        );
+        return;
+      }
+      await this.dailyStatusRepo.updatePresentIfAbsentOrLate(
+        kindergartenId,
+        childId,
+        isoDate,
+        staff,
+        this.clock.now(),
+      );
+      return;
+    }
+
+    if (existing !== null && existing.status.value === 'present') {
+      await this.dailyStatusRepo.upsert(
+        kindergartenId,
+        ChildDailyStatus.createNew(
+          {
+            id: existing.id,
+            kindergartenId,
+            childId,
+            date: isoDate,
+            status: ChildIntradayStatus.ABSENT,
+            note: existing.note,
+            setBy: staff,
+          },
+          this.clock,
+        ),
+      );
+    }
   }
 
   // ── setDailyStatus ─────────────────────────────────────────────────────
@@ -449,6 +867,11 @@ export class AttendanceService {
     await this.assertChildExists(kindergartenId, input.childId);
 
     const status = ChildIntradayStatus.from(input.status);
+    const previous = await this.dailyStatusRepo.findByChildAndDate(
+      kindergartenId,
+      input.childId,
+      input.date,
+    );
     const upserted = await this.dailyStatusRepo.upsert(
       kindergartenId,
       ChildDailyStatus.createNew(
@@ -464,6 +887,19 @@ export class AttendanceService {
         this.clock,
       ),
     );
+
+    // Upsert — so `create` on a fresh (child, date), `update` when overriding
+    // an existing status. `before` is null in the create case.
+    await this.audit.record({
+      kindergartenId,
+      entityType: 'child_daily_status',
+      entityId: upserted.id,
+      action: previous === null ? 'create' : 'update',
+      actorUserId: callerUserId,
+      actorStaffId: staff,
+      before: previous ? toAuditSnapshot(previous.toState()) : null,
+      after: toAuditSnapshot(upserted.toState()),
+    });
 
     await this.notifications.notifyDailyStatusChanged({
       kindergartenId,
@@ -754,6 +1190,17 @@ export class AttendanceService {
     return this.resolveStaffMemberNames(
       kindergartenId,
       rows.map((r) => r.setBy),
+    );
+  }
+
+  /** `actor_staff_id` overlay for audit_log rows (staff names). */
+  async resolveActorNames(
+    kindergartenId: string,
+    rows: { actorStaffId: string | null }[],
+  ): Promise<Map<string, string | null>> {
+    return this.resolveStaffMemberNames(
+      kindergartenId,
+      rows.map((r) => r.actorStaffId),
     );
   }
 

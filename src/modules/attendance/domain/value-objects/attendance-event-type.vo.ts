@@ -1,8 +1,10 @@
 /**
  * Sealed enum-VO mirroring DB enum `attendance_event_type` (B8 migration).
  *
- * `attendance_events` is append-only — the type is fixed at row creation
- * (check_in or check_out) and never transitions.
+ * The type is fixed at row creation and never transitions as part of normal
+ * operation. The one exception is an explicit admin correction of a
+ * mis-pressed button (`AttendanceEvent.applyPatch({ eventType })`), which is
+ * journalled to `audit_log`.
  */
 export const ATTENDANCE_EVENT_TYPE_VALUES = ['check_in', 'check_out'] as const;
 

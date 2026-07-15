@@ -232,6 +232,7 @@ export class ChildDailyStatusRelationalRepository extends ChildDailyStatusReposi
                WHERE ae.kindergarten_id = cds.kindergarten_id
                  AND ae.child_id = cds.child_id
                  AND ae.event_type = 'check_in'
+                 AND ae.deleted_at IS NULL
                  AND ae.recorded_at >= $3
                  AND ae.recorded_at < $4
             )

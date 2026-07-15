@@ -21,6 +21,12 @@ export class AttendanceEventMapper {
         row.created_at instanceof Date
           ? row.created_at
           : new Date(row.created_at),
+      deletedAt: toDateOrNull(row.deleted_at),
     });
   }
+}
+
+function toDateOrNull(value: Date | string | null): Date | null {
+  if (value === null) return null;
+  return value instanceof Date ? value : new Date(value);
 }

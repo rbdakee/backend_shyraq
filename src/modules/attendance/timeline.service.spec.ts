@@ -104,6 +104,21 @@ class FakeTimelineRepo extends TimelineEntryRepository {
     return Promise.resolve(this.rows.get(id) ?? null);
   }
 
+  /**
+   * Backed by the same in-memory map, matching on `sourceEventId`. TimelineService
+   * itself never calls this — the admin attendance cascade does — but the port is
+   * abstract, so the fake implements it to stay a faithful stand-in.
+   */
+  findBySourceEventId(
+    _kg: string,
+    sourceEventId: string,
+  ): Promise<TimelineEntry | null> {
+    return Promise.resolve(
+      [...this.rows.values()].find((e) => e.sourceEventId === sourceEventId) ??
+        null,
+    );
+  }
+
   findByChild(
     _kg: string,
     _childId: string,

@@ -20,6 +20,7 @@ import { SharedKernelModule } from './shared-kernel/shared-kernel.module';
 import { RedisModule } from './redis/redis.module';
 import { HealthModule } from './modules/health/health.module';
 import { AttendanceModule } from './modules/attendance/attendance.module';
+import { AuditModule } from './modules/audit/audit.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { BillingModule } from './modules/billing/billing.module';
 import { BillingLifecycleBridgeModule } from './modules/billing/billing-lifecycle-bridge.module';
@@ -151,6 +152,7 @@ const resolveI18nPath = (): string => {
     MealModule,
     ScheduleModule,
     ScheduleRolloutModule,
+    AuditModule,
     AttendanceModule,
     PickupModule,
     ParentRequestModule,

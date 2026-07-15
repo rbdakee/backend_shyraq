@@ -66,6 +66,7 @@ export class TimelineEntryRelationalRepository extends TimelineEntryRepository {
       recorded_by: state.recordedBy,
       entry_time: state.entryTime,
       created_at: state.createdAt,
+      source_event_id: state.sourceEventId,
     });
     const row = await m.getRepository(TimelineEntryTypeOrmEntity).findOne({
       where: { id: state.id, kindergarten_id: kindergartenId },
@@ -85,6 +86,21 @@ export class TimelineEntryRelationalRepository extends TimelineEntryRepository {
     const row = await this.manager()
       .getRepository(TimelineEntryTypeOrmEntity)
       .findOne({ where: { id: entryId, kindergarten_id: kindergartenId } });
+    return row ? TimelineEntryMapper.toDomain(row) : null;
+  }
+
+  async findBySourceEventId(
+    kindergartenId: string,
+    sourceEventId: string,
+  ): Promise<TimelineEntry | null> {
+    const row = await this.manager()
+      .getRepository(TimelineEntryTypeOrmEntity)
+      .findOne({
+        where: {
+          source_event_id: sourceEventId,
+          kindergarten_id: kindergartenId,
+        },
+      });
     return row ? TimelineEntryMapper.toDomain(row) : null;
   }
 
@@ -150,6 +166,10 @@ export class TimelineEntryRelationalRepository extends TimelineEntryRepository {
     await m.getRepository(TimelineEntryTypeOrmEntity).update(
       { id: state.id, kindergarten_id: kindergartenId },
       {
+        // child_id is here for the admin attendance cascade (re-pointing a
+        // check_in/check_out entry onto the corrected child). The staff
+        // timeline endpoints never populate it in their patch.
+        child_id: state.childId,
         title: state.title,
         body: state.body,
         media_urls: state.mediaUrls,

@@ -20,6 +20,7 @@ export interface TimelineEntryState {
   recordedBy: string | null;
   entryTime: Date;
   createdAt: Date;
+  sourceEventId: string | null;
 }
 
 export interface CreateTimelineEntryInput {
@@ -33,6 +34,16 @@ export interface CreateTimelineEntryInput {
   metadata?: Record<string, unknown> | null;
   recordedBy: string | null;
   entryTime: Date;
+  /**
+   * The `attendance_events` row this entry mirrors, for check_in / check_out
+   * entries written in the same transaction as the event. null for
+   * standalone entries (activity, meal, note, …).
+   *
+   * Without this link the pair could only be matched heuristically on
+   * (child_id, entry_type, entry_time), which is not safe to cascade a
+   * delete or a child re-point through.
+   */
+  sourceEventId?: string | null;
 }
 
 /**
@@ -49,7 +60,7 @@ export class TimelineEntry {
   private constructor(
     readonly id: string,
     readonly kindergartenId: string,
-    readonly childId: string,
+    private _childId: string,
     readonly entryType: TimelineEntryType,
     private _title: string | null,
     private _body: string | null,
@@ -58,6 +69,7 @@ export class TimelineEntry {
     readonly recordedBy: string | null,
     private _entryTime: Date,
     readonly createdAt: Date,
+    readonly sourceEventId: string | null,
   ) {}
 
   static createNew(
@@ -76,6 +88,7 @@ export class TimelineEntry {
       input.recordedBy,
       input.entryTime,
       clock.now(),
+      input.sourceEventId ?? null,
     );
   }
 
@@ -92,10 +105,15 @@ export class TimelineEntry {
       state.recordedBy,
       state.entryTime,
       state.createdAt,
+      state.sourceEventId,
     );
   }
 
   // ── getters ──────────────────────────────────────────────────────────────
+
+  get childId(): string {
+    return this._childId;
+  }
 
   get title(): string | null {
     return this._title;
@@ -131,8 +149,12 @@ export class TimelineEntry {
 
   /**
    * Apply a partial update to mutable fields (title / body / mediaUrls /
-   * metadata / entryTime). entry_type is intentionally excluded — changing
-   * the type of an existing entry is not allowed.
+   * metadata / entryTime / childId). entry_type is intentionally excluded —
+   * changing the type of an existing entry is not allowed.
+   *
+   * `childId` is not reachable from the staff timeline endpoints; it exists
+   * for the admin attendance cascade, which re-points a check_in / check_out
+   * entry when its source event is corrected onto another child.
    */
   applyPatch(patch: {
     title?: string | null;
@@ -140,19 +162,21 @@ export class TimelineEntry {
     mediaUrls?: string[] | null;
     metadata?: Record<string, unknown> | null;
     entryTime?: Date;
+    childId?: string;
   }): void {
     if (patch.title !== undefined) this._title = patch.title;
     if (patch.body !== undefined) this._body = patch.body;
     if (patch.mediaUrls !== undefined) this._mediaUrls = patch.mediaUrls;
     if (patch.metadata !== undefined) this._metadata = patch.metadata;
     if (patch.entryTime !== undefined) this._entryTime = patch.entryTime;
+    if (patch.childId !== undefined) this._childId = patch.childId;
   }
 
   toState(): TimelineEntryState {
     return {
       id: this.id,
       kindergartenId: this.kindergartenId,
-      childId: this.childId,
+      childId: this._childId,
       entryType: this.entryType.value,
       title: this._title,
       body: this._body,
@@ -161,6 +185,7 @@ export class TimelineEntry {
       recordedBy: this.recordedBy,
       entryTime: this._entryTime,
       createdAt: this.createdAt,
+      sourceEventId: this.sourceEventId,
     };
   }
 }

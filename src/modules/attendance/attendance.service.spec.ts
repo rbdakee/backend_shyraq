@@ -13,6 +13,33 @@
  *     rows written, no notification.
  *   - patchEvent: non-admin out-of-window → 403; admin out-of-window → ok.
  *   - setDailyStatus is upsert-idempotent and emits notifyDailyStatusChanged.
+ *   - deleteEvent: soft-deletes (tombstone survives, reads as absent), drops
+ *     the paired timeline entry, audits `delete` with a `before` snapshot;
+ *     re-deleting → 404.
+ *   - daily_status demotion on delete: only check_in of the day + `present` →
+ *     `absent`; explicit `sick` / `on_vacation` → untouched; another live
+ *     check_in that day → stays `present`.
+ *   - patchEvent cascade (admin): childId move re-points the paired timeline
+ *     entry and recomputes daily_status for BOTH children; event_type flip
+ *     replaces the timeline entry (entry_type is immutable) and clears
+ *     pickup_user_id when flipping to check_in; a check_out re-pointed at
+ *     another child re-validates the pickup guardian.
+ *   - patchEvent admin-gate: non-admin passing childId / eventType → 403
+ *     attendance_correction_admin_only.
+ *   - patchEvent with an unlinked timeline entry (no source_event_id) → no
+ *     cascade, no throw.
+ *   - audit: checkIn / checkOut write `create` with an `after` snapshot + actor
+ *     ids; setDailyStatus writes `create` on a fresh (child, date) and `update`
+ *     when overriding; patchEvent writes `update` with before + after.
+ *   - notify:false suppresses the parent notification but still writes event +
+ *     timeline + audit.
+ *   - isBackdated: undefined → false, today → false, past Almaty day → true.
+ *
+ * Fake fidelity note: `FakeAttendanceEventRepo` mirrors the relational repo's
+ * `deleted_at IS NULL` filter on EVERY read, and derives `listByChild` from the
+ * live `child_id` rather than a creation-time index — the demotion and cascade
+ * assertions are only meaningful if a tombstoned or re-pointed event actually
+ * disappears from the check_in count `recomputeDailyStatus` reads.
  *
  * Test names use `it('returns ...')` / `it('throws ...')` / `it('rejects ...')`
  * per CLAUDE.md §7. NO `it('should ...')`.
@@ -31,6 +58,15 @@ import {
   PermissionsUpdatedEvent,
   TimelineEntryCreatedEvent,
 } from '@/common/notifications/notification.port';
+import { AuditService, RecordAuditInput } from '@/modules/audit/audit.service';
+import {
+  AuditEntityType,
+  AuditLogEntry,
+} from '@/modules/audit/domain/entities/audit-log-entry.entity';
+import {
+  AuditLogRepository,
+  ListAuditLogByEntityOptions,
+} from '@/modules/audit/infrastructure/persistence/audit-log.repository';
 import { Child } from '@/modules/child/domain/entities/child.entity';
 import { ChildGuardian } from '@/modules/child/domain/entities/child-guardian.entity';
 import { ChildNotFoundError } from '@/modules/child/domain/errors/child-not-found.error';
@@ -58,6 +94,7 @@ import { AttendanceService } from './attendance.service';
 import { AttendanceEvent } from './domain/entities/attendance-event.entity';
 import { ChildDailyStatus } from './domain/entities/child-daily-status.entity';
 import { TimelineEntry } from './domain/entities/timeline-entry.entity';
+import { AttendanceCorrectionAdminOnlyError } from './domain/errors/attendance-correction-admin-only.error';
 import { AttendanceEditWindowExpiredError } from './domain/errors/attendance-edit-window-expired.error';
 import { AttendanceEventNotFoundError } from './domain/errors/attendance-event-not-found.error';
 import { InvalidAttendancePickupError } from './domain/errors/invalid-attendance-pickup.error';
@@ -85,6 +122,8 @@ import {
 
 const KG = '11111111-1111-1111-1111-111111111111';
 const CHILD = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
+/** Second child in the same kg — the target of the admin child_id correction. */
+const CHILD_B = 'cccccccc-2222-2222-2222-cccccccccccc';
 const STAFF_USER = 'aaaaaaaa-1111-1111-1111-aaaaaaaaaaaa';
 const STAFF_ID = 'bbbbbbbb-1111-1111-1111-bbbbbbbbbbbb';
 const PICKUP_USER = 'aaaaaaaa-2222-2222-2222-aaaaaaaaaaaa';
@@ -104,21 +143,40 @@ class FixedClock extends ClockPort {
 
 // ── Fakes ────────────────────────────────────────────────────────────────
 
+/**
+ * In-memory stand-in for `AttendanceEventRelationalRepository`.
+ *
+ * Two fidelity details the demotion / cascade tests depend on:
+ *
+ *  1. EVERY read filters `deleted_at IS NULL`, exactly as the SQL does (see the
+ *     port's docblock). `recomputeDailyStatus` decides whether to demote a day
+ *     by counting live check_ins via `listByChild(..., {eventType:'check_in'})`
+ *     — a fake that returned tombstones would make the demotion tests pass for
+ *     the wrong reason (or never demote at all).
+ *
+ *  2. `listByChild` filters on the row's CURRENT `child_id` rather than a
+ *     creation-time index. An admin correction re-points `child_id` in place,
+ *     so an index built at insert would leave the event counted under its old
+ *     child and never under the new one — the exact cascade the spec asserts.
+ *
+ * `from` / `to` / `eventType` / `limit` are honoured too, since the recompute
+ * path passes a day window plus `eventType: 'check_in'`.
+ */
 class FakeAttendanceEventRepo extends AttendanceEventRepository {
   rows = new Map<string, AttendanceEvent>();
-  byChildId = new Map<string, AttendanceEvent[]>();
 
   create(kg: string, e: AttendanceEvent): Promise<AttendanceEvent> {
     if (e.kindergartenId !== kg) throw new Error('kg mismatch');
     this.rows.set(e.id, e);
-    const list = this.byChildId.get(e.childId) ?? [];
-    list.push(e);
-    this.byChildId.set(e.childId, list);
     return Promise.resolve(e);
   }
   findById(kg: string, id: string): Promise<AttendanceEvent | null> {
     const e = this.rows.get(id);
-    if (!e || e.kindergartenId !== kg) return Promise.resolve(null);
+    // Tombstones read as absent — patch/delete of a deleted id must surface
+    // attendance_event_not_found rather than mutate it.
+    if (!e || e.kindergartenId !== kg || e.deletedAt !== null) {
+      return Promise.resolve(null);
+    }
     return Promise.resolve(e);
   }
   update(kg: string, e: AttendanceEvent): Promise<AttendanceEvent> {
@@ -127,31 +185,56 @@ class FakeAttendanceEventRepo extends AttendanceEventRepository {
     this.rows.set(e.id, e);
     return Promise.resolve(e);
   }
+  /** Live rows for `kg`, newest first — the shared base of every list read. */
+  private live(
+    kg: string,
+    filter: {
+      from?: Date;
+      to?: Date;
+      eventType?: string;
+      limit?: number;
+    },
+  ): AttendanceEvent[] {
+    let items = [...this.rows.values()].filter(
+      (e) => e.kindergartenId === kg && e.deletedAt === null,
+    );
+    if (filter.from !== undefined) {
+      items = items.filter((e) => e.recordedAt >= filter.from!);
+    }
+    if (filter.to !== undefined) {
+      items = items.filter((e) => e.recordedAt < filter.to!);
+    }
+    if (filter.eventType !== undefined) {
+      items = items.filter((e) => e.eventType.value === filter.eventType);
+    }
+    items.sort((a, b) => b.recordedAt.getTime() - a.recordedAt.getTime());
+    return items.slice(
+      0,
+      filter.limit && filter.limit > 0 ? filter.limit : 100,
+    );
+  }
   listByChild(
     kg: string,
     childId: string,
-    _filter: ListAttendanceEventsByChildFilter,
+    filter: ListAttendanceEventsByChildFilter,
   ): Promise<AttendanceEvent[]> {
-    const list = (this.byChildId.get(childId) ?? []).filter(
-      (e) => e.kindergartenId === kg,
+    return Promise.resolve(
+      this.live(kg, filter).filter((e) => e.childId === childId),
     );
-    return Promise.resolve(list);
   }
   listByGroup(
     kg: string,
-    _filter: ListAttendanceEventsByGroupFilter,
+    filter: ListAttendanceEventsByGroupFilter,
   ): Promise<AttendanceEvent[]> {
-    return Promise.resolve(
-      [...this.rows.values()].filter((e) => e.kindergartenId === kg),
-    );
+    // No children table here — the group join is exercised in e2e; the fake
+    // only reproduces the kg + live-row scoping.
+    return Promise.resolve(this.live(kg, filter));
   }
   listByKindergarten(
     kg: string,
-    _filter: ListAttendanceEventsByKindergartenFilter,
+    filter: ListAttendanceEventsByKindergartenFilter,
   ): Promise<AttendanceEvent[]> {
-    return Promise.resolve(
-      [...this.rows.values()].filter((e) => e.kindergartenId === kg),
-    );
+    return Promise.resolve(this.live(kg, filter));
   }
   /** Test-driven buckets + captured args for getDaySummary. */
   lastEventBuckets = { inKindergarten: 0, checkedOut: 0 };
@@ -295,6 +378,22 @@ class FakeTimelineRepo extends TimelineEntryRepository {
   findById(kg: string, id: string): Promise<TimelineEntry | null> {
     const t = this.rows.get(id);
     if (!t || t.kindergartenId !== kg) return Promise.resolve(null);
+    return Promise.resolve(t);
+  }
+  /**
+   * Backs the event↔entry link off the same in-memory map, matching on
+   * `sourceEventId`. Entries written before the column existed (or which the
+   * migration backfill could not match) carry null and resolve to null here —
+   * the cascade treats that as "nothing to cascade".
+   */
+  findBySourceEventId(
+    kg: string,
+    sourceEventId: string,
+  ): Promise<TimelineEntry | null> {
+    const t =
+      [...this.rows.values()].find(
+        (e) => e.kindergartenId === kg && e.sourceEventId === sourceEventId,
+      ) ?? null;
     return Promise.resolve(t);
   }
   findByChild(
@@ -581,14 +680,65 @@ class FakeNotificationPort extends NotificationPort {
   }
 }
 
+/** In-memory `audit_log`, tenant-scoped, newest-first — as the SQL orders it. */
+class FakeAuditLogRepo extends AuditLogRepository {
+  rows: AuditLogEntry[] = [];
+  create(kg: string, entry: AuditLogEntry): Promise<AuditLogEntry> {
+    if (entry.kindergartenId !== kg) throw new Error('kg mismatch');
+    this.rows.push(entry);
+    return Promise.resolve(entry);
+  }
+  listByEntity(
+    kg: string,
+    entityType: AuditEntityType,
+    entityId: string,
+    opts: ListAuditLogByEntityOptions,
+  ): Promise<AuditLogEntry[]> {
+    const matched = this.rows
+      .filter(
+        (r) =>
+          r.kindergartenId === kg &&
+          r.entityType === entityType &&
+          r.entityId === entityId,
+      )
+      .reverse();
+    const offset = opts.offset ?? 0;
+    return Promise.resolve(
+      matched.slice(offset, offset + (opts.limit ?? matched.length)),
+    );
+  }
+}
+
+/**
+ * Real AuditService over an in-memory audit_log, with every `record(...)`
+ * argument captured so tests can assert on the trail the mutation left. The
+ * production wiring is deliberately non-optional (an unwired audit port must
+ * fail at boot, not drop the trail silently), so this is a real subclass rather
+ * than a stub — the entry is genuinely built and persisted.
+ */
+class FakeAuditService extends AuditService {
+  calls: RecordAuditInput[] = [];
+  constructor(clock: ClockPort) {
+    super(new FakeAuditLogRepo(), clock);
+  }
+  override record(input: RecordAuditInput): Promise<AuditLogEntry> {
+    this.calls.push(input);
+    return super.record(input);
+  }
+  /** Every captured call for one action — the usual assertion entry point. */
+  callsFor(action: 'create' | 'update' | 'delete'): RecordAuditInput[] {
+    return this.calls.filter((c) => c.action === action);
+  }
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────
 
-function makeChild(): Child {
+function makeChild(id: string = CHILD, fullName = 'Test Child'): Child {
   return Child.hydrate({
-    id: CHILD,
+    id,
     kindergartenId: KG,
     iin: null,
-    fullName: 'Test Child',
+    fullName,
     dateOfBirth: new Date('2022-01-01'),
     gender: null,
     photoUrl: null,
@@ -627,12 +777,14 @@ function makeApprovedPickupGuardian(
     canPickup?: boolean;
     revokedAt?: Date | null;
     status?: 'approved' | 'pending_approval' | 'rejected' | 'revoked';
+    /** Approval is per-child — re-pointing a check_out re-checks this pair. */
+    childId?: string;
   } = {},
 ): ChildGuardian {
   return ChildGuardian.hydrate({
     id: randomUUID(),
     kindergartenId: KG,
-    childId: CHILD,
+    childId: overrides.childId ?? CHILD,
     userId: PICKUP_USER,
     role: 'primary',
     status: overrides.status ?? 'approved',
@@ -659,6 +811,7 @@ interface Wired {
   guardianRepo: FakeGuardianRepo;
   staffRepo: FakeStaffRepo;
   notifications: FakeNotificationPort;
+  audit: FakeAuditService;
   clock: FixedClock;
 }
 
@@ -671,7 +824,9 @@ function wire(): Wired {
   const staffRepo = new FakeStaffRepo();
   const notifications = new FakeNotificationPort();
   const clock = new FixedClock(NOW);
+  const audit = new FakeAuditService(clock);
   childRepo.put(makeChild());
+  childRepo.put(makeChild(CHILD_B, 'Test Child B'));
   staffRepo.put(makeStaff());
   const service = new AttendanceService(
     eventRepo,
@@ -682,6 +837,7 @@ function wire(): Wired {
     staffRepo,
     clock,
     notifications,
+    audit,
   );
   return {
     service,
@@ -692,6 +848,7 @@ function wire(): Wired {
     guardianRepo,
     staffRepo,
     notifications,
+    audit,
     clock,
   };
 }
@@ -956,7 +1113,7 @@ describe('AttendanceService — service-unit', () => {
         result.event.id,
         STAFF_USER,
         { notes: 'admin fix' },
-        { isAdmin: true },
+        { skipEditWindow: true, allowStructuralCorrection: true },
       );
       expect(patched.notes).toBe('admin fix');
     });
@@ -973,7 +1130,7 @@ describe('AttendanceService — service-unit', () => {
           result.event.id,
           STAFF_USER,
           { notes: 'late edit' },
-          { isAdmin: false },
+          { skipEditWindow: false, allowStructuralCorrection: false },
         ),
       ).rejects.toBeInstanceOf(AttendanceEditWindowExpiredError);
     });
@@ -986,7 +1143,7 @@ describe('AttendanceService — service-unit', () => {
         result.event.id,
         STAFF_USER,
         { notes: 'corrected' },
-        { isAdmin: false },
+        { skipEditWindow: false, allowStructuralCorrection: false },
       );
       expect(patched.notes).toBe('corrected');
     });
@@ -999,7 +1156,7 @@ describe('AttendanceService — service-unit', () => {
           'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee',
           STAFF_USER,
           { notes: 'x' },
-          { isAdmin: true },
+          { skipEditWindow: true, allowStructuralCorrection: true },
         ),
       ).rejects.toBeInstanceOf(AttendanceEventNotFoundError);
     });
@@ -1013,7 +1170,7 @@ describe('AttendanceService — service-unit', () => {
           result.event.id,
           STAFF_USER,
           { pickupUserId: PICKUP_USER },
-          { isAdmin: true },
+          { skipEditWindow: true, allowStructuralCorrection: true },
         ),
       ).rejects.toBeInstanceOf(InvalidAttendancePickupError);
     });
@@ -1036,9 +1193,551 @@ describe('AttendanceService — service-unit', () => {
           result.event.id,
           STAFF_USER,
           { pickupUserId: ANOTHER_USER },
-          { isAdmin: true },
+          { skipEditWindow: true, allowStructuralCorrection: true },
         ),
       ).rejects.toBeInstanceOf(PickupUserNotAllowedError);
+    });
+  });
+
+  // ── Admin corrections: child_id / event_type + their cascade ────────────
+
+  describe('patchEvent — admin-only gate', () => {
+    it('throws AttendanceCorrectionAdminOnlyError when a non-admin patches childId', async () => {
+      const w = wire();
+      const r = await w.service.checkIn(KG, CHILD, STAFF_USER);
+      await expect(
+        w.service.patchEvent(
+          KG,
+          r.event.id,
+          STAFF_USER,
+          { childId: CHILD_B },
+          { skipEditWindow: false, allowStructuralCorrection: false },
+        ),
+      ).rejects.toBeInstanceOf(AttendanceCorrectionAdminOnlyError);
+      // The row is untouched — the gate fires before any mutation.
+      expect(w.eventRepo.rows.get(r.event.id)!.childId).toBe(CHILD);
+    });
+
+    it('throws AttendanceCorrectionAdminOnlyError when a non-admin patches eventType', async () => {
+      const w = wire();
+      const r = await w.service.checkIn(KG, CHILD, STAFF_USER);
+      await expect(
+        w.service.patchEvent(
+          KG,
+          r.event.id,
+          STAFF_USER,
+          { eventType: 'check_out' },
+          { skipEditWindow: false, allowStructuralCorrection: false },
+        ),
+      ).rejects.toBeInstanceOf(AttendanceCorrectionAdminOnlyError);
+      expect(w.eventRepo.rows.get(r.event.id)!.eventType.value).toBe(
+        'check_in',
+      );
+    });
+
+    // The reception-on-the-admin-route case: the two grants are independent,
+    // so skipping the edit window must NOT drag the structural corrections
+    // along with it. Collapsing these back into one `isAdmin` flag would hand
+    // reception the power to re-point events onto other children.
+    it('throws AttendanceCorrectionAdminOnlyError when the caller may skip the edit window but not correct structure', async () => {
+      const w = wire();
+      const r = await w.service.checkIn(KG, CHILD, STAFF_USER);
+      await expect(
+        w.service.patchEvent(
+          KG,
+          r.event.id,
+          STAFF_USER,
+          { childId: CHILD_B },
+          { skipEditWindow: true, allowStructuralCorrection: false },
+        ),
+      ).rejects.toBeInstanceOf(AttendanceCorrectionAdminOnlyError);
+      expect(w.eventRepo.rows.get(r.event.id)!.childId).toBe(CHILD);
+    });
+
+    it('returns the patched event when the caller may skip the edit window but only touches ordinary fields', async () => {
+      const w = wire();
+      const r = await w.service.checkIn(KG, CHILD, STAFF_USER);
+      w.clock.set(new Date('2026-05-03T09:00:00.000Z')); // two days later
+      const updated = await w.service.patchEvent(
+        KG,
+        r.event.id,
+        STAFF_USER,
+        { notes: 'reception fixing an earlier day' },
+        { skipEditWindow: true, allowStructuralCorrection: false },
+      );
+      expect(updated.notes).toBe('reception fixing an earlier day');
+    });
+  });
+
+  describe('patchEvent — childId cascade', () => {
+    it('moves the paired timeline entry to the new child and recomputes daily_status for both', async () => {
+      const w = wire();
+      const r = await w.service.checkIn(KG, CHILD, STAFF_USER);
+      expect(w.dailyRepo.rows).toHaveLength(1);
+      expect(w.dailyRepo.rows[0].status.value).toBe('present');
+
+      const patched = await w.service.patchEvent(
+        KG,
+        r.event.id,
+        STAFF_USER,
+        { childId: CHILD_B },
+        { skipEditWindow: true, allowStructuralCorrection: true },
+      );
+
+      expect(patched.childId).toBe(CHILD_B);
+      // The timeline entry found via source_event_id followed the event.
+      const entry = w.timelineRepo.rows.get(r.timelineEntry.id);
+      expect(entry).toBeDefined();
+      expect(entry!.childId).toBe(CHILD_B);
+      // Old child lost its only check_in → demoted; new child gained one →
+      // promoted. Both buckets recomputed off one patch.
+      const oldRow = w.dailyRepo.rows.find((x) => x.childId === CHILD);
+      const newRow = w.dailyRepo.rows.find((x) => x.childId === CHILD_B);
+      expect(oldRow!.status.value).toBe('absent');
+      expect(newRow!.status.value).toBe('present');
+    });
+
+    it('records an update audit entry carrying the child_id move in before/after', async () => {
+      const w = wire();
+      const r = await w.service.checkIn(KG, CHILD, STAFF_USER);
+      await w.service.patchEvent(
+        KG,
+        r.event.id,
+        STAFF_USER,
+        { childId: CHILD_B },
+        { skipEditWindow: true, allowStructuralCorrection: true },
+      );
+      const updates = w.audit.callsFor('update');
+      expect(updates).toHaveLength(1);
+      expect(updates[0].entityType).toBe('attendance_event');
+      expect(updates[0].entityId).toBe(r.event.id);
+      expect(updates[0].actorUserId).toBe(STAFF_USER);
+      expect(updates[0].actorStaffId).toBe(STAFF_ID);
+      expect(updates[0].before).toMatchObject({ childId: CHILD });
+      expect(updates[0].after).toMatchObject({ childId: CHILD_B });
+    });
+
+    it('throws PickupUserNotAllowedError when a check_out is re-pointed at a child the pickup user cannot collect', async () => {
+      const w = wire();
+      // Approved for CHILD only — CHILD_B has no guardian row.
+      w.guardianRepo.put(makeApprovedPickupGuardian());
+      const r = await w.service.checkOut(KG, CHILD, STAFF_USER, PICKUP_USER);
+      await expect(
+        w.service.patchEvent(
+          KG,
+          r.event.id,
+          STAFF_USER,
+          { childId: CHILD_B },
+          { skipEditWindow: true, allowStructuralCorrection: true },
+        ),
+      ).rejects.toBeInstanceOf(PickupUserNotAllowedError);
+      // Nothing moved — the re-validation fires before the write.
+      expect(w.eventRepo.rows.get(r.event.id)!.childId).toBe(CHILD);
+    });
+
+    it('returns the patched event when the pickup user is also approved for the new child', async () => {
+      const w = wire();
+      w.guardianRepo.put(makeApprovedPickupGuardian());
+      w.guardianRepo.put(makeApprovedPickupGuardian({ childId: CHILD_B }));
+      const r = await w.service.checkOut(KG, CHILD, STAFF_USER, PICKUP_USER);
+      const patched = await w.service.patchEvent(
+        KG,
+        r.event.id,
+        STAFF_USER,
+        { childId: CHILD_B },
+        { skipEditWindow: true, allowStructuralCorrection: true },
+      );
+      expect(patched.childId).toBe(CHILD_B);
+      expect(patched.pickupUserId).toBe(PICKUP_USER);
+    });
+
+    it('returns the patched event without cascading when no timeline entry links to it', async () => {
+      const w = wire();
+      const r = await w.service.checkIn(KG, CHILD, STAFF_USER);
+      // Rewrite the paired entry as an unlinked one — mirrors a pre-
+      // source_event_id row the migration backfill could not match.
+      const unlinked = TimelineEntry.hydrate({
+        ...r.timelineEntry.toState(),
+        sourceEventId: null,
+      });
+      w.timelineRepo.rows.set(unlinked.id, unlinked);
+
+      const patched = await w.service.patchEvent(
+        KG,
+        r.event.id,
+        STAFF_USER,
+        { childId: CHILD_B },
+        { skipEditWindow: true, allowStructuralCorrection: true },
+      );
+
+      // The correction itself still lands...
+      expect(patched.childId).toBe(CHILD_B);
+      // ...but the unmatched entry is left alone rather than the patch failing.
+      expect(w.timelineRepo.rows.get(unlinked.id)!.childId).toBe(CHILD);
+      expect(w.timelineRepo.rows.size).toBe(1);
+    });
+  });
+
+  describe('patchEvent — eventType cascade', () => {
+    it('replaces the timeline entry with a check_out entry when the event type is flipped', async () => {
+      const w = wire();
+      const r = await w.service.checkIn(KG, CHILD, STAFF_USER);
+      const oldEntryId = r.timelineEntry.id;
+
+      const patched = await w.service.patchEvent(
+        KG,
+        r.event.id,
+        STAFF_USER,
+        { eventType: 'check_out' },
+        { skipEditWindow: true, allowStructuralCorrection: true },
+      );
+
+      expect(patched.eventType.value).toBe('check_out');
+      // entry_type is immutable by design → replace, not mutate.
+      expect(w.timelineRepo.rows.has(oldEntryId)).toBe(false);
+      const entries = [...w.timelineRepo.rows.values()];
+      expect(entries).toHaveLength(1);
+      expect(entries[0].id).not.toBe(oldEntryId);
+      expect(entries[0].entryType.value).toBe('check_out');
+      // The fresh entry stays linked to the same event.
+      expect(entries[0].sourceEventId).toBe(r.event.id);
+      expect(entries[0].childId).toBe(CHILD);
+    });
+
+    it('demotes the day to absent when the only check_in is flipped to check_out', async () => {
+      const w = wire();
+      const r = await w.service.checkIn(KG, CHILD, STAFF_USER);
+      expect(w.dailyRepo.rows[0].status.value).toBe('present');
+      await w.service.patchEvent(
+        KG,
+        r.event.id,
+        STAFF_USER,
+        { eventType: 'check_out' },
+        { skipEditWindow: true, allowStructuralCorrection: true },
+      );
+      // No live check_in left for the day → the inferred present falls back.
+      expect(w.dailyRepo.rows[0].status.value).toBe('absent');
+    });
+
+    it('clears pickup_user_id when the event type is flipped to check_in', async () => {
+      const w = wire();
+      w.guardianRepo.put(makeApprovedPickupGuardian());
+      const r = await w.service.checkOut(KG, CHILD, STAFF_USER, PICKUP_USER);
+      expect(r.event.pickupUserId).toBe(PICKUP_USER);
+
+      const patched = await w.service.patchEvent(
+        KG,
+        r.event.id,
+        STAFF_USER,
+        { eventType: 'check_in' },
+        { skipEditWindow: true, allowStructuralCorrection: true },
+      );
+
+      // A check_in can never carry a pickup user — the entity clears it.
+      expect(patched.eventType.value).toBe('check_in');
+      expect(patched.pickupUserId).toBeNull();
+      // The replacement timeline entry is a check_in too.
+      const entries = [...w.timelineRepo.rows.values()];
+      expect(entries).toHaveLength(1);
+      expect(entries[0].entryType.value).toBe('check_in');
+    });
+  });
+
+  // ── deleteEvent ────────────────────────────────────────────────────────
+
+  describe('deleteEvent', () => {
+    it('soft-deletes the event, drops the paired timeline entry and audits the delete', async () => {
+      const w = wire();
+      const r = await w.service.checkIn(KG, CHILD, STAFF_USER);
+
+      await w.service.deleteEvent(KG, r.event.id, STAFF_USER);
+
+      // The row survives as a tombstone so audit_log.entity_id keeps resolving…
+      expect(w.eventRepo.rows.has(r.event.id)).toBe(true);
+      expect(w.eventRepo.rows.get(r.event.id)!.deletedAt).toEqual(NOW);
+      // …but every read path treats it as absent.
+      await expect(
+        w.service.getEventById(KG, r.event.id),
+      ).rejects.toBeInstanceOf(AttendanceEventNotFoundError);
+      expect(await w.service.listEventsByChild(KG, CHILD)).toHaveLength(0);
+      // The timeline entry mirrors the event, so it goes with it.
+      expect(w.timelineRepo.rows.size).toBe(0);
+
+      const deletes = w.audit.callsFor('delete');
+      expect(deletes).toHaveLength(1);
+      expect(deletes[0].entityType).toBe('attendance_event');
+      expect(deletes[0].entityId).toBe(r.event.id);
+      expect(deletes[0].actorUserId).toBe(STAFF_USER);
+      expect(deletes[0].actorStaffId).toBe(STAFF_ID);
+      // `before` is the pre-delete snapshot — still live at capture time.
+      expect(deletes[0].before).toMatchObject({
+        id: r.event.id,
+        childId: CHILD,
+        eventType: 'check_in',
+        deletedAt: null,
+      });
+    });
+
+    it('throws AttendanceEventNotFoundError when the event is already deleted', async () => {
+      const w = wire();
+      const r = await w.service.checkIn(KG, CHILD, STAFF_USER);
+      await w.service.deleteEvent(KG, r.event.id, STAFF_USER);
+      await expect(
+        w.service.deleteEvent(KG, r.event.id, STAFF_USER),
+      ).rejects.toBeInstanceOf(AttendanceEventNotFoundError);
+      // Still exactly one delete entry — the tombstone timestamp is not moved.
+      expect(w.audit.callsFor('delete')).toHaveLength(1);
+    });
+
+    it('throws AttendanceEventNotFoundError when the event does not exist', async () => {
+      const w = wire();
+      await expect(
+        w.service.deleteEvent(
+          KG,
+          'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee',
+          STAFF_USER,
+        ),
+      ).rejects.toBeInstanceOf(AttendanceEventNotFoundError);
+    });
+  });
+
+  // ── daily_status demotion on delete ────────────────────────────────────
+  //
+  // The rule is deliberately narrow: `present → absent` ONLY when no live
+  // check_in remains for the day. Explicit operator decisions outrank anything
+  // inferred from the event log.
+
+  describe('deleteEvent — daily_status demotion', () => {
+    /** Almaty civil day for NOW (2026-05-01T09:00Z = 14:00 Almaty). */
+    const TODAY = '2026-05-01';
+
+    function seedStatus(
+      w: Wired,
+      status: ChildIntradayStatus,
+      note: string | null = null,
+    ): void {
+      w.dailyRepo.put(
+        ChildDailyStatus.createNew(
+          {
+            id: randomUUID(),
+            kindergartenId: KG,
+            childId: CHILD,
+            date: TODAY,
+            status,
+            note,
+            setBy: STAFF_ID,
+          },
+          w.clock,
+        ),
+      );
+    }
+
+    it('demotes present to absent when the only check_in of the day is deleted', async () => {
+      const w = wire();
+      const r = await w.service.checkIn(KG, CHILD, STAFF_USER);
+      expect(w.dailyRepo.rows[0].status.value).toBe('present');
+
+      await w.service.deleteEvent(KG, r.event.id, STAFF_USER);
+
+      expect(w.dailyRepo.rows).toHaveLength(1);
+      expect(w.dailyRepo.rows[0].status.value).toBe('absent');
+    });
+
+    it('preserves an explicit sick status when a check_in of that day is deleted', async () => {
+      const w = wire();
+      seedStatus(w, ChildIntradayStatus.SICK, 'parent reported flu');
+      // check_in does not promote `sick`, so the row is still sick here.
+      const r = await w.service.checkIn(KG, CHILD, STAFF_USER);
+      expect(w.dailyRepo.rows[0].status.value).toBe('sick');
+
+      await w.service.deleteEvent(KG, r.event.id, STAFF_USER);
+
+      // An operator's explicit call outranks the event log — untouched.
+      expect(w.dailyRepo.rows[0].status.value).toBe('sick');
+      expect(w.dailyRepo.rows[0].note).toBe('parent reported flu');
+    });
+
+    it('preserves an explicit on_vacation status when a check_in of that day is deleted', async () => {
+      const w = wire();
+      seedStatus(w, ChildIntradayStatus.ON_VACATION);
+      const r = await w.service.checkIn(KG, CHILD, STAFF_USER);
+
+      await w.service.deleteEvent(KG, r.event.id, STAFF_USER);
+
+      expect(w.dailyRepo.rows[0].status.value).toBe('on_vacation');
+    });
+
+    it('keeps the day present when another live check_in remains', async () => {
+      const w = wire();
+      // Two check-ins on the same Almaty day, both in the past.
+      const first = await w.service.checkIn(KG, CHILD, STAFF_USER, {
+        recordedAt: new Date('2026-05-01T03:00:00.000Z'),
+      });
+      await w.service.checkIn(KG, CHILD, STAFF_USER, {
+        recordedAt: new Date('2026-05-01T04:00:00.000Z'),
+      });
+      expect(w.dailyRepo.rows[0].status.value).toBe('present');
+
+      await w.service.deleteEvent(KG, first.event.id, STAFF_USER);
+
+      // The surviving check_in still justifies `present`.
+      expect(w.dailyRepo.rows[0].status.value).toBe('present');
+      expect(w.eventRepo.rows.size).toBe(2);
+      expect(await w.service.listEventsByChild(KG, CHILD)).toHaveLength(1);
+    });
+  });
+
+  // ── Audit trail + notify opt ───────────────────────────────────────────
+
+  describe('audit trail', () => {
+    it('records a create entry with an after snapshot and the actor ids on checkIn', async () => {
+      const w = wire();
+      const r = await w.service.checkIn(KG, CHILD, STAFF_USER);
+
+      expect(w.audit.calls).toHaveLength(1);
+      const [entry] = w.audit.callsFor('create');
+      expect(entry.entityType).toBe('attendance_event');
+      expect(entry.entityId).toBe(r.event.id);
+      expect(entry.actorUserId).toBe(STAFF_USER);
+      expect(entry.actorStaffId).toBe(STAFF_ID);
+      expect(entry.after).toMatchObject({
+        id: r.event.id,
+        childId: CHILD,
+        eventType: 'check_in',
+        method: 'manual',
+      });
+      // Nothing existed before a create.
+      expect(entry.before).toBeUndefined();
+    });
+
+    it('records a create entry with an after snapshot on checkOut', async () => {
+      const w = wire();
+      w.guardianRepo.put(makeApprovedPickupGuardian());
+      const r = await w.service.checkOut(KG, CHILD, STAFF_USER, PICKUP_USER);
+
+      expect(w.audit.calls).toHaveLength(1);
+      const [entry] = w.audit.callsFor('create');
+      expect(entry.entityId).toBe(r.event.id);
+      expect(entry.actorUserId).toBe(STAFF_USER);
+      expect(entry.actorStaffId).toBe(STAFF_ID);
+      expect(entry.after).toMatchObject({
+        eventType: 'check_out',
+        pickupUserId: PICKUP_USER,
+      });
+    });
+
+    it('records no audit entry when the write is rejected before it happens', async () => {
+      const w = wire();
+      // No guardian seeded → pickup validation throws before any row is written.
+      await expect(
+        w.service.checkOut(KG, CHILD, STAFF_USER, PICKUP_USER),
+      ).rejects.toBeInstanceOf(PickupUserNotAllowedError);
+      expect(w.audit.calls).toHaveLength(0);
+    });
+
+    it('records create on a fresh (child, date) and update when setDailyStatus overrides', async () => {
+      const w = wire();
+      await w.service.setDailyStatus(KG, STAFF_USER, {
+        childId: CHILD,
+        date: '2026-05-01',
+        status: 'sick',
+      });
+
+      expect(w.audit.calls).toHaveLength(1);
+      expect(w.audit.calls[0].action).toBe('create');
+      expect(w.audit.calls[0].entityType).toBe('child_daily_status');
+      expect(w.audit.calls[0].before).toBeNull();
+      expect(w.audit.calls[0].after).toMatchObject({ status: 'sick' });
+
+      await w.service.setDailyStatus(KG, STAFF_USER, {
+        childId: CHILD,
+        date: '2026-05-01',
+        status: 'on_vacation',
+        note: 'family trip',
+      });
+
+      expect(w.audit.calls).toHaveLength(2);
+      expect(w.audit.calls[1].action).toBe('update');
+      expect(w.audit.calls[1].before).toMatchObject({ status: 'sick' });
+      expect(w.audit.calls[1].after).toMatchObject({
+        status: 'on_vacation',
+        note: 'family trip',
+      });
+    });
+  });
+
+  describe('notify opt', () => {
+    it('suppresses the check-in notification but still writes event, timeline and audit', async () => {
+      const w = wire();
+      const r = await w.service.checkIn(KG, CHILD, STAFF_USER, {
+        notify: false,
+      });
+
+      // The admin back-fill must not tell parents their child just arrived.
+      expect(w.notifications.checkIns).toHaveLength(0);
+      expect(w.notifications.timelines).toHaveLength(0);
+      // Everything else is written exactly as usual.
+      expect(w.eventRepo.rows.size).toBe(1);
+      expect(w.timelineRepo.rows.size).toBe(1);
+      expect(w.dailyRepo.rows).toHaveLength(1);
+      expect(w.audit.callsFor('create')).toHaveLength(1);
+      expect(w.audit.callsFor('create')[0].entityId).toBe(r.event.id);
+    });
+
+    it('suppresses the check-out notification but still writes event, timeline and audit', async () => {
+      const w = wire();
+      w.guardianRepo.put(makeApprovedPickupGuardian());
+      await w.service.checkOut(KG, CHILD, STAFF_USER, PICKUP_USER, {
+        notify: false,
+      });
+
+      expect(w.notifications.checkOuts).toHaveLength(0);
+      expect(w.notifications.timelines).toHaveLength(0);
+      expect(w.eventRepo.rows.size).toBe(1);
+      expect(w.timelineRepo.rows.size).toBe(1);
+      expect(w.audit.callsFor('create')).toHaveLength(1);
+    });
+
+    it('notifies by default when notify is omitted', async () => {
+      const w = wire();
+      await w.service.checkIn(KG, CHILD, STAFF_USER);
+      expect(w.notifications.checkIns).toHaveLength(1);
+      expect(w.notifications.timelines).toHaveLength(1);
+    });
+  });
+
+  // ── isBackdated ────────────────────────────────────────────────────────
+
+  describe('isBackdated', () => {
+    // NOW = 2026-05-01T09:00:00Z = 14:00 Almaty (UTC+5) → today is 2026-05-01,
+    // whose instant window is [2026-04-30T19:00Z, 2026-05-01T19:00Z).
+    it('returns false for undefined (a live write is never backdated)', () => {
+      const w = wire();
+      expect(w.service.isBackdated(undefined)).toBe(false);
+    });
+
+    it('returns false for a timestamp on today in Asia/Almaty', () => {
+      const w = wire();
+      // 2026-05-01T00:00Z = 05:00 Almaty on 2026-05-01 — same civil day as NOW.
+      expect(w.service.isBackdated(new Date('2026-05-01T00:00:00.000Z'))).toBe(
+        false,
+      );
+    });
+
+    it('returns true for a timestamp on a past Asia/Almaty day', () => {
+      const w = wire();
+      expect(w.service.isBackdated(new Date('2026-04-30T09:00:00.000Z'))).toBe(
+        true,
+      );
+    });
+
+    it('returns true just before the Almaty day boundary (UTC would disagree)', () => {
+      const w = wire();
+      // 2026-04-30T18:59Z = 23:59 Almaty on 2026-04-30 — yesterday locally,
+      // even though UTC still calls it the 30th's evening.
+      expect(w.service.isBackdated(new Date('2026-04-30T18:59:00.000Z'))).toBe(
+        true,
+      );
     });
   });
 
@@ -1232,7 +1931,7 @@ describe('AttendanceService — service-unit', () => {
           result.event.id,
           STAFF_USER,
           { recordedAt: futureTime },
-          { isAdmin: true },
+          { skipEditWindow: true, allowStructuralCorrection: true },
         ),
       ).rejects.toBeInstanceOf(InvalidAttendanceTimestampError);
     });
@@ -1278,6 +1977,7 @@ describe('AttendanceService — service-unit', () => {
     }
 
     function wireWithUsers(userRepo: FakeUserRepo): AttendanceService {
+      const clock = new FixedClock(NOW);
       return new AttendanceService(
         new FakeAttendanceEventRepo(),
         new FakeChildDailyStatusRepo(),
@@ -1285,8 +1985,9 @@ describe('AttendanceService — service-unit', () => {
         new FakeChildRepo(),
         new FakeGuardianRepo(),
         new FakeStaffRepo(),
-        new FixedClock(NOW),
+        clock,
         new FakeNotificationPort(),
+        new FakeAuditService(clock),
         userRepo as unknown as UserRepository,
       );
     }
@@ -1398,6 +2099,7 @@ describe('AttendanceService — service-unit', () => {
       });
     }
     function wireWithStaff(staffRepo: FakeStaffByIdRepo): AttendanceService {
+      const clock = new FixedClock(NOW);
       return new AttendanceService(
         new FakeAttendanceEventRepo(),
         new FakeChildDailyStatusRepo(),
@@ -1405,8 +2107,9 @@ describe('AttendanceService — service-unit', () => {
         new FakeChildRepo(),
         new FakeGuardianRepo(),
         staffRepo,
-        new FixedClock(NOW),
+        clock,
         new FakeNotificationPort(),
+        new FakeAuditService(clock),
         undefined,
         new FakeStaffService() as unknown as StaffService,
       );

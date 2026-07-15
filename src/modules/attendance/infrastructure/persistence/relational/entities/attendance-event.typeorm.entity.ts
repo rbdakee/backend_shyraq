@@ -21,13 +21,20 @@ import {
 } from '../../../../domain/value-objects/attendance-method.vo';
 
 /**
- * attendance_events row — append-only check-in / check-out log. RLS-scoped
- * on `kindergarten_id`. The migration created indexes on
+ * attendance_events row — check-in / check-out log. RLS-scoped on
+ * `kindergarten_id`. The migration created indexes on
  *   (kindergarten_id, recorded_at DESC) and (child_id, recorded_at DESC) —
  * mirrored here as `@Index` for documentation; TypeORM does not own them.
  *
  * `pickup_request_id` is intentionally a plain UUID column with no FK in
  * B8 — B11 will ALTER TABLE to add REFERENCES pickup_requests(id).
+ *
+ * `deleted_at` is a plain nullable column, NOT TypeORM's `@DeleteDateColumn`.
+ * That is deliberate: `@DeleteDateColumn` makes TypeORM filter soft-deleted
+ * rows implicitly, which would silently diverge from the raw-SQL read paths
+ * (`lastEventBucketsForDate`) that must spell the predicate out anyway. One
+ * explicit `deleted_at IS NULL` per read path is easier to audit than a mix
+ * of implicit and explicit filtering.
  */
 @Entity({ name: 'attendance_events' })
 @Index('idx_attendance_kg_recorded', ['kindergarten_id', 'recorded_at'])
@@ -90,4 +97,7 @@ export class AttendanceEventTypeOrmEntity {
 
   @CreateDateColumn({ type: 'timestamptz' })
   created_at!: Date;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  deleted_at!: Date | null;
 }
