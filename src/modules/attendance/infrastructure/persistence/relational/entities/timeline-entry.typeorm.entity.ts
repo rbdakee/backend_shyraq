@@ -14,6 +14,7 @@ import {
   TIMELINE_ENTRY_TYPE_VALUES,
   TimelineEntryTypeValue,
 } from '../../../../domain/value-objects/timeline-entry-type.vo';
+import { AttendanceEventTypeOrmEntity } from './attendance-event.typeorm.entity';
 
 /**
  * timeline_entries row — append-friendly journal entry. RLS-scoped on
@@ -71,4 +72,18 @@ export class TimelineEntryTypeOrmEntity {
 
   @CreateDateColumn({ type: 'timestamptz' })
   created_at!: Date;
+
+  /**
+   * The attendance_events row this entry mirrors (check_in / check_out
+   * entries only; null for standalone activity/meal/note entries). Lets the
+   * admin attendance cascade find the paired entry when an event is deleted
+   * or re-pointed at another child. Historical rows predating the column may
+   * be null where the backfill could not match unambiguously.
+   */
+  @Column({ type: 'uuid', nullable: true })
+  source_event_id!: string | null;
+
+  @ManyToOne(() => AttendanceEventTypeOrmEntity, { onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'source_event_id', referencedColumnName: 'id' })
+  sourceEvent?: AttendanceEventTypeOrmEntity;
 }

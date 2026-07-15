@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { AuditModule } from '@/modules/audit/audit.module';
 import { ChildModule } from '@/modules/child/child.module';
 import { GroupModule } from '@/modules/group/group.module';
 import { StaffModule } from '@/modules/staff/staff.module';
@@ -32,6 +33,8 @@ import { TimelineEntryRelationalRepository } from './infrastructure/persistence/
  *     the `recorded_by` / `set_by` display-name fields).
  *   - UsersModule exports UserRepository (identity overlay: pickup_user_id =
  *     users.id → users.full_name for the `pickup_user_full_name` field).
+ *   - AuditModule exports AuditService (mutation trail for every write here;
+ *     required, not optional — see AttendanceService's constructor).
  *   - SharedKernelModule (global) provides ClockPort + NotificationPort.
  *
  * AttendanceService and TimelineService are exported so they can be consumed
@@ -44,6 +47,7 @@ import { TimelineEntryRelationalRepository } from './infrastructure/persistence/
       ChildDailyStatusTypeOrmEntity,
       TimelineEntryTypeOrmEntity,
     ]),
+    AuditModule,
     ChildModule,
     GroupModule,
     StaffModule,

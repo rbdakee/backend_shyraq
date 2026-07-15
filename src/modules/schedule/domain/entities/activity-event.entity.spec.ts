@@ -5,6 +5,7 @@ import { ActivityEvent } from './activity-event.entity';
 const KG = '11111111-1111-1111-1111-111111111111';
 const GROUP = '22222222-2222-2222-2222-222222222222';
 const EVENT_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+const SLOT_ID = '33333333-3333-3333-3333-333333333333';
 const NOW = new Date('2026-04-30T10:00:00.000Z');
 const LATER = new Date('2026-04-30T11:00:00.000Z');
 
@@ -16,6 +17,7 @@ function newScheduled(): ActivityEvent {
       id: EVENT_ID,
       kindergartenId: KG,
       groupId: GROUP,
+      origin: 'adhoc',
       activityName: 'Morning Circle',
       startsAt: new Date('2026-05-04T09:00:00.000Z'),
       endsAt: new Date('2026-05-04T09:45:00.000Z'),
@@ -42,6 +44,7 @@ describe('ActivityEvent domain entity', () => {
           id: EVENT_ID,
           kindergartenId: KG,
           groupId: GROUP,
+          origin: 'adhoc',
           activityName: 'Обед',
           category: 'meal',
           startsAt: new Date('2026-05-04T12:00:00.000Z'),
@@ -58,6 +61,7 @@ describe('ActivityEvent domain entity', () => {
             id: EVENT_ID,
             kindergartenId: KG,
             groupId: GROUP,
+            origin: 'adhoc',
             activityName: 'Bad',
             startsAt: new Date('2026-05-04T10:00:00.000Z'),
             endsAt: new Date('2026-05-04T09:00:00.000Z'),
@@ -65,6 +69,100 @@ describe('ActivityEvent domain entity', () => {
           fixedClock(NOW),
         ),
       ).toThrow(InvariantViolationError);
+    });
+  });
+
+  describe('origin (durable provenance)', () => {
+    it('returns the origin passed to createScheduled', () => {
+      expect(newScheduled().origin).toBe('adhoc');
+    });
+
+    it('returns origin=template for a slot-projected event', () => {
+      const e = ActivityEvent.createScheduled(
+        {
+          id: EVENT_ID,
+          kindergartenId: KG,
+          groupId: GROUP,
+          templateSlotId: SLOT_ID,
+          origin: 'template',
+          activityName: 'Урок',
+          startsAt: new Date('2026-05-04T09:00:00.000Z'),
+        },
+        fixedClock(NOW),
+      );
+      expect(e.origin).toBe('template');
+      expect(e.templateSlotId).toBe(SLOT_ID);
+    });
+
+    it('round-trips origin through toState/hydrate', () => {
+      const e = ActivityEvent.createScheduled(
+        {
+          id: EVENT_ID,
+          kindergartenId: KG,
+          groupId: GROUP,
+          templateSlotId: SLOT_ID,
+          origin: 'template',
+          activityName: 'Урок',
+          startsAt: new Date('2026-05-04T09:00:00.000Z'),
+        },
+        fixedClock(NOW),
+      );
+      expect(e.toState().origin).toBe('template');
+      expect(ActivityEvent.hydrate(e.toState()).origin).toBe('template');
+    });
+
+    /**
+     * The whole point of the column: `template_slot_id` is ON DELETE SET NULL,
+     * so a template edit nulls the FK on already-materialized events. `origin`
+     * must still mark such an orphan as template-born, keeping it distinct from
+     * a genuine ad-hoc event (which also has templateSlotId === null).
+     */
+    it('returns origin=template for an orphan whose slot was deleted', () => {
+      const orphan = ActivityEvent.hydrate({
+        id: EVENT_ID,
+        kindergartenId: KG,
+        groupId: GROUP,
+        templateSlotId: null,
+        origin: 'template',
+        activityName: 'Урок',
+        category: 'lesson',
+        locationId: null,
+        startsAt: new Date('2026-05-04T09:00:00.000Z'),
+        endsAt: null,
+        status: 'scheduled',
+        createdBy: null,
+        notes: null,
+        createdAt: NOW,
+        updatedAt: NOW,
+      });
+      expect(orphan.templateSlotId).toBeNull();
+      expect(orphan.origin).toBe('template');
+      expect(orphan.origin).not.toBe(newScheduled().origin);
+    });
+
+    it('returns an unchanged origin after state transitions and reschedule', () => {
+      const e = newScheduled();
+      e.reschedule({ activityName: 'Renamed' }, fixedClock(LATER));
+      expect(e.origin).toBe('adhoc');
+      e.start(fixedClock(LATER));
+      expect(e.origin).toBe('adhoc');
+      e.complete(fixedClock(LATER));
+      expect(e.origin).toBe('adhoc');
+    });
+
+    /**
+     * Asserted via the descriptor rather than by expecting an assignment to
+     * throw: tsconfig sets no `strict`/`alwaysStrict`, so emitted specs are
+     * sloppy-mode, where writing to a getter-only property silently no-ops
+     * instead of raising TypeError. The descriptor is the deterministic check.
+     */
+    it('keeps origin immutable — a getter with no setter', () => {
+      const descriptor = Object.getOwnPropertyDescriptor(
+        ActivityEvent.prototype,
+        'origin',
+      );
+      expect(descriptor?.get).toBeDefined();
+      expect(descriptor?.set).toBeUndefined();
     });
   });
 

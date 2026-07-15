@@ -14,8 +14,10 @@ Onboarding для будущих Claude-сессий в этом репо. Read 
 |---|---|---|
 | domain-unit | `*.entity.spec.ts`, `*.vo.spec.ts` | `npm test` |
 | service-unit | `<x>.service.spec.ts` (рядом с service) | `npm test` |
-| integration | `*.integration-spec.ts` / `*.integration.spec.ts` | `INTEGRATION_DB=1 npm test` (требует PG+Redis в docker) |
+| integration | `*.integration-spec.ts` / `*.integration.spec.ts` | `INTEGRATION_DB=1 npx env-cmd -- npx jest <pattern>` (требует PG+Redis в docker) |
 | e2e | `test/<x>.e2e-spec.ts` | `npm run test:e2e` |
+
+⚠️ `npm test` — это **голый `jest` без `env-cmd`**, т.е. `.env` не читается и `DATABASE_*` падают на дефолты (порт 5432 вместо реального). Для unit-уровней это неважно — БД им не нужна, — но `INTEGRATION_DB=1 npm test` молча не достучится до базы и уронит весь integration-набор. Поэтому `env-cmd` в команде выше обязателен (`npm run test:e2e` его уже включает).
 
 Test naming: `it('returns ...')`, `it('throws ...')`, `it('rejects ...')`. **Не** `it('should ...')`.
 
@@ -54,7 +56,7 @@ Unit-тесты используют **рукописные in-memory fakes** д
 ## 9. Adding a new module
 
 1. Update `docs/schema.dbml`, `docs/endpoints.md`, `docs/Shyraq BP.md` — что меняется.
-2. Создать миграцию: `npm run migration:create -- --name=<Name>`. Включить таблицы + RLS policy + `FORCE ROW LEVEL SECURITY` + indexes.
+2. Создать миграцию: `npm run migration:create -- src/database/migrations/<Name>` (позиционный путь; флага `--name` у `typeorm migration:create` нет). Включить таблицы + RLS policy + `FORCE ROW LEVEL SECURITY` + indexes.
 3. Создать структуру `src/modules/<x>/` по template из [`MEMORY.md §4`](MEMORY.md).
 4. `domain/entities/<x>.entity.ts` — POJO с инвариантами + `toState()/fromState()`.
 5. TypeORM-entity в `infrastructure/persistence/relational/entities/`. Mapper в `mappers/`.

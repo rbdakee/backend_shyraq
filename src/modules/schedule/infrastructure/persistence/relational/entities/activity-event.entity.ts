@@ -12,6 +12,7 @@ import { GroupEntity } from '@/modules/group/infrastructure/persistence/relation
 import { KindergartenEntity } from '@/modules/kindergarten/infrastructure/persistence/relational/entities/kindergarten.entity';
 import { LocationEntity } from '@/modules/location/infrastructure/persistence/relational/entities/location.entity';
 import { StaffMemberEntity } from '@/modules/staff/infrastructure/persistence/relational/entities/staff-member.entity';
+import { ActivityEventOriginValue } from '../../../../domain/value-objects/activity-event-origin.vo';
 import {
   ACTIVITY_EVENT_STATUS_VALUES,
   ActivityEventStatusValue,
@@ -60,6 +61,15 @@ export class ActivityEventEntity {
   @ManyToOne(() => ScheduleTemplateSlotEntity, { onDelete: 'SET NULL' })
   @JoinColumn({ name: 'template_slot_id', referencedColumnName: 'id' })
   templateSlot?: ScheduleTemplateSlotEntity;
+
+  /**
+   * Durable provenance — survives the ON DELETE SET NULL above, which wipes
+   * `template_slot_id` whenever a template edit deletes the originating slot.
+   * varchar(20) + DB CHECK (see ActivityEventOrigin1784300000000), not an enum.
+   * Write-once: never included in any UPDATE set.
+   */
+  @Column({ type: 'varchar', length: 20, default: 'template' })
+  origin!: ActivityEventOriginValue;
 
   @Column({ type: 'varchar', length: 120 })
   activity_name!: string;

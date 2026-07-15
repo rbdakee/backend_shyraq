@@ -66,4 +66,31 @@ export abstract class ActivityEventRepository {
     kindergartenId: string,
     events: ActivityEvent[],
   ): Promise<ActivityEvent[]>;
+
+  /**
+   * Bulk-delete the template-projected, still-scheduled, still-future events of
+   * one group inside one week. The sweep half of
+   * `ScheduleService.rematerializeFutureWeeks`.
+   *
+   * Deletes exactly the rows matching ALL of:
+   *   - `kindergarten_id = kindergartenId` AND `group_id = groupId`
+   *   - `origin = 'template'` — ad-hoc events are never touched. Note this
+   *     matches template ORPHANS too (`template_slot_id IS NULL` after a slot
+   *     delete NULLed the FK); `origin` is write-once, so it is the only thing
+   *     that still identifies them. Sweeping them is the point.
+   *   - `status = 'scheduled'` — anything started/completed/cancelled is history.
+   *   - `starts_at >= from` AND `starts_at < to` — the target week, half-open.
+   *   - `starts_at > after` — preserves events that already began, so the current
+   *     week can be rebuilt from `now` forward without rewriting its past.
+   *
+   * Returns the number of rows deleted. Implementations MUST issue a single
+   * DELETE rather than read-then-delete.
+   */
+  abstract deleteTemplateScheduledInRange(
+    kindergartenId: string,
+    groupId: string,
+    from: Date,
+    to: Date,
+    after: Date,
+  ): Promise<number>;
 }

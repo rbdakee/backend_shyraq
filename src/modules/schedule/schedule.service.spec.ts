@@ -205,6 +205,35 @@ class FakeActivityEventRepo extends ActivityEventRepository {
     if (e && e.kindergartenId === kg) this.rows.delete(id);
     return Promise.resolve();
   }
+  /**
+   * Mirrors the single DELETE of the relational impl, predicate for predicate:
+   * tenant + group + origin='template' + status='scheduled' + starts_at in
+   * [from, to) + starts_at > after.
+   */
+  deleteTemplateScheduledInRange(
+    kg: string,
+    groupId: string,
+    from: Date,
+    to: Date,
+    after: Date,
+  ): Promise<number> {
+    let deleted = 0;
+    for (const [id, e] of [...this.rows]) {
+      if (
+        e.kindergartenId === kg &&
+        e.groupId === groupId &&
+        e.origin === 'template' &&
+        e.status.value === 'scheduled' &&
+        e.startsAt.getTime() >= from.getTime() &&
+        e.startsAt.getTime() < to.getTime() &&
+        e.startsAt.getTime() > after.getTime()
+      ) {
+        this.rows.delete(id);
+        deleted += 1;
+      }
+    }
+    return Promise.resolve(deleted);
+  }
 }
 
 class FakeWeekSnapshotRepo extends ScheduleWeekSnapshotRepository {
@@ -249,9 +278,25 @@ class FakeWeekSnapshotRepo extends ScheduleWeekSnapshotRepository {
   }
   list(
     kg: string,
-    _filter: ListScheduleWeekSnapshotsFilter,
+    filter: ListScheduleWeekSnapshotsFilter,
   ): Promise<ScheduleWeekSnapshot[]> {
-    return Promise.resolve(this.rows.filter((r) => r.kindergartenId === kg));
+    let items = this.rows.filter((r) => r.kindergartenId === kg);
+    if (filter.groupId !== undefined) {
+      items = items.filter((r) => r.groupId === filter.groupId);
+    }
+    // Bounds mirror the relational impl: `from` inclusive, `to` INCLUSIVE
+    // (week_start_date >= :from / <= :to).
+    if (filter.from !== undefined) {
+      items = items.filter(
+        (r) => r.weekStartDate.getTime() >= filter.from!.getTime(),
+      );
+    }
+    if (filter.to !== undefined) {
+      items = items.filter(
+        (r) => r.weekStartDate.getTime() <= filter.to!.getTime(),
+      );
+    }
+    return Promise.resolve(items);
   }
 }
 
@@ -424,6 +469,7 @@ function makeEvent(
     kindergartenId: kg,
     groupId,
     templateSlotId: null,
+    origin: 'adhoc',
     activityName: 'Test Activity',
     category: 'activity',
     locationId,
@@ -880,8 +926,27 @@ describe('ScheduleService — service-unit', () => {
         (e) => e.activityName === 'Morning Circle',
       )!;
       const tueEvent = allEvents.find((e) => e.activityName === 'IZO')!;
-      expect(monEvent.startsAt.toISOString()).toBe('2026-05-04T09:00:00.000Z');
-      expect(tueEvent.startsAt.toISOString()).toBe('2026-05-05T10:00:00.000Z');
+      // Slot times are a naive wall clock authored in the kindergarten's zone
+      // (Asia/Almaty, UTC+5): 09:00 local on Mon 2026-05-04 is 04:00Z, and
+      // 10:00 local on Tue 2026-05-05 is 05:00Z. The old projection declared the
+      // wall clock to BE UTC and shifted every event +5h.
+      expect(monEvent.startsAt.toISOString()).toBe('2026-05-04T04:00:00.000Z');
+      expect(tueEvent.startsAt.toISOString()).toBe('2026-05-05T05:00:00.000Z');
+    });
+
+    it('projects slot end times in the kindergarten timezone too', async () => {
+      const w = wire();
+      setupGroupAndTemplate(w);
+      await w.service.copyWeekToNext(
+        KG,
+        new Date('2026-04-27T00:00:00.000Z'),
+        'manual',
+      );
+      const monEvent = (await w.eventRepo.list(KG, {})).find(
+        (e) => e.activityName === 'Morning Circle',
+      )!;
+      // 09:45 Almaty → 04:45Z.
+      expect(monEvent.endsAt!.toISOString()).toBe('2026-05-04T04:45:00.000Z');
     });
 
     it('copies each slot category onto the projected activity_event', async () => {
@@ -906,6 +971,712 @@ describe('ScheduleService — service-unit', () => {
       const result = await w.service.copyWeekToNext(KG, fromMonday, 'cron');
       expect(result.snapshots).toHaveLength(1);
       expect(result.snapshots[0].source).toBe('cron');
+    });
+  });
+
+  describe('rematerializeFutureWeeks', () => {
+    // NOW is Thu 2026-04-30T10:00:00Z, so the current ISO week starts Mon
+    // 2026-04-27 and `startsAt > now` bites in the middle of that week.
+    const WEEK_PAST = new Date('2026-04-20T00:00:00.000Z');
+    const WEEK_CURRENT = new Date('2026-04-27T00:00:00.000Z');
+    const WEEK_NEXT = new Date('2026-05-04T00:00:00.000Z');
+
+    interface SlotSeed {
+      id: string;
+      dayOfWeek: string;
+      startTime: string;
+      endTime: string;
+      activityName: string;
+    }
+
+    function putTemplate(
+      w: Wired,
+      id: string,
+      groupId: string | null,
+      slots: SlotSeed[],
+    ): void {
+      w.templateRepo.put(
+        ScheduleTemplate.hydrate({
+          id,
+          kindergartenId: KG,
+          groupId,
+          name: `Template-${id}`,
+          recurrence: 'weekly',
+          isActive: true,
+          validFrom: new Date('2026-04-01'),
+          validUntil: null,
+          createdAt: NOW,
+          slots: slots.map((s) => ({
+            id: s.id,
+            templateId: id,
+            dayOfWeek: s.dayOfWeek as never,
+            startTime: s.startTime,
+            endTime: s.endTime,
+            activityName: s.activityName,
+            category: 'activity' as const,
+            locationId: null,
+            description: null,
+          })),
+        }),
+      );
+    }
+
+    function putSnapshot(w: Wired, groupId: string, weekStart: Date): void {
+      w.snapshotRepo.rows.push(
+        ScheduleWeekSnapshot.createNew(
+          {
+            id: `snap-${groupId}-${weekStart.toISOString().slice(0, 10)}`,
+            kindergartenId: KG,
+            groupId,
+            weekStartDate: weekStart,
+            source: 'cron',
+            copiedFrom: null,
+          },
+          NOW,
+        ),
+      );
+    }
+
+    function putEvent(
+      w: Wired,
+      seed: {
+        id: string;
+        groupId?: string;
+        startsAt: string;
+        activityName?: string;
+        origin?: 'template' | 'adhoc';
+        status?: ActivityEventStatusValue;
+        templateSlotId?: string | null;
+      },
+    ): void {
+      w.eventRepo.put(
+        ActivityEvent.hydrate({
+          id: seed.id,
+          kindergartenId: KG,
+          groupId: seed.groupId ?? GROUP_A,
+          templateSlotId: seed.templateSlotId ?? null,
+          origin: seed.origin ?? 'template',
+          activityName: seed.activityName ?? 'Seeded',
+          category: 'activity',
+          locationId: null,
+          startsAt: new Date(seed.startsAt),
+          endsAt: null,
+          status: seed.status ?? 'scheduled',
+          createdBy: null,
+          notes: null,
+          createdAt: NOW,
+          updatedAt: NOW,
+        }),
+      );
+    }
+
+    /**
+     * Simulate what the FK does on a template edit: `save()` DELETEs the dropped
+     * slot rows and `activity_events.template_slot_id` (ON DELETE SET NULL) goes
+     * NULL on every already-materialized event. `origin` survives — that is the
+     * whole reason it exists.
+     */
+    function nullOutTemplateSlotFks(w: Wired): void {
+      for (const [id, e] of [...w.eventRepo.rows]) {
+        const state = e.toState();
+        if (state.origin === 'template') {
+          w.eventRepo.rows.set(
+            id,
+            ActivityEvent.hydrate({ ...state, templateSlotId: null }),
+          );
+        }
+      }
+    }
+
+    async function names(w: Wired, groupId?: string): Promise<string[]> {
+      const events = await w.eventRepo.list(KG, { groupId });
+      return events.map((e) => e.activityName).sort();
+    }
+
+    it('returns exactly the new slots and zero ghosts after a template slot set is replaced', async () => {
+      // The production scenario end-to-end: a week is materialized once, the
+      // admin then rewrites the template, and parents are left staring at the
+      // old slots forever because copyWeekToNext will never revisit the week.
+      const w = wire();
+      w.groupRepo.put(makeGroup(KG, GROUP_A));
+      putTemplate(w, 'tpl-1', GROUP_A, [
+        {
+          id: 'slot-old-1',
+          dayOfWeek: 'mon',
+          startTime: '09:00:00',
+          endTime: '09:45:00',
+          activityName: 'Ghost A',
+        },
+        {
+          id: 'slot-old-2',
+          dayOfWeek: 'tue',
+          startTime: '10:00:00',
+          endTime: '11:00:00',
+          activityName: 'Ghost B',
+        },
+      ]);
+
+      // 1) Cron materializes next week from the 2-slot template.
+      await w.service.copyWeekToNext(KG, WEEK_CURRENT, 'manual');
+      expect(await names(w)).toEqual(['Ghost A', 'Ghost B']);
+
+      // 2) Admin replaces the slot set entirely — old slot ids are gone and the
+      //    FK NULLs template_slot_id on the two live events.
+      putTemplate(w, 'tpl-1', GROUP_A, [
+        {
+          id: 'slot-new-1',
+          dayOfWeek: 'mon',
+          startTime: '08:00:00',
+          endTime: '08:45:00',
+          activityName: 'Real A',
+        },
+        {
+          id: 'slot-new-2',
+          dayOfWeek: 'wed',
+          startTime: '11:00:00',
+          endTime: '12:00:00',
+          activityName: 'Real B',
+        },
+        {
+          id: 'slot-new-3',
+          dayOfWeek: 'fri',
+          startTime: '15:00:00',
+          endTime: '16:00:00',
+          activityName: 'Real C',
+        },
+      ]);
+      nullOutTemplateSlotFks(w);
+
+      // 3) The bridge.
+      const result = await w.service.rematerializeFutureWeeks(KG, {
+        groupId: GROUP_A,
+      });
+
+      expect(result.rebuiltWeeks).toBe(1);
+      expect(result.deletedEvents).toBe(2);
+      expect(result.insertedEvents).toBe(3);
+      expect(await names(w)).toEqual(['Real A', 'Real B', 'Real C']);
+    });
+
+    it('deletes template orphans whose template_slot_id is already NULL', async () => {
+      // The ghost-slot case in isolation: `origin` is the only handle left.
+      const w = wire();
+      w.groupRepo.put(makeGroup(KG, GROUP_A));
+      putSnapshot(w, GROUP_A, WEEK_NEXT);
+      putEvent(w, {
+        id: 'orphan-1',
+        startsAt: '2026-05-04T04:00:00.000Z',
+        activityName: 'Orphan',
+        origin: 'template',
+        templateSlotId: null,
+      });
+
+      const result = await w.service.rematerializeFutureWeeks(KG, {
+        groupId: GROUP_A,
+      });
+
+      expect(result.deletedEvents).toBe(1);
+      expect(await names(w)).toEqual([]);
+    });
+
+    it('returns zero work and preserves events for weeks that have no snapshot', async () => {
+      // The cron owns the forward horizon — we must not materialize a new week.
+      const w = wire();
+      w.groupRepo.put(makeGroup(KG, GROUP_A));
+      putTemplate(w, 'tpl-1', GROUP_A, [
+        {
+          id: 'slot-1',
+          dayOfWeek: 'mon',
+          startTime: '09:00:00',
+          endTime: '09:45:00',
+          activityName: 'A',
+        },
+      ]);
+
+      const result = await w.service.rematerializeFutureWeeks(KG, {
+        groupId: GROUP_A,
+      });
+
+      expect(result).toEqual({
+        rebuiltWeeks: 0,
+        deletedEvents: 0,
+        insertedEvents: 0,
+      });
+      expect(await w.eventRepo.list(KG, {})).toHaveLength(0);
+    });
+
+    it('preserves events in past weeks (no snapshot in range)', async () => {
+      const w = wire();
+      w.groupRepo.put(makeGroup(KG, GROUP_A));
+      putSnapshot(w, GROUP_A, WEEK_PAST);
+      putEvent(w, {
+        id: 'past-1',
+        startsAt: '2026-04-20T04:00:00.000Z',
+        activityName: 'Last week',
+      });
+
+      const result = await w.service.rematerializeFutureWeeks(KG, {
+        groupId: GROUP_A,
+      });
+
+      expect(result.rebuiltWeeks).toBe(0);
+      expect(result.deletedEvents).toBe(0);
+      expect(await names(w)).toEqual(['Last week']);
+    });
+
+    it('preserves events that are not in scheduled status', async () => {
+      const w = wire();
+      w.groupRepo.put(makeGroup(KG, GROUP_A));
+      putSnapshot(w, GROUP_A, WEEK_NEXT);
+      putEvent(w, {
+        id: 'ip-1',
+        startsAt: '2026-05-04T04:00:00.000Z',
+        activityName: 'In progress',
+        status: 'in_progress',
+      });
+      putEvent(w, {
+        id: 'done-1',
+        startsAt: '2026-05-04T05:00:00.000Z',
+        activityName: 'Completed',
+        status: 'completed',
+      });
+      putEvent(w, {
+        id: 'cancelled-1',
+        startsAt: '2026-05-04T06:00:00.000Z',
+        activityName: 'Cancelled',
+        status: 'cancelled',
+      });
+
+      const result = await w.service.rematerializeFutureWeeks(KG, {
+        groupId: GROUP_A,
+      });
+
+      expect(result.deletedEvents).toBe(0);
+      expect(await names(w)).toEqual(['Cancelled', 'Completed', 'In progress']);
+    });
+
+    it('preserves ad-hoc events and never recreates them', async () => {
+      const w = wire();
+      w.groupRepo.put(makeGroup(KG, GROUP_A));
+      putSnapshot(w, GROUP_A, WEEK_NEXT);
+      putEvent(w, {
+        id: 'adhoc-1',
+        startsAt: '2026-05-06T04:00:00.000Z',
+        activityName: 'Museum trip',
+        origin: 'adhoc',
+      });
+      putTemplate(w, 'tpl-1', GROUP_A, [
+        {
+          id: 'slot-1',
+          dayOfWeek: 'mon',
+          startTime: '09:00:00',
+          endTime: '09:45:00',
+          activityName: 'Morning Circle',
+        },
+      ]);
+
+      const result = await w.service.rematerializeFutureWeeks(KG, {
+        groupId: GROUP_A,
+      });
+
+      expect(result.deletedEvents).toBe(0);
+      expect(result.insertedEvents).toBe(1);
+      expect(await names(w)).toEqual(['Morning Circle', 'Museum trip']);
+    });
+
+    it('rebuilds the remainder of the current week while preserving what already started', async () => {
+      // This is the whole point of the `starts_at > now` guard: an edit made on
+      // Thursday morning fixes Thursday afternoon onward, today — not in two
+      // weeks — and does not rewrite Thursday morning.
+      const w = wire();
+      w.groupRepo.put(makeGroup(KG, GROUP_A));
+      putSnapshot(w, GROUP_A, WEEK_CURRENT);
+      // Thu 09:00 Almaty = 04:00Z, i.e. BEFORE now (10:00Z).
+      putEvent(w, {
+        id: 'earlier-today',
+        startsAt: '2026-04-30T04:00:00.000Z',
+        activityName: 'Morning Circle',
+      });
+      // Thu 16:00 Almaty = 11:00Z, i.e. AFTER now → stale, must be rebuilt.
+      putEvent(w, {
+        id: 'later-today',
+        startsAt: '2026-04-30T11:00:00.000Z',
+        activityName: 'Stale Afternoon',
+      });
+      putTemplate(w, 'tpl-1', GROUP_A, [
+        {
+          id: 'slot-morning',
+          dayOfWeek: 'thu',
+          startTime: '09:00:00',
+          endTime: '09:45:00',
+          activityName: 'Morning Circle',
+        },
+        {
+          id: 'slot-afternoon',
+          dayOfWeek: 'thu',
+          startTime: '16:00:00',
+          endTime: '17:00:00',
+          activityName: 'Fresh Afternoon',
+        },
+      ]);
+
+      const result = await w.service.rematerializeFutureWeeks(KG, {
+        groupId: GROUP_A,
+      });
+
+      expect(result.deletedEvents).toBe(1);
+      expect(result.insertedEvents).toBe(1);
+      // The morning slot is neither deleted nor re-inserted → exactly one copy.
+      expect(await names(w)).toEqual(['Fresh Afternoon', 'Morning Circle']);
+    });
+
+    it('narrows to a single group when groupId is given', async () => {
+      const w = wire();
+      w.groupRepo.put(makeGroup(KG, GROUP_A));
+      w.groupRepo.put(makeGroup(KG, GROUP_B));
+      putSnapshot(w, GROUP_A, WEEK_NEXT);
+      putSnapshot(w, GROUP_B, WEEK_NEXT);
+      putEvent(w, {
+        id: 'a-1',
+        groupId: GROUP_A,
+        startsAt: '2026-05-04T04:00:00.000Z',
+        activityName: 'A stale',
+      });
+      putEvent(w, {
+        id: 'b-1',
+        groupId: GROUP_B,
+        startsAt: '2026-05-04T04:00:00.000Z',
+        activityName: 'B untouched',
+      });
+
+      const result = await w.service.rematerializeFutureWeeks(KG, {
+        groupId: GROUP_A,
+      });
+
+      expect(result.rebuiltWeeks).toBe(1);
+      expect(result.deletedEvents).toBe(1);
+      expect(await names(w)).toEqual(['B untouched']);
+    });
+
+    it('rebuilds every group when groupId is null (kindergarten-wide template)', async () => {
+      const w = wire();
+      w.groupRepo.put(makeGroup(KG, GROUP_A));
+      w.groupRepo.put(makeGroup(KG, GROUP_B));
+      putSnapshot(w, GROUP_A, WEEK_NEXT);
+      putSnapshot(w, GROUP_B, WEEK_NEXT);
+      // groupId: null → applies to both groups.
+      putTemplate(w, 'tpl-kgwide', null, [
+        {
+          id: 'slot-1',
+          dayOfWeek: 'mon',
+          startTime: '09:00:00',
+          endTime: '09:45:00',
+          activityName: 'Zaryadka',
+        },
+      ]);
+
+      const result = await w.service.rematerializeFutureWeeks(KG, {
+        groupId: null,
+      });
+
+      expect(result.rebuiltWeeks).toBe(2);
+      expect(result.insertedEvents).toBe(2);
+      expect(await names(w, GROUP_A)).toEqual(['Zaryadka']);
+      expect(await names(w, GROUP_B)).toEqual(['Zaryadka']);
+    });
+
+    it('treats an omitted groupId the same as null', async () => {
+      const w = wire();
+      w.groupRepo.put(makeGroup(KG, GROUP_A));
+      w.groupRepo.put(makeGroup(KG, GROUP_B));
+      putSnapshot(w, GROUP_A, WEEK_NEXT);
+      putSnapshot(w, GROUP_B, WEEK_NEXT);
+
+      const result = await w.service.rematerializeFutureWeeks(KG, {});
+
+      expect(result.rebuiltWeeks).toBe(2);
+    });
+
+    it('rebuilds both the current and the next week when both are materialized', async () => {
+      const w = wire();
+      w.groupRepo.put(makeGroup(KG, GROUP_A));
+      putSnapshot(w, GROUP_A, WEEK_CURRENT);
+      putSnapshot(w, GROUP_A, WEEK_NEXT);
+      // Fri 15:00 Almaty = 10:00Z — future in both weeks.
+      putTemplate(w, 'tpl-1', GROUP_A, [
+        {
+          id: 'slot-fri',
+          dayOfWeek: 'fri',
+          startTime: '15:00:00',
+          endTime: '16:00:00',
+          activityName: 'Friday Music',
+        },
+      ]);
+
+      const result = await w.service.rematerializeFutureWeeks(KG, {
+        groupId: GROUP_A,
+      });
+
+      expect(result.rebuiltWeeks).toBe(2);
+      expect(result.insertedEvents).toBe(2);
+      const starts = (await w.eventRepo.list(KG, {})).map((e) =>
+        e.startsAt.toISOString(),
+      );
+      expect(starts).toEqual([
+        '2026-05-01T10:00:00.000Z', // Fri of the current week
+        '2026-05-08T10:00:00.000Z', // Fri of next week
+      ]);
+    });
+
+    it('ignores an inactive template (its future events are swept)', async () => {
+      const w = wire();
+      w.groupRepo.put(makeGroup(KG, GROUP_A));
+      putSnapshot(w, GROUP_A, WEEK_NEXT);
+      putEvent(w, {
+        id: 'stale-1',
+        startsAt: '2026-05-04T04:00:00.000Z',
+        activityName: 'From a since-deactivated template',
+      });
+      w.templateRepo.put(
+        ScheduleTemplate.hydrate({
+          id: 'tpl-off',
+          kindergartenId: KG,
+          groupId: GROUP_A,
+          name: 'Off',
+          recurrence: 'weekly',
+          isActive: false,
+          validFrom: new Date('2026-04-01'),
+          validUntil: null,
+          createdAt: NOW,
+          slots: [
+            {
+              id: 'slot-1',
+              templateId: 'tpl-off',
+              dayOfWeek: 'mon',
+              startTime: '09:00:00',
+              endTime: '09:45:00',
+              activityName: 'Should not appear',
+              category: 'activity',
+              locationId: null,
+              description: null,
+            },
+          ],
+        }),
+      );
+
+      const result = await w.service.rematerializeFutureWeeks(KG, {
+        groupId: GROUP_A,
+      });
+
+      expect(result.deletedEvents).toBe(1);
+      expect(result.insertedEvents).toBe(0);
+      expect(await names(w)).toEqual([]);
+    });
+
+    it('does not touch another tenant', async () => {
+      const w = wire();
+      w.groupRepo.put(makeGroup(KG, GROUP_A));
+      putSnapshot(w, GROUP_A, WEEK_NEXT);
+      w.eventRepo.put(
+        ActivityEvent.hydrate({
+          id: 'other-kg-1',
+          kindergartenId: KG_OTHER,
+          groupId: GROUP_A,
+          templateSlotId: null,
+          origin: 'template',
+          activityName: 'Other tenant',
+          category: 'activity',
+          locationId: null,
+          startsAt: new Date('2026-05-04T04:00:00.000Z'),
+          endsAt: null,
+          status: 'scheduled',
+          createdBy: null,
+          notes: null,
+          createdAt: NOW,
+          updatedAt: NOW,
+        }),
+      );
+
+      await w.service.rematerializeFutureWeeks(KG, { groupId: GROUP_A });
+
+      expect(await w.eventRepo.findById(KG_OTHER, 'other-kg-1')).not.toBeNull();
+    });
+
+    it('resolves the right week when PG hands back week_start_date as a local-midnight Date', async () => {
+      // node-postgres parses a bare `date` with `new Date(y, m-1, d)`, i.e.
+      // LOCAL midnight. East of Greenwich that instant belongs to the PREVIOUS
+      // UTC day (on UTC+5, '2026-05-04' → 2026-05-03T19:00Z, a Sunday), and a
+      // naive startOfIsoWeek would snap it back to the previous Monday and
+      // rebuild the wrong week. Emulate that parse explicitly.
+      const w = wire();
+      w.groupRepo.put(makeGroup(KG, GROUP_A));
+      w.snapshotRepo.rows.push(
+        ScheduleWeekSnapshot.createNew(
+          {
+            id: 'snap-local-midnight',
+            kindergartenId: KG,
+            groupId: GROUP_A,
+            weekStartDate: new Date('2026-05-03T19:00:00.000Z'),
+            source: 'cron',
+            copiedFrom: null,
+          },
+          NOW,
+        ),
+      );
+      putTemplate(w, 'tpl-1', GROUP_A, [
+        {
+          id: 'slot-mon',
+          dayOfWeek: 'mon',
+          startTime: '09:00:00',
+          endTime: '09:45:00',
+          activityName: 'Morning Circle',
+        },
+      ]);
+
+      const result = await w.service.rematerializeFutureWeeks(KG, {
+        groupId: GROUP_A,
+      });
+
+      expect(result.rebuiltWeeks).toBe(1);
+      expect(result.insertedEvents).toBe(1);
+      const [event] = await w.eventRepo.list(KG, {});
+      // Monday of the intended week (2026-05-04), NOT 2026-04-27.
+      expect(event.startsAt.toISOString()).toBe('2026-05-04T04:00:00.000Z');
+    });
+  });
+
+  describe('template mutations re-sync materialized weeks', () => {
+    const WEEK_NEXT = new Date('2026-05-04T00:00:00.000Z');
+
+    /**
+     * Group + snapshot for next week + a real template carrying one Monday slot,
+     * created through the service so the ids are the ones the service knows.
+     */
+    async function setup(): Promise<{ w: Wired; templateId: string }> {
+      const w = wire();
+      w.groupRepo.put(makeGroup(KG, GROUP_A));
+      w.snapshotRepo.rows.push(
+        ScheduleWeekSnapshot.createNew(
+          {
+            id: 'snap-1',
+            kindergartenId: KG,
+            groupId: GROUP_A,
+            weekStartDate: WEEK_NEXT,
+            source: 'cron',
+            copiedFrom: null,
+          },
+          NOW,
+        ),
+      );
+      const tpl = await w.service.createTemplate(KG, {
+        groupId: GROUP_A,
+        name: 'Std',
+        validFrom: new Date('2026-04-01'),
+      });
+      return { w, templateId: tpl.id };
+    }
+
+    it('materializes the new slot into the already-snapshotted week on addSlot', async () => {
+      const { w, templateId } = await setup();
+      await w.service.addSlot(KG, templateId, {
+        dayOfWeek: 'mon',
+        startTime: '09:00',
+        endTime: '09:45',
+        activityName: 'Morning Circle',
+      });
+      const events = await w.eventRepo.list(KG, {});
+      expect(events).toHaveLength(1);
+      expect(events[0].activityName).toBe('Morning Circle');
+      expect(events[0].origin).toBe('template');
+      expect(events[0].startsAt.toISOString()).toBe('2026-05-04T04:00:00.000Z');
+    });
+
+    it('rewrites the materialized event on updateSlot', async () => {
+      const { w, templateId } = await setup();
+      const tpl = await w.service.addSlot(KG, templateId, {
+        dayOfWeek: 'mon',
+        startTime: '09:00',
+        endTime: '09:45',
+        activityName: 'Old Name',
+      });
+      await w.service.updateSlot(KG, templateId, tpl.slots[0].id, {
+        activityName: 'New Name',
+        startTime: '10:00',
+        endTime: '10:45',
+      });
+      const events = await w.eventRepo.list(KG, {});
+      expect(events).toHaveLength(1);
+      expect(events[0].activityName).toBe('New Name');
+      expect(events[0].startsAt.toISOString()).toBe('2026-05-04T05:00:00.000Z');
+    });
+
+    it('sweeps the materialized event on removeSlot', async () => {
+      const { w, templateId } = await setup();
+      const tpl = await w.service.addSlot(KG, templateId, {
+        dayOfWeek: 'mon',
+        startTime: '09:00',
+        endTime: '09:45',
+        activityName: 'Morning Circle',
+      });
+      expect(await w.eventRepo.list(KG, {})).toHaveLength(1);
+
+      await w.service.removeSlot(KG, templateId, tpl.slots[0].id);
+
+      expect(await w.eventRepo.list(KG, {})).toHaveLength(0);
+    });
+
+    it('sweeps the materialized events on deleteTemplate', async () => {
+      const { w, templateId } = await setup();
+      await w.service.addSlot(KG, templateId, {
+        dayOfWeek: 'mon',
+        startTime: '09:00',
+        endTime: '09:45',
+        activityName: 'Morning Circle',
+      });
+      expect(await w.eventRepo.list(KG, {})).toHaveLength(1);
+
+      await w.service.deleteTemplate(KG, templateId);
+
+      expect(await w.eventRepo.list(KG, {})).toHaveLength(0);
+    });
+
+    it('sweeps the materialized events when updateTemplate deactivates it', async () => {
+      const { w, templateId } = await setup();
+      await w.service.addSlot(KG, templateId, {
+        dayOfWeek: 'mon',
+        startTime: '09:00',
+        endTime: '09:45',
+        activityName: 'Morning Circle',
+      });
+      expect(await w.eventRepo.list(KG, {})).toHaveLength(1);
+
+      await w.service.updateTemplate(KG, templateId, { isActive: false });
+
+      expect(await w.eventRepo.list(KG, {})).toHaveLength(0);
+    });
+
+    it('leaves ad-hoc events untouched across a template mutation', async () => {
+      const { w, templateId } = await setup();
+      const adhoc = await w.service.createAdHocEvent(KG, {
+        groupId: GROUP_A,
+        activityName: 'Museum trip',
+        startsAt: new Date('2026-05-06T04:00:00.000Z'),
+      });
+      await w.service.addSlot(KG, templateId, {
+        dayOfWeek: 'mon',
+        startTime: '09:00',
+        endTime: '09:45',
+        activityName: 'Morning Circle',
+      });
+      await w.service.removeSlot(
+        KG,
+        templateId,
+        (await w.service.getTemplate(KG, templateId)).slots[0].id,
+      );
+
+      const remaining = await w.eventRepo.list(KG, {});
+      expect(remaining).toHaveLength(1);
+      expect(remaining[0].id).toBe(adhoc.id);
     });
   });
 

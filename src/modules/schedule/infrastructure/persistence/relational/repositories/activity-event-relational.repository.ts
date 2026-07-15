@@ -31,6 +31,7 @@ export class ActivityEventRelationalRepository extends ActivityEventRepository {
       kindergarten_id: kindergartenId,
       group_id: state.groupId,
       template_slot_id: state.templateSlotId,
+      origin: state.origin,
       activity_name: state.activityName,
       category: state.category,
       location_id: state.locationId,
@@ -66,6 +67,7 @@ export class ActivityEventRelationalRepository extends ActivityEventRepository {
         kindergarten_id: kindergartenId,
         group_id: s.groupId,
         template_slot_id: s.templateSlotId,
+        origin: s.origin,
         activity_name: s.activityName,
         category: s.category,
         location_id: s.locationId,
@@ -184,6 +186,32 @@ export class ActivityEventRelationalRepository extends ActivityEventRepository {
     await this.manager()
       .getRepository(ActivityEventEntity)
       .delete({ id: eventId, kindergarten_id: kindergartenId });
+  }
+
+  async deleteTemplateScheduledInRange(
+    kindergartenId: string,
+    groupId: string,
+    from: Date,
+    to: Date,
+    after: Date,
+  ): Promise<number> {
+    // Single DELETE — no read-then-delete. `origin = 'template'` is what reaches
+    // the orphans a template edit left behind (their `template_slot_id` was
+    // NULLed by the FK's ON DELETE SET NULL), while leaving 'adhoc' rows alone.
+    const result = await this.manager()
+      .getRepository(ActivityEventEntity)
+      .createQueryBuilder()
+      .delete()
+      .from(ActivityEventEntity)
+      .where('kindergarten_id = :kg', { kg: kindergartenId })
+      .andWhere('group_id = :gid', { gid: groupId })
+      .andWhere('origin = :origin', { origin: 'template' })
+      .andWhere('status = :status', { status: 'scheduled' })
+      .andWhere('starts_at >= :from', { from })
+      .andWhere('starts_at < :to', { to })
+      .andWhere('starts_at > :after', { after })
+      .execute();
+    return result.affected ?? 0;
   }
 
   private manager(): EntityManager {

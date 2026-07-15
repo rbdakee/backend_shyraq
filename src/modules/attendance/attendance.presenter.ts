@@ -1,9 +1,35 @@
+import { AuditLogEntry } from '@/modules/audit/domain/entities/audit-log-entry.entity';
 import { AttendanceEvent } from './domain/entities/attendance-event.entity';
 import { ChildDailyStatus } from './domain/entities/child-daily-status.entity';
 import { AttendanceEventResponseDto } from './dto/attendance-event.response';
+import { AuditLogEntryResponseDto } from './dto/audit-log-entry.response';
 import { DailyStatusResponseDto } from './dto/daily-status.response';
 
 export class AttendancePresenter {
+  /**
+   * Maps an audit_log row → history DTO. `actorFullName` is the usual
+   * identity overlay (staff_members.id → users.full_name), resolved in batch
+   * by the service and defaulting to null.
+   *
+   * `before` / `after` pass through verbatim — the admin UI diffs them
+   * itself, so filtering fields here would only hide corrections.
+   */
+  static auditEntry(
+    e: AuditLogEntry,
+    actorFullName: string | null = null,
+  ): AuditLogEntryResponseDto {
+    const s = e.toState();
+    return {
+      id: s.id,
+      action: s.action,
+      actorUserId: s.actorUserId,
+      actor_full_name: actorFullName,
+      before: s.before,
+      after: s.after,
+      createdAt: s.createdAt.toISOString(),
+    };
+  }
+
   /**
    * Maps an attendance event → response DTO. The optional overlay params
    * carry display names resolved by the service (the row stores only ids):

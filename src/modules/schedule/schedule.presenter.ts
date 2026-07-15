@@ -62,6 +62,7 @@ export class SchedulePresenter {
       kindergartenId: s.kindergartenId,
       groupId: s.groupId,
       templateSlotId: s.templateSlotId,
+      origin: s.origin,
       activityName: s.activityName,
       category: s.category,
       locationId: s.locationId,

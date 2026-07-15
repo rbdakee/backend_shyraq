@@ -33,6 +33,19 @@ export abstract class TimelineEntryRepository {
     entryId: string,
   ): Promise<TimelineEntry | null>;
 
+  /**
+   * Finds the check_in / check_out entry mirroring the given attendance
+   * event, so the admin attendance cascade can re-point or remove it.
+   *
+   * Returns null for entries written before `source_event_id` existed where
+   * the migration's backfill could not match unambiguously — the cascade
+   * treats that as "nothing to cascade" rather than failing the correction.
+   */
+  abstract findBySourceEventId(
+    kindergartenId: string,
+    sourceEventId: string,
+  ): Promise<TimelineEntry | null>;
+
   abstract findByChild(
     kindergartenId: string,
     childId: string,

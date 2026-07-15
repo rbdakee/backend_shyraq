@@ -1,7 +1,7 @@
 /**
  * B8 attendance e2e — exercises staff check-in/out, staff PATCH, admin
- * attendance oversight, daily-status, dashboard, and cross-tenant RLS
- * isolation.
+ * attendance oversight + register-keeping, daily-status, dashboard, audit
+ * history, and cross-tenant RLS isolation.
  *
  * Endpoints under test:
  *   Staff:
@@ -10,11 +10,16 @@
  *     PATCH  /api/v1/staff/attendance/:eventId
  *     POST   /api/v1/staff/daily-status
  *   Admin:
+ *     POST   /api/v1/admin/attendance/check-in
  *     GET    /api/v1/admin/attendance-events
  *     GET    /api/v1/admin/attendance-events/:eventId
  *     PATCH  /api/v1/admin/attendance-events/:eventId
+ *     DELETE /api/v1/admin/attendance-events/:eventId
+ *     GET    /api/v1/admin/attendance-events/:eventId/history
  *     GET    /api/v1/admin/dashboard/attendance-today
+ *     POST   /api/v1/admin/daily-status
  *     GET    /api/v1/admin/daily-status
+ *     GET    /api/v1/admin/children/:childId/timeline
  *   Parent:
  *     GET    /api/v1/parent/children/:childId/attendance
  *     GET    /api/v1/parent/children/:childId/daily-status
@@ -22,9 +27,18 @@
  * Error codes asserted:
  *   pickup_user_not_allowed       → 403
  *   attendance_edit_window_expired → 403 (non-admin same-day gate)
- *   attendance_event_not_found    → 404
+ *   attendance_event_not_found    → 404 (unknown id, and re-delete of a
+ *                                        soft-deleted one)
  *
- * Scenarios A–H.
+ * Scenarios A–S (A–N as before; O–S cover the admin register):
+ *   O — admin check-in lands in the events list.
+ *   P — admin DELETE tombstones the event: it leaves BOTH the events list and
+ *       the dashboard donut. This is the regression guard for the
+ *       `deleted_at IS NULL` filters (a missed one leaks deleted events into
+ *       the counters, which no unit test can catch — the donut is raw SQL).
+ *   Q — admin PATCH childId moves the paired timeline entry between children.
+ *   R — audit history returns create+update+delete newest-first.
+ *   S — admin daily-status upsert returns 200.
  */
 import type { Server } from 'node:http';
 import bcrypt from 'bcryptjs';
@@ -692,5 +706,342 @@ describe('B8 attendance (e2e)', () => {
     // Identity overlay present on each daily-status row.
     expect(record).toHaveProperty('set_by_full_name');
     expect(record?.set_by_full_name).toBe('Admin');
+  });
+
+  // ── O. Admin records a check-in from the admin panel ─────────────────────
+
+  it('returns 201 on admin check-in and lists the event (Scenario O)', async () => {
+    const a = await createKgWithAdmin('att-o', '+77011130018');
+    const childId = await createChild(a.adminToken, {
+      full_name: 'O-Child',
+      date_of_birth: '2022-01-20',
+    });
+
+    const checkInRes = await request(server)
+      .post('/api/v1/admin/attendance/check-in')
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .send({ childId })
+      .expect(201);
+    expect(checkInRes.body.childId).toBe(childId);
+    expect(checkInRes.body.eventType).toBe('check_in');
+    expect(checkInRes.body.recorded_by_full_name).toBe('Admin');
+    expect(checkInRes.body.child_name).toBe('O-Child');
+
+    const listRes = await request(server)
+      .get('/api/v1/admin/attendance-events')
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .query({ childId })
+      .expect(200);
+    const ids = (listRes.body as { id: string }[]).map((e) => e.id);
+    expect(ids).toContain(checkInRes.body.id);
+  });
+
+  // ── P. Admin DELETE — event leaves the list AND the dashboard counters ────
+
+  it('returns 204 on admin delete and drops the event from the list and dashboard (Scenario P)', async () => {
+    const a = await createKgWithAdmin('att-p', '+77011130019');
+    const childId = await createChild(a.adminToken, {
+      full_name: 'P-Child',
+      date_of_birth: '2022-02-20',
+    });
+
+    const checkInRes = await request(server)
+      .post('/api/v1/admin/attendance/check-in')
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .send({ childId })
+      .expect(201);
+    const eventId = checkInRes.body.id as string;
+
+    // The child is in the kindergarten per the donut before the delete.
+    const beforeDash = await request(server)
+      .get('/api/v1/admin/dashboard/attendance-today')
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .expect(200);
+    expect(beforeDash.body.in_kindergarten).toBe(1);
+
+    await request(server)
+      .delete(`/api/v1/admin/attendance-events/${eventId}`)
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .expect(204);
+
+    // Gone from the events list…
+    const listRes = await request(server)
+      .get('/api/v1/admin/attendance-events')
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .query({ childId })
+      .expect(200);
+    expect((listRes.body as { id: string }[]).map((e) => e.id)).not.toContain(
+      eventId,
+    );
+
+    // …and from the single-event read.
+    const getRes = await request(server)
+      .get(`/api/v1/admin/attendance-events/${eventId}`)
+      .set('Authorization', `Bearer ${a.adminToken}`);
+    expect(getRes.status).toBe(404);
+    expect(getRes.body.error).toBe('attendance_event_not_found');
+
+    // …and from the dashboard donut. The counter is computed by a raw
+    // DISTINCT ON query, so this is the only place a missed `deleted_at IS
+    // NULL` would surface.
+    const afterDash = await request(server)
+      .get('/api/v1/admin/dashboard/attendance-today')
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .expect(200);
+    expect(afterDash.body.in_kindergarten).toBe(0);
+
+    // The child's day falls back from present to absent (no live check_in).
+    const today = new Date().toLocaleDateString('en-CA', {
+      timeZone: 'Asia/Almaty',
+    });
+    const statusRes = await request(server)
+      .get('/api/v1/admin/daily-status')
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .query({ from: today, to: today })
+      .expect(200);
+    const row = (statusRes.body as { childId: string; status: string }[]).find(
+      (r) => r.childId === childId,
+    );
+    expect(row?.status).toBe('absent');
+
+    // Re-deleting a tombstone is a 404, not a silent no-op.
+    const reDeleteRes = await request(server)
+      .delete(`/api/v1/admin/attendance-events/${eventId}`)
+      .set('Authorization', `Bearer ${a.adminToken}`);
+    expect(reDeleteRes.status).toBe(404);
+    expect(reDeleteRes.body.error).toBe('attendance_event_not_found');
+  });
+
+  // ── Q. Admin PATCH childId — the timeline entry moves with the event ─────
+
+  it('moves the timeline entry to the new child on admin PATCH childId (Scenario Q)', async () => {
+    const a = await createKgWithAdmin('att-q', '+77011130020');
+    const childA = await createChild(a.adminToken, {
+      full_name: 'Q-Child-A',
+      date_of_birth: '2022-03-20',
+    });
+    const childB = await createChild(a.adminToken, {
+      full_name: 'Q-Child-B',
+      date_of_birth: '2022-03-21',
+    });
+
+    const checkInRes = await request(server)
+      .post('/api/v1/admin/attendance/check-in')
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .send({ childId: childA })
+      .expect(201);
+    const eventId = checkInRes.body.id as string;
+
+    // Filed against the wrong kid — the entry sits on child A for now.
+    const beforeA = await request(server)
+      .get(`/api/v1/admin/children/${childA}/timeline`)
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .expect(200);
+    expect(beforeA.body.items).toHaveLength(1);
+    expect(beforeA.body.items[0].entryType).toBe('check_in');
+
+    const patchRes = await request(server)
+      .patch(`/api/v1/admin/attendance-events/${eventId}`)
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .send({ childId: childB })
+      .expect(200);
+    expect(patchRes.body.childId).toBe(childB);
+    expect(patchRes.body.child_name).toBe('Q-Child-B');
+
+    // Child A's timeline is now empty…
+    const afterA = await request(server)
+      .get(`/api/v1/admin/children/${childA}/timeline`)
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .expect(200);
+    expect(afterA.body.items).toHaveLength(0);
+
+    // …and child B carries the entry.
+    const afterB = await request(server)
+      .get(`/api/v1/admin/children/${childB}/timeline`)
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .expect(200);
+    expect(afterB.body.items).toHaveLength(1);
+    expect(afterB.body.items[0].entryType).toBe('check_in');
+    expect(afterB.body.items[0].childId).toBe(childB);
+  });
+
+  // ── R. Audit history — create + update + delete, newest first ─────────────
+
+  it('returns the correction history newest-first after create+update+delete (Scenario R)', async () => {
+    const a = await createKgWithAdmin('att-r', '+77011130021');
+    const childId = await createChild(a.adminToken, {
+      full_name: 'R-Child',
+      date_of_birth: '2022-04-20',
+    });
+
+    const checkInRes = await request(server)
+      .post('/api/v1/admin/attendance/check-in')
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .send({ childId })
+      .expect(201);
+    const eventId = checkInRes.body.id as string;
+
+    await request(server)
+      .patch(`/api/v1/admin/attendance-events/${eventId}`)
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .send({ notes: 'corrected by admin' })
+      .expect(200);
+
+    await request(server)
+      .delete(`/api/v1/admin/attendance-events/${eventId}`)
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .expect(204);
+
+    // History outlives the row — the id is a tombstone by now.
+    const histRes = await request(server)
+      .get(`/api/v1/admin/attendance-events/${eventId}/history`)
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .expect(200);
+
+    const entries = histRes.body as {
+      action: string;
+      actor_full_name: string | null;
+      actorUserId: string | null;
+      before: Record<string, unknown> | null;
+      after: Record<string, unknown> | null;
+    }[];
+    expect(entries).toHaveLength(3);
+    expect(entries.map((e) => e.action)).toEqual([
+      'delete',
+      'update',
+      'create',
+    ]);
+
+    // create → after only.
+    const create = entries[2];
+    expect(create.before).toBeNull();
+    expect(create.after).toMatchObject({ childId, eventType: 'check_in' });
+
+    // update → both, carrying the notes move.
+    const update = entries[1];
+    expect(update.before).toMatchObject({ notes: null });
+    expect(update.after).toMatchObject({ notes: 'corrected by admin' });
+
+    // delete → before only, snapshotted while the row was still live.
+    const del = entries[0];
+    expect(del.before).toMatchObject({ id: eventId, deletedAt: null });
+    expect(del.after).toBeNull();
+
+    // Identity overlay + actor id on every entry.
+    for (const e of entries) {
+      expect(e.actor_full_name).toBe('Admin');
+      expect(e.actorUserId).toBe(a.userId);
+    }
+  });
+
+  // ── S. Admin daily-status upsert ─────────────────────────────────────────
+
+  it('returns 200 on admin daily-status upsert (Scenario S)', async () => {
+    const a = await createKgWithAdmin('att-s', '+77011130022');
+    const childId = await createChild(a.adminToken, {
+      full_name: 'S-Child',
+      date_of_birth: '2022-05-20',
+    });
+    const today = new Date().toLocaleDateString('en-CA', {
+      timeZone: 'Asia/Almaty',
+    });
+
+    const res = await request(server)
+      .post('/api/v1/admin/daily-status')
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .send({ childId, date: today, status: 'sick', note: 'Температура 38' })
+      .expect(200);
+    expect(res.body.childId).toBe(childId);
+    expect(res.body.status).toBe('sick');
+    expect(res.body.note).toBe('Температура 38');
+    expect(res.body.set_by_full_name).toBe('Admin');
+
+    // Upsert — a second call on the same (child, date) overrides in place.
+    const overrideRes = await request(server)
+      .post('/api/v1/admin/daily-status')
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .send({ childId, date: today, status: 'on_vacation' })
+      .expect(200);
+    expect(overrideRes.body.status).toBe('on_vacation');
+
+    const listRes = await request(server)
+      .get('/api/v1/admin/daily-status')
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .query({ from: today, to: today })
+      .expect(200);
+    const rows = (listRes.body as { childId: string }[]).filter(
+      (r) => r.childId === childId,
+    );
+    expect(rows).toHaveLength(1);
+  });
+
+  /**
+   * The admin-attendance controller is @Roles('admin','reception') at the
+   * class level, so reception reaches these routes. It keeps the ordinary
+   * patch (incl. the edit-window bypass — correcting an earlier day is what
+   * the route is for), but must NOT get the admin-only powers: re-pointing an
+   * event onto another child, flipping its direction, or deleting it.
+   *
+   * This is the regression guard for exactly that: DELETE is narrowed by a
+   * method-level @Roles('admin'), and the structural fields are gated on the
+   * caller's real role rather than on the route.
+   */
+  it('rejects reception attempting the admin-only corrections while allowing its ordinary patch (Scenario T)', async () => {
+    const a = await createKgWithAdmin('att-t', '+77011130023');
+    const receptionToken = await mintStaffAccess({
+      sub: a.userId,
+      kindergartenId: a.kgId,
+      role: 'reception',
+    });
+    const childId = await createChild(a.adminToken, {
+      full_name: 'T-Child',
+      date_of_birth: '2022-03-10',
+    });
+    const otherChildId = await createChild(a.adminToken, {
+      full_name: 'T-Other',
+      date_of_birth: '2022-04-11',
+    });
+
+    const created = await request(server)
+      .post('/api/v1/admin/attendance/check-in')
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .send({ childId })
+      .expect(201);
+    const eventId = created.body.id as string;
+
+    // Structural correction → 403 attendance_correction_admin_only.
+    await request(server)
+      .patch(`/api/v1/admin/attendance-events/${eventId}`)
+      .set('Authorization', `Bearer ${receptionToken}`)
+      .send({ childId: otherChildId })
+      .expect(403);
+
+    await request(server)
+      .patch(`/api/v1/admin/attendance-events/${eventId}`)
+      .set('Authorization', `Bearer ${receptionToken}`)
+      .send({ eventType: 'check_out' })
+      .expect(403);
+
+    // DELETE → 403 insufficient_role (method-level @Roles('admin')).
+    await request(server)
+      .delete(`/api/v1/admin/attendance-events/${eventId}`)
+      .set('Authorization', `Bearer ${receptionToken}`)
+      .expect(403);
+
+    // The event survived all three attempts, unchanged.
+    const stillThere = await request(server)
+      .get(`/api/v1/admin/attendance-events/${eventId}`)
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .expect(200);
+    expect(stillThere.body.childId).toBe(childId);
+    expect(stillThere.body.eventType).toBe('check_in');
+
+    // …but reception's ordinary patch still works.
+    const patched = await request(server)
+      .patch(`/api/v1/admin/attendance-events/${eventId}`)
+      .set('Authorization', `Bearer ${receptionToken}`)
+      .send({ notes: 'reception note' })
+      .expect(200);
+    expect(patched.body.notes).toBe('reception note');
   });
 });

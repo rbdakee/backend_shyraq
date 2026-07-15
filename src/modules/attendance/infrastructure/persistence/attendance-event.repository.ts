@@ -33,9 +33,17 @@ export interface ListAttendanceEventsByKindergartenFilter {
 }
 
 /**
- * Port over `attendance_events`. Append-only — no `delete` method exposed.
- * Updates are limited to recorded_at / notes / pickup_user_id via the
- * domain entity's `applyPatch`.
+ * Port over `attendance_events`.
+ *
+ * There is no hard `delete` — removal is a soft-delete, expressed as an
+ * `update` of an event whose `softDelete()` has been called. The row survives
+ * so `audit_log.entity_id` keeps resolving.
+ *
+ * Consequence for implementors: EVERY read here returns live rows only
+ * (`deleted_at IS NULL`). `findById` included — a tombstone must read as
+ * absent so patch/delete of an already-deleted id surfaces
+ * `attendance_event_not_found` instead of mutating it. A missed filter leaks
+ * deleted events into the admin list and the dashboard donut counters.
  */
 export abstract class AttendanceEventRepository {
   abstract create(

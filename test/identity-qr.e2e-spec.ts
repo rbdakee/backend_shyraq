@@ -4,6 +4,7 @@
  * Endpoints under test:
  *   GET  /api/v1/users/me/qr
  *   POST /api/v1/staff/qr/scan
+ *   POST /api/v1/admin/qr/scan
  *   POST /api/v1/admin/qr/revoke-all/:userId
  *
  * Device-ID:
@@ -713,5 +714,51 @@ describe('B10 Identity QR (e2e)', () => {
 
     expect(res.status).toBe(404);
     expect(res.body.error).toBe('user_not_found');
+  });
+
+  // ── O. Admin scans a parent QR via the /admin/qr/scan alias ──────────────
+
+  it('admin scanning a parent QR via /admin/qr/scan returns 200 + linkedChildren (Scenario O)', async () => {
+    const parentPhone = '+77021110012';
+    const adminPhone = '+77021120015';
+
+    // The admin must OTP-login WITH X-Device-Id: the alias validates the
+    // header against the caller's refresh_token.device_id, exactly like
+    // /staff/qr/scan does.
+    const a = await createKgWithAdmin('qr-o', adminPhone, STAFF_DEVICE_ID);
+
+    const enrollment = await runEnrollmentCardCreated(a.adminToken, {
+      contactName: 'Parent O',
+      contactPhone: parentPhone,
+      childName: 'Child O',
+      childDob: '2021-04-01',
+    });
+
+    // OTP-login auto-approves the pending primary guardian row.
+    const parentAuth = await otpLogin(parentPhone);
+
+    const qrRes = await request(server)
+      .get('/api/v1/users/me/qr')
+      .set('Authorization', `Bearer ${parentAuth.access_token}`)
+      .expect(200);
+
+    const scanRes = await request(server)
+      .post('/api/v1/admin/qr/scan')
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .set('X-Device-Id', STAFF_DEVICE_ID)
+      .send({ token: qrRes.body.token })
+      .expect(200);
+
+    // Same payload shape as the /staff/qr/scan alias (Scenario D) — the
+    // admin route delegates to the identical IdentityQrService.scan().
+    expect(scanRes.body.user.id).toBe(parentAuth.user.id);
+    expect(scanRes.body.user.role).toBe('parent');
+    expect(Array.isArray(scanRes.body.linkedChildren)).toBe(true);
+    expect(scanRes.body.linkedChildren).toHaveLength(1);
+    expect(scanRes.body.linkedChildren[0].id).toBe(enrollment.childId);
+    // Enrollment creates primary guardian with can_pickup = true.
+    expect(scanRes.body.allowedActions).toEqual(
+      expect.arrayContaining(['check_in', 'check_out']),
+    );
   });
 });

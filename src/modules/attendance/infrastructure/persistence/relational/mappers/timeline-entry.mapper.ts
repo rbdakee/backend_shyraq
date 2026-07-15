@@ -21,6 +21,7 @@ export class TimelineEntryMapper {
         row.created_at instanceof Date
           ? row.created_at
           : new Date(row.created_at),
+      sourceEventId: row.source_event_id,
     });
   }
 }

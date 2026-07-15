@@ -535,10 +535,13 @@ Table attendance_events {
   notes             text
   recorded_at       timestamptz           [not null, default: `now()`]
   created_at        timestamptz           [not null, default: `now()`]
+  deleted_at        timestamptz           // soft-delete tombstone (миграция AdminAttendanceAudit); non-null = строка исчезает из ВСЕХ чтений (лог, таймлайн, счётчики дашборда), но остаётся резолвимой для audit_log. Повторный DELETE → 404. Физически строку не удаляем — на неё ссылается timeline_entries.source_event_id
 
   indexes {
     (kindergarten_id, recorded_at)
     (child_id, recorded_at)
+    // idx_attendance_kg_recorded_live: (kindergarten_id, recorded_at DESC) WHERE deleted_at IS NULL
+    // — партиал-двойник первого индекса; live-листинги фильтруют deleted_at IS NULL и не платят за tombstone'ы
   }
 }
 
@@ -570,12 +573,57 @@ Table timeline_entries {
   media_urls      text[]
   metadata        jsonb
   recorded_by     uuid               [ref: > staff_members.id]
+  source_event_id uuid               [ref: > attendance_events.id]
+  // Обратная связь на событие-первоисточник (миграция AdminAttendanceAudit). Non-null у записей,
+  // порождённых check-in/check-out; null у ручных записей (activity/meal/nap/note/…) и у исторических,
+  // которым backfill не нашёл пары. Нужен чтобы admin-корректировка события каскадила сюда:
+  // смена child_id/recorded_at → re-point записи, флип event_type → пересоздание (entry_type неизменяем),
+  // soft-delete события → удаление записи. Не найден (null) → корректировка проходит без каскада, а не падает.
   entry_time      timestamptz        [not null, default: `now()`]
   created_at      timestamptz        [not null, default: `now()`]
 
   indexes {
     (child_id, entry_time)
+    // idx_timeline_source_event: (source_event_id) WHERE source_event_id IS NOT NULL
   }
+}
+
+// ─────────────────────────────────────────
+// AUDIT
+// ─────────────────────────────────────────
+
+// Миграция AdminAttendanceAudit — append-only журнал мутаций tenant-scoped строк.
+// Первый писатель — B8 attendance (admin-ведение журнала); таблица рассчитана на будущие модули.
+Table audit_log {
+  id              uuid        [pk, default: `gen_random_uuid()`]
+  kindergarten_id uuid        [not null, ref: > kindergartens.id]
+  // FORCE ROW LEVEL SECURITY — defense-in-depth, applies even to table owner; DDL в миграции AdminAttendanceAudit
+  entity_type     varchar(64) [not null]
+  // Сознательно БЕЗ CHECK-констрейнта: сейчас 'attendance_event' | 'child_daily_status',
+  // но таблица должна впитывать новые модули без миграции на каждый вид сущности
+  entity_id       uuid        [not null]
+  action          varchar(32) [not null]
+  // audit_log_action_chk: action IN ('create','update','delete') — вот это констрейнтом закреплено
+  actor_user_id   uuid        [ref: > users.id]
+  actor_staff_id  uuid        [ref: > staff_members.id]
+  // Оба nullable и независимы: мутация от сотрудника → оба заполнены, system/CLI → оба null,
+  // обычный пользователь → только user. XOR-check сознательно НЕ ставим: переconstrain'ить
+  // append-only сток = рискнуть потерять запись целиком на краевом случае
+  before          jsonb
+  // Снимок строки ДО мутации. null у 'create'
+  after           jsonb
+  // Снимок строки ПОСЛЕ мутации. null у 'delete'
+  created_at      timestamptz [not null, default: `now()`]
+
+  indexes {
+    // idx_audit_entity: (kindergarten_id, entity_type, entity_id, created_at DESC) — read-path
+    // GET /admin/attendance-events/:eventId/history
+    (kindergarten_id, entity_type, entity_id, created_at)
+    // idx_audit_kg_created: (kindergarten_id, created_at DESC) — tenant-wide лента
+    (kindergarten_id, created_at)
+  }
+
+  Note: 'Append-only: UPDATE/DELETE не предусмотрены портом. Строка пишется в ТОЙ ЖЕ транзакции, что и описываемая мутация, — откатывается вместе с ней. Форма before/after принадлежит вызывающему модулю; значения jsonb, поэтому Date возвращается ISO-строкой. Переживает soft-delete сущности: история события читается и после его удаления.'
 }
 
 // ─────────────────────────────────────────
@@ -625,7 +673,14 @@ Table activity_events {
   kindergarten_id  uuid                   [not null, ref: > kindergartens.id]
   group_id         uuid                   [not null, ref: > groups.id]
   template_slot_id uuid                   [ref: > schedule_template_slots.id]
-  // null = ad-hoc event created by staff outside template
+  // FK объявлен ON DELETE SET NULL → обнуляется, когда слот удаляют правкой шаблона.
+  // ВНИМАНИЕ: null НЕ означает ad-hoc. Осиротевшее событие от удалённого слота тоже
+  // имеет null. Для происхождения используй `origin` — он переживает удаление слота.
+  origin           varchar                [not null, default: 'template']
+  // varchar(20) + CHECK ('template','adhoc') — не PG enum, как recurrence/source.
+  // 'template' = спроецировано из слота (week copy / rematerialize); 'adhoc' = создано руками.
+  // Immutable после вставки. Пересборка сносит только origin='template', поэтому ad-hoc
+  // события переживают правку шаблона, а призраки от удалённых слотов — нет.
   activity_name    varchar                [not null]
   category         slot_category          [not null, default: 'activity']
   // копируется из слота при проекции (week copy); ad-hoc события → 'activity' по умолчанию

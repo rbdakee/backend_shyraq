@@ -412,6 +412,7 @@ describeIntegration(
             id: randomUUID(),
             kindergartenId: kgB,
             groupId: groupB,
+            origin: 'adhoc',
             activityName: 'Strange',
             startsAt: new Date('2026-05-04T10:00:00.000Z'),
           },

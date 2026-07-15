@@ -235,7 +235,7 @@ export class StaffAttendanceController {
         notes: dto.notes,
         pickupUserId: dto.pickupUserId,
       },
-      { isAdmin: false },
+      { skipEditWindow: false, allowStructuralCorrection: false },
     );
     return this.presentEvent(kgId, updated);
   }
