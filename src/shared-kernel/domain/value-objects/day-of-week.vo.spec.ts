@@ -5,8 +5,10 @@ import {
   dayOfWeekFromIsoWeekday,
   firstOfMonthInTimezone,
   formatDateInTimezone,
+  formatInstantWithOffset,
   isWeekendDay,
   isoWeekdayOf,
+  parseDateTimeInput,
   startOfDayInTimezone,
   todayInTimezone,
 } from './day-of-week.vo';
@@ -336,6 +338,51 @@ describe('day-of-week timezone helpers (Asia/Almaty)', () => {
           'Asia/Almaty',
         ),
       ).toThrow(InvariantViolationError);
+    });
+  });
+
+  describe('formatInstantWithOffset', () => {
+    it('returns the Almaty wall clock with +05:00 offset for an 08:00 local instant', () => {
+      // 03:00Z = 08:00 Asia/Almaty. Same instant as `...Z`, but naive clients
+      // read 08:00 off the string without converting.
+      expect(
+        formatInstantWithOffset(new Date('2026-07-13T03:00:00.000Z')),
+      ).toBe('2026-07-13T08:00:00.000+05:00');
+    });
+
+    it('returns the next Almaty calendar day for a late-UTC instant that crosses local midnight', () => {
+      // 2026-07-12T21:00:00Z = 2026-07-13T02:00 Almaty — the date rolls forward.
+      expect(
+        formatInstantWithOffset(new Date('2026-07-12T21:00:00.000Z')),
+      ).toBe('2026-07-13T02:00:00.000+05:00');
+    });
+  });
+
+  describe('parseDateTimeInput', () => {
+    it('returns the 03:00Z instant for a zoneless 08:00 Almaty wall clock', () => {
+      expect(parseDateTimeInput('2026-07-13T08:00').getTime()).toBe(
+        new Date('2026-07-13T03:00:00.000Z').getTime(),
+      );
+    });
+
+    it('returns the same instant when the input already carries a Z suffix', () => {
+      expect(parseDateTimeInput('2026-07-13T08:00:00.000Z').getTime()).toBe(
+        new Date('2026-07-13T08:00:00.000Z').getTime(),
+      );
+    });
+
+    it('returns the honoured instant when the input carries an explicit offset', () => {
+      expect(parseDateTimeInput('2026-07-13T08:00:00+05:00').getTime()).toBe(
+        new Date('2026-07-13T03:00:00.000Z').getTime(),
+      );
+    });
+
+    it('returns the original instant on a format→slice(0,16)→parse round-trip (no +5h drift)', () => {
+      // Mirrors the admin form: prefill `formatInstantWithOffset(...).slice(0,16)`
+      // into a datetime-local, resubmit the naive value, parse it back.
+      const instant = new Date('2026-07-13T03:00:00.000Z');
+      const prefill = formatInstantWithOffset(instant).slice(0, 16);
+      expect(parseDateTimeInput(prefill).getTime()).toBe(instant.getTime());
     });
   });
 });

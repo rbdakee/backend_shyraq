@@ -295,3 +295,64 @@ export function combineDateAndTimeInTimezone(
     wallClockAsUtcMs - zoneOffsetMsAt(new Date(guessMs), timeZone),
   );
 }
+
+/**
+ * Renders `date` (a UTC instant) as an RFC3339 string in `timeZone` WITH the
+ * zone's numeric offset — Asia/Almaty → `2026-07-13T08:00:00.000+05:00`. Same
+ * absolute instant as `date.toISOString()` (`...Z`), but the wall clock is the
+ * zone's, so a naive client reading `HH:mm` off the string shows local time
+ * without converting, while zone-aware clients parse the identical instant.
+ */
+export function formatInstantWithOffset(
+  date: Date,
+  timeZone: string = KG_DEFAULT_TIMEZONE,
+): string {
+  if (Number.isNaN(date.getTime())) {
+    throw new InvariantViolationError('date must be a valid Date');
+  }
+  const offsetMs = zoneOffsetMsAt(date, timeZone);
+  const local = new Date(date.getTime() + offsetMs);
+  const p2 = (n: number) => String(n).padStart(2, '0');
+  const p3 = (n: number) => String(n).padStart(3, '0');
+  const body =
+    `${local.getUTCFullYear()}-${p2(local.getUTCMonth() + 1)}-${p2(local.getUTCDate())}` +
+    `T${p2(local.getUTCHours())}:${p2(local.getUTCMinutes())}:${p2(local.getUTCSeconds())}` +
+    `.${p3(local.getUTCMilliseconds())}`;
+  const sign = offsetMs >= 0 ? '+' : '-';
+  const abs = Math.abs(offsetMs);
+  return `${body}${sign}${p2(Math.floor(abs / 3_600_000))}:${p2(Math.floor((abs % 3_600_000) / 60_000))}`;
+}
+
+const ZONE_SUFFIX_RE = /(?:[zZ]|[+-]\d{2}:?\d{2})$/;
+
+/**
+ * Parses a client datetime string into a UTC instant, interpreting a ZONELESS
+ * wall clock (e.g. `2026-07-13T08:00`, as posted by an admin
+ * `<input type="datetime-local">`) in `timeZone` rather than the host zone.
+ * A string that already carries a zone (`...Z` or `±HH:MM`) is honoured as-is.
+ * Write-side mirror of `formatInstantWithOffset`: `new Date()` would read the
+ * naive value as the host zone (UTC in prod) and shift every admin time +5h.
+ */
+export function parseDateTimeInput(
+  input: string,
+  timeZone: string = KG_DEFAULT_TIMEZONE,
+): Date {
+  const trimmed = input.trim();
+  if (ZONE_SUFFIX_RE.test(trimmed)) {
+    const d = new Date(trimmed);
+    if (Number.isNaN(d.getTime())) {
+      throw new InvariantViolationError(`invalid datetime: ${input}`);
+    }
+    return d;
+  }
+  const [datePart, timePartRaw] = trimmed.split('T');
+  const timePart = (timePartRaw ?? '00:00').slice(0, 8); // HH:mm or HH:mm:ss
+  const [yy, mm, dd] = datePart.split('-').map((x) => parseInt(x, 10));
+  if (!yy || !mm || !dd) {
+    throw new InvariantViolationError(`invalid datetime: ${input}`);
+  }
+  // Noon-UTC anchor keeps the calendar day unambiguous in any zone; then
+  // combineDateAndTimeInTimezone places the wall clock in `timeZone`.
+  const anchor = new Date(Date.UTC(yy, mm - 1, dd, 12, 0, 0));
+  return combineDateAndTimeInTimezone(anchor, timePart, timeZone);
+}

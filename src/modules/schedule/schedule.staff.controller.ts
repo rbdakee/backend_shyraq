@@ -31,6 +31,10 @@ import { PendingRoleSelectGuard } from '@/common/guards/pending-role-select.guar
 import { RolesGuard } from '@/common/guards/roles.guard';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-context';
+import {
+  formatDateInTimezone,
+  KG_DEFAULT_TIMEZONE,
+} from '@/shared-kernel/domain/value-objects/day-of-week.vo';
 import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
 import { ActivityEventResponseDto } from './dto/activity-event.response.dto';
 import { CancelEventDto } from './dto/cancel-event.dto';
@@ -183,7 +187,9 @@ function groupEventsByDay(
 ): ScheduleWeekResponseDto {
   const days = DAYS.map((day, idx) => {
     const date = new Date(weekStart.getTime() + idx * DAY_MS);
-    const dateStr = toIsoDate(date);
+    // Bucket by the Almaty calendar date: `startsAt` now carries the +05:00
+    // offset, so its `slice(0,10)` is the local day — match with the same zone.
+    const dateStr = formatDateInTimezone(date, KG_DEFAULT_TIMEZONE);
     const dayEvents = events.filter((e) => e.startsAt.slice(0, 10) === dateStr);
     return {
       dayOfWeek: day,

@@ -33,6 +33,7 @@ import { JwtAuthGuard } from '@/common/guards/jwt-auth.guard';
 import { PendingRoleSelectGuard } from '@/common/guards/pending-role-select.guard';
 import { RolesGuard } from '@/common/guards/roles.guard';
 import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-context';
+import { parseDateTimeInput } from '@/shared-kernel/domain/value-objects/day-of-week.vo';
 import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
 import { ActivityEventResponseDto } from './dto/activity-event.response.dto';
 import { CopyWeekDto } from './dto/copy-week.dto';
@@ -316,8 +317,8 @@ export class ScheduleAdminController {
       activityName: dto.activityName,
       category: dto.category ?? null,
       locationId: dto.locationId ?? null,
-      startsAt: new Date(dto.startsAt),
-      endsAt: dto.endsAt ? new Date(dto.endsAt) : null,
+      startsAt: parseDateTimeInput(dto.startsAt),
+      endsAt: dto.endsAt ? parseDateTimeInput(dto.endsAt) : null,
       notes: dto.notes ?? null,
     });
     const name = await this.service.resolveLocationName(kgId, created);
@@ -344,8 +345,8 @@ export class ScheduleAdminController {
       activityName: dto.activityName,
       category: dto.category,
       locationId: dto.locationId ?? null,
-      startsAt: dto.startsAt ? new Date(dto.startsAt) : undefined,
-      endsAt: dto.endsAt ? new Date(dto.endsAt) : undefined,
+      startsAt: dto.startsAt ? parseDateTimeInput(dto.startsAt) : undefined,
+      endsAt: dto.endsAt ? parseDateTimeInput(dto.endsAt) : undefined,
       notes: dto.notes ?? null,
     });
     const name = await this.service.resolveLocationName(kgId, updated);
