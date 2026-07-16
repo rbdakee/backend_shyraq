@@ -1,3 +1,4 @@
+import { formatInstantWithOffset } from '@/shared-kernel/domain/value-objects/day-of-week.vo';
 import { ActivityEvent } from './domain/entities/activity-event.entity';
 import { ScheduleTemplate } from './domain/entities/schedule-template.entity';
 import { ScheduleTemplateSlot } from './domain/entities/schedule-template-slot.entity';
@@ -67,8 +68,8 @@ export class SchedulePresenter {
       category: s.category,
       locationId: s.locationId,
       location_name: locationName,
-      startsAt: s.startsAt.toISOString(),
-      endsAt: s.endsAt === null ? null : s.endsAt.toISOString(),
+      startsAt: formatInstantWithOffset(s.startsAt),
+      endsAt: s.endsAt === null ? null : formatInstantWithOffset(s.endsAt),
       status: s.status,
       createdBy: s.createdBy,
       notes: s.notes,

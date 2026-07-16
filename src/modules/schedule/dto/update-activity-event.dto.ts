@@ -29,12 +29,20 @@ export class UpdateActivityEventDto {
   @IsUUID()
   locationId?: string;
 
-  @ApiPropertyOptional({ example: '2026-05-04T10:00:00.000Z' })
+  @ApiPropertyOptional({
+    example: '2026-05-04T10:00:00.000Z',
+    description:
+      'ISO timestamp. A zoneless value (e.g. 2026-05-04T09:00) is interpreted as kindergarten-local (Asia/Almaty); a value with Z or an offset is honoured as-is.',
+  })
   @IsOptional()
   @IsDateString()
   startsAt?: string;
 
-  @ApiPropertyOptional({ example: '2026-05-04T11:00:00.000Z' })
+  @ApiPropertyOptional({
+    example: '2026-05-04T11:00:00.000Z',
+    description:
+      'ISO timestamp. A zoneless value (e.g. 2026-05-04T09:00) is interpreted as kindergarten-local (Asia/Almaty); a value with Z or an offset is honoured as-is.',
+  })
   @IsOptional()
   @IsDateString()
   endsAt?: string;

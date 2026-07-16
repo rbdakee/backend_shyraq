@@ -58,10 +58,19 @@ export class ActivityEventResponseDto {
   })
   location_name!: string | null;
 
-  @ApiProperty({ example: '2026-05-04T09:00:00.000Z' })
+  @ApiProperty({
+    example: '2026-05-04T14:00:00.000+05:00',
+    description:
+      'Rendered in the kindergarten timezone (Asia/Almaty) with numeric offset — same instant as UTC, but naive clients read local wall-clock time directly.',
+  })
   startsAt!: string;
 
-  @ApiPropertyOptional({ example: '2026-05-04T09:45:00.000Z', nullable: true })
+  @ApiPropertyOptional({
+    example: '2026-05-04T14:45:00.000+05:00',
+    nullable: true,
+    description:
+      'Rendered in the kindergarten timezone (Asia/Almaty) with numeric offset — same instant as UTC, but naive clients read local wall-clock time directly.',
+  })
   endsAt!: string | null;
 
   @ApiProperty({ enum: ACTIVITY_EVENT_STATUS_VALUES, example: 'scheduled' })
