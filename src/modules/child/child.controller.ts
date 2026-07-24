@@ -208,8 +208,16 @@ export class ChildController {
       out.guardians,
     );
     const groupName = await this.service.resolveGroupName(kgId, out.child);
+    const outstanding = await this.service.resolveOutstandingTotals(kgId, [
+      out.child,
+    ]);
     return {
-      child: ChildPresenter.child(out.child, groupName),
+      child: ChildPresenter.child(
+        out.child,
+        groupName,
+        null,
+        outstanding.get(out.child.toState().id) ?? 0,
+      ),
       guardians: out.guardians.map((g) =>
         ChildPresenter.guardian(g, identities.get(g.userId)),
       ),

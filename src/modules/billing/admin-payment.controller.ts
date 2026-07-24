@@ -49,7 +49,7 @@ export class AdminPaymentController {
   @Get()
   @ApiOperation({
     summary:
-      'List payments (filters: provider, status, child_id, refund_required, from_date, to_date). Pass refund_required=true to get the double-payment refund queue.',
+      'List payments (filters: provider, status, child_id, invoice_id, refund_required, from_date, to_date). Pass invoice_id to get the payment history of a single invoice; refund_required=true for the double-payment refund queue.',
   })
   @ApiOkResponse({ type: [PaymentResponseDto] })
   @ApiBadRequestResponse({ description: 'Validation error.' })
@@ -64,6 +64,7 @@ export class AdminPaymentController {
       provider: query.provider,
       status: query.status,
       childId: query.child_id,
+      invoiceId: query.invoice_id,
       refundRequired: query.refund_required === 'true' ? true : undefined,
       fromDate: query.from_date ? new Date(query.from_date) : undefined,
       toDate: query.to_date ? new Date(query.to_date) : undefined,
