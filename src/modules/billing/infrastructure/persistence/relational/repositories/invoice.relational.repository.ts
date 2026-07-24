@@ -193,6 +193,63 @@ export class InvoiceRelationalRepository extends InvoiceRepository {
     return Number(sum);
   }
 
+  async getPaidSumsForInvoices(
+    kindergartenId: string,
+    invoiceIds: string[],
+  ): Promise<Map<string, number>> {
+    const out = new Map<string, number>();
+    if (invoiceIds.length === 0) return out;
+    const rows: Array<{ invoice_id: string; sum: string }> =
+      await this.manager().query(
+        `SELECT invoice_id, COALESCE(SUM(amount), 0)::text AS sum
+           FROM payments
+          WHERE kindergarten_id = $1
+            AND invoice_id = ANY($2::uuid[])
+            AND status = 'completed'
+          GROUP BY invoice_id`,
+        [kindergartenId, invoiceIds],
+      );
+    for (const r of rows) out.set(r.invoice_id, Number(r.sum));
+    return out;
+  }
+
+  async getOutstandingByChild(
+    kindergartenId: string,
+    childIds: string[],
+  ): Promise<Map<string, number>> {
+    const out = new Map<string, number>();
+    if (childIds.length === 0) return out;
+    // Per invoice, remaining = max(0, amount_after_discount − completed_paid);
+    // summed per child over non-terminal invoices. The paid sum is folded in
+    // via a correlated subquery so a partially-paid invoice contributes only
+    // its unpaid slice. `GREATEST(...,0)` clamps overpaid/rounding rows to 0.
+    const rows: Array<{ child_id: string; outstanding: string }> =
+      await this.manager().query(
+        `SELECT inv.child_id AS child_id,
+                COALESCE(SUM(
+                  GREATEST(
+                    inv.amount_after_discount - COALESCE(p.paid, 0),
+                    0
+                  )
+                ), 0)::text AS outstanding
+           FROM invoices inv
+           LEFT JOIN (
+                  SELECT invoice_id, SUM(amount) AS paid
+                    FROM payments
+                   WHERE kindergarten_id = $1
+                     AND status = 'completed'
+                   GROUP BY invoice_id
+                ) p ON p.invoice_id = inv.id
+          WHERE inv.kindergarten_id = $1
+            AND inv.child_id = ANY($2::uuid[])
+            AND inv.status NOT IN ('cancelled', 'refunded')
+          GROUP BY inv.child_id`,
+        [kindergartenId, childIds],
+      );
+    for (const r of rows) out.set(r.child_id, Number(r.outstanding));
+    return out;
+  }
+
   async markPaidConditional(
     kindergartenId: string,
     id: string,

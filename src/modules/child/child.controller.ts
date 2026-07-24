@@ -164,12 +164,18 @@ export class ChildController {
       { limit, offset },
     );
     const groupNames = await this.service.resolveGroupNames(kgId, result.items);
+    const outstanding = await this.service.resolveOutstandingTotals(
+      kgId,
+      result.items,
+    );
     return {
       data: result.items.map((c) => {
         const gid = c.toState().currentGroupId;
         return ChildPresenter.child(
           c,
           gid ? (groupNames.get(gid) ?? null) : null,
+          null,
+          outstanding.get(c.toState().id) ?? 0,
         );
       }),
       meta: { total: result.total, limit, offset },

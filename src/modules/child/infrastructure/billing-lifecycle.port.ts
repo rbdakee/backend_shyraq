@@ -51,6 +51,20 @@ export abstract class BillingLifecyclePort {
     childId: string,
     atDate: Date,
   ): Promise<boolean>;
+
+  /**
+   * Per-child outstanding balance overlay for the admin children list. For
+   * each id in `childIds`, returns the sum of `max(0, amount_after_discount
+   * − completed_paid)` over that child's non-terminal invoices
+   * (`cancelled`/`refunded` excluded; a fully-paid invoice contributes 0).
+   * Ids with no outstanding balance are absent from the map (caller treats
+   * missing as 0). The Noop default returns an empty map — a child-only
+   * bootstrap without billing reports every child as owing nothing.
+   */
+  abstract getOutstandingForChildren(
+    kindergartenId: string,
+    childIds: string[],
+  ): Promise<Map<string, number>>;
 }
 
 /**
@@ -74,5 +88,12 @@ export class NoopBillingLifecycleAdapter extends BillingLifecyclePort {
     _atDate: Date,
   ): Promise<boolean> {
     return Promise.resolve(false);
+  }
+
+  getOutstandingForChildren(
+    _kindergartenId: string,
+    _childIds: string[],
+  ): Promise<Map<string, number>> {
+    return Promise.resolve(new Map());
   }
 }

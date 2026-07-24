@@ -121,6 +121,20 @@ class FakeInvoiceRepo extends InvoiceRepository {
   getPaidSumForInvoice(_kg: string, invoiceId: string): Promise<number> {
     return Promise.resolve(this.paidSums.get(invoiceId) ?? 0);
   }
+  getPaidSumsForInvoices(
+    _kg: string,
+    ids: string[],
+  ): Promise<Map<string, number>> {
+    const out = new Map<string, number>();
+    for (const id of ids) {
+      const sum = this.paidSums.get(id);
+      if (sum !== undefined) out.set(id, sum);
+    }
+    return Promise.resolve(out);
+  }
+  getOutstandingByChild(): Promise<Map<string, number>> {
+    return Promise.resolve(new Map());
+  }
 
   markPaidConditional(
     kindergartenId: string,

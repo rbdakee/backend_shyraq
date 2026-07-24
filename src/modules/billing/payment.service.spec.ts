@@ -330,6 +330,20 @@ class FakeInvoiceRepo extends InvoiceRepository {
     }
     return Promise.resolve(0);
   }
+  async getPaidSumsForInvoices(
+    kg: string,
+    ids: string[],
+  ): Promise<Map<string, number>> {
+    const out = new Map<string, number>();
+    for (const id of ids) {
+      const sum = await this.getPaidSumForInvoice(kg, id);
+      if (sum > 0) out.set(id, sum);
+    }
+    return out;
+  }
+  getOutstandingByChild(): Promise<Map<string, number>> {
+    return Promise.resolve(new Map());
+  }
   markPaidConditional(
     _kg: string,
     id: string,

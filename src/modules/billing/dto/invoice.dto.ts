@@ -407,6 +407,20 @@ export class InvoiceResponseDto {
   })
   amount_after_discount!: number;
 
+  @ApiProperty({
+    example: 50000,
+    description:
+      'Sum of completed payments toward this invoice in KZT. Always present (0 when nothing paid). May slightly exceed amount_after_discount on sub-tenge rounding of a provider charge.',
+  })
+  amount_paid!: number;
+
+  @ApiProperty({
+    example: 58000,
+    description:
+      'Remaining balance in KZT: max(0, amount_after_discount − amount_paid). Always present (0 when fully paid / cancelled / refunded).',
+  })
+  amount_remaining!: number;
+
   @ApiProperty({ enum: INVOICE_STATUSES, example: 'pending' })
   status!: InvoiceStatus;
 

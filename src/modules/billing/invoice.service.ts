@@ -196,6 +196,25 @@ export class InvoiceService {
   }
 
   /**
+   * Completed-payment total for a single invoice — feeds the presenter's
+   * `amount_paid` / `amount_remaining` on single-invoice read endpoints.
+   */
+  async getPaidSum(kindergartenId: string, invoiceId: string): Promise<number> {
+    return this.invoices.getPaidSumForInvoice(kindergartenId, invoiceId);
+  }
+
+  /**
+   * Batch variant for list endpoints — one query for the whole page instead
+   * of N × `getPaidSum`. Returns `Map<invoiceId, paidSum>` (missing → 0).
+   */
+  async getPaidSums(
+    kindergartenId: string,
+    invoiceIds: string[],
+  ): Promise<Map<string, number>> {
+    return this.invoices.getPaidSumsForInvoices(kindergartenId, invoiceIds);
+  }
+
+  /**
    * Parent-side guardian re-check for invoice/calendar read endpoints.
    *
    * Used by `ParentInvoiceController` for every route — `ChildAccessGuard`

@@ -57,6 +57,7 @@ export class ChildPresenter {
     c: Child,
     groupName: string | null = null,
     mentor: { id: string; fullName: string | null } | null = null,
+    outstandingTotal: number | null = null,
   ): ChildDto {
     const state = c.toState();
     return {
@@ -73,6 +74,7 @@ export class ChildPresenter {
       current_group_name: groupName,
       current_mentor_id: mentor?.id ?? null,
       current_mentor_name: mentor?.fullName ?? null,
+      outstanding_total: outstandingTotal,
       enrollment_date:
         state.enrollmentDate === null ? null : toIsoDate(state.enrollmentDate),
       archived_at:
