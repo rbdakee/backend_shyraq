@@ -32,6 +32,14 @@ export const InvoicePresenter = {
    * or `getPaidSumsForInvoices` (batch, for lists); it defaults to 0 so
    * call sites that never touch payments (e.g. a freshly created invoice)
    * present `amount_paid: 0` / `amount_remaining: <full>` without a query.
+   *
+   * `amount_remaining` = `max(0, amount_after_discount − amount_paid)`, EXCEPT
+   * for the void terminal states (`cancelled` / `refunded`) where it is forced
+   * to 0 — a voided/refunded invoice is not a debt. Without this a refunded
+   * invoice would report the full balance again (its payment left `completed`,
+   * so `paidSum` drops to 0) and a cancelled unpaid invoice would show its full
+   * amount as "still owed". Clients rely on `amount_remaining` as "how much is
+   * actually owed", so terminal-void → 0.
    */
   one(
     invoice: Invoice,
@@ -41,7 +49,10 @@ export const InvoicePresenter = {
     const s = invoice.toState();
     const afterDiscount = s.amountAfterDiscount.toNumber();
     const amountPaid = paidSum;
-    const amountRemaining = Math.max(0, afterDiscount - amountPaid);
+    const isVoid = s.status === 'cancelled' || s.status === 'refunded';
+    const amountRemaining = isVoid
+      ? 0
+      : Math.max(0, afterDiscount - amountPaid);
     const dto: InvoiceResponseDto = {
       id: s.id,
       kindergarten_id: s.kindergartenId,

@@ -66,6 +66,24 @@ describe('InvoicePresenter.one — amount_paid / amount_remaining', () => {
     expect(dto.amount_paid).toBe(14);
     expect(dto.amount_remaining).toBe(0);
   });
+
+  it('forces amount_remaining to 0 for a cancelled invoice even when nothing was paid', () => {
+    const dto = InvoicePresenter.one(
+      makeInvoice({ status: 'cancelled' }),
+      undefined,
+      0,
+    );
+    expect(dto.amount_remaining).toBe(0);
+  });
+
+  it('forces amount_remaining to 0 for a refunded invoice (payment left completed → paidSum 0)', () => {
+    const dto = InvoicePresenter.one(
+      makeInvoice({ status: 'refunded' }),
+      undefined,
+      0,
+    );
+    expect(dto.amount_remaining).toBe(0);
+  });
 });
 
 describe('InvoicePresenter.list — paid-sum overlay', () => {
