@@ -728,7 +728,9 @@ Admin-managed справочник — **AUTHORITY** для `staff_members.speci
 
 **Auth:** `super_admin` only — endpoint iterates EVERY active kindergarten. Per-kg admin path lives at `POST /admin/schedule/week-snapshots/copy` (§2.8) and `POST /admin/meal-plans/copy-week` (§2.9).
 
-**Cron `schedule:weekly-rollout`** (каждое воскресенье 23:00 Asia/Almaty, `@Cron('0 23 * * 0', { timeZone: 'Asia/Almaty' })`): для каждого активного `kindergartens` row — `ScheduleService.copyWeekToNext` + `MealService.copyWeekMenuToNext`. RLS-context устанавливается per-kg через `SET LOCAL app.kindergarten_id` внутри отдельной транзакции; список активных садиков читается под `bypass_rls=true`. Идемпотентен на уровне обоих сервисов.
+**Cron `schedule:weekly-rollout`** (каждое воскресенье 23:00 Asia/Almaty, BullMQ repeatable job `0 23 * * 0` tz=`Asia/Almaty`): для каждого активного `kindergartens` row — `ScheduleService.copyWeekToNext` + `MealService.copyWeekMenuToNext`. RLS-context устанавливается per-kg через `set_config('app.kindergarten_id', ...)`; список активных садиков читается под `bypass_rls=true`. Идемпотентен на уровне обоих сервисов.
+
+**Изоляция шагов:** schedule и meal выполняются в ДВУХ независимых транзакциях на садик. Падение одного шага не откатывает другой; оба сообщения попадают в `item.error` (`"schedule: …; meal: …"`), а `totals.errors` считает садики, а не шаги.
 
 | Метод | Путь | Назначение |
 |---|---|---|
@@ -738,7 +740,7 @@ Admin-managed справочник — **AUTHORITY** для `staff_members.speci
 
 **Auth:** `admin` role, `kindergarten_id` в JWT.
 
-**Cron `meal:auto-copy`** (каждое воскресенье 23:00 Asia/Almaty, `@Cron('0 23 * * 0')`): для каждого садика — если на следующую ПН–ПТ нет `meal_plans` → копирует из текущей недели со сдвигом +7 дней (`source='auto_copied_from_previous_week'`, `copied_from` = id оригинала). Идемпотентен: если план уже существует на эту дату → пропускает.
+**Cron `meal:auto-copy`** (каждое воскресенье 23:00 Asia/Almaty, шаг внутри `schedule:weekly-rollout`): для каждого садика копирует `meal_plans` текущей недели со сдвигом +7 дней (`source='cron'`, `copied_from` = id оригинала). Идемпотентен **per-(дата, `group_id`)** — ровно по ключам partial-unique индексов `idx_meal_plans_unique_group` / `idx_meal_plans_unique_kg`: занятый слот пропускается (`plans_skipped`), свободные копируются. Один заранее созданный день (черновик, пустой план, Сб/Вс) больше НЕ блокирует копирование всей недели.
 
 | Метод | Путь | Назначение |
 |---|---|---|
@@ -749,7 +751,7 @@ Admin-managed справочник — **AUTHORITY** для `staff_members.speci
 | POST | `/admin/meal-plans/:id/items` | Добавить блюдо. Body: `{meal_type, dish_name: {ru, kz}, description?: {ru, kz}, allergens?: string[], calories?: int, photo_url?: string, serve_time?: "HH:mm", position?: int}`. `meal_type` — enum `breakfast|snack_am|lunch|snack_pm|dinner`. `serve_time` — время подачи `"HH:mm"` (24ч), опционально/nullable. Response 201. Errors: 404 `meal_plan_not_found`, 400 `invalid_meal_type`. |
 | PATCH | `/admin/meal-plans/:id/items/:itemId` | Обновить поля блюда. Errors: 404 `meal_plan_not_found`, 404 `meal_item_not_found`. |
 | DELETE | `/admin/meal-plans/:id/items/:itemId` | Удалить блюдо. Errors: 404 `meal_plan_not_found`, 404 `meal_item_not_found`. |
-| POST | `/admin/meal-plans/copy-week` | Ручной запуск copy-week (аналог cron). Body: `{source_week_start_date}` — понедельник источника; копирует ПН–ПТ на следующую неделю. Идемпотентен. Response: `{plans_created: N, plans_skipped: N}`. |
+| POST | `/admin/meal-plans/copy-week` | Ручной запуск copy-week (аналог cron). Body: `{fromMonday}` — ISO `YYYY-MM-DD`, понедельник источника; копирует неделю на следующую. Идемпотентен per-(дата, `group_id`): занятые слоты попадают в `plans_skipped`, свободные копируются. Response: `{plans_created: N, plans_skipped: N}`. DTO-класс — `MealCopyWeekDto` (имя не должно совпадать со schedule-овским `CopyWeekDto`: Nest-Swagger ключует `components.schemas` по имени класса, и одноимённые DTO схлопываются в одну схему в `/docs-json`). |
 
 **Error codes (§2.9):** `meal_plan_not_found`(404), `meal_plan_already_exists`(409), `meal_item_not_found`(404), `invalid_meal_type`(400), `group_not_found`(404).
 

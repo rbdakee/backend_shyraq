@@ -213,26 +213,38 @@ export class MealPlanRelationalRepository extends MealPlanRepository {
     return rows.map(MealPlanMapper.toDomain);
   }
 
-  async existsAnyInRange(
+  async listOccupiedSlotsInRange(
     kindergartenId: string,
     dateFrom: string,
     dateTo: string,
-  ): Promise<boolean> {
-    const count = await this.manager()
+  ): Promise<Array<{ date: string; groupId: string | null }>> {
+    // Projection-only — never hydrates `meal_items`. The caller only needs
+    // the unique-index keys to decide which source plans are insertable.
+    //
+    // `TO_CHAR` rather than selecting the raw DATE column: on the raw path
+    // TypeORM does not run `prepareHydratedValue`, so the pg driver can hand
+    // back a JS Date at LOCAL midnight — `toISOString().slice(0,10)` would
+    // then shift the day backwards on any positive-offset host (Asia/Almaty
+    // is UTC+5) and the slot keys would silently miss.
+    const rows = await this.manager()
       .getRepository(MealPlanEntity)
       .createQueryBuilder('mp')
+      .select(`TO_CHAR(mp.date, 'YYYY-MM-DD')`, 'date')
+      .addSelect('mp.group_id', 'group_id')
       .where('mp.kindergarten_id = :kg', { kg: kindergartenId })
       .andWhere('mp.date >= :from', { from: dateFrom })
       .andWhere('mp.date <= :to', { to: dateTo })
-      .getCount();
-    return count > 0;
+      .getRawMany<{ date: string; group_id: string | null }>();
+
+    return rows.map((r) => ({ date: r.date, groupId: r.group_id }));
   }
 
   /**
    * Batch-insert plans for copy-week.
    *
-   * Caller assumption: the target week range is empty BEFORE this call
-   * (verified via `existsAnyInRange` in `MealService.copyWeekMenuToNext`).
+   * Caller assumption: every plan handed in targets a FREE `(date, group_id)`
+   * slot (verified via `listOccupiedSlotsInRange` in
+   * `MealService.copyWeekMenuToNext`).
    * The 23505 catch below is a defensive net for the "single isolated
    * batchCreate inside its own TX" path used by integration tests and by
    * narrow direct callers — under that contract a 23505 only happens at
@@ -291,8 +303,8 @@ export class MealPlanRelationalRepository extends MealPlanRepository {
    * — released at the surrounding TX boundary set up by
    * `TenantContextInterceptor`. Two concurrent `copyWeekMenuToNext` callers
    * for the same (kg, week) serialize on this lock, so the second one
-   * observes the first one's just-committed plans via `existsAnyInRange`
-   * and short-circuits cleanly with `plans_skipped = sourceCount` instead
+   * observes the first one's just-committed slots via
+   * `listOccupiedSlotsInRange` and filters those source plans out instead
    * of racing into `batchCreate` where a 23505 would poison the ambient TX.
    */
   async acquireWeekCopyLock(

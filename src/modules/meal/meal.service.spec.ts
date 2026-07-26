@@ -134,11 +134,18 @@ class FakeMealPlanRepository extends MealPlanRepository {
     );
   }
 
-  existsAnyInRange(_kgId: string, from: string, to: string): Promise<boolean> {
-    const found = [...this.rows.values()].some(
-      (p) => p.kindergartenId === _kgId && p.date >= from && p.date <= to,
+  listOccupiedSlotsInRange(
+    _kgId: string,
+    from: string,
+    to: string,
+  ): Promise<Array<{ date: string; groupId: string | null }>> {
+    return Promise.resolve(
+      [...this.rows.values()]
+        .filter(
+          (p) => p.kindergartenId === _kgId && p.date >= from && p.date <= to,
+        )
+        .map((p) => ({ date: p.date, groupId: p.groupId })),
     );
-    return Promise.resolve(found);
   }
 
   batchCreate(
@@ -661,6 +668,90 @@ describe('MealService', () => {
       );
       expect(result.plans_created).toBe(0);
       expect(result.plans_skipped).toBe(0);
+    });
+
+    it('copies the remaining days when one target day is already occupied', async () => {
+      // Regression: the probe used to be "does ANY plan exist in the target
+      // week for this kg", so a single pre-created day made the cron a no-op
+      // for the whole week. It is now keyed on (date, group_id).
+      const planRepo = new FakeMealPlanRepository();
+      const groupRepo = new FakeGroupRepository();
+      const childRepo = new FakeChildRepository();
+      const svc = makeService(planRepo, groupRepo, childRepo);
+
+      for (let i = 0; i < 5; i++) {
+        const d = new Date('2026-04-27');
+        d.setDate(d.getDate() + i);
+        const plan = MealPlan.create({
+          id: `src-${i}`,
+          kindergartenId: KG_UUID,
+          date: d.toISOString().slice(0, 10),
+          groupId: null,
+          isPublished: true,
+          now: NOW,
+        });
+        planRepo.rows.set(plan.id, plan);
+      }
+      // Admin pre-created Wednesday of the TARGET week.
+      const preexisting = MealPlan.create({
+        id: 'target-wed',
+        kindergartenId: KG_UUID,
+        date: '2026-05-06',
+        groupId: null,
+        isPublished: false,
+        now: NOW,
+      });
+      planRepo.rows.set(preexisting.id, preexisting);
+
+      const result = await svc.copyWeekMenuToNext(
+        KG_UUID,
+        new Date('2026-04-27'),
+        'cron',
+      );
+      expect(result.plans_created).toBe(4);
+      expect(result.plans_skipped).toBe(1);
+    });
+
+    it('treats a kindergarten-wide plan and a group plan on the same date as distinct slots', async () => {
+      const planRepo = new FakeMealPlanRepository();
+      const groupRepo = new FakeGroupRepository();
+      const childRepo = new FakeChildRepository();
+      const svc = makeService(planRepo, groupRepo, childRepo);
+
+      const groupId = '99999999-9999-9999-9999-999999999999';
+      for (const [id, gid] of [
+        ['src-kg-wide', null],
+        ['src-group', groupId],
+      ] as Array<[string, string | null]>) {
+        const plan = MealPlan.create({
+          id,
+          kindergartenId: KG_UUID,
+          date: '2026-04-27',
+          groupId: gid,
+          isPublished: true,
+          now: NOW,
+        });
+        planRepo.rows.set(plan.id, plan);
+      }
+      // Only the kg-wide slot of the target Monday is taken.
+      const preexisting = MealPlan.create({
+        id: 'target-kg-wide',
+        kindergartenId: KG_UUID,
+        date: '2026-05-04',
+        groupId: null,
+        isPublished: false,
+        now: NOW,
+      });
+      planRepo.rows.set(preexisting.id, preexisting);
+
+      const result = await svc.copyWeekMenuToNext(
+        KG_UUID,
+        new Date('2026-04-27'),
+        'cron',
+      );
+      // The group plan still copies — its (date, group_id) slot is free.
+      expect(result.plans_created).toBe(1);
+      expect(result.plans_skipped).toBe(1);
     });
   });
 });

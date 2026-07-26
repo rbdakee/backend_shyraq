@@ -62,14 +62,23 @@ export abstract class MealPlanRepository {
   ): Promise<MealPlan[]>;
 
   /**
-   * Check if any plan exists in [fromMonday, fromMonday+7).
-   * Used by copyWeekMenuToNext idempotency check.
+   * List the `(date, group_id)` slots already occupied by a plan in
+   * `[dateFrom, dateTo]`. Used by `copyWeekMenuToNext` as its idempotency
+   * probe: the returned pairs are exactly the keys of the two partial-unique
+   * indexes (`idx_meal_plans_unique_group` for group_id IS NOT NULL,
+   * `idx_meal_plans_unique_kg` for group_id IS NULL), so a source plan whose
+   * projected slot is absent from this set is guaranteed insertable.
+   *
+   * Deliberately NOT a whole-week boolean: a kindergarten that pre-created a
+   * single day (or a Saturday plan, or a draft) would otherwise block the
+   * copy of the entire target week. Slot-level granularity mirrors the
+   * schedule side, which already skips per-group.
    */
-  abstract existsAnyInRange(
+  abstract listOccupiedSlotsInRange(
     kindergartenId: string,
     dateFrom: string,
     dateTo: string,
-  ): Promise<boolean>;
+  ): Promise<Array<{ date: string; groupId: string | null }>>;
 
   /**
    * Batch-insert plans for copy-week. Returns count of actually inserted rows
@@ -85,7 +94,7 @@ export abstract class MealPlanRepository {
    * `copyWeekMenuToNext` callers (cron + admin manual trigger, two admin
    * clicks). Released at the surrounding TX boundary.
    *
-   * Without the lock, two callers can both observe `existsAnyInRange = false`
+   * Without the lock, two callers can both observe the same empty slot set
    * in the race window, both enter `batchCreate`, the loser's INSERT hits
    * 23505 → PG sets the TX state to 25P02 (InFailedSqlTransactionError)
    * which poisons every subsequent statement in the ambient TX.

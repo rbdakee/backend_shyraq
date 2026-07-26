@@ -152,12 +152,16 @@ class FakeScheduleService {
 
 class FakeMealService {
   seenWeeks = new Set<string>();
+  shouldThrowFor: string | null = null;
 
   copyWeekMenuToNext(
     kgId: string,
     fromMonday: Date,
     _source: 'manual' | 'cron',
   ): Promise<{ plans_created: number; plans_skipped: number }> {
+    if (this.shouldThrowFor === kgId) {
+      return Promise.reject(new Error('meal_failure'));
+    }
     const key = `${kgId}|${fromMonday.toISOString().slice(0, 10)}`;
     if (this.seenWeeks.has(key)) {
       return Promise.resolve({ plans_created: 0, plans_skipped: 5 });
@@ -262,15 +266,23 @@ describe('WeeklyRolloutService.runWeeklyRollout', () => {
 
     // Per-kg tenant id is now bound via `SELECT set_config($1, $2, true)`
     // (FINDINGS H3 — was `SET LOCAL app.kindergarten_id = '<kgId>'` string
-    // interpolation). Assert the bind shape AND that both kgs landed in
+    // interpolation). Two calls per kg, not one: the schedule and meal steps
+    // each open their own transaction so a failing schedule copy cannot roll
+    // the menu copy back. Assert the bind shape AND that both kgs landed in
     // order.
     const setConfigCalls = dataSource.paramCalls.filter(
       ({ q, params }) =>
         q.includes('set_config') && params[0] === 'app.kindergarten_id',
     );
-    expect(setConfigCalls).toHaveLength(2);
-    expect(setConfigCalls[0].params).toEqual(['app.kindergarten_id', KG_A]);
-    expect(setConfigCalls[1].params).toEqual(['app.kindergarten_id', KG_B]);
+    expect(setConfigCalls.map(({ params }) => params[1])).toEqual([
+      KG_A,
+      KG_A,
+      KG_B,
+      KG_B,
+    ]);
+    for (const call of setConfigCalls) {
+      expect(call.params[0]).toBe('app.kindergarten_id');
+    }
   });
 
   it('captures one-kg failure into the summary and continues with the rest', async () => {
@@ -287,12 +299,75 @@ describe('WeeklyRolloutService.runWeeklyRollout', () => {
     expect(summary.kindergartens).toHaveLength(2);
     const itemA = summary.kindergartens.find((k) => k.kindergartenId === KG_A)!;
     const itemB = summary.kindergartens.find((k) => k.kindergartenId === KG_B)!;
-    expect(itemA.error).toBe('schedule_failure');
+    expect(itemA.error).toBe('schedule: schedule_failure');
     expect(itemA.schedule.copiedGroups).toBe(0);
     expect(itemB.error).toBeNull();
     expect(itemB.schedule.copiedGroups).toBe(2);
     expect(summary.totals.errors).toBe(1);
     expect(summary.totals.copiedGroups).toBe(2); // only KG_B counted
+  });
+
+  it('keeps the meal copy when the schedule step of the same kg fails', async () => {
+    // The two steps run in SEPARATE transactions — a broken schedule template
+    // must not cost the kindergarten its menus for the week.
+    const { service, kgRepo, scheduleSvc } = makeService();
+    kgRepo.putActive(KG_A);
+    scheduleSvc.shouldThrowFor = KG_A;
+
+    const summary = await service.runWeeklyRollout({
+      fromMonday,
+      source: 'cron',
+    });
+
+    const itemA = summary.kindergartens[0];
+    expect(itemA.schedule).toEqual({
+      copiedGroups: 0,
+      skippedGroups: 0,
+      totalEvents: 0,
+    });
+    expect(itemA.meal).toEqual({ plansCreated: 5, plansSkipped: 0 });
+    expect(summary.totals.plansCreated).toBe(5);
+    expect(summary.totals.copiedGroups).toBe(0);
+  });
+
+  it('keeps the schedule copy when the meal step of the same kg fails', async () => {
+    const { service, kgRepo, mealSvc } = makeService();
+    kgRepo.putActive(KG_A);
+    mealSvc.shouldThrowFor = KG_A;
+
+    const summary = await service.runWeeklyRollout({
+      fromMonday,
+      source: 'cron',
+    });
+
+    const itemA = summary.kindergartens[0];
+    expect(itemA.error).toBe('meal: meal_failure');
+    expect(itemA.schedule).toEqual({
+      copiedGroups: 2,
+      skippedGroups: 0,
+      totalEvents: 12,
+    });
+    expect(itemA.meal).toEqual({ plansCreated: 0, plansSkipped: 0 });
+    expect(summary.totals.totalEvents).toBe(12);
+    expect(summary.totals.plansCreated).toBe(0);
+  });
+
+  it('joins both messages into item.error when both steps fail, counting the kg once', async () => {
+    const { service, kgRepo, scheduleSvc, mealSvc } = makeService();
+    kgRepo.putActive(KG_A);
+    scheduleSvc.shouldThrowFor = KG_A;
+    mealSvc.shouldThrowFor = KG_A;
+
+    const summary = await service.runWeeklyRollout({
+      fromMonday,
+      source: 'cron',
+    });
+
+    expect(summary.kindergartens[0].error).toBe(
+      'schedule: schedule_failure; meal: meal_failure',
+    );
+    // `totals.errors` counts kindergartens, not steps.
+    expect(summary.totals.errors).toBe(1);
   });
 
   it('idempotent: re-running with the same fromMonday returns skipped totals', async () => {

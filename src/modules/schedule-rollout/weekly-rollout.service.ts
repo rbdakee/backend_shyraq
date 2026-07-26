@@ -65,9 +65,9 @@ const UUID_RE =
  *   The cron handler runs OUTSIDE the HTTP pipeline, so neither
  *   `KindergartenScopeGuard` nor `TenantContextInterceptor` ever fire.
  *   Therefore this service drives the tenant scope itself: for each kg in
- *   the active list it opens its OWN transaction, issues
- *   `SET LOCAL app.kindergarten_id = '<kgId>'`, then runs the underlying
- *   `ScheduleService.copyWeekToNext` + `MealService.copyWeekMenuToNext`
+ *   the active list, each rollout STEP opens its OWN transaction (see
+ *   `runInTenantTx`), issues `set_config('app.kindergarten_id', ...)`, then
+ *   runs `ScheduleService.copyWeekToNext` / `MealService.copyWeekMenuToNext`
  *   inside `tenantStorage.run({...})`. The injected
  *   `KindergartenRepository.listActive()` is itself called inside an
  *   outer `bypass=true` transaction so RLS does not hide cross-tenant
@@ -79,10 +79,14 @@ const UUID_RE =
  *   contract is therefore "safe to re-run" so a manual trigger after a
  *   cron run is a no-op.
  *
- * Failure isolation:
- *   A failure within one kindergarten's transaction is caught, its message
- *   pinned to that kg's summary entry, and the rollout proceeds to the
- *   next kg. The whole batch never aborts on a single-kg failure.
+ * Failure isolation (two levels):
+ *   - Between kindergartens: a failure is caught, its message pinned to that
+ *     kg's summary entry, and the rollout proceeds to the next kg. The whole
+ *     batch never aborts on a single-kg failure.
+ *   - Between steps: schedule and meal run in separate transactions, so a
+ *     failing schedule copy no longer rolls back that kg's menu copy (and
+ *     vice versa). `item.error` carries both messages when both fail;
+ *     `totals.errors` still counts kindergartens, not steps.
  *
  * B9 T6: the recurring cron driver lives in the worker process now
  * (`WeeklyRolloutProcessor` on the BullMQ `schedule-rollout` queue). The
@@ -160,63 +164,61 @@ export class WeeklyRolloutService {
         error: null,
       };
 
+      // Schedule and meal run in SEPARATE transactions. They share nothing
+      // but the tenant scope, and a single TX made the weaker half poison the
+      // stronger one: any failure in `copyWeekToNext` rolled the menu copy
+      // back too, so a broken template silently cost the kindergarten its
+      // whole week of menus. Independent TXs mean a failing step only loses
+      // its own work; both errors are still surfaced on `item.error`.
+      const errors: string[] = [];
+
       try {
-        await this.tx.run(async (manager) => {
-          // H3 (FINDINGS): parameterized `set_config(...)` instead of
-          // `SET LOCAL app.kindergarten_id = '<kgId>'` — kgId is a UUID that
-          // we already validate upstream, so the previous interpolation is
-          // not exploitable today, but every other processor on this code
-          // path uses bind variables (`monthly-billing`, `discount-expire`,
-          // `content-publish`, etc.). Keeping the pattern consistent
-          // protects against future copy-paste of an unvalidated value.
-          await manager.query(`SELECT set_config($1, $2, true)`, [
-            'app.kindergarten_id',
-            kgId,
-          ]);
-          await tenantStorage.run(
-            { kgId, bypass: false, entityManager: manager },
-            async () => {
-              const sched = await this.scheduleService.copyWeekToNext(
-                kgId,
-                fromMonday,
-                input.source,
-              );
-              item.schedule = {
-                copiedGroups: sched.copiedGroups,
-                skippedGroups: sched.skippedGroups,
-                totalEvents: sched.totalEvents,
-              };
-              const meal = await this.mealService.copyWeekMenuToNext(
-                kgId,
-                fromMonday,
-                input.source,
-              );
-              item.meal = {
-                plansCreated: meal.plans_created,
-                plansSkipped: meal.plans_skipped,
-              };
-            },
-          );
-        });
-        // Only accumulate on success. If schedule succeeded but meal threw,
-        // the surrounding TX rolled back both — `item.schedule` was a local
-        // mutation that does NOT reflect what landed in PG, so adding it to
-        // totals would over-count rows that no longer exist.
+        const sched = await this.runInTenantTx(kgId, () =>
+          this.scheduleService.copyWeekToNext(kgId, fromMonday, input.source),
+        );
+        item.schedule = {
+          copiedGroups: sched.copiedGroups,
+          skippedGroups: sched.skippedGroups,
+          totalEvents: sched.totalEvents,
+        };
+        // Accumulate only after the TX committed — counters returned by a
+        // rolled-back call describe rows that no longer exist.
         totals.copiedGroups += item.schedule.copiedGroups;
         totals.skippedGroups += item.schedule.skippedGroups;
         totals.totalEvents += item.schedule.totalEvents;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.logger.warn(
+          `weekly-rollout: kg=${kgId} schedule step failed (${msg}); continuing with meal`,
+        );
+        item.schedule = { copiedGroups: 0, skippedGroups: 0, totalEvents: 0 };
+        errors.push(`schedule: ${msg}`);
+      }
+
+      try {
+        const meal = await this.runInTenantTx(kgId, () =>
+          this.mealService.copyWeekMenuToNext(kgId, fromMonday, input.source),
+        );
+        item.meal = {
+          plansCreated: meal.plans_created,
+          plansSkipped: meal.plans_skipped,
+        };
         totals.plansCreated += item.meal.plansCreated;
         totals.plansSkipped += item.meal.plansSkipped;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         this.logger.warn(
-          `weekly-rollout: kg=${kgId} failed (${msg}); continuing with the rest`,
+          `weekly-rollout: kg=${kgId} meal step failed (${msg}); continuing with the rest`,
         );
-        // Reset per-kg counters: the in-flight mutations of `item.schedule`
-        // / `item.meal` were rolled back with the TX.
-        item.schedule = { copiedGroups: 0, skippedGroups: 0, totalEvents: 0 };
         item.meal = { plansCreated: 0, plansSkipped: 0 };
-        item.error = msg;
+        errors.push(`meal: ${msg}`);
+      }
+
+      if (errors.length > 0) {
+        item.error = errors.join('; ');
+        // `totals.errors` counts KINDERGARTENS with at least one failed step,
+        // not failed steps — unchanged from the single-TX version so existing
+        // dashboards/alerts keep the same denominator.
         totals.errors += 1;
       }
 
@@ -233,6 +235,34 @@ export class WeeklyRolloutService {
       kindergartens: items,
       totals,
     };
+  }
+
+  /**
+   * Opens one transaction scoped to `kgId` and runs `fn` inside it with the
+   * matching `tenantStorage` context. Called once per rollout STEP so a
+   * failure in one step cannot roll back the other.
+   */
+  private async runInTenantTx<T>(
+    kgId: string,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    return this.tx.run(async (manager) => {
+      // H3 (FINDINGS): parameterized `set_config(...)` instead of
+      // `SET LOCAL app.kindergarten_id = '<kgId>'` — kgId is a UUID that
+      // we already validate upstream, so the previous interpolation is
+      // not exploitable today, but every other processor on this code
+      // path uses bind variables (`monthly-billing`, `discount-expire`,
+      // `content-publish`, etc.). Keeping the pattern consistent
+      // protects against future copy-paste of an unvalidated value.
+      await manager.query(`SELECT set_config($1, $2, true)`, [
+        'app.kindergarten_id',
+        kgId,
+      ]);
+      return tenantStorage.run(
+        { kgId, bypass: false, entityManager: manager },
+        fn,
+      );
+    });
   }
 
   /**
