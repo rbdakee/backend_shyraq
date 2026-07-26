@@ -858,6 +858,151 @@ describe('InvoiceService', () => {
     });
   });
 
+  describe('manualMarkPaid (partial amount)', () => {
+    const seed = (
+      invoiceRepo: FakeInvoiceRepo,
+      accountId: string,
+      id: string,
+      status: InvoiceState['status'],
+      amount = 135000,
+    ) => {
+      invoiceRepo.rows.set(
+        id,
+        Invoice.fromState({
+          id,
+          kindergartenId: KG,
+          childId: CHILD,
+          paymentAccountId: accountId,
+          tariffPlanId: null,
+          invoiceType: 'monthly',
+          periodStart: new Date('2026-06-01T00:00:00.000Z'),
+          periodEnd: new Date('2026-06-30T00:00:00.000Z'),
+          amountDue: m(amount),
+          discountPct: null,
+          discountReason: null,
+          amountAfterDiscount: m(amount),
+          status,
+          dueDate: new Date('2026-06-10T00:00:00.000Z'),
+          description: null,
+          proratedForDays: null,
+          createdAt: NOW,
+          updatedAt: NOW,
+        }),
+      );
+    };
+
+    it('records a partial cash payment and flips pending → partial', async () => {
+      const {
+        svc,
+        invoiceRepo,
+        accountSvc,
+        accountRepo,
+        paymentRepo,
+        notifier,
+      } = buildSvc();
+      const account = await accountSvc.ensureForChild(KG, CHILD);
+      seed(invoiceRepo, account.id, 'i-p1', 'pending');
+
+      const updated = await svc.manualMarkPaid(KG, 'i-p1', { amount: 30000 });
+
+      expect(updated.status).toBe('partial');
+      const payments = [...paymentRepo.rows.values()];
+      expect(payments).toHaveLength(1);
+      expect(payments[0].provider).toBe('cash' as PaymentProvider);
+      expect(payments[0].status).toBe('completed');
+      expect(payments[0].amount.toNumber()).toBe(30000);
+      expect(accountRepo.rows.get(account.id)?.balance.toNumber()).toBe(30000);
+
+      const types = notifier.events.map((e) => e.type);
+      expect(types).toContain('payment_completed');
+      expect(types).not.toContain('invoice_paid');
+    });
+
+    it('flips an overdue invoice → partial on a sub-remaining cash amount', async () => {
+      const { svc, invoiceRepo, accountSvc } = buildSvc();
+      const account = await accountSvc.ensureForChild(KG, CHILD);
+      seed(invoiceRepo, account.id, 'i-p2', 'overdue');
+
+      const updated = await svc.manualMarkPaid(KG, 'i-p2', { amount: 1000 });
+      expect(updated.status).toBe('partial');
+    });
+
+    it('keeps an already-partial invoice partial and validates against the remaining sum', async () => {
+      const { svc, invoiceRepo, accountSvc, paymentRepo } = buildSvc();
+      const account = await accountSvc.ensureForChild(KG, CHILD);
+      seed(invoiceRepo, account.id, 'i-p3', 'partial');
+      invoiceRepo.paidSums.set('i-p3', 105000); // remaining = 30000
+
+      const updated = await svc.manualMarkPaid(KG, 'i-p3', { amount: 10000 });
+      expect(updated.status).toBe('partial');
+      const payments = [...paymentRepo.rows.values()];
+      expect(payments).toHaveLength(1);
+      expect(payments[0].amount.toNumber()).toBe(10000);
+    });
+
+    it('settles in full when amount equals the remaining balance', async () => {
+      const { svc, invoiceRepo, accountSvc, paymentRepo, notifier } =
+        buildSvc();
+      const account = await accountSvc.ensureForChild(KG, CHILD);
+      seed(invoiceRepo, account.id, 'i-p4', 'partial');
+      invoiceRepo.paidSums.set('i-p4', 105000); // remaining = 30000
+
+      const updated = await svc.manualMarkPaid(KG, 'i-p4', { amount: 30000 });
+
+      expect(updated.status).toBe('paid');
+      const payments = [...paymentRepo.rows.values()];
+      expect(payments).toHaveLength(1);
+      expect(payments[0].amount.toNumber()).toBe(30000);
+      const types = notifier.events.map((e) => e.type);
+      expect(types).toContain('invoice_paid');
+    });
+
+    it('rejects an amount above the remaining balance', async () => {
+      const { svc, invoiceRepo, accountSvc, paymentRepo } = buildSvc();
+      const account = await accountSvc.ensureForChild(KG, CHILD);
+      seed(invoiceRepo, account.id, 'i-p5', 'pending');
+
+      await expect(
+        svc.manualMarkPaid(KG, 'i-p5', { amount: 135001 }),
+      ).rejects.toThrow('amount_mismatch_partial');
+      expect(invoiceRepo.rows.get('i-p5')?.status).toBe('pending');
+      expect(paymentRepo.rows.size).toBe(0);
+    });
+
+    it('rejects a non-positive amount', async () => {
+      const { svc, invoiceRepo, accountSvc } = buildSvc();
+      const account = await accountSvc.ensureForChild(KG, CHILD);
+      seed(invoiceRepo, account.id, 'i-p6', 'pending');
+
+      await expect(
+        svc.manualMarkPaid(KG, 'i-p6', { amount: 0 }),
+      ).rejects.toThrow('amount_mismatch_partial');
+      await expect(
+        svc.manualMarkPaid(KG, 'i-p6', { amount: -500 }),
+      ).rejects.toThrow('amount_mismatch_partial');
+    });
+
+    it('throws InvoiceAlreadyPaidError when a partial amount targets a paid invoice', async () => {
+      const { svc, invoiceRepo, accountSvc } = buildSvc();
+      const account = await accountSvc.ensureForChild(KG, CHILD);
+      seed(invoiceRepo, account.id, 'i-p7', 'paid');
+
+      await expect(
+        svc.manualMarkPaid(KG, 'i-p7', { amount: 1000 }),
+      ).rejects.toThrow(InvoiceAlreadyPaidError);
+    });
+
+    it('throws InvoiceStatusInvalidError when a partial amount targets a cancelled invoice', async () => {
+      const { svc, invoiceRepo, accountSvc } = buildSvc();
+      const account = await accountSvc.ensureForChild(KG, CHILD);
+      seed(invoiceRepo, account.id, 'i-p8', 'cancelled');
+
+      await expect(
+        svc.manualMarkPaid(KG, 'i-p8', { amount: 1000 }),
+      ).rejects.toThrow(InvoiceStatusInvalidError);
+    });
+  });
+
   describe('cancel', () => {
     it('flips pending → cancelled', async () => {
       const { svc, invoiceRepo, accountSvc } = buildSvc();

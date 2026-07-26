@@ -206,6 +206,24 @@ export class ManualMarkPaidInvoiceDto {
   @IsString()
   @MaxLength(500)
   note?: string | null;
+
+  @ApiProperty({
+    example: 30000,
+    description:
+      'Cash amount received in KZT. Omitted or equal to amount_remaining → ' +
+      'full settlement, invoice flips to `paid` (legacy behavior). ' +
+      '0 < amount < amount_remaining → partial cash receipt, invoice flips ' +
+      'to `partial`. Amounts ≤ 0 or > amount_remaining are rejected with ' +
+      '409 `invoice_status_invalid` (mirrors payment_mode=partial of ' +
+      'POST /payments/initiate).',
+    required: false,
+    nullable: true,
+    minimum: 1,
+  })
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  amount?: number | null;
 }
 
 export class CancelInvoiceDto {

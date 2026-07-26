@@ -152,7 +152,7 @@ export class AdminInvoiceController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
-      'Mark an invoice as paid via cash/off-platform settlement. Idempotent at the conditional-UPDATE level.',
+      'Mark an invoice as paid via cash/off-platform settlement. Optional `amount` records a partial cash receipt (invoice → partial). Idempotent at the conditional-UPDATE level.',
   })
   @ApiOkResponse({ type: InvoiceResponseDto })
   @ApiBadRequestResponse({ description: 'Validation error.' })
@@ -161,7 +161,7 @@ export class AdminInvoiceController {
   @ApiNotFoundResponse({ description: 'Invoice not found.' })
   @ApiConflictResponse({
     description:
-      'Invoice already paid / refunded / cancelled (state-machine conflict).',
+      'Invoice already paid / refunded / cancelled (state-machine conflict), or `amount` is ≤ 0 / exceeds amount_remaining (amount_mismatch_partial).',
   })
   async manualMarkPaid(
     @Tenant() t: TenantContext,
@@ -173,6 +173,7 @@ export class AdminInvoiceController {
       paidAt: dto.paid_at ? new Date(dto.paid_at) : undefined,
       payerUserId: dto.payer_user_id ?? null,
       note: dto.note ?? null,
+      amount: dto.amount ?? null,
     });
     const paidSum = await this.service.getPaidSum(kgId, id);
     return InvoicePresenter.one(invoice, undefined, paidSum);

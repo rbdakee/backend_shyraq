@@ -862,7 +862,7 @@ Qundylyq реализуется как `content_posts` с `content_type='qundyly
 | GET | `/admin/invoices` | Список инвойсов. Query: `status`, `due_date` (ISO date), `child_id` (uuid), `invoice_type` (`monthly`/`prepayment_3m`/…/`late_pickup_fee`/`other`). Response: `[{id, kindergarten_id, child_id, payment_account_id, tariff_plan_id, invoice_type, period_start, period_end, amount_due, discount_pct, discount_reason, amount_after_discount, status, due_date, description, prorated_for_days, created_at, updated_at}]`. |
 | GET | `/admin/invoices/:id` | Детали инвойса + `invoice_line_items` + связанные `payments`, `refunds`, `fiscal_receipts`, применённые `custom_discount_applications`. |
 | POST | `/admin/invoices` | Разовое начисление (доп. услуга). Body: `{child_id, invoice_type, amount_due, due_date, description?, period_start?, period_end?, line_items?: [{description, tariff_plan_id?, quantity, unit_price}]}`. Response 201: invoice object. Errors: 404 `child_not_found`, 422 validation. |
-| POST | `/admin/invoices/:id/manual-mark-paid` | Ручная отметка оплаты наличкой. Создаёт `payments` с `provider='cash'`, `status='completed'`, применяет `Invoice.applyPayment`. Conditional UPDATE WHERE status IN ('pending','partial') RETURNING *; 409 `invoice_already_paid` при race. Response 200: `{invoice_id, payment_id, new_status}`. Errors: 404 `invoice_not_found`, 409 `invoice_already_paid`. |
+| POST | `/admin/invoices/:id/manual-mark-paid` | Ручная отметка оплаты наличкой. Body: `{paid_at?, payer_user_id?, note?, amount?}`. Создаёт `payments` с `provider='cash'`, `status='completed'`. `amount` опционален (зеркалит `payment_mode=partial` из `/payments/initiate`): не передан или == остатку → полное погашение (invoice → `paid`); `0 < amount < остаток` → частичный кэш-платёж (invoice → `partial`, событие `invoice.paid` не эмитится); `amount <= 0` или `> остатка` → 409 `invoice_status_invalid` (`amount_mismatch_partial`). Conditional UPDATE WHERE status IN ('pending','partial','overdue') RETURNING *; 409 `invoice_already_paid` при race. Response 200: invoice object (`amount_paid`/`amount_remaining` пересчитаны). Errors: 404 `invoice_not_found`, 409 `invoice_already_paid`, 409 `invoice_status_invalid`. |
 | POST | `/admin/invoices/:id/cancel` | Отменить инвойс. Conditional UPDATE WHERE status IN ('pending','partial') RETURNING *. Response 200: `{id, status: 'cancelled'}`. Errors: 404 `invoice_not_found`, 409 `invoice_status_invalid`. |
 | GET | `/admin/payments` | Список платежей. Query: `provider`, `status`, `child_id`, `from` (ISO date), `to` (ISO date). Response: `[{id, kindergarten_id, invoice_id, child_id, payer_user_id, amount, provider, provider_txn_id, idempotency_key, status, paid_at, created_at}]`. |
 | GET | `/admin/payments/:id` | Детали платежа (включая `provider_payload`). |
@@ -874,7 +874,7 @@ Qundylyq реализуется как `content_posts` с `content_type='qundyly
 | 404 | `invoice_not_found` | Инвойс не найден в kg |
 | 404 | `child_not_found` | Ребёнок не найден в kg |
 | 409 | `invoice_already_paid` | `manual-mark-paid` когда status уже `paid` |
-| 409 | `invoice_status_invalid` | `cancel` из несовместимого состояния (`paid`/`refunded`/`cancelled`) |
+| 409 | `invoice_status_invalid` | `cancel` из несовместимого состояния (`paid`/`refunded`/`cancelled`); `manual-mark-paid` с `amount` вне диапазона `(0, остаток]` (`amount_mismatch_partial`) |
 | 422 | validation | Невалидные поля DTO |
 
 ### 2.13 Tariffs (Billing)
