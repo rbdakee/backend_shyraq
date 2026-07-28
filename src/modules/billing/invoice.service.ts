@@ -643,7 +643,8 @@ export class InvoiceService {
    * assignment as of `periodStart`. See class-level docstring on the
    * required ambient TX. Idempotent via advisory lock + existsMonthlyForPeriod
    * short-circuit (only `invoice_type='monthly'` rows count — prepayments
-   * and one-offs do not block re-runs).
+   * and one-offs do not block re-runs). Children whose period is covered
+   * by a PAID prepayment window are skipped per-child (handoff §2.7 / P4).
    */
   async generateMonthly(
     kindergartenId: string,
@@ -683,10 +684,30 @@ export class InvoiceService {
       periodStart,
       periodEnd,
     );
+    // Prepayment coverage (handoff §2.7 / P4): children whose PAID
+    // prepayment_* window contains this period are skipped below. ONE
+    // kg-wide query here, Set lookup per child — never a per-child query.
+    const coveredByPrepayment = new Set(
+      await this.invoices.listChildIdsWithPaidPrepaymentCovering(
+        kindergartenId,
+        periodStart,
+      ),
+    );
 
     let generated = 0;
     let skipped = 0;
     for (const assignment of assignments) {
+      // Cheapest guard first: paid-prepayment coverage skip (handoff §5.1).
+      // The branch has zero side effects, so a repeat cron run (e.g. when
+      // ALL children are covered and the existsMonthlyForPeriod
+      // short-circuit never arms) re-skips harmlessly.
+      if (coveredByPrepayment.has(assignment.childId)) {
+        this.logger.log(
+          `monthly: skipping child=${assignment.childId} — covered by paid prepayment`,
+        );
+        skipped++;
+        continue;
+      }
       // B21 T3 step5: defence-in-depth gate against billing archived
       // children. T3 step3 closes their tariff_assignment at the archive
       // moment via `closeActiveForChild`, so `findAllActiveAtDate` here
