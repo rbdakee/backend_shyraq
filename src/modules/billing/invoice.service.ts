@@ -131,6 +131,8 @@ export interface PaymentCalendarMonthEntry {
   due_date: string | null;
   is_projection: boolean;
   holidays_affected: number;
+  /** `invoice_type` of the backing invoice — null on projected rows. */
+  invoice_type: string | null;
 }
 
 /** Per-month row of a `PrepaymentQuote` (handoff §2.4 / §2.6). */
@@ -918,8 +920,13 @@ export class InvoiceService {
    * invoice yet are returned as `projected` rows derived from the active
    * `tariff_assignment` + holiday count (best-effort estimate).
    *
-   * `monthsAhead` is clamped to `[1, 24]`. The starting month is the first
-   * day of the current UTC month (DB stores `period_start` as `date`).
+   * Months covered by a PAID prepayment (§2.9 / P6) render as `paid` rows
+   * of that prepayment invoice with the month's line-item share as the
+   * amount. Pending/partial prepayments are NOT spread — they stay visible
+   * only in their `period_start` month, like today.
+   *
+   * `monthsAhead` outside `[1, 24]` → 400. The starting month is the first
+   * day of the current Almaty month (DB stores `period_start` as `date`).
    */
   async buildPaymentCalendar(
     kindergartenId: string,
@@ -961,6 +968,54 @@ export class InvoiceService {
       }
     }
 
+    // Paid-prepayment coverage spread (§2.9 / P6). Separate fetch on
+    // `period_end >= startMonth`: a paid prepayment whose window started
+    // before the calendar horizon (or ends past it) is invisible to the
+    // bucketing fetch above (`period_start >= startMonth AND period_end <=
+    // endMonth`), yet still covers months inside it.
+    const paidPrepayments = await this.invoices.findPaidPrepaymentsByChild(
+      kindergartenId,
+      childId,
+      startMonth,
+    );
+    const coverage = new Map<string, { invoice: Invoice; share: MoneyKzt }>();
+    if (paidPrepayments.length > 0) {
+      const prepayLineItems = await this.invoiceLineItems.listByInvoiceIds(
+        kindergartenId,
+        paidPrepayments.map((p) => p.id),
+      );
+      const itemsByInvoice = new Map<string, InvoiceLineItem[]>();
+      for (const item of prepayLineItems) {
+        const list = itemsByInvoice.get(item.invoiceId) ?? [];
+        list.push(item);
+        itemsByInvoice.set(item.invoiceId, list);
+      }
+      for (const p of paidPrepayments) {
+        const windowMonths: Date[] = [];
+        for (
+          let m = p.periodStart;
+          m.getTime() <= p.periodEnd.getTime();
+          m = addMonthsUtc(m, 1)
+        ) {
+          windowMonths.push(m);
+        }
+        const items = (itemsByInvoice.get(p.id) ?? []).sort(
+          (a, b) => a.createdAt.getTime() - b.createdAt.getTime(),
+        );
+        for (let i = 0; i < windowMonths.length; i++) {
+          // P2 writes one line item per covered month (created_at ASC, i-th
+          // item → i-th window month). Legacy pre-fix prepayments carry a
+          // single `quantity=months` item — fall back to an even split so
+          // they render instead of crashing the calendar.
+          const share =
+            items.length === windowMonths.length
+              ? items[i].lineTotal
+              : p.amountAfterDiscount.div(windowMonths.length);
+          coverage.set(monthKey(windowMonths[i]), { invoice: p, share });
+        }
+      }
+    }
+
     // Resolve the active assignment + tariff plan once for projections.
     const assignment = await this.tariffAssignments.findActiveForChild(
       kindergartenId,
@@ -984,8 +1039,24 @@ export class InvoiceService {
         mStart,
         mEnd,
       );
+      const covered = coverage.get(monthKey(mStart));
       const matching = byMonthKey.get(monthKey(mStart));
-      if (matching) {
+      if (covered) {
+        // Coverage wins over a matching invoice (§2.9): if a monthly
+        // slipped in before the settlement hook cancelled it, the month
+        // still reads as paid-by-prepayment.
+        result.push({
+          period_start: toIsoDate(mStart),
+          period_end: toIsoDate(mEnd),
+          invoice_id: covered.invoice.id,
+          projected_status: 'paid',
+          amount_after_discount: covered.share.round().toNumber(),
+          due_date: toIsoDate(covered.invoice.dueDate),
+          is_projection: false,
+          holidays_affected: holidaysAffected,
+          invoice_type: covered.invoice.invoiceType,
+        });
+      } else if (matching) {
         result.push({
           period_start: toIsoDate(mStart),
           period_end: toIsoDate(mEnd),
@@ -995,6 +1066,7 @@ export class InvoiceService {
           due_date: toIsoDate(matching.dueDate),
           is_projection: false,
           holidays_affected: holidaysAffected,
+          invoice_type: matching.invoiceType,
         });
       } else {
         result.push({
@@ -1006,6 +1078,7 @@ export class InvoiceService {
           due_date: null,
           is_projection: true,
           holidays_affected: holidaysAffected,
+          invoice_type: null,
         });
       }
     }
