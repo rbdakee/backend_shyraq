@@ -16,6 +16,15 @@ import { InvoiceLineItemTypeOrmEntity } from '../entities/invoice-line-item.type
 import { InvoiceMapper } from '../mappers/invoice.mapper';
 import { toIsoDate } from '../mappers/date-utils';
 
+// `invoice_type` is a PG ENUM — `LIKE 'prepayment_%'` would need a `::text`
+// cast, so the prepayment horizon set is kept as an explicit IN-list.
+const PREPAYMENT_TYPES = [
+  'prepayment_3m',
+  'prepayment_6m',
+  'prepayment_12m',
+  'prepayment_24m',
+];
+
 @Injectable()
 export class InvoiceRelationalRepository extends InvoiceRepository {
   constructor(
@@ -557,6 +566,107 @@ export class InvoiceRelationalRepository extends InvoiceRepository {
         amount: Number(r.refunded_amount ?? 0),
       },
     };
+  }
+
+  // ── Prepayment coverage (handoff §2, PREPAYMENT_BILLING_FIX) ──────────
+
+  async findUnpaidNonPrepaymentByChild(
+    kindergartenId: string,
+    childId: string,
+  ): Promise<Invoice[]> {
+    const rows = await this.manager()
+      .getRepository(InvoiceTypeOrmEntity)
+      .createQueryBuilder('inv')
+      .where('inv.kindergarten_id = :kg', { kg: kindergartenId })
+      .andWhere('inv.child_id = :cid', { cid: childId })
+      .andWhere('inv.status IN (:...statuses)', {
+        statuses: ['pending', 'overdue', 'partial'],
+      })
+      .andWhere('inv.invoice_type NOT IN (:...pt)', { pt: PREPAYMENT_TYPES })
+      .orderBy('inv.due_date', 'ASC')
+      .addOrderBy('inv.id', 'ASC')
+      .getMany();
+    return rows.map(InvoiceMapper.toDomain);
+  }
+
+  async findPaidPrepaymentsByChild(
+    kindergartenId: string,
+    childId: string,
+    periodEndFrom: Date,
+  ): Promise<Invoice[]> {
+    const rows = await this.manager()
+      .getRepository(InvoiceTypeOrmEntity)
+      .createQueryBuilder('inv')
+      .where('inv.kindergarten_id = :kg', { kg: kindergartenId })
+      .andWhere('inv.child_id = :cid', { cid: childId })
+      .andWhere('inv.invoice_type IN (:...pt)', { pt: PREPAYMENT_TYPES })
+      .andWhere(`inv.status = 'paid'`)
+      .andWhere('inv.period_end >= :from', { from: toIsoDate(periodEndFrom) })
+      .orderBy('inv.period_start', 'ASC')
+      .addOrderBy('inv.id', 'ASC')
+      .getMany();
+    return rows.map(InvoiceMapper.toDomain);
+  }
+
+  async listChildIdsWithPaidPrepaymentCovering(
+    kindergartenId: string,
+    periodStart: Date,
+  ): Promise<string[]> {
+    const rows: Array<{ child_id: string }> = await this.manager().query(
+      `SELECT DISTINCT child_id
+         FROM invoices
+        WHERE kindergarten_id = $1
+          AND invoice_type IN ('prepayment_3m', 'prepayment_6m', 'prepayment_12m', 'prepayment_24m')
+          AND status = 'paid'
+          AND period_start <= $2::date
+          AND period_end >= $2::date`,
+      [kindergartenId, toIsoDate(periodStart)],
+    );
+    return rows.map((r) => r.child_id);
+  }
+
+  async findMonthlyInWindow(
+    kindergartenId: string,
+    childId: string,
+    windowStart: Date,
+    windowEnd: Date,
+  ): Promise<Invoice[]> {
+    const rows = await this.manager()
+      .getRepository(InvoiceTypeOrmEntity)
+      .createQueryBuilder('inv')
+      .where('inv.kindergarten_id = :kg', { kg: kindergartenId })
+      .andWhere('inv.child_id = :cid', { cid: childId })
+      .andWhere(`inv.invoice_type = 'monthly'`)
+      .andWhere('inv.status IN (:...statuses)', {
+        statuses: ['pending', 'overdue', 'partial', 'paid'],
+      })
+      .andWhere('inv.period_start >= :ws', { ws: toIsoDate(windowStart) })
+      .andWhere('inv.period_start <= :we', { we: toIsoDate(windowEnd) })
+      .orderBy('inv.period_start', 'ASC')
+      .addOrderBy('inv.id', 'ASC')
+      .getMany();
+    return rows.map(InvoiceMapper.toDomain);
+  }
+
+  async findUnpaidPrepaymentsByChild(
+    kindergartenId: string,
+    childId: string,
+  ): Promise<Invoice[]> {
+    // `partial` deliberately absent — a partially-paid prepayment already
+    // holds parent money and must never be auto-cancelled (§2.2 / P2).
+    const rows = await this.manager()
+      .getRepository(InvoiceTypeOrmEntity)
+      .createQueryBuilder('inv')
+      .where('inv.kindergarten_id = :kg', { kg: kindergartenId })
+      .andWhere('inv.child_id = :cid', { cid: childId })
+      .andWhere('inv.invoice_type IN (:...pt)', { pt: PREPAYMENT_TYPES })
+      .andWhere('inv.status IN (:...statuses)', {
+        statuses: ['pending', 'overdue'],
+      })
+      .orderBy('inv.created_at', 'ASC')
+      .addOrderBy('inv.id', 'ASC')
+      .getMany();
+    return rows.map(InvoiceMapper.toDomain);
   }
 }
 

@@ -61,4 +61,20 @@ export class InvoiceLineItemRelationalRepository extends InvoiceLineItemReposito
       });
     return rows.map(InvoiceLineItemMapper.toDomain);
   }
+
+  async listByInvoiceIds(
+    kindergartenId: string,
+    invoiceIds: string[],
+  ): Promise<InvoiceLineItem[]> {
+    if (invoiceIds.length === 0) return [];
+    const rows = await this.manager()
+      .getRepository(InvoiceLineItemTypeOrmEntity)
+      .createQueryBuilder('li')
+      .where('li.kindergarten_id = :kg', { kg: kindergartenId })
+      .andWhere('li.invoice_id IN (:...ids)', { ids: invoiceIds })
+      .orderBy('li.invoice_id', 'ASC')
+      .addOrderBy('li.created_at', 'ASC')
+      .getMany();
+    return rows.map(InvoiceLineItemMapper.toDomain);
+  }
 }

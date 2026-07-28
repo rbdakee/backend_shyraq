@@ -51,6 +51,7 @@ import { HolidayService } from './holiday.service';
 import { PaymentAccountService } from './payment-account.service';
 import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import { firstOfMonthInTimezone } from '@/shared-kernel/domain/value-objects/day-of-week.vo';
+import { Decimal } from 'decimal.js';
 
 const DEFAULT_DUE_DAY = 10; // monthly invoices fall due on the 10th of period
 const LATE_PICKUP_DUE_DAYS = 7;
@@ -130,6 +131,49 @@ export interface PaymentCalendarMonthEntry {
   is_projection: boolean;
   holidays_affected: number;
 }
+
+/** Per-month row of a `PrepaymentQuote` (handoff §2.4 / §2.6). */
+export interface PrepaymentQuoteMonth {
+  periodStart: Date;
+  periodEnd: Date;
+  /** Holiday-adjusted pre-discount month price — full precision. */
+  baseAmount: MoneyKzt;
+  holidayDays: number;
+  /** Whole-tenge slice of the discounted `total` (Σ shares === total exactly). */
+  amountShare: MoneyKzt;
+}
+
+/** Debt-blocked quote (§2.2) — nothing computed, no side effects occurred. */
+export interface PrepaymentQuoteBlocked {
+  blockedReason: 'outstanding_debt';
+  /** KZT — Σ(amount_after_discount − completed paid) over the blocking invoices. */
+  outstandingAmount: number;
+}
+
+export interface PrepaymentQuoteComputed {
+  blockedReason?: undefined;
+  windowStart: Date;
+  windowEnd: Date;
+  months: PrepaymentQuoteMonth[];
+  discountPct: number | null;
+  /** Full engine result — P2 persists `customApplicationsToWrite` from it. */
+  discountResult: DiscountEvaluationResult;
+  /**
+   * Capped discounts whose `total_max_uses` slot was reserved (reserve mode
+   * only; `[]` in preview mode). Non-winner reservations are ALREADY
+   * released inside the quote — callers must not release them again.
+   */
+  reservedDiscountIds: string[];
+  /** Σ month bases, pre-discount, full precision → `invoice.amountDue`. */
+  baseTotal: MoneyKzt;
+  /** Discounted + whole-tenge quantized → `invoice.amountAfterDiscount`. */
+  total: MoneyKzt;
+  /** Resolved here so the create path (P2) avoids a re-fetch. */
+  tariffPlan: TariffPlan;
+  assignment: TariffAssignment;
+}
+
+export type PrepaymentQuote = PrepaymentQuoteBlocked | PrepaymentQuoteComputed;
 
 /**
  * InvoiceService — admin/internal CRUD plus the auto-generation entry
@@ -947,6 +991,226 @@ export class InvoiceService {
   }
 
   /**
+   * Prepayment quote (handoff §2 / P1) — single source of truth for both
+   * invoice creation (P2, reserve mode) and the read-only preview endpoint
+   * (P3, preview mode).
+   *
+   * Pipeline:
+   *   1. Debt block (§2.2) — any `pending|overdue|partial` NON-prepayment
+   *      invoice of the child blocks the quote, checked BEFORE any
+   *      reservation side effects. Unpaid prepayments are not debt (P2
+   *      cancels pending/overdue ones on retry).
+   *   2. Window shift (§2.3) — first day of the next Almaty month, walked
+   *      forward past every month already covered by a PAID prepayment.
+   *   3. Per-month holiday math (§2.4) — `price × (days − holidays) / days`
+   *      per covered month, full-precision MoneyKzt chain. Holidays are
+   *      snapshotted at quote time; later holiday/tariff edits do not
+   *      reprice (§2.4 — price is fixed at creation).
+   *   4. ONE discount-engine evaluate over the summed base with
+   *      `context.prepaymentMonths` (§5.7) — never per month, so
+   *      `prepay_N_pct` applies once and capped custom discounts consume at
+   *      most one slot.
+   *   5. Whole-tenge quantization of the discounted total (§2.5, Bug 2) —
+   *      the only rounding in the chain.
+   *   6. Largest-remainder split of the total into whole-tenge per-month
+   *      shares (§2.6) — these become the per-month line items (P2) and the
+   *      calendar amounts (P6).
+   *
+   * Side effects: reserve mode (default) reserves capped custom-discount
+   * slots via `tryReserveUsage` and already releases non-winner
+   * reservations here; the caller only persists the winner applications.
+   * Preview mode (`reserveCustomDiscounts: false`) writes nothing and takes
+   * no advisory locks — read-only capacity guards only.
+   */
+  async computePrepaymentQuote(
+    kindergartenId: string,
+    childId: string,
+    months: 3 | 6 | 12 | 24,
+    opts?: { reserveCustomDiscounts?: boolean },
+  ): Promise<PrepaymentQuote> {
+    const reserve = opts?.reserveCustomDiscounts ?? true;
+    const now = this.clock.now();
+    const assignment = await this.tariffAssignments.findActiveForChild(
+      kindergartenId,
+      childId,
+      now,
+    );
+    if (!assignment) {
+      throw new TariffAssignmentNotFoundError(childId);
+    }
+    const tariffPlan = await this.tariffPlans.findById(
+      kindergartenId,
+      assignment.tariffPlanId,
+    );
+    if (!tariffPlan) {
+      throw new TariffPlanNotFoundError(assignment.tariffPlanId);
+    }
+
+    // Horizon gate — kept as a Nest BadRequestException (not a DomainError)
+    // for contract compat with the existing pay/prepayment route.
+    const ruleKey =
+      `prepay_${months}m_pct` as keyof typeof tariffPlan.discountRules;
+    const rulePct = tariffPlan.discountRules[ruleKey];
+    if (rulePct === undefined || rulePct === null) {
+      throw new BadRequestException('prepayment_horizon_not_configured');
+    }
+
+    // 1 — debt block (§2.2), before any reservation side effects.
+    const unpaid = await this.invoices.findUnpaidNonPrepaymentByChild(
+      kindergartenId,
+      childId,
+    );
+    if (unpaid.length > 0) {
+      const paidSums = await this.invoices.getPaidSumsForInvoices(
+        kindergartenId,
+        unpaid.map((i) => i.id),
+      );
+      let outstanding = MoneyKzt.zero();
+      for (const inv of unpaid) {
+        const paid = MoneyKzt.fromKzt(paidSums.get(inv.id) ?? 0);
+        const remaining = inv.amountAfterDiscount.sub(paid);
+        if (remaining.isPositive()) {
+          outstanding = outstanding.add(remaining);
+        }
+      }
+      return {
+        blockedReason: 'outstanding_debt',
+        outstandingAmount: outstanding.round().toNumber(),
+      };
+    }
+
+    // 2 — window shift (§2.3). SP2: Almaty anchor applies only to
+    // `clock.now()`; stored period dates are canonical midnight-UTC anchors
+    // (mapper `toDate`), so pure UTC month arithmetic on them is correct.
+    // The covered-month-key walk is robust against multiple / overlapping
+    // paid prepayments — not just max(period_end).
+    let windowStart = addMonthsUtc(firstOfMonthInTimezone(now), 1);
+    const paidPrepayments = await this.invoices.findPaidPrepaymentsByChild(
+      kindergartenId,
+      childId,
+      windowStart,
+    );
+    const coveredMonthKeys = new Set<string>();
+    for (const p of paidPrepayments) {
+      for (
+        let m = p.periodStart;
+        m.getTime() <= p.periodEnd.getTime();
+        m = addMonthsUtc(m, 1)
+      ) {
+        coveredMonthKeys.add(monthKey(m));
+      }
+    }
+    while (coveredMonthKeys.has(monthKey(windowStart))) {
+      windowStart = addMonthsUtc(windowStart, 1);
+    }
+    const windowEnd = endOfMonth(addMonthsUtc(windowStart, months - 1));
+
+    // 3 — per-month base amounts (§2.4): full-precision chain, no
+    // intermediate rounding (B22b T2/T15 — quantize only at sinks).
+    // `dayWeights` carries the per-month billable-day fraction for the
+    // share split below — the monthly price cancels out of the ratio, so
+    // the day fractions alone are the exact full-precision weights.
+    const monthlyAmount = assignment.effectiveAmount(tariffPlan);
+    const monthEntries: PrepaymentQuoteMonth[] = [];
+    const dayWeights: Decimal[] = [];
+    let baseTotal = MoneyKzt.zero();
+    for (let i = 0; i < months; i++) {
+      const mStart = addMonthsUtc(windowStart, i);
+      const mEnd = endOfMonth(mStart);
+      const totalDays = daysBetweenInclusive(mStart, mEnd);
+      const holidayDays = await this.holidays.countNonBillableInRange(
+        kindergartenId,
+        mStart,
+        mEnd,
+      );
+      const effectiveDays = Math.max(0, totalDays - holidayDays);
+      const baseAmount = monthlyAmount.mul(effectiveDays).div(totalDays);
+      baseTotal = baseTotal.add(baseAmount);
+      dayWeights.push(new Decimal(effectiveDays).div(totalDays));
+      monthEntries.push({
+        periodStart: mStart,
+        periodEnd: mEnd,
+        baseAmount,
+        holidayDays,
+        amountShare: MoneyKzt.zero(), // assigned after quantization below
+      });
+    }
+
+    // 4 — ONE engine call over the summed base (§5.7): `prepay_N_pct`
+    // applies once via `prepaymentMonths`; looping the engine per month
+    // would re-reserve capped slots AND multiply ledger rows. `dueDate` is
+    // deliberately omitted from the engine input on the prepay path
+    // (computed after the quote), matching the existing prepayInvoice call.
+    const invoiceType = `prepayment_${months}m` as InvoiceType;
+    const customCtx = await this.buildCustomDiscountInputs(
+      kindergartenId,
+      childId,
+      windowStart,
+      invoiceType,
+      now,
+      reserve,
+    );
+    const discount = await this.discountEngine.evaluate({
+      invoice: {
+        invoiceId: 'pending',
+        invoiceType,
+        childId,
+        kindergartenId,
+        amountDue: baseTotal,
+        periodStart: windowStart,
+        periodEnd: windowEnd,
+      },
+      tariffPlan: {
+        id: tariffPlan.id,
+        discountRules: tariffPlan.discountRules,
+      },
+      context: {
+        prepaymentMonths: months,
+        customDiscounts: customCtx.customDiscounts,
+        childContext: customCtx.childContext ?? undefined,
+        familyContext: customCtx.familyContext ?? undefined,
+      },
+    });
+    // B22a T13 H1 — compensate reservations the engine dropped. No-op in
+    // preview mode (reservedDiscountIds is empty).
+    await this.releaseUnusedReservations(
+      kindergartenId,
+      customCtx.reservedDiscountIds,
+      discount,
+    );
+
+    // 5 — single-rounding chain to whole tenge (§2.5): the discounted total
+    // is quantized exactly once, at the sink.
+    const amountAfter = Invoice.computeAmountAfterDiscount(
+      baseTotal,
+      discount.discountPct,
+      discount.customDiscountAmount === null
+        ? null
+        : MoneyKzt.fromKzt(discount.customDiscountAmount),
+    );
+    const total = amountAfter.roundToWholeKzt();
+
+    // 6 — whole-tenge per-month shares (§2.6).
+    const shares = distributeWholeTenge(total, dayWeights);
+    for (let i = 0; i < months; i++) {
+      monthEntries[i].amountShare = shares[i];
+    }
+
+    return {
+      windowStart,
+      windowEnd,
+      months: monthEntries,
+      discountPct: discount.discountPct,
+      discountResult: discount,
+      reservedDiscountIds: customCtx.reservedDiscountIds,
+      baseTotal,
+      total,
+      tariffPlan,
+      assignment,
+    };
+  }
+
+  /**
    * Build a prepayment invoice covering the next `months` (3|6|12|24)
    * starting at the first day of next month after `now`. Resolves the
    * child's active tariff_assignment + plan, evaluates the matching
@@ -1317,6 +1581,14 @@ export class InvoiceService {
    *
    * Returns empty `customDiscounts: []` when any required dep is
    * missing (B13-only callers / older spec wiring).
+   *
+   * `reserve` (default true) — preview mode (`false`, prepayment-preview
+   * P3) skips `tryReserveUsage` AND the per-(child,discount) advisory
+   * locks: a GET must not consume `total_max_uses` slots (winners' — i.e.
+   * non-released — reservations would leak on every preview) nor hold
+   * locks. Read-only guards (per-child count, snapshot `used_count` vs
+   * cap) still run, so the preview reflects capacity best-effort; the
+   * create path re-runs in reserve mode and remains the only authority.
    */
   private async buildCustomDiscountInputs(
     kindergartenId: string,
@@ -1324,6 +1596,7 @@ export class InvoiceService {
     periodStart: Date,
     _invoiceType: InvoiceType,
     now: Date,
+    reserve = true,
   ): Promise<{
     customDiscounts: CustomDiscountSnapshot[];
     childContext: DiscountEvaluationInput['context']['childContext'] | null;
@@ -1389,11 +1662,13 @@ export class InvoiceService {
     const reservedDiscountIds: string[] = [];
     for (const snap of targeted) {
       if (snap.maxUsesPerChild !== null) {
-        await this.customDiscounts.acquireDiscountApplyAdvisoryLock(
-          kindergartenId,
-          snap.id,
-          childId,
-        );
+        if (reserve) {
+          await this.customDiscounts.acquireDiscountApplyAdvisoryLock(
+            kindergartenId,
+            snap.id,
+            childId,
+          );
+        }
         const used =
           await this.customDiscountApplications.countByChildAndDiscount(
             kindergartenId,
@@ -1405,17 +1680,23 @@ export class InvoiceService {
       // total_max_uses atomic reserve. `tryReserveUsage` returns true
       // immediately for cap-disabled discounts (total_max_uses IS NULL).
       if (snap.totalMaxUses !== null) {
-        const reserved = await this.customDiscounts.tryReserveUsage(
-          kindergartenId,
-          snap.id,
-        );
-        if (!reserved) {
-          this.logger.log(
-            `discount.cap_raced: kg=${kindergartenId} discount=${snap.id} child=${childId} — skipped before engine.`,
+        if (!reserve) {
+          // Preview mode: snapshot-read capacity guard only — no slot
+          // consumed, so no compensation needed either.
+          if (snap.usedCount >= snap.totalMaxUses) continue;
+        } else {
+          const reserved = await this.customDiscounts.tryReserveUsage(
+            kindergartenId,
+            snap.id,
           );
-          continue;
+          if (!reserved) {
+            this.logger.log(
+              `discount.cap_raced: kg=${kindergartenId} discount=${snap.id} child=${childId} — skipped before engine.`,
+            );
+            continue;
+          }
+          reservedDiscountIds.push(snap.id);
         }
-        reservedDiscountIds.push(snap.id);
       }
       eligible.push(snap);
     }
@@ -1600,6 +1881,50 @@ function monthsBetween(from: Date, to: Date): number {
     total -= 1;
   }
   return Math.max(0, total);
+}
+
+/**
+ * Largest-remainder allocation of a whole-tenge `total` across `weights`
+ * (per-month billable-day fractions — the shared monthly price cancels out
+ * of the base-amount ratio, so day fractions alone carry the exact
+ * full-precision weights). Floors first, then one tenge at a time by
+ * descending fractional remainder (ties → earlier month), which guarantees
+ * `Σ shares === total` exactly (§2.6) — asserted before returning. All-zero
+ * weights (every month fully holiday → total is 0) yield all-zero shares.
+ */
+function distributeWholeTenge(total: MoneyKzt, weights: Decimal[]): MoneyKzt[] {
+  const totalKzt = total.toNumber(); // whole after roundToWholeKzt — exact
+  const weightSum = weights.reduce((acc, w) => acc.plus(w), new Decimal(0));
+  if (weightSum.isZero() || totalKzt === 0) {
+    return weights.map(() => MoneyKzt.zero());
+  }
+  const floors: number[] = [];
+  const remainders: Decimal[] = [];
+  let floorSum = 0;
+  for (const w of weights) {
+    const raw = w.mul(totalKzt).div(weightSum);
+    const floor = raw.floor();
+    floors.push(floor.toNumber());
+    remainders.push(raw.minus(floor));
+    floorSum += floor.toNumber();
+  }
+  let leftover = totalKzt - floorSum;
+  const order = remainders
+    .map((r, i) => ({ r, i }))
+    .sort((a, b) => b.r.comparedTo(a.r) || a.i - b.i);
+  for (const { i } of order) {
+    if (leftover <= 0) break;
+    floors[i] += 1;
+    leftover -= 1;
+  }
+  const shares = floors.map((f) => MoneyKzt.fromKzt(f));
+  const sum = shares.reduce((acc, s) => acc.add(s), MoneyKzt.zero());
+  if (!sum.equals(total)) {
+    // Internal invariant (§2.6): line items and calendar rows must add up
+    // to exactly what the parent pays. Unreachable by construction.
+    throw new Error('prepayment_share_sum_mismatch');
+  }
+  return shares;
 }
 
 // ── pure date helpers ────────────────────────────────────────────────────

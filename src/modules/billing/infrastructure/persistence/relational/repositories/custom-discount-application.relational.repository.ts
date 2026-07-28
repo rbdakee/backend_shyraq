@@ -64,13 +64,42 @@ export class CustomDiscountApplicationRelationalRepository extends CustomDiscoun
     manager?: EntityManager,
   ): Promise<number> {
     const m = this.manager(manager);
+    // Cancelled/refunded invoices must not consume capped discount slots
+    // (handoff §5.3): the ledger is insert-only, so a per-child cap check
+    // that counts every row would keep a slot burnt after its invoice was
+    // voided (prepayment retry P2 / settlement auto-cancel P5). Excluding
+    // voided invoices here frees the slot without a ledger delete. LEFT
+    // JOIN + `inv.id IS NULL` keeps orphan rows counted (fail-closed).
     return m
       .getRepository(CustomDiscountApplicationTypeOrmEntity)
       .createQueryBuilder('app')
+      .leftJoin(
+        'invoices',
+        'inv',
+        'inv.id = app.invoice_id AND inv.kindergarten_id = app.kindergarten_id',
+      )
       .where('app.kindergarten_id = :kg', { kg: kindergartenId })
       .andWhere('app.child_id = :cid', { cid: childId })
       .andWhere('app.custom_discount_id = :did', { did: customDiscountId })
+      .andWhere(
+        `(inv.id IS NULL OR inv.status NOT IN ('cancelled', 'refunded'))`,
+      )
       .getCount();
+  }
+
+  async listByInvoiceId(
+    kindergartenId: string,
+    invoiceId: string,
+  ): Promise<CustomDiscountApplication[]> {
+    const rows = await this.manager()
+      .getRepository(CustomDiscountApplicationTypeOrmEntity)
+      .createQueryBuilder('app')
+      .where('app.kindergarten_id = :kg', { kg: kindergartenId })
+      .andWhere('app.invoice_id = :inv', { inv: invoiceId })
+      .orderBy('app.applied_at', 'ASC')
+      .addOrderBy('app.id', 'ASC')
+      .getMany();
+    return rows.map(CustomDiscountApplicationMapper.toDomain);
   }
 
   async listByDiscountId(
