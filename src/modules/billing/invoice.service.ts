@@ -27,6 +27,7 @@ import { ChildArchivedDuringRunError } from './domain/errors/child-archived-duri
 import { InvoiceAlreadyPaidError } from './domain/errors/invoice-already-paid.error';
 import { InvoiceNotFoundError } from './domain/errors/invoice-not-found.error';
 import { InvoiceStatusInvalidError } from './domain/errors/invoice-status-invalid.error';
+import { PrepaymentBlockedOutstandingDebtError } from './domain/errors/prepayment-blocked-outstanding-debt.error';
 import { TariffAssignmentNotFoundError } from './domain/errors/tariff-assignment-not-found.error';
 import { TariffPlanNotFoundError } from './domain/errors/tariff-plan-not-found.error';
 import {
@@ -1211,11 +1212,18 @@ export class InvoiceService {
   }
 
   /**
-   * Build a prepayment invoice covering the next `months` (3|6|12|24)
-   * starting at the first day of next month after `now`. Resolves the
-   * child's active tariff_assignment + plan, evaluates the matching
-   * `prepay_{N}m_pct` discount rule, and persists a single invoice with
-   * `invoice_type='prepayment_{N}m'`.
+   * Build a prepayment invoice from `computePrepaymentQuote` (reserve
+   * mode): debt block (§2.2), window shifted past months already covered
+   * by a paid prepayment (§2.3), per-month holiday math (§2.4) and a
+   * whole-tenge total (§2.5). Persists ONE invoice with a line item per
+   * covered month (§2.6) — the calendar (P6) reads the exact monthly
+   * shares back from those items in `created_at` order.
+   *
+   * A retry replaces the child's stale unpaid prepayments: every
+   * `pending`/`overdue` `prepayment_*` invoice is conditionally cancelled
+   * and its capped custom-discount slots are released. A `partial`
+   * prepayment is never auto-cancelled — the parent already paid money
+   * into it.
    *
    * Caller (`ParentPaymentController`) chains this into
    * `paymentService.initiate` to actually start the provider flow.
@@ -1226,90 +1234,37 @@ export class InvoiceService {
     months: 3 | 6 | 12 | 24,
   ): Promise<Invoice> {
     const now = this.clock.now();
-    const assignment = await this.tariffAssignments.findActiveForChild(
+    const quote = await this.computePrepaymentQuote(
       kindergartenId,
       childId,
-      now,
+      months,
+      { reserveCustomDiscounts: true },
     );
-    if (!assignment) {
-      throw new TariffAssignmentNotFoundError(childId);
-    }
-    const tariffPlan = await this.tariffPlans.findById(
-      kindergartenId,
-      assignment.tariffPlanId,
-    );
-    if (!tariffPlan) {
-      throw new TariffPlanNotFoundError(assignment.tariffPlanId);
+    if (quote.blockedReason) {
+      throw new PrepaymentBlockedOutstandingDebtError(quote.outstandingAmount);
     }
 
-    // Verify the requested horizon has an explicit pct configured. The
-    // monthly cron does not gate on this — it is checked here so the parent
-    // gets a clear 400 instead of a silent 0% prepayment.
-    const ruleKey =
-      `prepay_${months}m_pct` as keyof typeof tariffPlan.discountRules;
-    const rulePct = tariffPlan.discountRules[ruleKey];
-    if (rulePct === undefined || rulePct === null) {
-      throw new BadRequestException('prepayment_horizon_not_configured');
-    }
-
-    // Period: first day of the next month → last day of (next + months-1).
-    // SP2: anchor on Asia/Almaty so `clock.now()` near local midnight does
-    // not shift the prepayment horizon a month back.
-    const periodStart = addMonthsUtc(firstOfMonthInTimezone(now), 1);
-    const periodEnd = endOfMonth(addMonthsUtc(periodStart, months - 1));
-
-    const monthlyAmount = assignment.effectiveAmount(tariffPlan);
-    const baseAmount = monthlyAmount.mul(months);
-
-    const customCtx = await this.buildCustomDiscountInputs(
+    // §2.2 — a new attempt replaces stale unpaid prepayments. The repo
+    // method returns pending/overdue ONLY (`partial` excluded by query).
+    // Deliberately NO `notifyInvoiceCancelled` here: this is a
+    // parent-initiated replacement, not an admin action.
+    const stale = await this.invoices.findUnpaidPrepaymentsByChild(
       kindergartenId,
       childId,
-      periodStart,
-      `prepayment_${months}m` as InvoiceType,
-      now,
     );
-
-    const discount = await this.discountEngine.evaluate({
-      invoice: {
-        invoiceId: 'pending',
-        invoiceType: `prepayment_${months}m` as InvoiceType,
-        childId,
+    for (const old of stale) {
+      const cancelled = await this.invoices.markCancelledConditional(
         kindergartenId,
-        amountDue: baseAmount,
-        periodStart,
-        periodEnd,
-      },
-      tariffPlan: {
-        id: tariffPlan.id,
-        discountRules: tariffPlan.discountRules,
-      },
-      context: {
-        prepaymentMonths: months,
-        customDiscounts: customCtx.customDiscounts,
-        childContext: customCtx.childContext ?? undefined,
-        familyContext: customCtx.familyContext ?? undefined,
-      },
-    });
-
-    // B22a T13 H1 — release reservations for any pre-engine-reserved
-    // discount that the engine ultimately did NOT include in
-    // `customApplicationsToWrite` (e.g. dropped by a non-stackable gate or
-    // by `evaluateConditions` returning false). Without this compensation
-    // the slot stays consumed forever, prematurely exhausting capped
-    // discounts. Runs in the same ambient TX so the release is durable.
-    await this.releaseUnusedReservations(
-      kindergartenId,
-      customCtx.reservedDiscountIds,
-      discount,
-    );
-
-    const amountAfter = Invoice.computeAmountAfterDiscount(
-      baseAmount,
-      discount.discountPct,
-      discount.customDiscountAmount === null
-        ? null
-        : MoneyKzt.fromKzt(discount.customDiscountAmount),
-    );
+        old.id,
+        now,
+      );
+      // null = raced (settled / already cancelled meanwhile) — leave as-is.
+      if (!cancelled) continue;
+      await this.releaseCustomDiscountUsagesForInvoice(kindergartenId, old.id);
+      this.logger.log(
+        `prepayment.retry: cancelled stale prepayment ${old.id} kg=${kindergartenId} child=${childId}`,
+      );
+    }
 
     const account = await this.paymentAccounts.ensureForChild(
       kindergartenId,
@@ -1323,39 +1278,52 @@ export class InvoiceService {
       kindergartenId,
       childId,
       paymentAccountId: account.id,
-      tariffPlanId: tariffPlan.id,
+      tariffPlanId: quote.tariffPlan.id,
       invoiceType: `prepayment_${months}m` as InvoiceType,
-      periodStart,
-      periodEnd,
-      amountDue: baseAmount,
-      discountPct: discount.discountPct,
-      discountReason: discount.discountReason,
-      amountAfterDiscount: amountAfter,
+      periodStart: quote.windowStart,
+      periodEnd: quote.windowEnd,
+      // numeric(12,2) persist precision — PG would round the
+      // full-precision base sum on write anyway; rounding here keeps the
+      // returned domain object identical to the round-tripped row.
+      amountDue: quote.baseTotal.round(),
+      discountPct: quote.discountResult.discountPct,
+      discountReason: quote.discountResult.discountReason,
+      amountAfterDiscount: quote.total,
       status: 'pending',
       dueDate,
-      description: `Prepayment ${months}m — ${toIsoDate(periodStart)}..${toIsoDate(periodEnd)}`,
+      description: `Prepayment ${months}m — ${toIsoDate(quote.windowStart)}..${toIsoDate(quote.windowEnd)}`,
       proratedForDays: null,
       createdAt: now,
       updatedAt: now,
     });
-    const lineItem = InvoiceLineItem.fromState({
-      id: randomUUID(),
-      invoiceId,
-      kindergartenId,
-      description: `Prepayment ${months} months — ${tariffPlan.name}`,
-      tariffPlanId: tariffPlan.id,
-      quantity: months,
-      unitPrice: monthlyAmount,
-      lineTotal: InvoiceLineItem.compute(months, monthlyAmount),
-      createdAt: now,
-    });
+    // One line item per covered month (§2.6): quantity=1, unitPrice =
+    // lineTotal = the month's whole-tenge share of the discounted total.
+    // `createdAt` is offset by +i ms — all-equal timestamps would make
+    // `listByInvoice` (ORDER BY created_at ASC) unstable and break the
+    // calendar's index→month mapping (P6).
+    const lineItems = quote.months.map((m, i) =>
+      InvoiceLineItem.fromState({
+        id: randomUUID(),
+        invoiceId,
+        kindergartenId,
+        description: `Prepayment ${monthKey(m.periodStart)} — ${quote.tariffPlan.name}`,
+        tariffPlanId: quote.tariffPlan.id,
+        quantity: 1,
+        unitPrice: m.amountShare,
+        lineTotal: m.amountShare,
+        createdAt: new Date(now.getTime() + i),
+      }),
+    );
 
-    const persisted = await this.invoices.create(invoice, [lineItem]);
+    const persisted = await this.invoices.create(invoice, lineItems);
+    // ONE ledger row per winner discount, anchored to the first month's
+    // line item — never one per month (§5.7). Non-winner reservations were
+    // already released inside the quote.
     await this.persistCustomDiscountApplications(
       kindergartenId,
       persisted,
-      lineItem,
-      discount,
+      lineItems[0],
+      quote.discountResult,
     );
     await this.emitInvoiceCreated(persisted);
     return persisted;
@@ -1796,6 +1764,43 @@ export class InvoiceService {
       await this.customDiscounts.releaseUsage(kindergartenId, reservedId);
       this.logger.debug(
         `discount.reserve_released: kg=${kindergartenId} discount=${reservedId} — engine dropped post-reserve.`,
+      );
+    }
+  }
+
+  /**
+   * Reverse of the `tryReserveUsage` reservation for a CANCELLED invoice's
+   * custom-discount applications — cancelled invoices must not consume
+   * capped discount slots (handoff §5.3). The reservation only ever
+   * incremented `used_count` for discounts WITH a `total_max_uses` cap
+   * (`buildCustomDiscountInputs` guards the `tryReserveUsage` call with
+   * `snap.totalMaxUses !== null`), so only those are released here —
+   * releasing an uncapped discount would underflow-drift its counter.
+   * The insert-only application ledger stays untouched: the per-child cap
+   * check (`countByChildAndDiscount`) excludes voided invoices by status
+   * instead. Runs in the ambient TX, atomic with the cancel flip.
+   */
+  private async releaseCustomDiscountUsagesForInvoice(
+    kindergartenId: string,
+    invoiceId: string,
+  ): Promise<void> {
+    if (!this.customDiscounts || !this.customDiscountApplications) return;
+    const apps = await this.customDiscountApplications.listByInvoiceId(
+      kindergartenId,
+      invoiceId,
+    );
+    for (const app of apps) {
+      const discount = await this.customDiscounts.findById(
+        kindergartenId,
+        app.customDiscountId,
+      );
+      if (!discount || discount.totalMaxUses === null) continue;
+      await this.customDiscounts.releaseUsage(
+        kindergartenId,
+        app.customDiscountId,
+      );
+      this.logger.debug(
+        `discount.reserve_released: kg=${kindergartenId} discount=${app.customDiscountId} — invoice ${invoiceId} cancelled.`,
       );
     }
   }
