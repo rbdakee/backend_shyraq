@@ -367,6 +367,20 @@ export class ListPaymentsQueryDto {
   limit?: number;
 }
 
+export class PrepaymentPreviewQueryDto {
+  @ApiProperty({
+    enum: [3, 6, 12, 24],
+    example: 3,
+    description:
+      'Number of months to preview. Must match an available prepay_*m_pct ' +
+      'in the active tariff discount_rules (same rule as the pay endpoint).',
+  })
+  @Type(() => Number)
+  @IsInt()
+  @IsEnum([3, 6, 12, 24])
+  months!: 3 | 6 | 12 | 24;
+}
+
 // ── response DTOs ──────────────────────────────────────────────────────────
 
 export class PaymentResponseDto {
@@ -528,6 +542,112 @@ export class InitiatePrepaymentResponseDto {
 
   @ApiProperty({ type: PrepaymentPreviewDto })
   preview!: PrepaymentPreviewDto;
+}
+
+class PrepaymentPreviewWindowDto {
+  @ApiProperty({
+    example: '2026-08-01',
+    description: 'First day of the first covered month (ISO date).',
+  })
+  from!: string;
+
+  @ApiProperty({
+    example: '2026-10-31',
+    description: 'Last day of the last covered month (ISO date).',
+  })
+  to!: string;
+}
+
+class PrepaymentPreviewMonthDto {
+  @ApiProperty({
+    example: '2026-08-01',
+    description: 'First day of the covered month (ISO date).',
+  })
+  period_start!: string;
+
+  @ApiProperty({
+    example: '2026-08-31',
+    description: 'Last day of the covered month (ISO date).',
+  })
+  period_end!: string;
+
+  @ApiProperty({
+    example: 60000,
+    description:
+      'Pre-discount month price in KZT after the holiday deduction: ' +
+      'price × (days − non-billable holidays) / days.',
+  })
+  base_amount!: number;
+
+  @ApiProperty({
+    example: 0,
+    description: 'Non-billable holiday days deducted in this month.',
+  })
+  holiday_days!: number;
+
+  @ApiProperty({
+    example: 54000,
+    description:
+      'Whole-tenge slice of the discounted total attributed to this month ' +
+      '(shares sum to `total` exactly). Becomes the month line item on pay.',
+  })
+  amount_share!: number;
+}
+
+export class PrepaymentPreviewResponseDto {
+  @ApiProperty({
+    example: null,
+    nullable: true,
+    enum: ['outstanding_debt'],
+    description:
+      'Non-null when the prepayment would be rejected. `outstanding_debt` = ' +
+      'the child has a pending/overdue/partial non-prepayment invoice.',
+  })
+  blocked_reason!: 'outstanding_debt' | null;
+
+  @ApiProperty({
+    example: null,
+    nullable: true,
+    description:
+      'Total unpaid remainder (KZT) over the blocking invoices. ' +
+      'Null unless blocked.',
+  })
+  outstanding_amount!: number | null;
+
+  @ApiProperty({
+    type: PrepaymentPreviewWindowDto,
+    nullable: true,
+    description:
+      'Covered window — starts at the 1st of the next month (Almaty), ' +
+      'shifted past months already covered by a paid prepayment. ' +
+      'Null when blocked.',
+  })
+  window!: PrepaymentPreviewWindowDto | null;
+
+  @ApiProperty({
+    type: [PrepaymentPreviewMonthDto],
+    description: 'Per-month breakdown. Empty when blocked.',
+  })
+  months!: PrepaymentPreviewMonthDto[];
+
+  @ApiProperty({
+    example: 10,
+    nullable: true,
+    description:
+      'Percentage discount the engine would apply (prepay_{N}m_pct or a ' +
+      'winning custom pct discount). Null when blocked or when the winning ' +
+      'discount is an absolute amount.',
+  })
+  discount_pct!: number | null;
+
+  @ApiProperty({
+    example: 162000,
+    nullable: true,
+    description:
+      'Final amount in whole KZT (discounted, whole-tenge quantized) — ' +
+      'exactly what the pay endpoint would charge. Null when blocked.',
+  })
+  total!: number | null;
 }
 
 // ── manual mark paid response ──────────────────────────────────────────────

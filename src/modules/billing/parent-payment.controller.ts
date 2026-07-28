@@ -2,11 +2,13 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Get,
   HttpCode,
   HttpStatus,
   Param,
   ParseUUIDPipe,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -16,9 +18,12 @@ import {
   ApiCreatedResponse,
   ApiForbiddenResponse,
   ApiNotFoundResponse,
+  ApiOkResponse,
   ApiOperation,
   ApiTags,
+  ApiTooManyRequestsResponse,
   ApiUnauthorizedResponse,
+  ApiUnprocessableEntityResponse,
 } from '@nestjs/swagger';
 import { CurrentUser } from '@/common/decorators/current-user.decorator';
 import { Roles } from '@/common/decorators/roles.decorator';
@@ -35,6 +40,8 @@ import {
   InitiatePaymentResponseDto,
   InitiatePrepaymentDto,
   InitiatePrepaymentResponseDto,
+  PrepaymentPreviewQueryDto,
+  PrepaymentPreviewResponseDto,
 } from './dto/payment.dto';
 import { InvoicePresenter } from './invoice.presenter';
 import { InvoiceService } from './invoice.service';
@@ -46,6 +53,13 @@ const TENANT_REQUIRED = 'tenant_required';
 function requireTenant(t: TenantContext): string {
   if (!t.kgId) throw new BadRequestException(TENANT_REQUIRED);
   return t.kgId;
+}
+
+function toIsoDate(d: Date): string {
+  const year = d.getUTCFullYear();
+  const month = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(d.getUTCDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 /**
@@ -215,6 +229,79 @@ export class ParentPaymentController {
           to: presented.period_end,
         },
       },
+    };
+  }
+
+  @Get(':id/prepayment-preview')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Preview the prepayment quote for the child of the anchor invoice — same computation as POST :id/pay/prepayment but with ZERO writes (no invoice, no discount-slot reservation, no cancellation of stale prepayments). Returns the covered window (shifted past months already covered by a paid prepayment), per-month breakdown with holiday deductions, discount and whole-tenge total; when the child has outstanding non-prepayment debt, returns `blocked_reason` + `outstanding_amount` instead (HTTP 200, not 400).',
+  })
+  @ApiOkResponse({ type: PrepaymentPreviewResponseDto })
+  @ApiBadRequestResponse({
+    description: 'prepayment_horizon_not_configured / malformed request.',
+  })
+  @ApiUnauthorizedResponse({ description: 'Bearer missing/invalid/revoked.' })
+  @ApiForbiddenResponse({
+    description:
+      'not_a_guardian / nanny_cannot_pay / secondary_pay_not_allowed.',
+  })
+  @ApiNotFoundResponse({
+    description: 'invoice_not_found / tariff_not_found.',
+  })
+  @ApiUnprocessableEntityResponse({
+    description: 'Validation error (months not one of 3/6/12/24).',
+  })
+  @ApiTooManyRequestsResponse({ description: 'Rate limited.' })
+  async prepaymentPreview(
+    @Tenant() t: TenantContext,
+    @CurrentUser() user: JwtPayload,
+    @Param('id', new ParseUUIDPipe()) invoiceId: string,
+    @Query() query: PrepaymentPreviewQueryDto,
+  ): Promise<PrepaymentPreviewResponseDto> {
+    const kgId = requireTenant(t);
+    const original = await this.invoiceService.get(kgId, invoiceId);
+    // Same permission gate as the pay routes — the preview is a pre-flight
+    // of pay/prepayment, so a guardian who cannot pay must not see quotes.
+    await this.paymentService.assertCanPay(kgId, user.sub, original.childId);
+
+    const quote = await this.invoiceService.computePrepaymentQuote(
+      kgId,
+      original.childId,
+      query.months,
+      { reserveCustomDiscounts: false },
+    );
+
+    if (quote.blockedReason) {
+      return {
+        blocked_reason: quote.blockedReason,
+        outstanding_amount: quote.outstandingAmount,
+        window: null,
+        months: [],
+        discount_pct: null,
+        total: null,
+      };
+    }
+
+    return {
+      blocked_reason: null,
+      outstanding_amount: null,
+      window: {
+        from: toIsoDate(quote.windowStart),
+        to: toIsoDate(quote.windowEnd),
+      },
+      months: quote.months.map((m) => ({
+        period_start: toIsoDate(m.periodStart),
+        period_end: toIsoDate(m.periodEnd),
+        // full-precision quote value → 2dp for the wire (numeric(12,2)
+        // persist precision on the eventual invoice.amount_due).
+        base_amount: m.baseAmount.round().toNumber(),
+        holiday_days: m.holidayDays,
+        amount_share: m.amountShare.toNumber(),
+      })),
+      discount_pct: quote.discountPct,
+      total: quote.total.toNumber(),
     };
   }
 
