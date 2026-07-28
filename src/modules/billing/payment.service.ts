@@ -22,6 +22,9 @@ import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import { ChildGuardianRepository } from '@/modules/child/infrastructure/persistence/child-guardian.repository';
 import { KindergartenRepository } from '@/modules/kindergarten/infrastructure/persistence/kindergarten.repository';
 import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
+import { CustomDiscountRepository } from './custom-discount.repository';
+import { CustomDiscountApplicationRepository } from './custom-discount-application.repository';
+import { Invoice } from './domain/entities/invoice.entity';
 import {
   Payment,
   PaymentProvider,
@@ -176,6 +179,15 @@ export class PaymentService {
     @Optional()
     @InjectQueue(BCC_RECONCILIATION_QUEUE)
     private readonly bccReconciliationQueue?: Queue,
+    // P5 — custom-discount repos, used only by the prepayment settlement
+    // hook to release the capped discount slots of auto-cancelled monthlies
+    // (same optional-dep pattern as InvoiceService's B16 deps). Optional so
+    // the many existing PaymentService spec wirings keep compiling; when
+    // absent the hook skips the release.
+    @Optional()
+    private readonly customDiscounts?: CustomDiscountRepository,
+    @Optional()
+    private readonly customDiscountApplications?: CustomDiscountApplicationRepository,
   ) {}
 
   assertProviderEnabled(provider: PaymentProvider): void {
@@ -842,13 +854,18 @@ export class PaymentService {
         current.invoiceId,
       ),
     );
+    // Hoisted for the P5 settlement hook below: it must fire only when
+    // THIS call actually flipped the invoice → paid. A prepayment that
+    // lost the flip to a concurrent admin-cancel is a cancelled invoice
+    // and must not suppress any monthly.
+    let paidFlip: Invoice | null = null;
     if (paidSum.gte(invoice.amountAfterDiscount)) {
-      const flipped = await this.invoiceRepo.markPaidConditional(
+      paidFlip = await this.invoiceRepo.markPaidConditional(
         kindergartenId,
         current.invoiceId,
         now,
       );
-      if (!flipped) {
+      if (!paidFlip) {
         this.logger.warn(
           `payment.completed: invoice ${current.invoiceId} could not flip → paid (concurrent cancel/already-paid)`,
         );
@@ -874,6 +891,21 @@ export class PaymentService {
           `payment.completed: invoice ${current.invoiceId} could not flip → partial (concurrent transition)`,
         );
       }
+    }
+
+    // §2.8 / P5 — a prepayment that just settled to `paid` supersedes the
+    // unpaid monthlies its window covers (the race «create prepayment →
+    // cron bills a covered month → parent pays the prepayment» would
+    // otherwise double-bill). Idempotency is structural: replayed
+    // settlements exit at the early returns above and never get here.
+    // Runs on the ambient TX only — no tx.run (the sync mock/cash path
+    // from `initiate` is interceptor-TX only; nesting would break it).
+    if (paidFlip !== null && invoice.invoiceType.startsWith('prepayment_')) {
+      await this.cancelMonthliesCoveredByPrepayment(
+        kindergartenId,
+        invoice,
+        now,
+      );
     }
 
     // PaymentAccount credit only when this call actually flipped the row.
@@ -981,6 +1013,97 @@ export class PaymentService {
     }
 
     return updated;
+  }
+
+  /**
+   * §2.8 / P5 — auto-cancel the monthly invoices covered by a freshly
+   * SETTLED prepayment. `pending`/`overdue` monthlies in the prepayment
+   * window are conditionally cancelled (a null flip = raced with a
+   * concurrent transition — silent skip, idempotent) and their capped
+   * custom-discount slots released; already-`paid`/`partial` monthlies
+   * hold real parent money and are only flagged for manual review (§2.8:
+   * no window shift, no auto-refund).
+   */
+  private async cancelMonthliesCoveredByPrepayment(
+    kindergartenId: string,
+    prepayment: Invoice,
+    now: Date,
+  ): Promise<void> {
+    const overlapped = await this.invoiceRepo.findMonthlyInWindow(
+      kindergartenId,
+      prepayment.childId,
+      prepayment.periodStart,
+      prepayment.periodEnd,
+    );
+    for (const monthly of overlapped) {
+      if (monthly.status === 'pending' || monthly.status === 'overdue') {
+        const cancelled = await this.invoiceRepo.markCancelledConditional(
+          kindergartenId,
+          monthly.id,
+          now,
+        );
+        if (!cancelled) continue;
+        await this.releaseCustomDiscountUsagesForInvoice(
+          kindergartenId,
+          monthly.id,
+        );
+        this.logger.log(
+          `prepayment.settled: cancelled overlapped monthly ${monthly.id} (period ${monthly.periodStart.toISOString().slice(0, 10)}) covered by prepayment ${prepayment.id}`,
+        );
+        // Outbox insert rides the ambient settlement TX, same as the
+        // admin-cancel flow (`InvoiceService.cancel`).
+        await this.notificationPort.notifyInvoiceCancelled({
+          kindergartenId,
+          invoiceId: monthly.id,
+          childId: monthly.childId,
+          reason: 'covered_by_prepayment',
+        });
+      } else {
+        // 'paid' | 'partial'
+        this.logger.warn(
+          `prepayment.settled: overlapped monthly ${monthly.id} already ${monthly.status} — manual review (no auto-refund), prepayment ${prepayment.id}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Reverse of the `tryReserveUsage` reservation for a CANCELLED invoice's
+   * custom-discount applications — cancelled invoices must not consume
+   * capped discount slots (handoff §5.3). Mirrors the private
+   * `InvoiceService.releaseCustomDiscountUsagesForInvoice` (P2 prepayment
+   * retry): the reservation only ever incremented `used_count` for
+   * discounts WITH a `total_max_uses` cap (`buildCustomDiscountInputs`
+   * guards `tryReserveUsage` with `snap.totalMaxUses !== null`), so only
+   * those are released — releasing an uncapped discount would
+   * underflow-drift its counter. The insert-only application ledger stays
+   * untouched: the per-child cap (`countByChildAndDiscount`) excludes
+   * voided invoices by status instead. Skipped when the optional
+   * custom-discount deps are absent (legacy spec wiring).
+   */
+  private async releaseCustomDiscountUsagesForInvoice(
+    kindergartenId: string,
+    invoiceId: string,
+  ): Promise<void> {
+    if (!this.customDiscounts || !this.customDiscountApplications) return;
+    const apps = await this.customDiscountApplications.listByInvoiceId(
+      kindergartenId,
+      invoiceId,
+    );
+    for (const app of apps) {
+      const discount = await this.customDiscounts.findById(
+        kindergartenId,
+        app.customDiscountId,
+      );
+      if (!discount || discount.totalMaxUses === null) continue;
+      await this.customDiscounts.releaseUsage(
+        kindergartenId,
+        app.customDiscountId,
+      );
+      this.logger.debug(
+        `discount.reserve_released: kg=${kindergartenId} discount=${app.customDiscountId} — invoice ${invoiceId} cancelled.`,
+      );
+    }
   }
 
   /**
