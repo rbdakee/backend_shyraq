@@ -347,10 +347,13 @@ export class InvoiceService {
     );
     const amountDue = MoneyKzt.fromKzt(input.amountDue);
     const discountPct = input.discountPct ?? null;
+    // Bug 2 — whole-tenge sink, same rationale as the monthly builder: a
+    // percentage discount on a non-divisible amount otherwise stores a
+    // fractional total that no provider can charge exactly.
     const amountAfter = Invoice.computeAmountAfterDiscount(
       amountDue,
       discountPct,
-    );
+    ).roundToWholeKzt();
     const invoiceId = randomUUID();
     const state: InvoiceState = {
       id: invoiceId,
@@ -1671,6 +1674,15 @@ export class InvoiceService {
       amountAfter = amountAfter.mul(effectiveBillableDays).div(totalDays);
       proratedForDays = effectiveBillableDays;
     }
+
+    // Bug 2 — quantize at the sink, exactly as the prepayment chain does
+    // (§2.5). Everything above stays full-precision (single-rounding), but
+    // the STORED total must be whole tenge: providers bill whole tenge, so a
+    // 13.50 ₸ invoice was charged 14 ₸ in Kaspi and the half-tenge fell
+    // outside the ledger — `paidSum >= amountAfterDiscount` and
+    // `amount_remaining` both drifted. Discount % on a non-divisible price
+    // and holiday pro-rata are the two ways a fraction gets here.
+    amountAfter = amountAfter.roundToWholeKzt();
 
     const invoiceId = randomUUID();
     const invoice = Invoice.fromState({

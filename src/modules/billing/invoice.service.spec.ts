@@ -874,6 +874,37 @@ describe('InvoiceService', () => {
       });
       expect(inv.amountAfterDiscount.toNumber()).toBe(45000);
     });
+
+    // Bug 2 — the stored total must be whole tenge. A 15 ₸ base at 10% is
+    // 13.50 ₸; Kaspi charged 14 ₸ against a 13.50 ₸ invoice in the
+    // 2026-06-20 live test, and the half-tenge sat outside the ledger.
+    it('quantizes a fractional discounted amount to whole tenge', async () => {
+      const { svc } = buildSvc();
+      const inv = await svc.createOneOff(KG, {
+        childId: CHILD,
+        invoiceType: 'additional_service',
+        amountDue: 15,
+        discountPct: 10,
+        dueDate: new Date('2026-06-10T00:00:00.000Z'),
+        periodStart: new Date('2026-06-01T00:00:00.000Z'),
+        periodEnd: new Date('2026-06-30T00:00:00.000Z'),
+      });
+      expect(inv.amountAfterDiscount.toNumber()).toBe(14);
+    });
+
+    it('leaves an already-whole discounted amount untouched', async () => {
+      const { svc } = buildSvc();
+      const inv = await svc.createOneOff(KG, {
+        childId: CHILD,
+        invoiceType: 'additional_service',
+        amountDue: 100000,
+        discountPct: 7,
+        dueDate: new Date('2026-06-10T00:00:00.000Z'),
+        periodStart: new Date('2026-06-01T00:00:00.000Z'),
+        periodEnd: new Date('2026-06-30T00:00:00.000Z'),
+      });
+      expect(inv.amountAfterDiscount.toNumber()).toBe(93000);
+    });
   });
 
   describe('manualMarkPaid', () => {
@@ -1473,6 +1504,37 @@ describe('InvoiceService', () => {
       const inv = [...invoiceRepo.rows.values()][0];
       expect(inv.amountAfterDiscount.toNumber()).toBe(25000);
       expect(inv.proratedForDays).toBe(25);
+    });
+
+    // Bug 2 — holiday pro-rata is the second way a fraction reaches the
+    // stored total: 100000 × 29/30 = 96666.6666… . Providers bill whole
+    // tenge, so anything but a whole-tenge total drifts `amount_remaining`
+    // and the `paidSum >= amountAfterDiscount` settle check.
+    it('quantizes a fractional pro-rated amount to whole tenge', async () => {
+      const { svc, planRepo, assignmentRepo, holidayRepo, invoiceRepo } =
+        buildSvc();
+      planRepo.put(TariffPlan.fromState(basePlanState({ amount: m(100000) })));
+      assignmentRepo.put(
+        TariffAssignment.fromState(baseAssignmentState({ id: 'ta-frac' })),
+      );
+      holidayRepo.rows.push(
+        KindergartenHoliday.fromState({
+          id: 'h-frac',
+          kindergartenId: KG,
+          date: new Date('2026-06-01T00:00:00.000Z'),
+          name: { ru: 'Holiday' },
+          isBillable: false,
+          createdAt: NOW,
+          updatedAt: NOW,
+        }),
+      );
+
+      await svc.generateMonthly(KG, PERIOD_START);
+
+      const inv = [...invoiceRepo.rows.values()][0];
+      expect(inv.proratedForDays).toBe(29);
+      expect(inv.amountAfterDiscount.toNumber()).toBe(96667);
+      expect(Number.isInteger(inv.amountAfterDiscount.toNumber())).toBe(true);
     });
   });
 
