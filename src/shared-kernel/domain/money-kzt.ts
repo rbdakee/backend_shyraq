@@ -180,6 +180,17 @@ export class MoneyKzt {
     return new MoneyKzt(this.value.toDecimalPlaces(SCALE));
   }
 
+  /**
+   * Quantize to whole tenge (0dp, banker's ROUND_HALF_EVEN — process-wide
+   * `Decimal.set` above): `13.5 → 14` (14 is even), `12.5 → 12`. Used as
+   * the final sink of the prepayment single-rounding chain (handoff §2.5,
+   * Bug 2 — providers like Kaspi bill whole tenge) — everything upstream
+   * stays full-precision.
+   */
+  roundToWholeKzt(): MoneyKzt {
+    return new MoneyKzt(this.value.toDecimalPlaces(0));
+  }
+
   // ── comparison ────────────────────────────────────────────────────────
 
   equals(other: MoneyKzt): boolean {

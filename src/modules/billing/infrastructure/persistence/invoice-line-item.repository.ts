@@ -21,4 +21,19 @@ export abstract class InvoiceLineItemRepository {
     kindergartenId: string,
     invoiceId: string,
   ): Promise<InvoiceLineItem[]>;
+
+  /**
+   * Batch variant of `listByInvoice` — one query for N invoices (payment
+   * calendar's paid-prepayment coverage spread, P6). Ordered by
+   * `invoice_id, created_at ASC` so per-invoice line items keep the same
+   * index→month mapping as `listByInvoice`.
+   *
+   * Default stub so older in-memory fakes compile; relational overrides.
+   */
+  listByInvoiceIds(
+    _kindergartenId: string,
+    _invoiceIds: string[],
+  ): Promise<InvoiceLineItem[]> {
+    return Promise.resolve([]);
+  }
 }

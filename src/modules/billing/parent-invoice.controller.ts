@@ -217,7 +217,7 @@ export class ParentInvoiceController {
   @UseGuards(ChildAccessGuard)
   @ApiOperation({
     summary:
-      'Kaspi-style payment calendar for the child. `months_ahead` ∈ [1, 24]. Returns one entry per month — real invoices where present, projected entries (status=projected) for unfilled months. Nanny → 403.',
+      'Kaspi-style payment calendar for the child. `months_ahead` ∈ [1, 24]. Returns one entry per month — real invoices where present, projected entries (status=projected) for unfilled months. Months covered by a paid prepayment render as paid rows of the prepayment invoice (invoice_type=prepayment_Nm, amount = per-month share). Nanny → 403.',
   })
   @ApiOkResponse({ type: PaymentCalendarResponseDto })
   @ApiUnauthorizedResponse({ description: 'Bearer missing/invalid/revoked.' })

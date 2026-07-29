@@ -22,6 +22,9 @@ import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import { ChildGuardianRepository } from '@/modules/child/infrastructure/persistence/child-guardian.repository';
 import { KindergartenRepository } from '@/modules/kindergarten/infrastructure/persistence/kindergarten.repository';
 import { StaffMemberRepository } from '@/modules/staff/infrastructure/persistence/staff-member.repository';
+import { CustomDiscountRepository } from './custom-discount.repository';
+import { CustomDiscountApplicationRepository } from './custom-discount-application.repository';
+import { Invoice } from './domain/entities/invoice.entity';
 import {
   Payment,
   PaymentProvider,
@@ -176,6 +179,15 @@ export class PaymentService {
     @Optional()
     @InjectQueue(BCC_RECONCILIATION_QUEUE)
     private readonly bccReconciliationQueue?: Queue,
+    // P5 — custom-discount repos, used only by the prepayment settlement
+    // hook to release the capped discount slots of auto-cancelled monthlies
+    // (same optional-dep pattern as InvoiceService's B16 deps). Optional so
+    // the many existing PaymentService spec wirings keep compiling; when
+    // absent the hook skips the release.
+    @Optional()
+    private readonly customDiscounts?: CustomDiscountRepository,
+    @Optional()
+    private readonly customDiscountApplications?: CustomDiscountApplicationRepository,
   ) {}
 
   assertProviderEnabled(provider: PaymentProvider): void {
@@ -246,6 +258,25 @@ export class PaymentService {
   }
 
   // ── public API ─────────────────────────────────────────────────────────
+
+  /**
+   * Review FIX 1 — pre-flight idempotency lookup for the prepayment
+   * initiation flow. The controller resolves the client key BEFORE calling
+   * `InvoiceService.prepayInvoice`: `initiate`'s own fast-path returns the
+   * existing payment WITHOUT comparing invoice ids, so running the
+   * prepayment-create first on a documented same-key retry would cancel
+   * invoice A, create invoice B, then return A's payment/checkout — an
+   * invoice/payment mismatch with a cancelled payment target.
+   */
+  async findByIdempotencyKey(
+    kindergartenId: string,
+    idempotencyKey: string,
+  ): Promise<Payment | null> {
+    return this.paymentRepo.findByIdempotencyKey(
+      kindergartenId,
+      idempotencyKey,
+    );
+  }
 
   async initiate(
     kindergartenId: string,
@@ -850,15 +881,36 @@ export class PaymentService {
         current.invoiceId,
       ),
     );
+    // Hoisted for the P5 settlement hook below: it must fire only when
+    // THIS call actually flipped the invoice → paid. A prepayment that
+    // lost the flip to a concurrent admin-cancel is a cancelled invoice
+    // and must not suppress any monthly.
+    let paidFlip: Invoice | null = null;
     if (paidSum.gte(invoice.amountAfterDiscount)) {
-      const flipped = await this.invoiceRepo.markPaidConditional(
+      if (invoice.invoiceType.startsWith('prepayment_')) {
+        // Review FIX 6 — serialise the settling prepayment against a
+        // concurrent `prepayInvoice` for the same child (which takes this
+        // lock first thing) BEFORE the paid flip, so the two flows cannot
+        // interleave. Lock ordering stays acyclic: payment lock (held
+        // above) → child lock → monthly-generation lock(s) in the hook.
+        await this.invoiceRepo.acquireChildPrepaymentAdvisoryLock(
+          kindergartenId,
+          invoice.childId,
+        );
+      }
+      paidFlip = await this.invoiceRepo.markPaidConditional(
         kindergartenId,
         current.invoiceId,
         now,
       );
-      if (!flipped) {
+      if (!paidFlip) {
         this.logger.warn(
           `payment.completed: invoice ${current.invoiceId} could not flip → paid (concurrent cancel/already-paid)`,
+        );
+        await this.escalateSettleIntoVoidInvoice(
+          kindergartenId,
+          updated,
+          current.invoiceId,
         );
       }
     } else if (
@@ -881,7 +933,42 @@ export class PaymentService {
         this.logger.warn(
           `payment.completed: invoice ${current.invoiceId} could not flip → partial (concurrent transition)`,
         );
+        await this.escalateSettleIntoVoidInvoice(
+          kindergartenId,
+          updated,
+          current.invoiceId,
+        );
       }
+    } else if (
+      paidSum.isPositive() &&
+      (invoice.status === 'cancelled' || invoice.status === 'refunded')
+    ) {
+      // Review FIX 10 — a sub-total completed payment landed on an already
+      // void invoice: there is no flip to attempt, but parent money moved
+      // and admins must see it, not just the logs.
+      this.logger.warn(
+        `payment.completed: invoice ${current.invoiceId} is ${invoice.status}; partial payment ${updated.id} settled into a void invoice`,
+      );
+      await this.escalateSettleIntoVoidInvoice(
+        kindergartenId,
+        updated,
+        current.invoiceId,
+      );
+    }
+
+    // §2.8 / P5 — a prepayment that just settled to `paid` supersedes the
+    // unpaid monthlies its window covers (the race «create prepayment →
+    // cron bills a covered month → parent pays the prepayment» would
+    // otherwise double-bill). Idempotency is structural: replayed
+    // settlements exit at the early returns above and never get here.
+    // Runs on the ambient TX only — no tx.run (the sync mock/cash path
+    // from `initiate` is interceptor-TX only; nesting would break it).
+    if (paidFlip !== null && invoice.invoiceType.startsWith('prepayment_')) {
+      await this.cancelMonthliesCoveredByPrepayment(
+        kindergartenId,
+        invoice,
+        now,
+      );
     }
 
     // PaymentAccount credit only when this call actually flipped the row.
@@ -924,10 +1011,11 @@ export class PaymentService {
       );
       // Best-effort admin ping so the manual-refund queue surfaces, not just a
       // flag in the payments list. Never fails settlement.
-      await this.notifyDoublePayment(
+      await this.notifyRefundRequiredToAdmins(
         kindergartenId,
         updated,
         earlierCompleted.id,
+        'double_payment',
       ).catch((err) =>
         this.logger.warn(
           `payment.completed: double-pay admin notify failed for payment=${updated.id}: ${err instanceof Error ? err.message : err}`,
@@ -992,19 +1080,201 @@ export class PaymentService {
   }
 
   /**
-   * #5b admin ping — resolve the kg's active admins and emit
-   * `payment.refund_required` so the manual-refund queue surfaces in the admin
-   * app (not just a flag in the payments list). Skipped when the optional
-   * `StaffMemberRepository` is absent (unit-test wiring) or the kg has no
-   * active admins. Runs under the caller's ambient tenant context (the
-   * settlement TX), so both the staff read (RLS) and the outbox insert stay
-   * kg-scoped. Mirrors the poller's `notifyKaspiSessionExpired` recipient
-   * resolution.
+   * §2.8 / P5 — auto-cancel the monthly invoices covered by a freshly
+   * SETTLED prepayment. Mirrors the private
+   * `InvoiceService.cancelCoveredMonthliesForPrepayment` (cash-settlement
+   * path, review FIX 4) — this copy exists so the payment.service spec
+   * harness's get-only InvoiceService shim keeps compiling. Keep in sync.
+   *
+   * Guards:
+   *   - FIX 6: per-child prepayment advisory lock (reentrant — the
+   *     paid-flip branch already took it) so a concurrent `prepayInvoice`
+   *     for the same child cannot interleave;
+   *   - FIX 7: the SAME per-(kg, month) monthly-generation advisory lock
+   *     the cron holds, acquired chronologically over the window — the
+   *     hook then either sees the committed monthly (and cancels it) or
+   *     blocks until the cron finishes;
+   *   - FIX 5: money guard — an overlapped monthly with a completed-paid
+   *     sum > 0 (whatever its status; covers `partial → overdue` rows
+   *     flipped by `markOverdueBatch`) is never cancelled, only flagged
+   *     for manual review (§2.8: no window shift, no auto-refund); a lost
+   *     `markCancelledConditional` flip is re-read — silent only when the
+   *     row is already `cancelled`, warned otherwise.
    */
-  private async notifyDoublePayment(
+  private async cancelMonthliesCoveredByPrepayment(
     kindergartenId: string,
-    duplicate: Payment,
+    prepayment: Invoice,
+    now: Date,
+  ): Promise<void> {
+    await this.invoiceRepo.acquireChildPrepaymentAdvisoryLock(
+      kindergartenId,
+      prepayment.childId,
+    );
+    for (
+      let mStart = prepayment.periodStart;
+      mStart.getTime() <= prepayment.periodEnd.getTime();
+      mStart = addMonthsUtc(mStart, 1)
+    ) {
+      await this.invoiceRepo.acquireMonthlyGenerationAdvisoryLock(
+        kindergartenId,
+        mStart,
+      );
+    }
+    const overlapped = await this.invoiceRepo.findMonthlyInWindow(
+      kindergartenId,
+      prepayment.childId,
+      prepayment.periodStart,
+      prepayment.periodEnd,
+    );
+    if (overlapped.length === 0) return;
+    const paidSums = await this.invoiceRepo.getPaidSumsForInvoices(
+      kindergartenId,
+      overlapped.map((m) => m.id),
+    );
+    for (const monthly of overlapped) {
+      const paidKzt = paidSums.get(monthly.id) ?? 0;
+      if (
+        monthly.status === 'paid' ||
+        monthly.status === 'partial' ||
+        paidKzt > 0
+      ) {
+        this.logger.warn(
+          `prepayment.settled: overlapped monthly ${monthly.id} already ${monthly.status}${paidKzt > 0 ? ` (paid_sum=${paidKzt})` : ''} — manual review (no auto-refund), prepayment ${prepayment.id}`,
+        );
+        continue;
+      }
+      const cancelled = await this.invoiceRepo.markCancelledConditional(
+        kindergartenId,
+        monthly.id,
+        now,
+      );
+      if (!cancelled) {
+        // FIX 5 lost-flip: silent only when the row really is cancelled;
+        // any other terminal state means money moved mid-hook.
+        const reread = await this.invoiceRepo.findById(
+          kindergartenId,
+          monthly.id,
+        );
+        if (reread && reread.status !== 'cancelled') {
+          this.logger.warn(
+            `prepayment.settled: overlapped monthly ${monthly.id} flipped to ${reread.status} mid-hook — manual review (no auto-refund), prepayment ${prepayment.id}`,
+          );
+        }
+        continue;
+      }
+      await this.releaseCustomDiscountUsagesForInvoice(
+        kindergartenId,
+        monthly.id,
+      );
+      this.logger.log(
+        `prepayment.settled: cancelled overlapped monthly ${monthly.id} (period ${monthly.periodStart.toISOString().slice(0, 10)}) covered by prepayment ${prepayment.id}`,
+      );
+      // Outbox insert rides the ambient settlement TX, same as the
+      // admin-cancel flow (`InvoiceService.cancel`).
+      await this.notificationPort.notifyInvoiceCancelled({
+        kindergartenId,
+        invoiceId: monthly.id,
+        childId: monthly.childId,
+        reason: 'covered_by_prepayment',
+      });
+    }
+  }
+
+  /**
+   * Review FIX 10 — a COMPLETED payment whose invoice flip was lost
+   * because the invoice is meanwhile `cancelled`/`refunded` means real
+   * parent money settled into a void invoice. That must reach admins as a
+   * manual-refund alert, not just a warn log. Reuses the #5b
+   * `payment.refund_required` channel with
+   * `reason='settled_into_cancelled_invoice'`; `duplicateOfPaymentId`
+   * self-references — the event shape requires the field but there is no
+   * duplicate payment in this scenario. Best-effort: never fails
+   * settlement. A lost flip against a live status (paid/partial — another
+   * writer applied the same transition) stays a silent no-op as before.
+   */
+  private async escalateSettleIntoVoidInvoice(
+    kindergartenId: string,
+    payment: Payment,
+    invoiceId: string,
+  ): Promise<void> {
+    const reread = await this.invoiceRepo.findById(kindergartenId, invoiceId);
+    if (
+      !reread ||
+      (reread.status !== 'cancelled' && reread.status !== 'refunded')
+    ) {
+      return;
+    }
+    this.logger.warn(
+      `payment.completed: payment=${payment.id} settled into ${reread.status} invoice=${invoiceId} — admin refund required`,
+    );
+    await this.notifyRefundRequiredToAdmins(
+      kindergartenId,
+      payment,
+      payment.id,
+      'settled_into_cancelled_invoice',
+    ).catch((err) =>
+      this.logger.warn(
+        `payment.completed: settle-into-${reread.status} admin notify failed for payment=${payment.id}: ${err instanceof Error ? err.message : err}`,
+      ),
+    );
+  }
+
+  /**
+   * Reverse of the `tryReserveUsage` reservation for a CANCELLED invoice's
+   * custom-discount applications — cancelled invoices must not consume
+   * capped discount slots (handoff §5.3). Mirrors the private
+   * `InvoiceService.releaseCustomDiscountUsagesForInvoice` (P2 prepayment
+   * retry): the reservation only ever incremented `used_count` for
+   * discounts WITH a `total_max_uses` cap (`buildCustomDiscountInputs`
+   * guards `tryReserveUsage` with `snap.totalMaxUses !== null`), so only
+   * those are released — releasing an uncapped discount would
+   * underflow-drift its counter. The insert-only application ledger stays
+   * untouched: the per-child cap (`countByChildAndDiscount`) excludes
+   * voided invoices by status instead. Skipped when the optional
+   * custom-discount deps are absent (legacy spec wiring).
+   */
+  private async releaseCustomDiscountUsagesForInvoice(
+    kindergartenId: string,
+    invoiceId: string,
+  ): Promise<void> {
+    if (!this.customDiscounts || !this.customDiscountApplications) return;
+    const apps = await this.customDiscountApplications.listByInvoiceId(
+      kindergartenId,
+      invoiceId,
+    );
+    for (const app of apps) {
+      const discount = await this.customDiscounts.findById(
+        kindergartenId,
+        app.customDiscountId,
+      );
+      if (!discount || discount.totalMaxUses === null) continue;
+      await this.customDiscounts.releaseUsage(
+        kindergartenId,
+        app.customDiscountId,
+      );
+      this.logger.debug(
+        `discount.reserve_released: kg=${kindergartenId} discount=${app.customDiscountId} — invoice ${invoiceId} cancelled.`,
+      );
+    }
+  }
+
+  /**
+   * Admin ping — resolve the kg's active admins and emit
+   * `payment.refund_required` so the manual-refund queue surfaces in the admin
+   * app (not just a flag in the payments list). Used by the #5b double-pay
+   * detector (`reason='double_payment'`) and the FIX 10 settle-into-void
+   * escalation (`reason='settled_into_cancelled_invoice'`). Skipped when the
+   * optional `StaffMemberRepository` is absent (unit-test wiring) or the kg
+   * has no active admins. Runs under the caller's ambient tenant context
+   * (the settlement TX), so both the staff read (RLS) and the outbox insert
+   * stay kg-scoped. Mirrors the poller's `notifyKaspiSessionExpired`
+   * recipient resolution.
+   */
+  private async notifyRefundRequiredToAdmins(
+    kindergartenId: string,
+    payment: Payment,
     duplicateOfPaymentId: string,
+    reason: string,
   ): Promise<void> {
     if (!this.staffRepo) return;
     const admins = await this.staffRepo.listByKindergarten(kindergartenId, {
@@ -1021,12 +1291,12 @@ export class PaymentService {
     if (recipientUserIds.length === 0) return;
     await this.notificationPort.notifyPaymentRefundRequired({
       kindergartenId,
-      paymentId: duplicate.id,
+      paymentId: payment.id,
       duplicateOfPaymentId,
-      invoiceId: duplicate.invoiceId,
-      childId: duplicate.childId,
-      amount: duplicate.amount.toNumber(),
-      reason: 'double_payment',
+      invoiceId: payment.invoiceId,
+      childId: payment.childId,
+      amount: payment.amount.toNumber(),
+      reason,
       recipientUserIds,
     });
   }
@@ -1154,6 +1424,18 @@ export class PaymentService {
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────
+
+/**
+ * Month-start iterator step for the FIX 7 lock walk. Stored prepayment
+ * period dates are canonical midnight-UTC first-of-month anchors (mapper
+ * `toDate`), so pure UTC month arithmetic is correct — mirrors
+ * `invoice.service.ts`'s module-private helper of the same name.
+ */
+function addMonthsUtc(d: Date, months: number): Date {
+  return new Date(
+    Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + months, d.getUTCDate()),
+  );
+}
 
 function readRedirectFromPayload(payment: Payment): {
   redirectUrl?: string;

@@ -298,5 +298,76 @@ describeIntegration(
         await seed.cleanup();
       }
     });
+
+    it('frees the per-child cap slot once the invoice holding it is voided', async () => {
+      // The application ledger is insert-only, so the cap check has to read
+      // the INVOICE status to know whether a slot is still consumed. That
+      // lives in one LEFT JOIN inside `countByChildAndDiscount` — invisible
+      // to the unit fakes, which return a plain row count. Without this test
+      // dropping the join keeps every suite green while a parent whose
+      // prepayment was cancelled or refunded stays permanently locked out of
+      // a discount they never actually used.
+      const seed = await seedScenario();
+      try {
+        const appRepo = new CustomDiscountApplicationRelationalRepository(
+          dataSource.getRepository(CustomDiscountApplicationTypeOrmEntity),
+        );
+        const count = () =>
+          dataSource.transaction(async (m) => {
+            await m.query(`SET LOCAL app.bypass_rls = 'true'`);
+            return appRepo.countByChildAndDiscount(
+              seed.kgId,
+              seed.childId,
+              seed.discountId,
+              m,
+            );
+          });
+        const setInvoiceStatus = (invoiceId: string, status: string) =>
+          dataSource.transaction(async (m) => {
+            await m.query(`SET LOCAL app.bypass_rls = 'true'`);
+            await m.query(`UPDATE invoices SET status = $2 WHERE id = $1`, [
+              invoiceId,
+              status,
+            ]);
+          });
+
+        // One application per invoice, both against live `pending` invoices.
+        for (const [iid, lid] of [
+          [seed.invoiceId1, seed.lineItem1],
+          [seed.invoiceId2, seed.lineItem2],
+        ] as const) {
+          await dataSource.transaction(async (m) => {
+            await m.query(`SET LOCAL app.bypass_rls = 'true'`);
+            await appRepo.create(
+              {
+                kindergartenId: seed.kgId,
+                customDiscountId: seed.discountId,
+                invoiceId: iid,
+                invoiceLineItemId: lid,
+                childId: seed.childId,
+                amountApplied: 1000,
+              },
+              m,
+            );
+          });
+        }
+        expect(await count()).toBe(2);
+
+        // P2 retry path: the stale prepayment is cancelled → its slot returns.
+        await setInvoiceStatus(seed.invoiceId2, 'cancelled');
+        expect(await count()).toBe(1);
+
+        // A refund frees the slot on the same rule.
+        await setInvoiceStatus(seed.invoiceId1, 'refunded');
+        expect(await count()).toBe(0);
+
+        // …but a non-void status still consumes it — the join must not turn
+        // into a blanket exclusion.
+        await setInvoiceStatus(seed.invoiceId1, 'overdue');
+        expect(await count()).toBe(1);
+      } finally {
+        await seed.cleanup();
+      }
+    });
   },
 );
