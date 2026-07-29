@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { InMemoryNotificationAdapter } from '@/common/notifications/in-memory-notification.adapter';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
@@ -18,6 +19,8 @@ import { InvoiceAlreadyPaidError } from './domain/errors/invoice-already-paid.er
 import { InvoiceNotFoundError } from './domain/errors/invoice-not-found.error';
 import { InvoiceStatusInvalidError } from './domain/errors/invoice-status-invalid.error';
 import { PrepaymentBlockedOutstandingDebtError } from './domain/errors/prepayment-blocked-outstanding-debt.error';
+import { PrepaymentBlockedPartialPrepaymentError } from './domain/errors/prepayment-blocked-partial-prepayment.error';
+import { PrepaymentBlockedWindowOverlapError } from './domain/errors/prepayment-blocked-window-overlap.error';
 import { TariffAssignmentNotFoundError } from './domain/errors/tariff-assignment-not-found.error';
 import { TariffPlanNotFoundError } from './domain/errors/tariff-plan-not-found.error';
 import {
@@ -77,6 +80,11 @@ class FakeInvoiceRepo extends InvoiceRepository {
   /** invoice_id → list */
   lineItems = new Map<string, InvoiceLineItem[]>();
   paidSums = new Map<string, number>();
+  /**
+   * Advisory-lock recording (review FIX 6/7) — `child:<id>` and
+   * `monthly:<YYYY-MM-DD>` entries in acquisition order.
+   */
+  lockCalls: string[] = [];
 
   create(invoice: Invoice, items: InvoiceLineItem[]): Promise<Invoice> {
     this.rows.set(invoice.id, invoice);
@@ -240,7 +248,19 @@ class FakeInvoiceRepo extends InvoiceRepository {
     return updated;
   }
 
-  acquireMonthlyGenerationAdvisoryLock(): Promise<void> {
+  acquireMonthlyGenerationAdvisoryLock(
+    _kindergartenId: string,
+    periodStart: Date,
+  ): Promise<void> {
+    this.lockCalls.push(`monthly:${periodStart.toISOString().slice(0, 10)}`);
+    return Promise.resolve();
+  }
+
+  acquireChildPrepaymentAdvisoryLock(
+    _kindergartenId: string,
+    childId: string,
+  ): Promise<void> {
+    this.lockCalls.push(`child:${childId}`);
     return Promise.resolve();
   }
 
@@ -304,13 +324,39 @@ class FakeInvoiceRepo extends InvoiceRepository {
     kindergartenId: string,
     childId: string,
   ): Promise<Invoice[]> {
+    // `partial` included (review FIX 2) — mirrors the relational query;
+    // the service's paid-sum money guard decides block-vs-cancel.
     return Promise.resolve(
       [...this.rows.values()].filter(
         (i) =>
           i.kindergartenId === kindergartenId &&
           i.childId === childId &&
           i.invoiceType.startsWith('prepayment_') &&
-          (i.status === 'pending' || i.status === 'overdue'),
+          (i.status === 'pending' ||
+            i.status === 'overdue' ||
+            i.status === 'partial'),
+      ),
+    );
+  }
+
+  findMonthlyInWindow(
+    kindergartenId: string,
+    childId: string,
+    windowStart: Date,
+    windowEnd: Date,
+  ): Promise<Invoice[]> {
+    // Mirrors the relational query (monthly-only, four live statuses,
+    // period_start containment) — feeds the FIX 4 manualMarkPaid hook.
+    const live = ['pending', 'overdue', 'partial', 'paid'];
+    return Promise.resolve(
+      [...this.rows.values()].filter(
+        (i) =>
+          i.kindergartenId === kindergartenId &&
+          i.childId === childId &&
+          i.invoiceType === 'monthly' &&
+          live.includes(i.status) &&
+          i.periodStart.getTime() >= windowStart.getTime() &&
+          i.periodStart.getTime() <= windowEnd.getTime(),
       ),
     );
   }
@@ -1199,6 +1245,47 @@ describe('InvoiceService', () => {
       await expect(svc.cancel(KG, 'missing')).rejects.toThrow(
         InvoiceNotFoundError,
       );
+    });
+
+    it('releases capped custom-discount usages of the cancelled invoice (FIX 8)', async () => {
+      const deps = buildSvc();
+      deps.invoiceRepo.rows.set(
+        'inv-1',
+        Invoice.fromState(baseInvoiceState({ id: 'inv-1' })),
+      );
+      const releaseCalls: Array<{ kg: string; id: string }> = [];
+
+      (deps.svc as any).customDiscounts = {
+        findById: (_kg: string, id: string) =>
+          Promise.resolve(
+            id === 'd-capped' ? { totalMaxUses: 5 } : { totalMaxUses: null },
+          ),
+        releaseUsage: (kg: string, id: string) => {
+          releaseCalls.push({ kg, id });
+          return Promise.resolve();
+        },
+      };
+      (deps.svc as any).customDiscountApplications = {
+        listByInvoiceId: (_kg: string, invoiceId: string) =>
+          Promise.resolve(
+            invoiceId === 'inv-1'
+              ? [
+                  { customDiscountId: 'd-capped' },
+                  { customDiscountId: 'd-uncapped' },
+                ]
+              : [],
+          ),
+      };
+
+      const updated = await deps.svc.cancel(KG, 'inv-1', 'admin_reversal');
+
+      expect(updated.status).toBe('cancelled');
+      // Only the capped discount is released — keeps used_count symmetric
+      // with the status-aware countByChildAndDiscount (review FIX 8).
+      expect(releaseCalls).toEqual([{ kg: KG, id: 'd-capped' }]);
+      expect(
+        deps.notifier.events.filter((e) => e.type === 'invoice_cancelled'),
+      ).toHaveLength(1);
     });
   });
 
@@ -2131,6 +2218,102 @@ describe('InvoiceService', () => {
       expect(quote.windowEnd).toEqual(new Date('2027-03-31T00:00:00.000Z'));
     });
 
+    it('returns blocked partial_prepayment_exists in preview mode without cancelling the money-holding stale prepayment (FIX 2)', async () => {
+      const deps = buildSvc();
+      seedPrepayPlanAndAssignment(deps);
+      deps.invoiceRepo.rows.set(
+        'part-prep',
+        Invoice.fromState(
+          baseInvoiceState({
+            id: 'part-prep',
+            invoiceType: 'prepayment_3m',
+            status: 'partial',
+            periodStart: new Date('2026-07-01T00:00:00.000Z'),
+            periodEnd: new Date('2026-09-30T00:00:00.000Z'),
+          }),
+        ),
+      );
+      deps.invoiceRepo.paidSums.set('part-prep', 60000);
+
+      const quote = asBlocked(
+        await deps.svc.computePrepaymentQuote(KG, CHILD, 3, {
+          reserveCustomDiscounts: false,
+        }),
+      );
+
+      expect(quote.blockedReason).toBe('partial_prepayment_exists');
+      expect(quote.blockedInvoiceId).toBe('part-prep');
+      expect(quote.blockedPaidAmount).toBe(60000);
+      // Read-only: the preview cancelled nothing.
+      expect(deps.invoiceRepo.rows.get('part-prep')?.status).toBe('partial');
+    });
+
+    it('returns a computed quote when the only stale prepayment is zero-paid pending (preview cancels nothing, blocks nothing)', async () => {
+      const deps = buildSvc();
+      seedPrepayPlanAndAssignment(deps);
+      deps.invoiceRepo.rows.set(
+        'prep-zero',
+        Invoice.fromState(
+          baseInvoiceState({
+            id: 'prep-zero',
+            invoiceType: 'prepayment_3m',
+            status: 'pending',
+            periodStart: new Date('2026-07-01T00:00:00.000Z'),
+            periodEnd: new Date('2026-09-30T00:00:00.000Z'),
+          }),
+        ),
+      );
+
+      const quote = asComputed(
+        await deps.svc.computePrepaymentQuote(KG, CHILD, 3, {
+          reserveCustomDiscounts: false,
+        }),
+      );
+
+      expect(quote.windowStart).toEqual(new Date('2026-07-01T00:00:00.000Z'));
+      // Preview never cancels — the zero-paid stale row survives untouched.
+      expect(deps.invoiceRepo.rows.get('prep-zero')?.status).toBe('pending');
+    });
+
+    it('returns blocked window_overlaps_covered when non-contiguous paid coverage sits inside the shifted window (FIX 9)', async () => {
+      const deps = buildSvc(new Date('2026-09-15T09:00:00.000Z'));
+      seedPrepayPlanAndAssignment(deps);
+      // Paid coverage aug–oct AND dec–feb (a refunded middle window left a
+      // november gap): the start shifts to nov, but dec+jan inside the
+      // 3-month window are still covered → block, never silently bill.
+      deps.invoiceRepo.rows.set(
+        'prep-aug-oct',
+        Invoice.fromState(
+          baseInvoiceState({
+            id: 'prep-aug-oct',
+            invoiceType: 'prepayment_3m',
+            status: 'paid',
+            periodStart: new Date('2026-08-01T00:00:00.000Z'),
+            periodEnd: new Date('2026-10-31T00:00:00.000Z'),
+          }),
+        ),
+      );
+      deps.invoiceRepo.rows.set(
+        'prep-dec-feb',
+        Invoice.fromState(
+          baseInvoiceState({
+            id: 'prep-dec-feb',
+            invoiceType: 'prepayment_3m',
+            status: 'paid',
+            periodStart: new Date('2026-12-01T00:00:00.000Z'),
+            periodEnd: new Date('2027-02-28T00:00:00.000Z'),
+          }),
+        ),
+      );
+
+      const quote = asBlocked(
+        await deps.svc.computePrepaymentQuote(KG, CHILD, 3),
+      );
+
+      expect(quote.blockedReason).toBe('window_overlaps_covered');
+      expect(quote.coveredMonths).toEqual(['2026-12', '2027-01']);
+    });
+
     it('returns the exact case-4 totals: 148065 whole KZT with 8 January holidays and 10% prepay', async () => {
       const deps = buildSvc(new Date('2026-09-15T09:00:00.000Z'));
       seedPrepayPlanAndAssignment(deps);
@@ -2363,7 +2546,7 @@ describe('InvoiceService', () => {
       expect(releaseCalls).toEqual([{ kg: KG, id: 'd-capped' }]);
     });
 
-    it('leaves a partial prepayment untouched on retry', async () => {
+    it('throws PrepaymentBlockedPartialPrepaymentError and cancels nothing when a stale prepayment holds money (FIX 2)', async () => {
       const deps = buildSvc();
       seedPrepayPlanAndAssignment(deps);
       deps.invoiceRepo.rows.set(
@@ -2378,13 +2561,181 @@ describe('InvoiceService', () => {
           }),
         ),
       );
+      deps.invoiceRepo.paidSums.set('part-prep', 60000);
+
+      const err: unknown = await deps.svc
+        .prepayInvoice(KG, CHILD, 3)
+        .catch((e: unknown) => e);
+
+      // Deliberate supersession of the earlier "left alive silently"
+      // behavior: a money-holding prepayment now BLOCKS the retry instead
+      // of coexisting with a fresh replacement.
+      expect(err).toBeInstanceOf(PrepaymentBlockedPartialPrepaymentError);
+      expect((err as PrepaymentBlockedPartialPrepaymentError).details).toEqual({
+        invoice_id: 'part-prep',
+        paid_amount: 60000,
+      });
+      expect(deps.invoiceRepo.rows.get('part-prep')?.status).toBe('partial');
+      // No replacement was created either.
+      const prepayments = [...deps.invoiceRepo.rows.values()].filter(
+        (i) => i.invoiceType.startsWith('prepayment_') && i.id !== 'part-prep',
+      );
+      expect(prepayments).toHaveLength(0);
+    });
+
+    it('throws PrepaymentBlockedPartialPrepaymentError for an overdue stale prepayment holding money (markOverdueBatch flip)', async () => {
+      const deps = buildSvc();
+      seedPrepayPlanAndAssignment(deps);
+      // `markOverdueBatch` flips `partial → overdue`, so a money-holding
+      // prepayment can sit in `overdue` — the paid-sum guard, not the
+      // status, must decide (review FIX 2).
+      deps.invoiceRepo.rows.set(
+        'ovd-prep',
+        Invoice.fromState(
+          baseInvoiceState({
+            id: 'ovd-prep',
+            invoiceType: 'prepayment_3m',
+            status: 'overdue',
+            periodStart: new Date('2026-07-01T00:00:00.000Z'),
+            periodEnd: new Date('2026-09-30T00:00:00.000Z'),
+          }),
+        ),
+      );
+      deps.invoiceRepo.paidSums.set('ovd-prep', 1000);
+
+      const err: unknown = await deps.svc
+        .prepayInvoice(KG, CHILD, 3)
+        .catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(PrepaymentBlockedPartialPrepaymentError);
+      expect((err as PrepaymentBlockedPartialPrepaymentError).details).toEqual({
+        invoice_id: 'ovd-prep',
+        paid_amount: 1000,
+      });
+      expect(deps.invoiceRepo.rows.get('ovd-prep')?.status).toBe('overdue');
+    });
+
+    it('acquires the per-child prepayment advisory lock before any read or cancel (FIX 6)', async () => {
+      const deps = buildSvc();
+      seedPrepayPlanAndAssignment(deps);
+      await deps.svc.prepayInvoice(KG, CHILD, 3);
+      expect(deps.invoiceRepo.lockCalls[0]).toBe(`child:${CHILD}`);
+    });
+
+    it('re-applies a capped custom discount previously held by the cancelled stale prepayment (FIX 3 reorder)', async () => {
+      const deps = buildSvc();
+      seedPrepayPlanAndAssignment(deps);
+      deps.invoiceRepo.rows.set(
+        'old-prep',
+        Invoice.fromState(
+          baseInvoiceState({
+            id: 'old-prep',
+            invoiceType: 'prepayment_3m',
+            status: 'pending',
+            periodStart: new Date('2026-07-01T00:00:00.000Z'),
+            periodEnd: new Date('2026-09-30T00:00:00.000Z'),
+          }),
+        ),
+      );
+
+      // Capped discount at FULL capacity: total_max_uses=1, used_count=1 —
+      // the single slot is held by the stale prepayment's application row.
+      const cap = { totalMaxUses: 1, usedCount: 1 };
+      const appRows: Array<{ invoiceId: string; customDiscountId: string }> = [
+        { invoiceId: 'old-prep', customDiscountId: 'd-capped' },
+      ];
+
+      (deps.svc as any).customDiscounts = {
+        findActiveCustomDiscounts: () =>
+          Promise.resolve([
+            {
+              id: 'd-capped',
+              name: { ru: 'Скидка' },
+              discountType: 'percentage',
+              amount: m(10),
+              conditions: {},
+              targetType: 'all',
+              targetIds: null,
+              priority: 0,
+              stackable: true,
+              maxUsesPerChild: null,
+              totalMaxUses: cap.totalMaxUses,
+              usedCount: cap.usedCount,
+              createdAt: NOW,
+            },
+          ]),
+        tryReserveUsage: () => {
+          if (cap.usedCount >= cap.totalMaxUses) return Promise.resolve(false);
+          cap.usedCount++;
+          return Promise.resolve(true);
+        },
+        releaseUsage: () => {
+          cap.usedCount = Math.max(0, cap.usedCount - 1);
+          return Promise.resolve();
+        },
+        findById: () => Promise.resolve({ totalMaxUses: cap.totalMaxUses }),
+        acquireDiscountApplyAdvisoryLock: () => Promise.resolve(),
+      };
+      (deps.svc as any).customDiscountApplications = {
+        listByInvoiceId: (_kg: string, invoiceId: string) =>
+          Promise.resolve(appRows.filter((r) => r.invoiceId === invoiceId)),
+        countByChildAndDiscount: () => Promise.resolve(0),
+        create: (input: { invoiceId: string; customDiscountId: string }) => {
+          appRows.push({
+            invoiceId: input.invoiceId,
+            customDiscountId: input.customDiscountId,
+          });
+          return Promise.resolve(input);
+        },
+      };
+      (deps.svc as any).discountTargetResolver = {
+        filterDiscountsForChild: (
+          _kg: string,
+          _child: string,
+          snaps: unknown[],
+        ) => Promise.resolve(snaps),
+      };
+      (deps.svc as any).children = {
+        findById: () =>
+          Promise.resolve({
+            dateOfBirth: new Date('2021-01-01T00:00:00.000Z'),
+            currentGroupId: null,
+          }),
+      };
+      (deps.svc as any).childGuardians = {
+        countSiblingsInKgForChild: () => Promise.resolve(0),
+      };
+
+      deps.discount.result = {
+        discountPct: 10,
+        discountReason: 'custom',
+        appliedRules: ['custom:d-capped'],
+        customApplicationsToWrite: [
+          {
+            customDiscountId: 'd-capped',
+            amountApplied: 5000,
+            reason: 'custom',
+          },
+        ],
+        customDiscountAmount: null,
+      };
 
       const created = await deps.svc.prepayInvoice(KG, CHILD, 3);
 
-      // The parent already paid money into the partial prepayment — it is
-      // never auto-cancelled (§2.2 / P2).
-      expect(deps.invoiceRepo.rows.get('part-prep')?.status).toBe('partial');
-      expect(created.status).toBe('pending');
+      // THE fix-3 regression pin: the stale prepayment's cancel + release
+      // ran BEFORE the quote reserved, so the capped discount reached the
+      // engine (old order: tryReserveUsage failed on the still-consumed
+      // slot and dropped the discount pre-engine).
+      expect(deps.invoiceRepo.rows.get('old-prep')?.status).toBe('cancelled');
+      expect(
+        (deps.discount.lastInput?.context.customDiscounts ?? []).map(
+          (d) => d.id,
+        ),
+      ).toEqual(['d-capped']);
+      // Slot freed by the cancel (1→0), then re-consumed by the reserve
+      // (0→1) — net one slot held by the NEW invoice's application row.
+      expect(cap.usedCount).toBe(1);
+      expect(appRows.filter((r) => r.invoiceId === created.id)).toHaveLength(1);
     });
 
     it('persists one line item per covered month with quantity 1 and strictly increasing createdAt', async () => {
@@ -2442,6 +2793,193 @@ describe('InvoiceService', () => {
       await deps.svc.prepayInvoice(KG, CHILD, 3);
       expect(deps.discount.calls).toHaveLength(1);
       expect(deps.discount.calls[0].context.prepaymentMonths).toBe(3);
+    });
+
+    it('throws PrepaymentBlockedWindowOverlapError when the shifted window overlaps non-contiguous paid coverage (FIX 9)', async () => {
+      const deps = buildSvc(new Date('2026-09-15T09:00:00.000Z'));
+      seedPrepayPlanAndAssignment(deps);
+      deps.invoiceRepo.rows.set(
+        'prep-aug-oct',
+        Invoice.fromState(
+          baseInvoiceState({
+            id: 'prep-aug-oct',
+            invoiceType: 'prepayment_3m',
+            status: 'paid',
+            periodStart: new Date('2026-08-01T00:00:00.000Z'),
+            periodEnd: new Date('2026-10-31T00:00:00.000Z'),
+          }),
+        ),
+      );
+      deps.invoiceRepo.rows.set(
+        'prep-dec-feb',
+        Invoice.fromState(
+          baseInvoiceState({
+            id: 'prep-dec-feb',
+            invoiceType: 'prepayment_3m',
+            status: 'paid',
+            periodStart: new Date('2026-12-01T00:00:00.000Z'),
+            periodEnd: new Date('2027-02-28T00:00:00.000Z'),
+          }),
+        ),
+      );
+
+      const err: unknown = await deps.svc
+        .prepayInvoice(KG, CHILD, 3)
+        .catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(PrepaymentBlockedWindowOverlapError);
+      expect((err as PrepaymentBlockedWindowOverlapError).details).toEqual({
+        covered_months: ['2026-12', '2027-01'],
+      });
+      // Nothing was created.
+      const pendings = [...deps.invoiceRepo.rows.values()].filter(
+        (i) => i.status === 'pending',
+      );
+      expect(pendings).toHaveLength(0);
+    });
+  });
+
+  describe('manualMarkPaid — prepayment settlement hook (FIX 4/5)', () => {
+    function seedPrepaymentAndAccount(deps: ReturnType<typeof buildSvc>) {
+      deps.invoiceRepo.rows.set(
+        'prep-pend',
+        Invoice.fromState(
+          baseInvoiceState({
+            id: 'prep-pend',
+            invoiceType: 'prepayment_3m',
+            status: 'pending',
+            periodStart: new Date('2026-07-01T00:00:00.000Z'),
+            periodEnd: new Date('2026-09-30T00:00:00.000Z'),
+            amountDue: m(180000),
+            amountAfterDiscount: m(162000),
+            paymentAccountId: 'pa-1',
+          }),
+        ),
+      );
+    }
+
+    it('cancels the covered pending monthly, releases its capped discount and notifies on full cash settlement of a prepayment', async () => {
+      const deps = buildSvc();
+      await deps.accountSvc.ensureForChild(KG, CHILD); // creates pa-1
+      seedPrepaymentAndAccount(deps);
+      deps.invoiceRepo.rows.set(
+        'mon-jul',
+        Invoice.fromState(
+          baseInvoiceState({
+            id: 'mon-jul',
+            periodStart: new Date('2026-07-01T00:00:00.000Z'),
+            periodEnd: new Date('2026-07-31T00:00:00.000Z'),
+          }),
+        ),
+      );
+      const releaseCalls: Array<{ kg: string; id: string }> = [];
+
+      (deps.svc as any).customDiscounts = {
+        findById: (_kg: string, id: string) =>
+          Promise.resolve(
+            id === 'd-capped' ? { totalMaxUses: 5 } : { totalMaxUses: null },
+          ),
+        releaseUsage: (kg: string, id: string) => {
+          releaseCalls.push({ kg, id });
+          return Promise.resolve();
+        },
+      };
+      (deps.svc as any).customDiscountApplications = {
+        listByInvoiceId: (_kg: string, invoiceId: string) =>
+          Promise.resolve(
+            invoiceId === 'mon-jul' ? [{ customDiscountId: 'd-capped' }] : [],
+          ),
+      };
+
+      const updated = await deps.svc.manualMarkPaid(KG, 'prep-pend');
+
+      expect(updated.status).toBe('paid');
+      expect(deps.invoiceRepo.rows.get('mon-jul')?.status).toBe('cancelled');
+      expect(releaseCalls).toEqual([{ kg: KG, id: 'd-capped' }]);
+      const cancelEvents = deps.notifier.events.filter(
+        (e) => e.type === 'invoice_cancelled',
+      );
+      expect(cancelEvents).toHaveLength(1);
+      expect(cancelEvents[0].event).toMatchObject({
+        invoiceId: 'mon-jul',
+        childId: CHILD,
+        reason: 'covered_by_prepayment',
+      });
+      // FIX 6/7 lock choreography: child lock pre-flip, then child lock +
+      // chronological monthly-generation locks inside the hook.
+      expect(deps.invoiceRepo.lockCalls).toEqual([
+        `child:${CHILD}`,
+        `child:${CHILD}`,
+        'monthly:2026-07-01',
+        'monthly:2026-08-01',
+        'monthly:2026-09-01',
+      ]);
+    });
+
+    it('warns instead of cancelling an overdue covered monthly that holds a partial payment (FIX 5 money guard)', async () => {
+      const deps = buildSvc();
+      const warnSpy = jest
+        .spyOn(Logger.prototype, 'warn')
+        .mockImplementation(() => undefined);
+      await deps.accountSvc.ensureForChild(KG, CHILD);
+      seedPrepaymentAndAccount(deps);
+      deps.invoiceRepo.rows.set(
+        'mon-jul',
+        Invoice.fromState(
+          baseInvoiceState({
+            id: 'mon-jul',
+            status: 'overdue',
+            periodStart: new Date('2026-07-01T00:00:00.000Z'),
+            periodEnd: new Date('2026-07-31T00:00:00.000Z'),
+          }),
+        ),
+      );
+      // partial→overdue flip left real money inside the monthly.
+      deps.invoiceRepo.paidSums.set('mon-jul', 10000);
+
+      const updated = await deps.svc.manualMarkPaid(KG, 'prep-pend');
+
+      expect(updated.status).toBe('paid');
+      expect(deps.invoiceRepo.rows.get('mon-jul')?.status).toBe('overdue');
+      expect(
+        deps.notifier.events.filter((e) => e.type === 'invoice_cancelled'),
+      ).toHaveLength(0);
+      const warns = warnSpy.mock.calls
+        .map((c) => c[0])
+        .filter(
+          (msg): msg is string =>
+            typeof msg === 'string' && msg.includes('manual review'),
+        );
+      expect(warns).toHaveLength(1);
+      expect(warns[0]).toContain('mon-jul');
+      expect(warns[0]).toContain('paid_sum=10000');
+      warnSpy.mockRestore();
+    });
+
+    it('runs no hook when a prepayment settles only partially via cash amount', async () => {
+      const deps = buildSvc();
+      await deps.accountSvc.ensureForChild(KG, CHILD);
+      seedPrepaymentAndAccount(deps);
+      deps.invoiceRepo.rows.set(
+        'mon-jul',
+        Invoice.fromState(
+          baseInvoiceState({
+            id: 'mon-jul',
+            periodStart: new Date('2026-07-01T00:00:00.000Z'),
+            periodEnd: new Date('2026-07-31T00:00:00.000Z'),
+          }),
+        ),
+      );
+
+      const updated = await deps.svc.manualMarkPaid(KG, 'prep-pend', {
+        amount: 50000,
+      });
+
+      expect(updated.status).toBe('partial');
+      expect(deps.invoiceRepo.rows.get('mon-jul')?.status).toBe('pending');
+      expect(
+        deps.notifier.events.filter((e) => e.type === 'invoice_cancelled'),
+      ).toHaveLength(0);
     });
   });
 

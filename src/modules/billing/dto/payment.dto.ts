@@ -598,21 +598,62 @@ export class PrepaymentPreviewResponseDto {
   @ApiProperty({
     example: null,
     nullable: true,
-    enum: ['outstanding_debt'],
+    enum: [
+      'outstanding_debt',
+      'partial_prepayment_exists',
+      'window_overlaps_covered',
+    ],
     description:
       'Non-null when the prepayment would be rejected. `outstanding_debt` = ' +
-      'the child has a pending/overdue/partial non-prepayment invoice.',
+      'the child has a pending/overdue/partial non-prepayment invoice. ' +
+      '`partial_prepayment_exists` = a stale prepayment already holds parent ' +
+      'money (never auto-cancelled; see blocked_invoice_id / ' +
+      'blocked_paid_amount). `window_overlaps_covered` = non-contiguous paid ' +
+      'coverage inside the shifted window would double-bill a month (see ' +
+      'covered_months).',
   })
-  blocked_reason!: 'outstanding_debt' | null;
+  blocked_reason!:
+    | 'outstanding_debt'
+    | 'partial_prepayment_exists'
+    | 'window_overlaps_covered'
+    | null;
 
   @ApiProperty({
     example: null,
     nullable: true,
     description:
       'Total unpaid remainder (KZT) over the blocking invoices. ' +
-      'Null unless blocked.',
+      'Null unless blocked_reason=outstanding_debt.',
   })
   outstanding_amount!: number | null;
+
+  @ApiProperty({
+    example: null,
+    nullable: true,
+    description:
+      'Id of the money-holding stale prepayment invoice. ' +
+      'Null unless blocked_reason=partial_prepayment_exists.',
+  })
+  blocked_invoice_id!: string | null;
+
+  @ApiProperty({
+    example: null,
+    nullable: true,
+    description:
+      'Completed-paid KZT already inside the stale prepayment. ' +
+      'Null unless blocked_reason=partial_prepayment_exists.',
+  })
+  blocked_paid_amount!: number | null;
+
+  @ApiProperty({
+    example: null,
+    nullable: true,
+    type: [String],
+    description:
+      'YYYY-MM keys inside the requested window still covered by a paid ' +
+      'prepayment. Null unless blocked_reason=window_overlaps_covered.',
+  })
+  covered_months!: string[] | null;
 
   @ApiProperty({
     type: PrepaymentPreviewWindowDto,

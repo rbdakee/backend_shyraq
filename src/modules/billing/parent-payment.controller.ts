@@ -167,6 +167,9 @@ export class ParentPaymentController {
   @ApiCreatedResponse({ type: InitiatePrepaymentResponseDto })
   @ApiBadRequestResponse({
     description:
+      'prepayment_blocked_outstanding_debt (child has unpaid non-prepayment invoices) / ' +
+      'prepayment_blocked_partial_prepayment (a stale prepayment already holds money — never auto-cancelled) / ' +
+      'prepayment_blocked_window_overlap (non-contiguous paid coverage inside the shifted window) / ' +
       'prepayment_horizon_not_configured / months_out_of_range / payment_provider_unavailable / validation error.',
   })
   @ApiUnauthorizedResponse({ description: 'Bearer missing/invalid/revoked.' })
@@ -195,11 +198,27 @@ export class ParentPaymentController {
     }
     const billing = await this.prepareBccBillingDetails(user.sub, dto);
 
-    const prepaymentInvoice = await this.invoiceService.prepayInvoice(
+    // Review FIX 1 — documented same-key retry short-circuit. The
+    // idempotency key MUST be resolved BEFORE `prepayInvoice`:
+    // `paymentService.initiate`'s fast-path returns the existing payment
+    // WITHOUT comparing invoice ids, so running the create first would
+    // cancel invoice A, create invoice B, then hand back A's
+    // payment/checkout — an invoice/payment mismatch on a plain retry.
+    // Here the retry returns the ORIGINAL payment + ITS invoice and
+    // touches nothing (response shape identical to the first call;
+    // `initiate` recovers redirect/deeplink — incl. the BCC checkout
+    // continuation — through its own fast-path).
+    const existingPayment = await this.paymentService.findByIdempotencyKey(
       kgId,
-      original.childId,
-      dto.months,
+      dto.idempotency_key,
     );
+    const prepaymentInvoice = existingPayment
+      ? await this.invoiceService.get(kgId, existingPayment.invoiceId)
+      : await this.invoiceService.prepayInvoice(
+          kgId,
+          original.childId,
+          dto.months,
+        );
 
     const result = await this.paymentService.initiate(kgId, {
       invoiceId: prepaymentInvoice.id,
@@ -236,7 +255,7 @@ export class ParentPaymentController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
-      'Preview the prepayment quote for the child of the anchor invoice — same computation as POST :id/pay/prepayment but with ZERO writes (no invoice, no discount-slot reservation, no cancellation of stale prepayments). Returns the covered window (shifted past months already covered by a paid prepayment), per-month breakdown with holiday deductions, discount and whole-tenge total; when the child has outstanding non-prepayment debt, returns `blocked_reason` + `outstanding_amount` instead (HTTP 200, not 400).',
+      'Preview the prepayment quote for the child of the anchor invoice — same computation as POST :id/pay/prepayment but with ZERO writes (no invoice, no discount-slot reservation, no cancellation of stale prepayments). Returns the covered window (shifted past months already covered by a paid prepayment), per-month breakdown with holiday deductions, discount and whole-tenge total. Blocked cases return HTTP 200 with `blocked_reason` + details instead of the quote: `outstanding_debt` (+ `outstanding_amount`), `partial_prepayment_exists` (a stale prepayment holds money; + `blocked_invoice_id`, `blocked_paid_amount`), `window_overlaps_covered` (+ `covered_months`).',
   })
   @ApiOkResponse({ type: PrepaymentPreviewResponseDto })
   @ApiBadRequestResponse({
@@ -276,7 +295,10 @@ export class ParentPaymentController {
     if (quote.blockedReason) {
       return {
         blocked_reason: quote.blockedReason,
-        outstanding_amount: quote.outstandingAmount,
+        outstanding_amount: quote.outstandingAmount ?? null,
+        blocked_invoice_id: quote.blockedInvoiceId ?? null,
+        blocked_paid_amount: quote.blockedPaidAmount ?? null,
+        covered_months: quote.coveredMonths ?? null,
         window: null,
         months: [],
         discount_pct: null,
@@ -287,6 +309,9 @@ export class ParentPaymentController {
     return {
       blocked_reason: null,
       outstanding_amount: null,
+      blocked_invoice_id: null,
+      blocked_paid_amount: null,
+      covered_months: null,
       window: {
         from: toIsoDate(quote.windowStart),
         to: toIsoDate(quote.windowEnd),

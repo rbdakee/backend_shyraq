@@ -28,6 +28,8 @@ import { InvoiceAlreadyPaidError } from './domain/errors/invoice-already-paid.er
 import { InvoiceNotFoundError } from './domain/errors/invoice-not-found.error';
 import { InvoiceStatusInvalidError } from './domain/errors/invoice-status-invalid.error';
 import { PrepaymentBlockedOutstandingDebtError } from './domain/errors/prepayment-blocked-outstanding-debt.error';
+import { PrepaymentBlockedPartialPrepaymentError } from './domain/errors/prepayment-blocked-partial-prepayment.error';
+import { PrepaymentBlockedWindowOverlapError } from './domain/errors/prepayment-blocked-window-overlap.error';
 import { TariffAssignmentNotFoundError } from './domain/errors/tariff-assignment-not-found.error';
 import { TariffPlanNotFoundError } from './domain/errors/tariff-plan-not-found.error';
 import {
@@ -146,11 +148,31 @@ export interface PrepaymentQuoteMonth {
   amountShare: MoneyKzt;
 }
 
-/** Debt-blocked quote (§2.2) — nothing computed, no side effects occurred. */
+/**
+ * Blocked quote — nothing computed, no side effects occurred. Three
+ * reasons (review fixes 2/9 extended the original §2.2 debt block):
+ *   - `outstanding_debt` (§2.2) — unpaid non-prepayment invoices;
+ *   - `partial_prepayment_exists` (FIX 2) — a stale prepayment holds
+ *     parent money and must not be auto-cancelled;
+ *   - `window_overlaps_covered` (FIX 9) — non-contiguous paid coverage
+ *     inside the shifted window would silently double-bill a month.
+ */
 export interface PrepaymentQuoteBlocked {
-  blockedReason: 'outstanding_debt';
-  /** KZT — Σ(amount_after_discount − completed paid) over the blocking invoices. */
-  outstandingAmount: number;
+  blockedReason:
+    | 'outstanding_debt'
+    | 'partial_prepayment_exists'
+    | 'window_overlaps_covered';
+  /**
+   * KZT — Σ(amount_after_discount − completed paid) over the blocking
+   * invoices. Present only for `outstanding_debt`.
+   */
+  outstandingAmount?: number;
+  /** The money-holding stale prepayment. `partial_prepayment_exists` only. */
+  blockedInvoiceId?: string;
+  /** Completed-paid KZT inside it. `partial_prepayment_exists` only. */
+  blockedPaidAmount?: number;
+  /** Covered `YYYY-MM` keys inside the window. `window_overlaps_covered` only. */
+  coveredMonths?: string[];
 }
 
 export interface PrepaymentQuoteComputed {
@@ -406,6 +428,15 @@ export class InvoiceService {
     if (!existingForResidual) {
       throw new InvoiceNotFoundError(invoiceId);
     }
+    if (existingForResidual.invoiceType.startsWith('prepayment_')) {
+      // Review FIX 6 — serialise a cash settlement of a prepayment against
+      // a concurrent `prepayInvoice` for the same child (which takes the
+      // same lock first thing). Held until the ambient TX commits.
+      await this.invoices.acquireChildPrepaymentAdvisoryLock(
+        kindergartenId,
+        existingForResidual.childId,
+      );
+    }
     const priorPaidSum = MoneyKzt.fromKzt(
       await this.invoices.getPaidSumForInvoice(kindergartenId, invoiceId),
     );
@@ -462,6 +493,18 @@ export class InvoiceService {
         throw new InvoiceAlreadyPaidError(invoiceId);
       }
       throw new InvoiceStatusInvalidError(existing.status, 'manualMarkPaid');
+    }
+
+    // §2.8 / review FIX 4 — a cash-settled prepayment supersedes the unpaid
+    // monthlies its window covers, exactly like the gateway settlement hook
+    // in `PaymentService.applyCompletedPayment`. Fires only on a FULL flip
+    // (the partial branch returned earlier) that THIS call performed.
+    if (updated.invoiceType.startsWith('prepayment_')) {
+      await this.cancelCoveredMonthliesForPrepayment(
+        kindergartenId,
+        updated,
+        now,
+      );
     }
 
     // T11 C3: synthesise a Payment row with provider='cash'. Without this
@@ -629,6 +672,15 @@ export class InvoiceService {
       }
       throw new InvoiceStatusInvalidError(existing.status, 'cancel');
     }
+    // Review FIX 8 — keep `used_count` symmetric with the status-aware
+    // per-child cap (`countByChildAndDiscount` excludes voided invoices):
+    // an admin-cancelled invoice must not keep consuming capped
+    // custom-discount slots, same as the prepayment-retry / settlement-hook
+    // cancels.
+    await this.releaseCustomDiscountUsagesForInvoice(
+      kindergartenId,
+      updated.id,
+    );
     await this.notificationPort.notifyInvoiceCancelled({
       kindergartenId,
       invoiceId: updated.id,
@@ -1151,26 +1203,36 @@ export class InvoiceService {
     }
 
     // 1 — debt block (§2.2), before any reservation side effects.
-    const unpaid = await this.invoices.findUnpaidNonPrepaymentByChild(
+    const outstanding = await this.computeOutstandingDebt(
       kindergartenId,
       childId,
     );
-    if (unpaid.length > 0) {
-      const paidSums = await this.invoices.getPaidSumsForInvoices(
-        kindergartenId,
-        unpaid.map((i) => i.id),
-      );
-      let outstanding = MoneyKzt.zero();
-      for (const inv of unpaid) {
-        const paid = MoneyKzt.fromKzt(paidSums.get(inv.id) ?? 0);
-        const remaining = inv.amountAfterDiscount.sub(paid);
-        if (remaining.isPositive()) {
-          outstanding = outstanding.add(remaining);
-        }
-      }
+    if (outstanding !== null) {
       return {
         blockedReason: 'outstanding_debt',
         outstandingAmount: outstanding.round().toNumber(),
+      };
+    }
+
+    // 1b — money-holding stale prepayment blocks the quote (review FIX 2).
+    // The create path (`prepayInvoice`) cancels zero-paid stale prepayments
+    // BEFORE calling this quote, so on create this check only ever fires
+    // for the money-holding case that survived the pre-check race-free
+    // under the child advisory lock. The read-only preview relies on it as
+    // the single detection point — nothing is cancelled here.
+    const stale = await this.invoices.findUnpaidPrepaymentsByChild(
+      kindergartenId,
+      childId,
+    );
+    const holding = await this.findMoneyHoldingPrepayment(
+      kindergartenId,
+      stale,
+    );
+    if (holding) {
+      return {
+        blockedReason: 'partial_prepayment_exists',
+        blockedInvoiceId: holding.invoice.id,
+        blockedPaidAmount: holding.paidAmount,
       };
     }
 
@@ -1199,6 +1261,25 @@ export class InvoiceService {
       windowStart = addMonthsUtc(windowStart, 1);
     }
     const windowEnd = endOfMonth(addMonthsUtc(windowStart, months - 1));
+
+    // 2b — window-overlap guard (review FIX 9). The shift walk moves the
+    // START past covered months, but non-contiguous coverage (e.g. a
+    // refunded middle window) can leave covered months INSIDE the shifted
+    // window. Silently billing them would double-charge — block instead.
+    // §2.3 "shift start only" is preserved for the contiguous normal case.
+    const overlappingCovered: string[] = [];
+    for (let i = 0; i < months; i++) {
+      const key = monthKey(addMonthsUtc(windowStart, i));
+      if (coveredMonthKeys.has(key)) {
+        overlappingCovered.push(key);
+      }
+    }
+    if (overlappingCovered.length > 0) {
+      return {
+        blockedReason: 'window_overlaps_covered',
+        coveredMonths: overlappingCovered,
+      };
+    }
 
     // 3 — per-month base amounts (§2.4): full-precision chain, no
     // intermediate rounding (B22b T2/T15 — quantize only at sinks).
@@ -1313,11 +1394,20 @@ export class InvoiceService {
    * covered month (§2.6) — the calendar (P6) reads the exact monthly
    * shares back from those items in `created_at` order.
    *
-   * A retry replaces the child's stale unpaid prepayments: every
-   * `pending`/`overdue` `prepayment_*` invoice is conditionally cancelled
-   * and its capped custom-discount slots are released. A `partial`
-   * prepayment is never auto-cancelled — the parent already paid money
-   * into it.
+   * Ordering (review FIX 3, all in the ambient TX so a later throw rolls
+   * the cancels back):
+   *   1. per-child advisory lock (FIX 6) — serialises with a concurrent
+   *      settlement of the same child's prepayment;
+   *   2. cheap debt pre-check — a debt-blocked retry cancels NOTHING;
+   *   3. stale-prepayment handling (FIX 2) — any stale `prepayment_*` row
+   *      with completed-paid money inside BLOCKS the attempt
+   *      (`prepayment_blocked_partial_prepayment`); zero-paid rows are
+   *      conditionally cancelled and their capped custom-discount slots
+   *      released. Deliberately NO `notifyInvoiceCancelled` for the
+   *      replacement cancel: parent-initiated, not an admin action;
+   *   4. ONLY THEN the quote in reserve mode — so the cancelled stale
+   *      invoice's ledger rows are status-excluded and its `used_count`
+   *      slot is freed before the quote counts/reserves.
    *
    * Caller (`ParentPaymentController`) chains this into
    * `paymentService.initiate` to actually start the provider flow.
@@ -1328,24 +1418,38 @@ export class InvoiceService {
     months: 3 | 6 | 12 | 24,
   ): Promise<Invoice> {
     const now = this.clock.now();
-    const quote = await this.computePrepaymentQuote(
+    await this.invoices.acquireChildPrepaymentAdvisoryLock(
       kindergartenId,
       childId,
-      months,
-      { reserveCustomDiscounts: true },
     );
-    if (quote.blockedReason) {
-      throw new PrepaymentBlockedOutstandingDebtError(quote.outstandingAmount);
+
+    // FIX 3 step 2 — debt pre-check BEFORE any cancel side effect.
+    const outstanding = await this.computeOutstandingDebt(
+      kindergartenId,
+      childId,
+    );
+    if (outstanding !== null) {
+      throw new PrepaymentBlockedOutstandingDebtError(
+        outstanding.round().toNumber(),
+      );
     }
 
-    // §2.2 — a new attempt replaces stale unpaid prepayments. The repo
-    // method returns pending/overdue ONLY (`partial` excluded by query).
-    // Deliberately NO `notifyInvoiceCancelled` here: this is a
-    // parent-initiated replacement, not an admin action.
+    // FIX 3 step 3 / FIX 2 — stale prepayments: block on money, cancel the
+    // rest.
     const stale = await this.invoices.findUnpaidPrepaymentsByChild(
       kindergartenId,
       childId,
     );
+    const holding = await this.findMoneyHoldingPrepayment(
+      kindergartenId,
+      stale,
+    );
+    if (holding) {
+      throw new PrepaymentBlockedPartialPrepaymentError(
+        holding.invoice.id,
+        holding.paidAmount,
+      );
+    }
     for (const old of stale) {
       const cancelled = await this.invoices.markCancelledConditional(
         kindergartenId,
@@ -1358,6 +1462,33 @@ export class InvoiceService {
       this.logger.log(
         `prepayment.retry: cancelled stale prepayment ${old.id} kg=${kindergartenId} child=${childId}`,
       );
+    }
+
+    // FIX 3 step 4 — quote AFTER the cancels.
+    const quote = await this.computePrepaymentQuote(
+      kindergartenId,
+      childId,
+      months,
+      { reserveCustomDiscounts: true },
+    );
+    if (quote.blockedReason) {
+      switch (quote.blockedReason) {
+        case 'partial_prepayment_exists':
+          // Belt-and-braces — the pre-check above already threw for this.
+          throw new PrepaymentBlockedPartialPrepaymentError(
+            quote.blockedInvoiceId ?? '',
+            quote.blockedPaidAmount ?? 0,
+          );
+        case 'window_overlaps_covered':
+          throw new PrepaymentBlockedWindowOverlapError(
+            quote.coveredMonths ?? [],
+          );
+        case 'outstanding_debt':
+        default:
+          throw new PrepaymentBlockedOutstandingDebtError(
+            quote.outstandingAmount ?? 0,
+          );
+      }
     }
 
     const account = await this.paymentAccounts.ensureForChild(
@@ -1859,6 +1990,157 @@ export class InvoiceService {
       this.logger.debug(
         `discount.reserve_released: kg=${kindergartenId} discount=${reservedId} — engine dropped post-reserve.`,
       );
+    }
+  }
+
+  /**
+   * §2.2 debt computation shared by `computePrepaymentQuote` (blocked-quote
+   * path) and the `prepayInvoice` pre-check (review FIX 3: the debt check
+   * must run BEFORE any stale-prepayment cancel so a debt-blocked retry
+   * cancels nothing). Returns `null` when the child has no unsettled
+   * non-prepayment invoice; otherwise the KZT remainder summed over the
+   * blocking invoices (possibly zero — presence of the invoices blocks,
+   * not the amount).
+   */
+  private async computeOutstandingDebt(
+    kindergartenId: string,
+    childId: string,
+  ): Promise<MoneyKzt | null> {
+    const unpaid = await this.invoices.findUnpaidNonPrepaymentByChild(
+      kindergartenId,
+      childId,
+    );
+    if (unpaid.length === 0) return null;
+    const paidSums = await this.invoices.getPaidSumsForInvoices(
+      kindergartenId,
+      unpaid.map((i) => i.id),
+    );
+    let outstanding = MoneyKzt.zero();
+    for (const inv of unpaid) {
+      const paid = MoneyKzt.fromKzt(paidSums.get(inv.id) ?? 0);
+      const remaining = inv.amountAfterDiscount.sub(paid);
+      if (remaining.isPositive()) {
+        outstanding = outstanding.add(remaining);
+      }
+    }
+    return outstanding;
+  }
+
+  /**
+   * Review FIX 2 money guard — the first stale prepayment holding a
+   * completed-paid sum > 0, whatever its status (a `partial` row flipped to
+   * `overdue` by `markOverdueBatch` still holds the parent's money).
+   * `null` when every stale row is zero-paid (safe to cancel).
+   */
+  private async findMoneyHoldingPrepayment(
+    kindergartenId: string,
+    stale: Invoice[],
+  ): Promise<{ invoice: Invoice; paidAmount: number } | null> {
+    if (stale.length === 0) return null;
+    const paidSums = await this.invoices.getPaidSumsForInvoices(
+      kindergartenId,
+      stale.map((s) => s.id),
+    );
+    for (const inv of stale) {
+      const paid = paidSums.get(inv.id) ?? 0;
+      if (paid > 0) {
+        return { invoice: inv, paidAmount: paid };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * §2.8 / review FIX 4 — cancel the unpaid monthlies covered by a freshly
+   * SETTLED prepayment, shared by `manualMarkPaid` (cash settlement).
+   * Mirrors `PaymentService.cancelMonthliesCoveredByPrepayment` (the
+   * gateway settlement hook keeps its own copy so the payment.service spec
+   * harness's get-only InvoiceService shim keeps compiling) — keep the two
+   * in sync.
+   *
+   * Guards:
+   *   - FIX 6: per-child prepayment advisory lock (reentrant when the
+   *     caller already holds it) so a concurrent `prepayInvoice` for the
+   *     same child cannot interleave;
+   *   - FIX 7: the SAME per-(kg, month) monthly-generation advisory lock
+   *     the cron holds, acquired chronologically over the window — the
+   *     hook then either sees the committed monthly (and cancels it) or
+   *     blocks until the cron finishes;
+   *   - FIX 5: money guard — an overlapped monthly with a completed-paid
+   *     sum > 0 (whatever its status, covers partial→overdue rows) is
+   *     never cancelled, only flagged for manual review (§2.8); and a lost
+   *     `markCancelledConditional` flip is re-read — silent only when the
+   *     row is already `cancelled`, warned otherwise.
+   */
+  private async cancelCoveredMonthliesForPrepayment(
+    kindergartenId: string,
+    prepayment: Invoice,
+    now: Date,
+  ): Promise<void> {
+    await this.invoices.acquireChildPrepaymentAdvisoryLock(
+      kindergartenId,
+      prepayment.childId,
+    );
+    for (
+      let mStart = prepayment.periodStart;
+      mStart.getTime() <= prepayment.periodEnd.getTime();
+      mStart = addMonthsUtc(mStart, 1)
+    ) {
+      await this.invoices.acquireMonthlyGenerationAdvisoryLock(
+        kindergartenId,
+        mStart,
+      );
+    }
+    const overlapped = await this.invoices.findMonthlyInWindow(
+      kindergartenId,
+      prepayment.childId,
+      prepayment.periodStart,
+      prepayment.periodEnd,
+    );
+    if (overlapped.length === 0) return;
+    const paidSums = await this.invoices.getPaidSumsForInvoices(
+      kindergartenId,
+      overlapped.map((m) => m.id),
+    );
+    for (const monthly of overlapped) {
+      const paidKzt = paidSums.get(monthly.id) ?? 0;
+      if (
+        monthly.status === 'paid' ||
+        monthly.status === 'partial' ||
+        paidKzt > 0
+      ) {
+        this.logger.warn(
+          `prepayment.settled: overlapped monthly ${monthly.id} already ${monthly.status}${paidKzt > 0 ? ` (paid_sum=${paidKzt})` : ''} — manual review (no auto-refund), prepayment ${prepayment.id}`,
+        );
+        continue;
+      }
+      const cancelled = await this.invoices.markCancelledConditional(
+        kindergartenId,
+        monthly.id,
+        now,
+      );
+      if (!cancelled) {
+        const reread = await this.invoices.findById(kindergartenId, monthly.id);
+        if (reread && reread.status !== 'cancelled') {
+          this.logger.warn(
+            `prepayment.settled: overlapped monthly ${monthly.id} flipped to ${reread.status} mid-hook — manual review (no auto-refund), prepayment ${prepayment.id}`,
+          );
+        }
+        continue;
+      }
+      await this.releaseCustomDiscountUsagesForInvoice(
+        kindergartenId,
+        monthly.id,
+      );
+      this.logger.log(
+        `prepayment.settled: cancelled overlapped monthly ${monthly.id} (period ${toIsoDate(monthly.periodStart)}) covered by prepayment ${prepayment.id}`,
+      );
+      await this.notificationPort.notifyInvoiceCancelled({
+        kindergartenId,
+        invoiceId: monthly.id,
+        childId: monthly.childId,
+        reason: 'covered_by_prepayment',
+      });
     }
   }
 

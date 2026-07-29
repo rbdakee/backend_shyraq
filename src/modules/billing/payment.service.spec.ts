@@ -301,6 +301,11 @@ class FakeInvoiceRepo extends InvoiceRepository {
   rows = new Map<string, Invoice>();
   paidSums = new Map<string, number>();
   paymentRepo: FakePaymentRepo | null = null;
+  /**
+   * Advisory-lock recording (review FIX 6/7) — `child:<id>` and
+   * `monthly:<YYYY-MM-DD>` entries in acquisition order.
+   */
+  lockCalls: string[] = [];
 
   create(): Promise<Invoice> {
     return Promise.reject(new Error('not used'));
@@ -397,7 +402,19 @@ class FakeInvoiceRepo extends InvoiceRepository {
       this.flip(id, ['pending', 'partial'], 'overdue', now),
     );
   }
-  acquireMonthlyGenerationAdvisoryLock(): Promise<void> {
+  acquireMonthlyGenerationAdvisoryLock(
+    _kindergartenId: string,
+    periodStart: Date,
+  ): Promise<void> {
+    this.lockCalls.push(`monthly:${periodStart.toISOString().slice(0, 10)}`);
+    return Promise.resolve();
+  }
+
+  acquireChildPrepaymentAdvisoryLock(
+    _kindergartenId: string,
+    childId: string,
+  ): Promise<void> {
+    this.lockCalls.push(`child:${childId}`);
     return Promise.resolve();
   }
 
@@ -2766,5 +2783,219 @@ describe('PaymentService.processWebhook — prepayment settlement auto-cancel (P
     expect(h.paymentRepo.rows.get('pmt-prepay')?.status).toBe('completed');
     expect(h.invoiceRepo.rows.get('inv-jul')?.status).toBe('pending');
     expect(cancelledEvents(h)).toHaveLength(0);
+  });
+
+  it('warns instead of cancelling an overdue covered monthly that holds a partial payment (FIX 5 money guard)', async () => {
+    const h = buildHarness();
+    const warnSpy = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+    h.invoiceRepo.rows.set(PREPAY, makePrepayment());
+    // `markOverdueBatch` flipped a partial monthly → overdue: status alone
+    // says "cancellable", the completed-paid sum says "money inside".
+    h.invoiceRepo.rows.set(
+      'inv-jul',
+      makeMonthly('inv-jul', '2026-07-01', '2026-07-31', 'overdue'),
+    );
+    h.invoiceRepo.setPaidSum('inv-jul', 10_000);
+    h.paymentAccountRepo.put(makeAccount());
+    seedPrepayPayment(h);
+
+    await settle(h);
+
+    expect(h.invoiceRepo.rows.get(PREPAY)?.status).toBe('paid');
+    expect(h.invoiceRepo.rows.get('inv-jul')?.status).toBe('overdue');
+    expect(cancelledEvents(h)).toHaveLength(0);
+    const warns = warnSpy.mock.calls
+      .map((c) => c[0])
+      .filter(
+        (msg): msg is string =>
+          typeof msg === 'string' && msg.includes('manual review'),
+      );
+    expect(warns).toHaveLength(1);
+    expect(warns[0]).toContain('inv-jul already overdue (paid_sum=10000)');
+  });
+
+  it('warns on a lost cancel flip whose re-read shows the monthly became paid mid-hook (FIX 5)', async () => {
+    const h = buildHarness();
+    const warnSpy = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+    h.invoiceRepo.rows.set(PREPAY, makePrepayment());
+    h.invoiceRepo.rows.set(
+      'inv-jul',
+      makeMonthly('inv-jul', '2026-07-01', '2026-07-31', 'pending'),
+    );
+    h.paymentAccountRepo.put(makeAccount());
+    seedPrepayPayment(h);
+    // Simulate a payment settling the monthly BETWEEN the hook's read and
+    // its conditional cancel: the flip returns null and the row is `paid`.
+    jest
+      .spyOn(h.invoiceRepo, 'markCancelledConditional')
+      .mockImplementation((_kg, id, now) => {
+        const inv = h.invoiceRepo.rows.get(id);
+        if (inv && id === 'inv-jul') {
+          h.invoiceRepo.rows.set(
+            id,
+            Invoice.fromState({
+              ...inv.toState(),
+              status: 'paid',
+              updatedAt: now,
+            }),
+          );
+        }
+        return Promise.resolve(null);
+      });
+
+    await settle(h);
+
+    expect(h.invoiceRepo.rows.get('inv-jul')?.status).toBe('paid');
+    expect(cancelledEvents(h)).toHaveLength(0);
+    const warns = warnSpy.mock.calls
+      .map((c) => c[0])
+      .filter(
+        (msg): msg is string =>
+          typeof msg === 'string' &&
+          msg.includes('flipped to paid mid-hook — manual review'),
+      );
+    expect(warns).toHaveLength(1);
+    expect(warns[0]).toContain('inv-jul');
+  });
+
+  it('acquires the child prepayment lock and the chronological monthly-generation locks before cancelling (FIX 6/7)', async () => {
+    const h = buildHarness();
+    h.invoiceRepo.rows.set(PREPAY, makePrepayment());
+    h.invoiceRepo.rows.set(
+      'inv-jul',
+      makeMonthly('inv-jul', '2026-07-01', '2026-07-31', 'pending'),
+    );
+    h.paymentAccountRepo.put(makeAccount());
+    seedPrepayPayment(h);
+
+    await settle(h);
+
+    // Paid-flip branch takes the child lock first (under the payment
+    // advisory lock), then the hook re-takes it (reentrant) and walks the
+    // window's monthly-generation locks in chronological order — the same
+    // locks the cron holds, so hook-vs-cron cannot interleave.
+    expect(h.invoiceRepo.lockCalls).toEqual([
+      `child:${CHILD}`,
+      `child:${CHILD}`,
+      'monthly:2026-07-01',
+      'monthly:2026-08-01',
+      'monthly:2026-09-01',
+    ]);
+    expect(h.invoiceRepo.rows.get('inv-jul')?.status).toBe('cancelled');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Review FIX 10 — settle-into-void escalation. A completed payment whose
+// invoice flip is lost because the invoice is meanwhile cancelled/refunded
+// must reach the kg admins via `payment.refund_required` (reason
+// `settled_into_cancelled_invoice`), not just a warn log.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('PaymentService.processWebhook — settle-into-cancelled escalation (FIX 10)', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  function seedProcessingPayment(h: Harness, amountKzt: number): void {
+    h.paymentRepo.rows.set(
+      'pmt-void',
+      Payment.fromState({
+        id: 'pmt-void',
+        kindergartenId: KG,
+        invoiceId: INVOICE,
+        childId: CHILD,
+        payerUserId: PAYER,
+        amount: m(amountKzt),
+        provider: 'mock',
+        providerTxnId: 'tx_void',
+        idempotencyKey: 'idem-void',
+        status: 'processing',
+        providerPayload: null,
+        paidAt: null,
+        refundId: null,
+        createdAt: NOW,
+        updatedAt: NOW,
+      }),
+    );
+  }
+
+  async function settleVoid(h: Harness): Promise<void> {
+    h.provider.verifyWebhookImpl = () =>
+      Promise.resolve({
+        providerPaymentId: 'tx_void',
+        status: 'completed',
+        raw: {},
+      });
+    await h.service.processWebhook({
+      provider: 'mock',
+      headers: { 'x-mock-signature': 'valid' },
+      body: {},
+    });
+  }
+
+  it('emits payment.refund_required with reason settled_into_cancelled_invoice when the full paid-flip lands on a cancelled invoice', async () => {
+    const h = buildHarness({ adminUserIds: ['admin-1'] });
+    h.invoiceRepo.rows.set(INVOICE, makeInvoice({ status: 'cancelled' }));
+    h.paymentAccountRepo.put(makeAccount());
+    seedProcessingPayment(h, 50_000); // full amount → paid-flip branch
+
+    await settleVoid(h);
+
+    expect(h.paymentRepo.rows.get('pmt-void')?.status).toBe('completed');
+    expect(h.invoiceRepo.rows.get(INVOICE)?.status).toBe('cancelled');
+    const pings = h.notifier.events.filter(
+      (e) => e.type === 'payment_refund_required',
+    );
+    expect(pings).toHaveLength(1);
+    expect(pings[0].event).toMatchObject({
+      kindergartenId: KG,
+      paymentId: 'pmt-void',
+      invoiceId: INVOICE,
+      childId: CHILD,
+      amount: 50_000,
+      reason: 'settled_into_cancelled_invoice',
+      recipientUserIds: ['admin-1'],
+    });
+  });
+
+  it('emits the same escalation when a partial payment settles into a refunded invoice (partial-flip branch)', async () => {
+    const h = buildHarness({ adminUserIds: ['admin-1'] });
+    h.invoiceRepo.rows.set(INVOICE, makeInvoice({ status: 'refunded' }));
+    h.paymentAccountRepo.put(makeAccount());
+    seedProcessingPayment(h, 20_000); // sub-total → partial-flip branch
+
+    await settleVoid(h);
+
+    expect(h.paymentRepo.rows.get('pmt-void')?.status).toBe('completed');
+    expect(h.invoiceRepo.rows.get(INVOICE)?.status).toBe('refunded');
+    const pings = h.notifier.events.filter(
+      (e) => e.type === 'payment_refund_required',
+    );
+    expect(pings).toHaveLength(1);
+    expect(pings[0].event).toMatchObject({
+      paymentId: 'pmt-void',
+      reason: 'settled_into_cancelled_invoice',
+    });
+  });
+
+  it('emits no escalation when the lost flip re-reads as a live status (concurrent writer applied the same transition)', async () => {
+    const h = buildHarness({ adminUserIds: ['admin-1'] });
+    // Invoice already `paid` — markPaidConditional loses, but the invoice
+    // is alive and settled; the silent no-op behavior is preserved.
+    h.invoiceRepo.rows.set(INVOICE, makeInvoice({ status: 'paid' }));
+    h.paymentAccountRepo.put(makeAccount());
+    seedProcessingPayment(h, 50_000);
+
+    await settleVoid(h);
+
+    expect(h.paymentRepo.rows.get('pmt-void')?.status).toBe('completed');
+    expect(
+      h.notifier.events.filter((e) => e.type === 'payment_refund_required'),
+    ).toHaveLength(0);
   });
 });

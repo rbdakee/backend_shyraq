@@ -652,8 +652,11 @@ export class InvoiceRelationalRepository extends InvoiceRepository {
     kindergartenId: string,
     childId: string,
   ): Promise<Invoice[]> {
-    // `partial` deliberately absent — a partially-paid prepayment already
-    // holds parent money and must never be auto-cancelled (§2.2 / P2).
+    // `partial` INCLUDED (review FIX 2): the status set is not the money
+    // guard — `markOverdueBatch` flips `partial → overdue`, so a
+    // money-holding prepayment can be in any of the three statuses. The
+    // service checks completed-paid sums over the result and blocks (never
+    // cancels) any row with money inside; only zero-paid rows are cancelled.
     const rows = await this.manager()
       .getRepository(InvoiceTypeOrmEntity)
       .createQueryBuilder('inv')
@@ -661,12 +664,25 @@ export class InvoiceRelationalRepository extends InvoiceRepository {
       .andWhere('inv.child_id = :cid', { cid: childId })
       .andWhere('inv.invoice_type IN (:...pt)', { pt: PREPAYMENT_TYPES })
       .andWhere('inv.status IN (:...statuses)', {
-        statuses: ['pending', 'overdue'],
+        statuses: ['pending', 'overdue', 'partial'],
       })
       .orderBy('inv.created_at', 'ASC')
       .addOrderBy('inv.id', 'ASC')
       .getMany();
     return rows.map(InvoiceMapper.toDomain);
+  }
+
+  async acquireChildPrepaymentAdvisoryLock(
+    kindergartenId: string,
+    childId: string,
+  ): Promise<void> {
+    // Review FIX 6 — same key-hashing pattern as the payment / monthly
+    // advisory locks. Requires the ambient tenant TX; released at commit.
+    const scope = `billing:prepayment:${kindergartenId}:${childId}`;
+    await this.manager().query(
+      `SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`,
+      [scope],
+    );
   }
 }
 

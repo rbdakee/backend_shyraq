@@ -407,16 +407,40 @@ export abstract class InvoiceRepository {
   }
 
   /**
-   * The child's unpaid `prepayment_*` invoices — `status IN
-   * ('pending','overdue')` only. These are the rows a new prepayment
-   * attempt cancels before creating its replacement (§2.2 / P2). A
-   * `partial` prepayment is deliberately EXCLUDED — the parent already paid
-   * money into it, so it must never be auto-cancelled.
+   * The child's stale unpaid `prepayment_*` invoices — `status IN
+   * ('pending','overdue','partial')`. These are the rows a new prepayment
+   * attempt inspects before creating its replacement (§2.2 / P2). The
+   * status filter alone is NOT the money guard: `markOverdueBatch` flips
+   * `partial → overdue`, so a money-holding prepayment can sit in ANY of
+   * the three statuses. The service batches `getPaidSumsForInvoices` over
+   * the result — rows with a completed-paid sum > 0 BLOCK the retry
+   * (review FIX 2, `prepayment_blocked_partial_prepayment`); only
+   * zero-paid rows are cancelled.
    */
   findUnpaidPrepaymentsByChild(
     _kindergartenId: string,
     _childId: string,
   ): Promise<Invoice[]> {
     return Promise.resolve([]);
+  }
+
+  /**
+   * Serialises the per-child prepayment flow (review FIX 6):
+   * `pg_advisory_xact_lock(hashtext('billing:prepayment:'||kg||':'||childId))`.
+   * Held by `prepayInvoice` for the whole create flow and by the
+   * settlement paths (`applyCompletedPayment` paid-flip / covered-monthly
+   * hook, `manualMarkPaid` on a prepayment) so a settling prepayment and a
+   * concurrent `prepayInvoice` for the same child cannot interleave.
+   * Requires an ambient TX; released at COMMIT/ROLLBACK. Lock ordering is
+   * acyclic: payment lock → child lock → monthly-generation lock(s);
+   * `prepayInvoice` takes the child lock only.
+   *
+   * Default no-op so in-memory fakes compile; relational impl overrides.
+   */
+  acquireChildPrepaymentAdvisoryLock(
+    _kindergartenId: string,
+    _childId: string,
+  ): Promise<void> {
+    return Promise.resolve();
   }
 }
