@@ -33,7 +33,7 @@ import { PendingRoleSelectGuard } from '@/common/guards/pending-role-select.guar
 import { RolesGuard } from '@/common/guards/roles.guard';
 import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-context';
 import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
-import { CopyWeekDto } from './dto/copy-week.dto';
+import { MealCopyWeekDto } from './dto/copy-week.dto';
 import { CreateMealItemDto } from './dto/create-meal-item.dto';
 import { CreateMealPlanDto } from './dto/create-meal-plan.dto';
 import { ListMealPlansQuery } from './dto/list-meal-plans.query';
@@ -70,10 +70,10 @@ export class MealAdminController {
   @ApiUnprocessableEntityResponse({ description: 'Invalid date.' })
   async copyWeek(
     @Tenant() t: TenantContext,
-    @Body() dto: CopyWeekDto,
+    @Body() dto: MealCopyWeekDto,
   ): Promise<CopyWeekSummaryDto> {
     const kgId = requireTenant(t);
-    const fromMonday = new Date(dto.source_week_start_date);
+    const fromMonday = new Date(dto.fromMonday);
     return this.service.copyWeekMenuToNext(kgId, fromMonday, 'manual');
   }
 

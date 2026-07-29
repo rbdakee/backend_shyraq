@@ -336,10 +336,18 @@ export class MealService {
 
   /**
    * Copies all meal_plans in [fromMonday, fromMonday+7) to [nextMonday, nextMonday+7).
-   * Idempotent: probes the target week first via `existsAnyInRange`. If any
-   * target row already exists we short-circuit and report `plans_skipped =
-   * sourcePlans.length` — we never enter `batchCreate`, so a single 23505
-   * inside the ambient transaction can never poison it.
+   *
+   * Idempotent at `(date, group_id)` granularity: we read the slots already
+   * occupied in the target week and drop only the source plans that collide,
+   * copying the rest. `batchCreate` therefore never sees a conflicting row,
+   * so a 23505 can never poison the ambient transaction.
+   *
+   * Granularity matters operationally: the previous implementation probed
+   * "does ANY plan exist anywhere in the target week for this kg", which meant
+   * one pre-created day — a draft, an empty plan, a Sat/Sun entry — silently
+   * blocked the whole week's auto-copy (`plans_created: 0`). Kindergartens
+   * routinely pre-create something, so the cron was a no-op for them. The
+   * schedule half of the weekly rollout already skips per-group; this matches.
    *
    * Called by T5 cron and by admin manual trigger.
    */
@@ -357,10 +365,10 @@ export class MealService {
 
     // Per-(kg, target-week) advisory lock. Serializes concurrent callers
     // (cron + admin manual trigger, two admin clicks) on the SAME target
-    // week so the existsAnyInRange probe below observes the first
-    // caller's just-committed plans and short-circuits, instead of racing
-    // into batchCreate where a 23505 would poison the ambient TX. Lock
-    // is auto-released when the ambient TX commits/rolls back.
+    // week so the occupied-slot probe below observes the first caller's
+    // just-committed plans and filters them out, instead of racing into
+    // batchCreate where a 23505 would poison the ambient TX. Lock is
+    // auto-released when the ambient TX commits/rolls back.
     await this.mealPlanRepo.acquireWeekCopyLock(
       kindergartenId,
       targetMondayStr,
@@ -375,25 +383,39 @@ export class MealService {
       return { plans_created: 0, plans_skipped: 0 };
     }
 
-    // Idempotency probe — short-circuit BEFORE any insert. If we let
+    // Idempotency probe — resolve conflicts BEFORE any insert. If we let
     // `batchCreate` race and rely on its 23505 catch-and-continue, the first
     // 23505 inside the ambient TX puts it into the failed (25P02) state and
     // every subsequent statement raises InFailedSqlTransactionError, which
     // would propagate as a 500.
-    const targetExists = await this.mealPlanRepo.existsAnyInRange(
+    const occupied = await this.mealPlanRepo.listOccupiedSlotsInRange(
       kindergartenId,
       targetMondayStr,
       targetSundayStr,
     );
-    if (targetExists) {
-      return { plans_created: 0, plans_skipped: sourcePlans.length };
+    const occupiedKeys = new Set(
+      occupied.map((slot) => slotKey(slot.date, slot.groupId)),
+    );
+
+    // Project each source plan onto its target date, then keep only the ones
+    // whose slot is free. `plans_skipped` is now the count of genuinely
+    // conflicting days, not "the whole week because one day existed".
+    const projected = sourcePlans.map((src) => ({
+      src,
+      // src.date is YYYY-MM-DD — parse as UTC and add exactly 7 UTC days.
+      targetDateStr: toIsoDate(addDaysUtc(parseIsoDateUtc(src.date), 7)),
+    }));
+    const copyable = projected.filter(
+      (p) => !occupiedKeys.has(slotKey(p.targetDateStr, p.src.groupId)),
+    );
+    const plansSkipped = projected.length - copyable.length;
+
+    if (copyable.length === 0) {
+      return { plans_created: 0, plans_skipped: plansSkipped };
     }
 
     const now = this.clock.now();
-    const newPlans: MealPlan[] = sourcePlans.map((src) => {
-      // src.date is YYYY-MM-DD — parse as UTC and add exactly 7 UTC days.
-      const srcDate = parseIsoDateUtc(src.date);
-      const targetDateStr = toIsoDate(addDaysUtc(srcDate, 7));
+    const newPlans: MealPlan[] = copyable.map(({ src, targetDateStr }) => {
       const newPlanId = randomUUID();
 
       return MealPlan.create({
@@ -428,7 +450,20 @@ export class MealService {
     );
     return {
       plans_created: result.plans_created,
-      plans_skipped: result.plans_skipped,
+      // `result.plans_skipped` should be 0 — the probe above already removed
+      // every conflicting slot — but add it anyway so a row lost to the
+      // defensive 23505 net still shows up in the summary.
+      plans_skipped: plansSkipped + result.plans_skipped,
     };
   }
+}
+
+/**
+ * Key for the `(date, group_id)` uniqueness pair. `group_id IS NULL` means a
+ * kindergarten-wide plan and is a distinct slot from any group plan on the
+ * same date — matching the two partial-unique indexes on `meal_plans`. The
+ * `*` sentinel cannot collide with a groupId (always a UUID).
+ */
+function slotKey(date: string, groupId: string | null): string {
+  return `${date}|${groupId ?? '*'}`;
 }

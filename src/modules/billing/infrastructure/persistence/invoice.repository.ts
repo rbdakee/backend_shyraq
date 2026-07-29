@@ -118,6 +118,32 @@ export abstract class InvoiceRepository {
   ): Promise<number>;
 
   /**
+   * Batch variant of `getPaidSumForInvoice`. Sums `payments.amount` over
+   * `status='completed'` rows grouped by `invoice_id`, restricted to the
+   * given ids. Returns a `Map<invoiceId, paidSum>`; invoice ids with no
+   * completed payment are simply absent (caller treats missing as 0). Used
+   * by the list presenters (admin + parent) so rendering N invoices costs a
+   * single query instead of N × `getPaidSumForInvoice`.
+   */
+  abstract getPaidSumsForInvoices(
+    kindergartenId: string,
+    invoiceIds: string[],
+  ): Promise<Map<string, number>>;
+
+  /**
+   * Per-child outstanding balance: for each child in `childIds`, the sum of
+   * `max(0, amount_after_discount − completed_paid)` over that child's
+   * non-terminal invoices (`status NOT IN ('cancelled','refunded')`). A
+   * fully-paid invoice contributes 0. Returns `Map<childId, outstanding>`;
+   * children with no outstanding balance are absent (caller treats missing
+   * as 0). Powers the admin children-list `outstanding_total` overlay.
+   */
+  abstract getOutstandingByChild(
+    kindergartenId: string,
+    childIds: string[],
+  ): Promise<Map<string, number>>;
+
+  /**
    * Conditional UPDATE: `SET status='paid', updated_at=$now WHERE id=$id AND
    * kindergarten_id=$kg AND status IN ('pending','partial','overdue')
    * RETURNING *`. Returns the hydrated domain on success, `null` on

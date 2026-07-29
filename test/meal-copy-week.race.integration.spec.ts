@@ -8,24 +8,24 @@
  *   npm test -- --testPathPattern meal-copy-week.race.integration
  *
  * What this guards: MealService.copyWeekMenuToNext does
- *   1. existsAnyInRange(target_week)   ← boolean probe
- *   2. if false → batchCreate(...)
+ *   1. listOccupiedSlotsInRange(target_week)   ← (date, group_id) probe
+ *   2. batchCreate(source plans whose target slot is free)
  *
  * Two concurrent callers (cron + admin manual click, two admin clicks) can
- * both pass step 1 in the race window, both enter batchCreate, the loser's
- * INSERT hits 23505 → PG sets TX state to 25P02 → every subsequent statement
- * raises InFailedSqlTransactionError, propagating as a 500.
+ * both see an empty slot set in the race window, both enter batchCreate, the
+ * loser's INSERT hits 23505 → PG sets TX state to 25P02 → every subsequent
+ * statement raises InFailedSqlTransactionError, propagating as a 500.
  *
  * Fix: MealPlanRepository.acquireWeekCopyLock(kg, weekStart) calls
  *   pg_advisory_xact_lock(hashtext('meal-copy:'||kg||':'||weekStart)::bigint)
- * before existsAnyInRange. Concurrent callers serialize on the lock, the
- * second one observes the first one's just-committed plans and short-circuits
- * to plans_skipped = sourceCount.
+ * before the probe. Concurrent callers serialize on the lock, the second one
+ * observes the first one's just-committed slots and filters every source plan
+ * out, landing on plans_skipped = sourceCount.
  *
  * The spec verifies the primitive directly: with the lock + probe in place,
- * 2 concurrent acquireWeekCopyLock + existsAnyInRange + (conditional)
+ * 2 concurrent acquireWeekCopyLock + listOccupiedSlotsInRange + (conditional)
  * batchCreate sequences produce exactly 1 winner (creates rows) and 1 loser
- * (probe sees the just-created rows and short-circuits).
+ * (probe sees the just-created slots and copies nothing).
  */
 import 'reflect-metadata';
 import { randomUUID } from 'node:crypto';
@@ -135,33 +135,43 @@ describeIntegration(
         dateFrom: sourceMonday,
         dateTo: '2026-05-03',
       });
-      const exists = await repo.existsAnyInRange(
+      const occupied = await repo.listOccupiedSlotsInRange(
         kgId,
         targetMonday,
         targetSunday,
       );
-      if (exists) {
+      const occupiedKeys = new Set(
+        occupied.map((s) => `${s.date}|${s.groupId ?? '*'}`),
+      );
+      const newPlans: MealPlan[] = sourcePlans
+        .map((src) => {
+          // shift by 7 UTC days
+          const next = new Date(`${src.date}T00:00:00Z`);
+          next.setUTCDate(next.getUTCDate() + 7);
+          return { src, targetDateStr: next.toISOString().slice(0, 10) };
+        })
+        .filter(
+          (p) =>
+            !occupiedKeys.has(`${p.targetDateStr}|${p.src.groupId ?? '*'}`),
+        )
+        .map(({ src, targetDateStr }) =>
+          MealPlan.create({
+            id: randomUUID(),
+            kindergartenId: kgId,
+            date: targetDateStr,
+            groupId: src.groupId,
+            isPublished: src.isPublished,
+            notes: src.notes,
+            source: 'copied',
+            copiedFrom: src.id,
+            createdBy: src.createdBy,
+            now: new Date(),
+            items: [],
+          }),
+        );
+      if (newPlans.length === 0) {
         return { kind: 'loser' };
       }
-      const newPlans: MealPlan[] = sourcePlans.map((src) => {
-        // shift by 7 UTC days
-        const next = new Date(`${src.date}T00:00:00Z`);
-        next.setUTCDate(next.getUTCDate() + 7);
-        const targetDateStr = next.toISOString().slice(0, 10);
-        return MealPlan.create({
-          id: randomUUID(),
-          kindergartenId: kgId,
-          date: targetDateStr,
-          groupId: src.groupId,
-          isPublished: src.isPublished,
-          notes: src.notes,
-          source: 'copied',
-          copiedFrom: src.id,
-          createdBy: src.createdBy,
-          now: new Date(),
-          items: [],
-        });
-      });
       const result = await repo.batchCreate(kgId, newPlans);
       return { kind: 'winner', created: result.plans_created };
     }

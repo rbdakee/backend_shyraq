@@ -463,8 +463,9 @@ describe('B7 meal plans (e2e)', () => {
 
   // ── F. Manual copy-week (idempotent) ─────────────────────────────────────
   // First call copies the source week into the target week (plans_created > 0).
-  // Second call with the same source-week start date probes the target range
-  // via existsAnyInRange and short-circuits before any insert, so it returns
+  // Second call with the same fromMonday probes the target range via
+  // listOccupiedSlotsInRange, finds every (date, group_id) slot taken, and
+  // filters all source plans out before any insert — so it returns
   // plans_created=0, plans_skipped = sourcePlans.length. This is the T7-C1
   // fix: previously the second call inside the ambient TX hit a 23505 inside
   // batchCreate and propagated as 500.
@@ -493,18 +494,18 @@ describe('B7 meal plans (e2e)', () => {
     const firstCopy = await request(server)
       .post('/api/v1/admin/meal-plans/copy-week')
       .set('Authorization', `Bearer ${a.adminToken}`)
-      .send({ source_week_start_date: '2026-04-27' })
+      .send({ fromMonday: '2026-04-27' })
       .expect(200);
     expect(firstCopy.body.plans_created).toBe(sourceDates.length);
     expect(firstCopy.body.plans_skipped).toBe(0);
 
-    // Second copy → idempotent skip. The service probes existsAnyInRange,
-    // sees the target range is non-empty, and returns plans_skipped =
-    // sourcePlans.length without entering batchCreate.
+    // Second copy → idempotent skip. Every target slot is now occupied, so
+    // all source plans are filtered out and the service returns
+    // plans_skipped = sourcePlans.length without entering batchCreate.
     const secondCopy = await request(server)
       .post('/api/v1/admin/meal-plans/copy-week')
       .set('Authorization', `Bearer ${a.adminToken}`)
-      .send({ source_week_start_date: '2026-04-27' })
+      .send({ fromMonday: '2026-04-27' })
       .expect(200);
     expect(secondCopy.body.plans_created).toBe(0);
     expect(secondCopy.body.plans_skipped).toBe(sourceDates.length);

@@ -82,6 +82,12 @@ class FakeRepo extends InvoiceRepository {
   getPaidSumForInvoice(): Promise<number> {
     return Promise.resolve(0);
   }
+  getPaidSumsForInvoices(): Promise<Map<string, number>> {
+    return Promise.resolve(new Map());
+  }
+  getOutstandingByChild(): Promise<Map<string, number>> {
+    return Promise.resolve(new Map());
+  }
   markPaidConditional(): Promise<Invoice | null> {
     return Promise.resolve(null);
   }

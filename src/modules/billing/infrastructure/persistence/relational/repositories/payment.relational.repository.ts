@@ -201,6 +201,9 @@ export class PaymentRelationalRepository extends PaymentRepository {
     if (filter.childId) {
       qb.andWhere('p.child_id = :child', { child: filter.childId });
     }
+    if (filter.invoiceId) {
+      qb.andWhere('p.invoice_id = :invoice', { invoice: filter.invoiceId });
+    }
     if (filter.refundRequired) {
       qb.andWhere('p.refund_required = true');
     }

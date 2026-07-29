@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { BillingLifecyclePort } from '@/modules/child/infrastructure/billing-lifecycle.port';
 import { TariffAssignmentRepository } from '../infrastructure/persistence/tariff-assignment.repository';
+import { InvoiceRepository } from '../infrastructure/persistence/invoice.repository';
 
 /**
  * BillingLifecycleAdapter — production binding for `BillingLifecyclePort`.
@@ -17,7 +18,10 @@ import { TariffAssignmentRepository } from '../infrastructure/persistence/tariff
  */
 @Injectable()
 export class BillingLifecycleAdapter extends BillingLifecyclePort {
-  constructor(private readonly tariffAssignments: TariffAssignmentRepository) {
+  constructor(
+    private readonly tariffAssignments: TariffAssignmentRepository,
+    private readonly invoices: InvoiceRepository,
+  ) {
     super();
   }
 
@@ -50,5 +54,17 @@ export class BillingLifecycleAdapter extends BillingLifecyclePort {
       atDate,
     );
     return assignment !== null;
+  }
+
+  /**
+   * Delegates to `InvoiceRepository.getOutstandingByChild` — the admin
+   * children-list overlay. Kept a single batch query so listing N children
+   * costs one round-trip regardless of N.
+   */
+  async getOutstandingForChildren(
+    kindergartenId: string,
+    childIds: string[],
+  ): Promise<Map<string, number>> {
+    return this.invoices.getOutstandingByChild(kindergartenId, childIds);
   }
 }

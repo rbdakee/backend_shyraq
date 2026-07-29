@@ -67,6 +67,20 @@ export class ChildDto {
   })
   current_mentor_name!: string | null;
 
+  @ApiProperty({
+    example: 58000,
+    nullable: true,
+    description:
+      'Total outstanding billing balance for the child in KZT: sum of ' +
+      'max(0, amount_after_discount − paid) over the child non-terminal ' +
+      'invoices (cancelled/refunded excluded; fully-paid invoices contribute ' +
+      '0). Resolved via the billing overlay on the admin children list ' +
+      '(GET /children). Null when the overlay was not built for this response ' +
+      '(e.g. single-child endpoints) — treat null as "not computed", 0 as ' +
+      '"nothing owed".',
+  })
+  outstanding_total!: number | null;
+
   @ApiProperty({ example: null, nullable: true })
   enrollment_date!: string | null;
 

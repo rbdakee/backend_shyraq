@@ -26,8 +26,33 @@ export const InvoicePresenter = {
     };
   },
 
-  one(invoice: Invoice, lineItems?: InvoiceLineItem[]): InvoiceResponseDto {
+  /**
+   * `paidSum` is the total of completed payments toward this invoice (KZT).
+   * Callers resolve it via `InvoiceRepository.getPaidSumForInvoice` (single)
+   * or `getPaidSumsForInvoices` (batch, for lists); it defaults to 0 so
+   * call sites that never touch payments (e.g. a freshly created invoice)
+   * present `amount_paid: 0` / `amount_remaining: <full>` without a query.
+   *
+   * `amount_remaining` = `max(0, amount_after_discount − amount_paid)`, EXCEPT
+   * for the void terminal states (`cancelled` / `refunded`) where it is forced
+   * to 0 — a voided/refunded invoice is not a debt. Without this a refunded
+   * invoice would report the full balance again (its payment left `completed`,
+   * so `paidSum` drops to 0) and a cancelled unpaid invoice would show its full
+   * amount as "still owed". Clients rely on `amount_remaining` as "how much is
+   * actually owed", so terminal-void → 0.
+   */
+  one(
+    invoice: Invoice,
+    lineItems?: InvoiceLineItem[],
+    paidSum = 0,
+  ): InvoiceResponseDto {
     const s = invoice.toState();
+    const afterDiscount = s.amountAfterDiscount.toNumber();
+    const amountPaid = paidSum;
+    const isVoid = s.status === 'cancelled' || s.status === 'refunded';
+    const amountRemaining = isVoid
+      ? 0
+      : Math.max(0, afterDiscount - amountPaid);
     const dto: InvoiceResponseDto = {
       id: s.id,
       kindergarten_id: s.kindergartenId,
@@ -40,7 +65,9 @@ export const InvoicePresenter = {
       amount_due: s.amountDue.toNumber(),
       discount_pct: s.discountPct,
       discount_reason: s.discountReason,
-      amount_after_discount: s.amountAfterDiscount.toNumber(),
+      amount_after_discount: afterDiscount,
+      amount_paid: amountPaid,
+      amount_remaining: amountRemaining,
       status: s.status,
       due_date: toIsoDate(s.dueDate),
       description: s.description,
@@ -57,9 +84,12 @@ export const InvoicePresenter = {
   list(
     invoices: Invoice[],
     nextCursor: string | null,
+    paidSums?: Map<string, number>,
   ): ListInvoicesResponseDto {
     return {
-      items: invoices.map((inv) => InvoicePresenter.one(inv)),
+      items: invoices.map((inv) =>
+        InvoicePresenter.one(inv, undefined, paidSums?.get(inv.id) ?? 0),
+      ),
       next_cursor: nextCursor,
     };
   },

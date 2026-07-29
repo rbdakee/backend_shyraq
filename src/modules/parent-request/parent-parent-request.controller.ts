@@ -44,7 +44,10 @@ import { CreateTrustedPersonRequestDto } from './dto/create-trusted-person-reque
 import { CreateVacationRequestDto } from './dto/create-vacation-request.dto';
 import { ListMessagesQueryDto } from './dto/list-messages-query.dto';
 import { ListParentRequestsQueryDto } from './dto/list-parent-requests-query.dto';
-import { OtpRequestDto, OtpRequestResponseDto } from './dto/otp-request.dto';
+import {
+  OtpRequestDto,
+  TrustedPersonOtpRequestResponseDto,
+} from './dto/otp-request.dto';
 import {
   ParentRequestMessageListResponseDto,
   ParentRequestMessageResponseDto,
@@ -177,7 +180,7 @@ export class ParentParentRequestController {
     summary:
       "Request an OTP code for the trusted-person sub-flow. Generates a 6-digit code, stores under `otp:request:trusted-person:{userId}` (TTL 1800s), and sends it to the requesting parent's own registered phone (re-auth). Per-phone rate-limit shared with auth login (`rate:otp:{phone}`).",
   })
-  @ApiOkResponse({ type: OtpRequestResponseDto })
+  @ApiOkResponse({ type: TrustedPersonOtpRequestResponseDto })
   @ApiBadRequestResponse({ description: 'Validation error.' })
   @ApiUnauthorizedResponse({ description: 'Bearer missing/invalid/revoked.' })
   @ApiForbiddenResponse({
@@ -192,7 +195,7 @@ export class ParentParentRequestController {
     @Tenant() t: TenantContext,
     @CurrentUser() user: JwtPayload,
     @Body() dto: OtpRequestDto,
-  ): Promise<OtpRequestResponseDto> {
+  ): Promise<TrustedPersonOtpRequestResponseDto> {
     const kgId = requireTenant(t);
     const result = await this.service.sendOtpForTrustedPerson(
       kgId,

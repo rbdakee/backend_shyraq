@@ -206,6 +206,24 @@ export class ManualMarkPaidInvoiceDto {
   @IsString()
   @MaxLength(500)
   note?: string | null;
+
+  @ApiProperty({
+    example: 30000,
+    description:
+      'Cash amount received in KZT. Omitted or equal to amount_remaining → ' +
+      'full settlement, invoice flips to `paid` (legacy behavior). ' +
+      '0 < amount < amount_remaining → partial cash receipt, invoice flips ' +
+      'to `partial`. Amounts ≤ 0 or > amount_remaining are rejected with ' +
+      '409 `invoice_status_invalid` (mirrors payment_mode=partial of ' +
+      'POST /payments/initiate).',
+    required: false,
+    nullable: true,
+    minimum: 1,
+  })
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  amount?: number | null;
 }
 
 export class CancelInvoiceDto {
@@ -406,6 +424,20 @@ export class InvoiceResponseDto {
     description: 'Net amount after discount in KZT.',
   })
   amount_after_discount!: number;
+
+  @ApiProperty({
+    example: 50000,
+    description:
+      'Sum of completed payments toward this invoice in KZT. Always present (0 when nothing paid). May slightly exceed amount_after_discount on sub-tenge rounding of a provider charge.',
+  })
+  amount_paid!: number;
+
+  @ApiProperty({
+    example: 58000,
+    description:
+      'Remaining balance in KZT: max(0, amount_after_discount − amount_paid). Always present (0 when fully paid / cancelled / refunded).',
+  })
+  amount_remaining!: number;
 
   @ApiProperty({ enum: INVOICE_STATUSES, example: 'pending' })
   status!: InvoiceStatus;

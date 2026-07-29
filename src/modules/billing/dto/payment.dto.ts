@@ -305,6 +305,17 @@ export class ListPaymentsQueryDto {
   child_id?: string;
 
   @ApiProperty({
+    example: 'i1a2b3c4-0005-0005-0005-000000000005',
+    description:
+      'Filter by invoice — returns only payments toward this invoice ' +
+      '(payment history of a single invoice on the admin invoice-detail page).',
+    required: false,
+  })
+  @IsOptional()
+  @IsUUID()
+  invoice_id?: string;
+
+  @ApiProperty({
     example: 'true',
     description:
       'Pass "true" to return only payments flagged as needing a manual refund (double payments).',

@@ -82,7 +82,13 @@ export class AdminInvoiceController {
       periodStart: query.period_start,
       periodEnd: query.period_end,
     });
-    return invoices.map((inv) => InvoicePresenter.one(inv));
+    const paidSums = await this.service.getPaidSums(
+      kgId,
+      invoices.map((inv) => inv.id),
+    );
+    return invoices.map((inv) =>
+      InvoicePresenter.one(inv, undefined, paidSums.get(inv.id) ?? 0),
+    );
   }
 
   @Post()
@@ -138,14 +144,15 @@ export class AdminInvoiceController {
     const kgId = requireTenant(t);
     const invoice = await this.service.get(kgId, id);
     const lineItems = await this.service.listLineItems(kgId, id);
-    return InvoicePresenter.one(invoice, lineItems);
+    const paidSum = await this.service.getPaidSum(kgId, id);
+    return InvoicePresenter.one(invoice, lineItems, paidSum);
   }
 
   @Post(':id/manual-mark-paid')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
-      'Mark an invoice as paid via cash/off-platform settlement. Idempotent at the conditional-UPDATE level.',
+      'Mark an invoice as paid via cash/off-platform settlement. Optional `amount` records a partial cash receipt (invoice → partial). Idempotent at the conditional-UPDATE level.',
   })
   @ApiOkResponse({ type: InvoiceResponseDto })
   @ApiBadRequestResponse({ description: 'Validation error.' })
@@ -154,7 +161,7 @@ export class AdminInvoiceController {
   @ApiNotFoundResponse({ description: 'Invoice not found.' })
   @ApiConflictResponse({
     description:
-      'Invoice already paid / refunded / cancelled (state-machine conflict).',
+      'Invoice already paid / refunded / cancelled (state-machine conflict), or `amount` is ≤ 0 / exceeds amount_remaining (amount_mismatch_partial).',
   })
   async manualMarkPaid(
     @Tenant() t: TenantContext,
@@ -166,8 +173,10 @@ export class AdminInvoiceController {
       paidAt: dto.paid_at ? new Date(dto.paid_at) : undefined,
       payerUserId: dto.payer_user_id ?? null,
       note: dto.note ?? null,
+      amount: dto.amount ?? null,
     });
-    return InvoicePresenter.one(invoice);
+    const paidSum = await this.service.getPaidSum(kgId, id);
+    return InvoicePresenter.one(invoice, undefined, paidSum);
   }
 
   @Post(':id/cancel')
@@ -196,6 +205,7 @@ export class AdminInvoiceController {
       id,
       dto.reason ?? undefined,
     );
-    return InvoicePresenter.one(invoice);
+    const paidSum = await this.service.getPaidSum(kgId, id);
+    return InvoicePresenter.one(invoice, undefined, paidSum);
   }
 }

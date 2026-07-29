@@ -33,9 +33,12 @@ import {
   PaymentCalendarResponseDto,
 } from './dto/invoice.dto';
 import { PaymentMethodsResponseDto } from './dto/payment-method.dto';
+import { PaymentResponseDto } from './dto/payment.dto';
 import { InvoicePresenter } from './invoice.presenter';
 import { InvoiceService } from './invoice.service';
 import { PaymentMethodAvailabilityService } from './payment-method-availability.service';
+import { PaymentPresenter } from './payment.presenter';
+import { PaymentService } from './payment.service';
 
 const TENANT_REQUIRED = 'tenant_required';
 
@@ -78,6 +81,7 @@ export class ParentInvoiceController {
   constructor(
     private readonly service: InvoiceService,
     private readonly paymentMethods: PaymentMethodAvailabilityService,
+    private readonly payments: PaymentService,
   ) {}
 
   @Get('children/:childId/invoices')
@@ -109,7 +113,13 @@ export class ParentInvoiceController {
       periodStart: query.period_start,
       periodEnd: query.period_end,
     });
-    return invoices.map((inv) => InvoicePresenter.one(inv));
+    const paidSums = await this.service.getPaidSums(
+      kgId,
+      invoices.map((inv) => inv.id),
+    );
+    return invoices.map((inv) =>
+      InvoicePresenter.one(inv, undefined, paidSums.get(inv.id) ?? 0),
+    );
   }
 
   @Get('invoices/:id')
@@ -137,7 +147,36 @@ export class ParentInvoiceController {
       invoice.childId,
     );
     const lineItems = await this.service.listLineItems(kgId, id);
-    return InvoicePresenter.one(invoice, lineItems);
+    const paidSum = await this.service.getPaidSum(kgId, id);
+    return InvoicePresenter.one(invoice, lineItems, paidSum);
+  }
+
+  @Get('invoices/:id/payments')
+  @UseGuards(InvoiceAccessGuard)
+  @ApiOperation({
+    summary:
+      'Payment history for a single invoice (newest first). Lets the parent see how much was paid, by whom, and when. Tenant resolved from the invoice (InvoiceAccessGuard); re-checks guardian-of-child access; nanny → 403.',
+  })
+  @ApiOkResponse({ type: [PaymentResponseDto] })
+  @ApiUnauthorizedResponse({ description: 'Bearer missing/invalid/revoked.' })
+  @ApiForbiddenResponse({
+    description: 'not_a_guardian / nanny_cannot_view_invoice.',
+  })
+  @ApiNotFoundResponse({ description: 'invoice_not_found.' })
+  async listPayments(
+    @Tenant() t: TenantContext,
+    @CurrentUser() user: JwtPayload,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<PaymentResponseDto[]> {
+    const kgId = requireTenant(t);
+    const invoice = await this.service.get(kgId, id);
+    await this.service.assertNonNannyGuardianForRead(
+      kgId,
+      user.sub,
+      invoice.childId,
+    );
+    const payments = await this.payments.list(kgId, { invoiceId: id });
+    return payments.map((p) => PaymentPresenter.one(p));
   }
 
   @Get('invoices/:id/payment-methods')

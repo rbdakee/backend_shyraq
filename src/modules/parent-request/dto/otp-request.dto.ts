@@ -17,7 +17,14 @@ export class OtpRequestDto {
   child_id!: string;
 }
 
-export class OtpRequestResponseDto {
+/**
+ * Prefixed `TrustedPerson…` because `auth/dto/auth-response.dto.ts` already
+ * exports an `OtpRequestResponseDto` (`{sent, registered, resend_after_sec}`).
+ * Nest-Swagger keys `components.schemas` by class name, so the two collapsed
+ * into a single schema and — since `ParentRequestModule` is registered after
+ * `AuthModule` — this shape overwrote the auth one in `/docs-json`.
+ */
+export class TrustedPersonOtpRequestResponseDto {
   @ApiProperty({
     example: 'otp:request:trusted-person:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
     description: 'Opaque Redis key reference — pass back via /trusted-person.',

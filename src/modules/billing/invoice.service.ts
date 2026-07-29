@@ -78,6 +78,13 @@ export interface ManualMarkPaidInput {
   paidAt?: Date;
   payerUserId?: string | null;
   note?: string | null;
+  /**
+   * Cash amount received. Omitted (or exactly equal to the remaining
+   * balance) → full settlement, invoice → `paid`. 0 < amount < remaining →
+   * partial cash receipt, invoice → `partial`. Mirrors the
+   * `payment_mode=partial` contract of `PaymentService.initiate`.
+   */
+  amount?: number | null;
 }
 
 export interface GenerateMonthlyResult {
@@ -196,12 +203,23 @@ export class InvoiceService {
   }
 
   /**
-   * Completed-payment total for a single invoice. Lets callers outside this
-   * service derive the outstanding balance (`amount_after_discount − paidSum`)
-   * without reaching into `InvoiceRepository` themselves.
+   * Completed-payment total for a single invoice — feeds the presenter's
+   * `amount_paid` / `amount_remaining` on single-invoice read endpoints, and
+   * lets the parent pay route derive the outstanding balance.
    */
   async getPaidSum(kindergartenId: string, invoiceId: string): Promise<number> {
     return this.invoices.getPaidSumForInvoice(kindergartenId, invoiceId);
+  }
+
+  /**
+   * Batch variant for list endpoints — one query for the whole page instead
+   * of N × `getPaidSum`. Returns `Map<invoiceId, paidSum>` (missing → 0).
+   */
+  async getPaidSums(
+    kindergartenId: string,
+    invoiceIds: string[],
+  ): Promise<Map<string, number>> {
+    return this.invoices.getPaidSumsForInvoices(kindergartenId, invoiceIds);
   }
 
   /**
@@ -315,6 +333,12 @@ export class InvoiceService {
    * `InvoiceStatusInvalidError` (or `InvoiceAlreadyPaidError` if a
    * follow-up read shows the row is already `paid`).
    *
+   * `input.amount` mirrors the gateway `payment_mode=partial` contract of
+   * `PaymentService.initiate`: omitted or equal to the remaining balance →
+   * full settlement (invoice → `paid`); 0 < amount < remaining → partial
+   * cash receipt (invoice → `partial`, no `invoice.paid` event); amount ≤ 0
+   * or > remaining → `InvoiceStatusInvalidError('amount_mismatch_partial')`.
+   *
    * The synthetic `Payment` row uses `provider='cash'` and a deterministic
    * idempotency key `cash:<invoiceId>:<isoTimestamp>` so reconciliation via
    * `GET /admin/payments` reflects the cash receipt and any subsequent
@@ -341,6 +365,43 @@ export class InvoiceService {
     );
     const residual = existingForResidual.amountAfterDiscount.sub(priorPaidSum);
 
+    if (input.amount !== undefined && input.amount !== null) {
+      // Status pre-check mirrors `PaymentService.initiate` — validate before
+      // touching amounts so a paid invoice yields `invoice_already_paid`,
+      // not `amount_mismatch_partial`. Races still land on the conditional
+      // UPDATE below.
+      if (existingForResidual.status === 'paid') {
+        throw new InvoiceAlreadyPaidError(invoiceId);
+      }
+      if (
+        existingForResidual.status !== 'pending' &&
+        existingForResidual.status !== 'partial' &&
+        existingForResidual.status !== 'overdue'
+      ) {
+        throw new InvoiceStatusInvalidError(
+          existingForResidual.status,
+          'manualMarkPaid',
+        );
+      }
+      const inputAmount = MoneyKzt.fromKzt(input.amount);
+      if (!inputAmount.isPositive() || inputAmount.gt(residual)) {
+        throw new InvoiceStatusInvalidError(
+          existingForResidual.status,
+          'amount_mismatch_partial',
+        );
+      }
+      if (!inputAmount.equals(residual)) {
+        return this.recordPartialCashPayment(
+          kindergartenId,
+          existingForResidual,
+          inputAmount,
+          input,
+          now,
+        );
+      }
+      // amount === remaining → full settlement, same as an omitted amount.
+    }
+
     const updated = await this.invoices.markPaidConditional(
       kindergartenId,
       invoiceId,
@@ -362,10 +423,10 @@ export class InvoiceService {
     // would return 0 forever for cash-paid invoices, and the refund flow on
     // those invoices would fail (no payment row to flip → refunded). The
     // Payment row's amount is the residual at the moment of the cash
-    // receipt — partial cash payments are not supported (admins are
-    // expected to call manualMarkPaid only when full payment was received
-    // off-platform), but using the residual rather than amount_after_discount
-    // keeps the ledger correct if a partial gateway payment landed earlier.
+    // receipt (a sub-residual cash amount goes through
+    // `recordPartialCashPayment` above and never reaches this path) —
+    // using the residual rather than amount_after_discount keeps the
+    // ledger correct if a partial gateway payment landed earlier.
     const paymentAmount = residual.isPositive()
       ? residual
       : updated.amountAfterDiscount;
@@ -413,6 +474,89 @@ export class InvoiceService {
       invoiceId: updated.id,
       childId: updated.childId,
       amountAfterDiscount: updated.amountAfterDiscount.toNumber(),
+      paidAt,
+    });
+    return updated;
+  }
+
+  /**
+   * Partial cash receipt — mirrors the gateway partial settlement in
+   * `PaymentService` (payment.completed handler): flip `pending`/`overdue`
+   * → `partial` (an invoice already `partial` stays as-is), record a
+   * completed `provider='cash'` Payment for the partial amount, credit the
+   * payment_account, and emit `payment.completed` WITHOUT `invoice.paid` —
+   * the invoice is not settled.
+   */
+  private async recordPartialCashPayment(
+    kindergartenId: string,
+    invoice: Invoice,
+    amount: MoneyKzt,
+    input: ManualMarkPaidInput,
+    now: Date,
+  ): Promise<Invoice> {
+    let updated: Invoice = invoice;
+    if (invoice.status !== 'partial') {
+      const flipped = await this.invoices.markPartialConditional(
+        kindergartenId,
+        invoice.id,
+        now,
+      );
+      if (flipped) {
+        updated = flipped;
+      } else {
+        // Race lost between the pre-check read and the conditional UPDATE —
+        // re-read and disambiguate like the full path does.
+        const reread = await this.invoices.findById(kindergartenId, invoice.id);
+        if (!reread) {
+          throw new InvoiceNotFoundError(invoice.id);
+        }
+        if (reread.status === 'partial') {
+          // A concurrent partial payment flipped it first — already the
+          // state we want; proceed with the cash receipt.
+          updated = reread;
+        } else if (reread.status === 'paid') {
+          throw new InvoiceAlreadyPaidError(invoice.id);
+        } else {
+          throw new InvoiceStatusInvalidError(reread.status, 'manualMarkPaid');
+        }
+      }
+    }
+
+    const paidAt = input.paidAt ?? now;
+    const cashPayment = Payment.fromState({
+      id: randomUUID(),
+      kindergartenId,
+      invoiceId: updated.id,
+      childId: updated.childId,
+      payerUserId: input.payerUserId ?? null,
+      amount,
+      provider: 'cash',
+      providerTxnId: null,
+      idempotencyKey: `cash:${updated.id}:${now.toISOString()}`,
+      status: 'completed',
+      providerPayload: {
+        note: input.note ?? null,
+        marked_by: 'admin_manual',
+      },
+      paidAt,
+      refundId: null,
+      createdAt: now,
+      updatedAt: now,
+    } as PaymentState);
+    await this.payments.create(cashPayment);
+
+    await this.paymentAccounts.creditFromPayment(
+      kindergartenId,
+      updated.paymentAccountId,
+      amount,
+    );
+    await this.notificationPort.notifyPaymentCompleted({
+      kindergartenId,
+      paymentId: cashPayment.id,
+      childId: updated.childId,
+      invoiceId: updated.id,
+      amount: cashPayment.amount.toNumber(),
+      provider: 'cash',
       paidAt,
     });
     return updated;

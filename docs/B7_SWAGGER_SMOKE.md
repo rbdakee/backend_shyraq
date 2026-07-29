@@ -74,7 +74,7 @@ Manual spot-check list for Swagger UI at `GET /docs`. Verify each item in the br
 
 | # | Method | Path | Expected | Check |
 |---|--------|------|----------|-------|
-| 29 | POST | `/api/v1/admin/meal-plans/copy-week` | 200 `CopyWeekSummaryDto` {plans_created, plans_skipped}. Body: `{source_week_start_date: "YYYY-MM-DD"}`. NOTE: idempotent re-run currently returns 500 (known bug — T7) | [ ] |
+| 29 | POST | `/api/v1/admin/meal-plans/copy-week` | 200 `CopyWeekSummaryDto` {plans_created, plans_skipped}. Body: `MealCopyWeekDto` `{fromMonday: "YYYY-MM-DD"}`. NOTE: idempotent re-run currently returns 500 (known bug — T7) | [ ] |
 
 ## 10. Parent / Children Menu — ChildAccessGuard
 

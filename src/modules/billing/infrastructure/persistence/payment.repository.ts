@@ -9,6 +9,8 @@ export interface ListPaymentsFilter {
   provider?: PaymentProvider;
   status?: PaymentStatus;
   childId?: string;
+  /** Restrict to payments targeting a single invoice (parent history view). */
+  invoiceId?: string;
   /** When true, return only payments flagged `refund_required` (#5b). */
   refundRequired?: boolean;
   /** ISO `YYYY-MM-DD`. Filters `created_at >= fromDate`. */

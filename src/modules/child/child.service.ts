@@ -1024,6 +1024,26 @@ export class ChildService {
   }
 
   /**
+   * Batch outstanding-balance overlay for the admin children list. Delegates
+   * to the billing module via `BillingLifecyclePort.getOutstandingForChildren`
+   * (one query for the whole page). Returns a map keyed by child id; children
+   * with no outstanding balance are absent from the map — the caller resolves
+   * missing to 0 (`nothing owed`). When billing is not wired (the Noop
+   * adapter) the map is empty and every child reports 0.
+   */
+  async resolveOutstandingTotals(
+    kindergartenId: string,
+    children: Child[],
+  ): Promise<Map<string, number>> {
+    const childIds = children.map((c) => c.toState().id);
+    if (childIds.length === 0) return new Map();
+    return this.billingLifecycle.getOutstandingForChildren(
+      kindergartenId,
+      childIds,
+    );
+  }
+
+  /**
    * Admin updates role and/or can_pickup. Disallowed on revoked rows. Cross-id
    * defense: if the guardian record points to a different child than the URL
    * suggests, the call resolves to GuardianNotFoundError.
