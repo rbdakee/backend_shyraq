@@ -1176,6 +1176,49 @@ describe('InvoiceService', () => {
         svc.manualMarkPaid(KG, 'i-p8', { amount: 1000 }),
       ).rejects.toThrow(InvoiceStatusInvalidError);
     });
+
+    // The cash seam mirrors the gateway seam (`PaymentService.initiate`):
+    // prepayment is indivisible, so an admin cannot hand-create the half-paid
+    // prepayment the parent is refused. Settling the FULL residual is still
+    // allowed — that closes the invoice rather than stranding money on it.
+    it('rejects a partial cash amount on a prepayment invoice', async () => {
+      const { svc, invoiceRepo, accountSvc, paymentRepo } = buildSvc();
+      const account = await accountSvc.ensureForChild(KG, CHILD);
+      seed(invoiceRepo, account.id, 'i-p9', 'pending', 148065);
+      invoiceRepo.rows.set(
+        'i-p9',
+        Invoice.fromState({
+          ...invoiceRepo.rows.get('i-p9')!.toState(),
+          invoiceType: 'prepayment_3m',
+        }),
+      );
+
+      await expect(
+        svc.manualMarkPaid(KG, 'i-p9', { amount: 50000 }),
+      ).rejects.toThrow('prepayment_partial_not_allowed');
+      expect(invoiceRepo.rows.get('i-p9')?.status).toBe('pending');
+      expect(paymentRepo.rows.size).toBe(0);
+    });
+
+    it('accepts a cash amount equal to the full residual on a prepayment invoice', async () => {
+      const { svc, invoiceRepo, accountSvc, paymentRepo } = buildSvc();
+      const account = await accountSvc.ensureForChild(KG, CHILD);
+      seed(invoiceRepo, account.id, 'i-p10', 'pending', 148065);
+      invoiceRepo.rows.set(
+        'i-p10',
+        Invoice.fromState({
+          ...invoiceRepo.rows.get('i-p10')!.toState(),
+          invoiceType: 'prepayment_3m',
+        }),
+      );
+
+      const updated = await svc.manualMarkPaid(KG, 'i-p10', {
+        amount: 148065,
+      });
+
+      expect(updated.status).toBe('paid');
+      expect([...paymentRepo.rows.values()][0].amount.toNumber()).toBe(148065);
+    });
   });
 
   describe('cancel', () => {
@@ -3002,7 +3045,11 @@ describe('InvoiceService', () => {
       warnSpy.mockRestore();
     });
 
-    it('runs no hook when a prepayment settles only partially via cash amount', async () => {
+    // Prepayment is indivisible, so a sub-residual cash amount never reaches
+    // the hook at all — it is refused at the seam. This test used to assert
+    // the opposite (invoice → `partial`, hook skipped), i.e. it encoded the
+    // half-paid prepayment state the product does not allow.
+    it('rejects a sub-residual cash amount on a prepayment and leaves the monthly untouched', async () => {
       const deps = buildSvc();
       await deps.accountSvc.ensureForChild(KG, CHILD);
       seedPrepaymentAndAccount(deps);
@@ -3017,11 +3064,11 @@ describe('InvoiceService', () => {
         ),
       );
 
-      const updated = await deps.svc.manualMarkPaid(KG, 'prep-pend', {
-        amount: 50000,
-      });
+      await expect(
+        deps.svc.manualMarkPaid(KG, 'prep-pend', { amount: 50000 }),
+      ).rejects.toThrow('prepayment_partial_not_allowed');
 
-      expect(updated.status).toBe('partial');
+      expect(deps.invoiceRepo.rows.get('prep-pend')?.status).toBe('pending');
       expect(deps.invoiceRepo.rows.get('mon-jul')?.status).toBe('pending');
       expect(
         deps.notifier.events.filter((e) => e.type === 'invoice_cancelled'),

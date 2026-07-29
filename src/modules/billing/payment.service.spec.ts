@@ -31,6 +31,7 @@ import {
   PaymentNotFoundError,
   PaymentProviderError,
   PaymentStatusInvalidError,
+  PrepaymentPartialNotAllowedError,
   WebhookSignatureInvalidError,
 } from './domain/errors';
 import {
@@ -968,6 +969,99 @@ describe('PaymentService.initiate', () => {
         returnUrl: 'https://app/return',
       }),
     ).rejects.toBeInstanceOf(InvoiceStatusInvalidError);
+  });
+
+  // Prepayment is an all-at-once product — the bulk discount is granted for
+  // settling N months in ONE payment. Splitting it would both hand out the
+  // discount for a part-payment and strand money on a prepayment no retry can
+  // auto-cancel. Monthly invoices stay splittable (asserted below).
+  it('rejects a partial payment on a prepayment invoice', async () => {
+    const h = buildHarness();
+    h.invoiceRepo.rows.set(
+      INVOICE,
+      makeInvoice({
+        invoiceType: 'prepayment_3m',
+        amountDue: m(150000),
+        amountAfterDiscount: m(148065),
+      }),
+    );
+    h.paymentAccountRepo.put(makeAccount());
+    await expect(
+      h.service.initiate(KG, {
+        invoiceId: INVOICE,
+        amount: 50000,
+        paymentMode: 'partial',
+        provider: 'mock',
+        idempotencyKey: 'idem-prepay-partial',
+        returnUrl: 'https://app/return',
+      }),
+    ).rejects.toBeInstanceOf(PrepaymentPartialNotAllowedError);
+  });
+
+  it('reports the invoice type and the full amount due when it rejects a partial prepayment', async () => {
+    const h = buildHarness();
+    h.invoiceRepo.rows.set(
+      INVOICE,
+      makeInvoice({
+        invoiceType: 'prepayment_12m',
+        amountDue: m(600000),
+        amountAfterDiscount: m(540000),
+      }),
+    );
+    h.paymentAccountRepo.put(makeAccount());
+    const err = await h.service
+      .initiate(KG, {
+        invoiceId: INVOICE,
+        amount: 100000,
+        paymentMode: 'partial',
+        provider: 'mock',
+        idempotencyKey: 'idem-prepay-partial-details',
+        returnUrl: 'https://app/return',
+      })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(PrepaymentPartialNotAllowedError);
+    expect((err as PrepaymentPartialNotAllowedError).details).toEqual({
+      invoice_id: INVOICE,
+      invoice_type: 'prepayment_12m',
+      amount_due: 540000,
+    });
+  });
+
+  it('accepts a full payment on a prepayment invoice', async () => {
+    const h = buildHarness();
+    h.invoiceRepo.rows.set(
+      INVOICE,
+      makeInvoice({
+        invoiceType: 'prepayment_3m',
+        amountDue: m(150000),
+        amountAfterDiscount: m(148065),
+      }),
+    );
+    h.paymentAccountRepo.put(makeAccount());
+    const result = await h.service.initiate(KG, {
+      invoiceId: INVOICE,
+      amount: 148065,
+      paymentMode: 'full',
+      provider: 'mock',
+      idempotencyKey: 'idem-prepay-full',
+      returnUrl: 'https://app/return',
+    });
+    expect(result.payment.amount.toNumber()).toBe(148065);
+  });
+
+  it('accepts a partial payment on a monthly invoice', async () => {
+    const h = buildHarness();
+    h.invoiceRepo.rows.set(INVOICE, makeInvoice());
+    h.paymentAccountRepo.put(makeAccount());
+    const result = await h.service.initiate(KG, {
+      invoiceId: INVOICE,
+      amount: 20000,
+      paymentMode: 'partial',
+      provider: 'mock',
+      idempotencyKey: 'idem-monthly-partial',
+      returnUrl: 'https://app/return',
+    });
+    expect(result.payment.amount.toNumber()).toBe(20000);
   });
 
   it('returns payment + redirectUrl when provider returns initiated (async path)', async () => {
@@ -3045,6 +3139,13 @@ describe('PaymentService.processWebhook — settle-into-cancelled escalation (FI
       reason: 'settled_into_cancelled_invoice',
       recipientUserIds: ['admin-1'],
     });
+    // No duplicate exists in this scenario. The field used to self-reference
+    // `pmt-void`, which made the dispatcher render the "double payment" copy
+    // for a case that had none.
+    expect(
+      (pings[0].event as { duplicateOfPaymentId: string | null })
+        .duplicateOfPaymentId,
+    ).toBeNull();
   });
 
   it('emits the same escalation when a partial payment settles into a refunded invoice (partial-flip branch)', async () => {

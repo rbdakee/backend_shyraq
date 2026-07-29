@@ -38,6 +38,7 @@ import {
   PaymentNotFoundError,
   PaymentProviderError,
   PaymentStatusInvalidError,
+  PrepaymentPartialNotAllowedError,
 } from './domain/errors';
 import { BccNotConnectedError } from './domain/errors/bcc-not-connected.error';
 import { FiscalReceiptPort } from './infrastructure/fiscal-receipt/fiscal-receipt.port';
@@ -348,6 +349,23 @@ export class PaymentService {
     // through the `equals` check below and open a 0 ₸ provider request.
     if (!remaining.isPositive()) {
       throw new InvoiceAlreadyPaidError(invoice.id);
+    }
+
+    // Prepayment is indivisible: the `prepay_{N}m_pct` discount is granted for
+    // settling N months in ONE payment, so a `prepayment_*` invoice never
+    // accepts a partial. Rejecting here (rather than only catching the
+    // aftermath in `prepayInvoice`) is what keeps money off a half-paid
+    // prepayment that no retry can auto-cancel. Monthly invoices are
+    // unaffected — they stay splittable.
+    if (
+      input.paymentMode === 'partial' &&
+      invoice.invoiceType.startsWith('prepayment_')
+    ) {
+      throw new PrepaymentPartialNotAllowedError(
+        invoice.id,
+        invoice.invoiceType,
+        remaining.toNumber(),
+      );
     }
 
     if (input.paymentMode === 'full') {
@@ -1186,9 +1204,11 @@ export class PaymentService {
    * parent money settled into a void invoice. That must reach admins as a
    * manual-refund alert, not just a warn log. Reuses the #5b
    * `payment.refund_required` channel with
-   * `reason='settled_into_cancelled_invoice'`; `duplicateOfPaymentId`
-   * self-references — the event shape requires the field but there is no
-   * duplicate payment in this scenario. Best-effort: never fails
+   * `reason='settled_into_cancelled_invoice'` and a `null`
+   * `duplicateOfPaymentId` — there is no duplicate payment in this scenario,
+   * and the dispatcher renders its own copy for the reason (it used to
+   * self-reference the flagged payment and show the double-payment text).
+   * Best-effort: never fails
    * settlement. A lost flip against a live status (paid/partial — another
    * writer applied the same transition) stays a silent no-op as before.
    */
@@ -1210,7 +1230,7 @@ export class PaymentService {
     await this.notifyRefundRequiredToAdmins(
       kindergartenId,
       payment,
-      payment.id,
+      null,
       'settled_into_cancelled_invoice',
     ).catch((err) =>
       this.logger.warn(
@@ -1273,7 +1293,7 @@ export class PaymentService {
   private async notifyRefundRequiredToAdmins(
     kindergartenId: string,
     payment: Payment,
-    duplicateOfPaymentId: string,
+    duplicateOfPaymentId: string | null,
     reason: string,
   ): Promise<void> {
     if (!this.staffRepo) return;

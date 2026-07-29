@@ -1635,6 +1635,60 @@ describe('NotificationDispatcher', () => {
     });
   });
 
+  // The channel is shared ("money moved, refund it by hand") but the copy is
+  // not: `settled_into_cancelled_invoice` has no duplicate payment, and the
+  // event used to self-reference the flagged payment while rendering the
+  // double-payment text — admins went looking for a second payment that never
+  // existed.
+  describe('payment.refund_required template', () => {
+    function render(payload: Record<string, unknown>) {
+      const template = EVENT_TEMPLATES['payment.refund_required'];
+      return template({ payload: payload as never } as never);
+    }
+
+    const base = {
+      paymentId: 'pmt-late',
+      invoiceId: 'inv-1',
+      amount: 50000,
+    };
+
+    it('renders the double-payment copy and links the kept payment', () => {
+      const out = render({
+        ...base,
+        duplicateOfPaymentId: 'pmt-first',
+        reason: 'double_payment',
+      });
+      expect(out.titleI18n.ru).toBe('Двойная оплата — нужен возврат');
+      expect(out.data.duplicateOfPaymentId).toBe('pmt-first');
+    });
+
+    it('renders the void-invoice copy instead of the double-payment one', () => {
+      const out = render({
+        ...base,
+        duplicateOfPaymentId: null,
+        reason: 'settled_into_cancelled_invoice',
+      });
+      expect(out.titleI18n.ru).toBe(
+        'Оплата по отменённому счёту — нужен возврат',
+      );
+      expect(out.bodyI18n.ru).toContain('уже отменён или возвращён');
+      expect(out.titleI18n.ru).not.toContain('Двойная');
+      expect(out.bodyI18n.kk).toBeDefined();
+      expect(out.bodyI18n.en).toBeDefined();
+    });
+
+    it('omits duplicateOfPaymentId from the void-invoice payload', () => {
+      const out = render({
+        ...base,
+        duplicateOfPaymentId: null,
+        reason: 'settled_into_cancelled_invoice',
+      });
+      expect(out.data.duplicateOfPaymentId).toBeUndefined();
+      expect(out.data.reason).toBe('settled_into_cancelled_invoice');
+      expect(out.data.paymentId).toBe('pmt-late');
+    });
+  });
+
   // ── B22b T13 — per-user locale push localisation ─────────────────────────
 
   describe('per-user locale', () => {

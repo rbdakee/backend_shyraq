@@ -96,12 +96,13 @@ export class ParentPaymentController {
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
     summary:
-      'Initiate a payment against the invoice. `payment_mode=full` pays the remaining balance; `partial` requires `amount`. `idempotency_key` collapses retries.',
+      'Initiate a payment against the invoice. `payment_mode=full` pays the remaining balance; `partial` requires `amount` and is accepted on MONTHLY invoices only — a `prepayment_*` invoice is indivisible (the bulk discount is granted for settling N months in one go).',
   })
   @ApiCreatedResponse({ type: InitiatePaymentResponseDto })
   @ApiBadRequestResponse({
     description:
-      'Validation error / amount mismatch / payment_provider_unavailable.',
+      'Validation error / amount mismatch / payment_provider_unavailable / ' +
+      'prepayment_partial_not_allowed (`payment_mode=partial` on a `prepayment_*` invoice).',
   })
   @ApiUnauthorizedResponse({ description: 'Bearer missing/invalid/revoked.' })
   @ApiForbiddenResponse({

@@ -152,10 +152,13 @@ export class AdminInvoiceController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
-      'Mark an invoice as paid via cash/off-platform settlement. Optional `amount` records a partial cash receipt (invoice → partial). Idempotent at the conditional-UPDATE level.',
+      'Mark an invoice as paid via cash/off-platform settlement. Optional `amount` records a partial cash receipt (invoice → partial) — MONTHLY invoices only; a `prepayment_*` invoice is indivisible and takes the full residual or nothing. Idempotent at the conditional-UPDATE level.',
   })
   @ApiOkResponse({ type: InvoiceResponseDto })
-  @ApiBadRequestResponse({ description: 'Validation error.' })
+  @ApiBadRequestResponse({
+    description:
+      'Validation error / prepayment_partial_not_allowed (`amount` below the residual on a `prepayment_*` invoice).',
+  })
   @ApiUnauthorizedResponse({ description: 'Bearer missing/invalid/revoked.' })
   @ApiForbiddenResponse({ description: 'Caller is not admin.' })
   @ApiNotFoundResponse({ description: 'Invoice not found.' })

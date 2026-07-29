@@ -29,6 +29,7 @@ import { InvoiceNotFoundError } from './domain/errors/invoice-not-found.error';
 import { InvoiceStatusInvalidError } from './domain/errors/invoice-status-invalid.error';
 import { PrepaymentBlockedOutstandingDebtError } from './domain/errors/prepayment-blocked-outstanding-debt.error';
 import { PrepaymentBlockedPartialPrepaymentError } from './domain/errors/prepayment-blocked-partial-prepayment.error';
+import { PrepaymentPartialNotAllowedError } from './domain/errors/prepayment-partial-not-allowed.error';
 import { PrepaymentBlockedWindowOverlapError } from './domain/errors/prepayment-blocked-window-overlap.error';
 import { TariffAssignmentNotFoundError } from './domain/errors/tariff-assignment-not-found.error';
 import { TariffPlanNotFoundError } from './domain/errors/tariff-plan-not-found.error';
@@ -466,6 +467,20 @@ export class InvoiceService {
         throw new InvoiceStatusInvalidError(
           existingForResidual.status,
           'amount_mismatch_partial',
+        );
+      }
+      // Prepayment is indivisible (see `PrepaymentPartialNotAllowedError`) —
+      // the cash seam enforces the same rule as the gateway seam, so an admin
+      // cannot hand-create the half-paid prepayment we refuse the parent.
+      // Settling the FULL residual stays allowed: that closes the invoice.
+      if (
+        existingForResidual.invoiceType.startsWith('prepayment_') &&
+        !inputAmount.equals(residual)
+      ) {
+        throw new PrepaymentPartialNotAllowedError(
+          existingForResidual.id,
+          existingForResidual.invoiceType,
+          residual.toNumber(),
         );
       }
       if (!inputAmount.equals(residual)) {
