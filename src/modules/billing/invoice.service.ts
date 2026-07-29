@@ -196,6 +196,15 @@ export class InvoiceService {
   }
 
   /**
+   * Completed-payment total for a single invoice. Lets callers outside this
+   * service derive the outstanding balance (`amount_after_discount − paidSum`)
+   * without reaching into `InvoiceRepository` themselves.
+   */
+  async getPaidSum(kindergartenId: string, invoiceId: string): Promise<number> {
+    return this.invoices.getPaidSumForInvoice(kindergartenId, invoiceId);
+  }
+
+  /**
    * Parent-side guardian re-check for invoice/calendar read endpoints.
    *
    * Used by `ParentInvoiceController` for every route — `ChildAccessGuard`

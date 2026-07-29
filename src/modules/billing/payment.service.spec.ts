@@ -1883,6 +1883,90 @@ describe('PaymentService.initiate — H14 partial on overdue', () => {
   });
 });
 
+describe('PaymentService.initiate — full mode on a partially paid invoice', () => {
+  /**
+   * Drives a real first payment through the mock provider (which settles
+   * immediately) so `getPaidSumForInvoice` keeps recomputing from the payment
+   * rows — pinning `paidSums` instead would freeze the sum and mask the
+   * post-settlement status transition.
+   */
+  async function seedPartiallyPaid(paid: number) {
+    const h = buildHarness();
+    h.invoiceRepo.rows.set(
+      INVOICE,
+      makeInvoice({ status: 'pending', amountAfterDiscount: m(50_000) }),
+    );
+    h.paymentAccountRepo.put(makeAccount());
+    await h.service.initiate(KG, {
+      invoiceId: INVOICE,
+      amount: paid,
+      paymentMode: 'partial',
+      provider: 'mock',
+      idempotencyKey: `idem-seed-${paid}`,
+      returnUrl: 'https://app/return',
+    });
+    return h;
+  }
+
+  it('settles the invoice when the amount equals the remaining balance', async () => {
+    const h = await seedPartiallyPaid(20_000);
+
+    const result = await h.service.initiate(KG, {
+      invoiceId: INVOICE,
+      amount: 30_000,
+      paymentMode: 'full',
+      provider: 'mock',
+      idempotencyKey: 'idem-rest-of-partial',
+      returnUrl: 'https://app/return',
+    });
+
+    expect(result.payment.amount.toNumber()).toBe(30_000);
+    const invAfter = await h.invoiceRepo.findById(KG, INVOICE);
+    expect(invAfter?.status).toBe('paid');
+  });
+
+  it('rejects the pre-payment sticker price once part of the invoice is paid', async () => {
+    const h = await seedPartiallyPaid(20_000);
+
+    // The bug parents hit: the client sent `amount_after_discount` for a
+    // pay-in-full retry, so the remainder could never be collected.
+    await expect(
+      h.service.initiate(KG, {
+        invoiceId: INVOICE,
+        amount: 50_000,
+        paymentMode: 'full',
+        provider: 'mock',
+        idempotencyKey: 'idem-sticker-price',
+        returnUrl: 'https://app/return',
+      }),
+    ).rejects.toBeInstanceOf(InvoiceStatusInvalidError);
+  });
+
+  it('throws InvoiceAlreadyPaidError when payments already cover the invoice', async () => {
+    // Pinned sum on purpose: an invoice left in `partial` while its payments
+    // already cover it. Settling it for real would flip the status to `paid`
+    // and the earlier status guard, not the zero-remainder one, would fire.
+    const h = buildHarness();
+    h.invoiceRepo.rows.set(
+      INVOICE,
+      makeInvoice({ status: 'partial', amountAfterDiscount: m(50_000) }),
+    );
+    h.invoiceRepo.paidSums.set(INVOICE, 50_000);
+    h.paymentAccountRepo.put(makeAccount());
+
+    await expect(
+      h.service.initiate(KG, {
+        invoiceId: INVOICE,
+        amount: 0,
+        paymentMode: 'full',
+        provider: 'mock',
+        idempotencyKey: 'idem-nothing-left',
+        returnUrl: 'https://app/return',
+      }),
+    ).rejects.toBeInstanceOf(InvoiceAlreadyPaidError);
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────────
 // #5a — single-parent double-pay guard (recallInFlightKaspiForPayer).
 // A parent re-initiating a Kaspi payment on the same invoice must have their
