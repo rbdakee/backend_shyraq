@@ -3,7 +3,7 @@ import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-co
 import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import { Invoice, InvoiceState } from './domain/entities/invoice.entity';
 import { Payment } from './domain/entities/payment.entity';
-import { InitiatePrepaymentDto } from './dto/payment.dto';
+import { InitiatePaymentDto, InitiatePrepaymentDto } from './dto/payment.dto';
 import { InvoiceService } from './invoice.service';
 import { ParentPaymentController } from './parent-payment.controller';
 import {
@@ -83,6 +83,7 @@ function makePayment(id: string, invoiceId: string): Payment {
 
 class FakeInvoiceService {
   invoices = new Map<string, Invoice>();
+  paidSums = new Map<string, number>();
   prepayCalls: Array<{ kg: string; childId: string; months: number }> = [];
   prepayResult: Invoice | null = null;
 
@@ -90,6 +91,10 @@ class FakeInvoiceService {
     const inv = this.invoices.get(id);
     if (!inv) return Promise.reject(new Error(`invoice_not_found:${id}`));
     return Promise.resolve(inv);
+  }
+
+  getPaidSum(_kg: string, id: string): Promise<number> {
+    return Promise.resolve(this.paidSums.get(id) ?? 0);
   }
 
   prepayInvoice(kg: string, childId: string, months: number): Promise<Invoice> {
@@ -218,6 +223,94 @@ describe('ParentPaymentController.initiatePrepayment — idempotency short-circu
       invoiceId: PREPAY_A,
       amount: 162000,
       paymentMode: 'full',
+    });
+  });
+});
+
+describe('ParentPaymentController.initiatePay — full mode settles the remainder', () => {
+  function makePayDto(
+    mode: 'full' | 'partial',
+    amount?: number,
+  ): InitiatePaymentDto {
+    const dto = new InitiatePaymentDto();
+    dto.provider = 'mock';
+    dto.payment_mode = mode;
+    dto.idempotency_key = IDEM;
+    dto.return_url = 'https://app.shyraq.kz/payment/callback';
+    if (amount !== undefined) dto.amount = amount;
+    return dto;
+  }
+
+  it('sends the outstanding balance, not amount_after_discount, on a partially paid invoice', async () => {
+    const { controller, invoiceService, paymentService } = buildController();
+    invoiceService.invoices.set(ANCHOR, makeInvoice({ status: 'partial' }));
+    invoiceService.paidSums.set(ANCHOR, 20000);
+    paymentService.initiateResult = {
+      payment: makePayment('pmt-rest', ANCHOR),
+      redirectUrl: 'https://mock/pay/rest',
+    };
+
+    await controller.initiatePay(tenant, user, ANCHOR, makePayDto('full'));
+
+    expect(paymentService.initiateCalls[0]).toMatchObject({
+      invoiceId: ANCHOR,
+      amount: 30000,
+      paymentMode: 'full',
+    });
+  });
+
+  it('sends the full amount when nothing has been paid yet', async () => {
+    const { controller, invoiceService, paymentService } = buildController();
+    invoiceService.invoices.set(ANCHOR, makeInvoice());
+    paymentService.initiateResult = {
+      payment: makePayment('pmt-fresh', ANCHOR),
+      redirectUrl: 'https://mock/pay/fresh',
+    };
+
+    await controller.initiatePay(tenant, user, ANCHOR, makePayDto('full'));
+
+    expect(paymentService.initiateCalls[0]).toMatchObject({
+      amount: 50000,
+      paymentMode: 'full',
+    });
+  });
+
+  it('keeps sub-tenge remainders exact instead of drifting through float math', async () => {
+    const { controller, invoiceService, paymentService } = buildController();
+    invoiceService.invoices.set(
+      ANCHOR,
+      makeInvoice({ status: 'partial', amountAfterDiscount: m(13.5) }),
+    );
+    invoiceService.paidSums.set(ANCHOR, 0.1);
+    paymentService.initiateResult = {
+      payment: makePayment('pmt-frac', ANCHOR),
+      redirectUrl: 'https://mock/pay/frac',
+    };
+
+    await controller.initiatePay(tenant, user, ANCHOR, makePayDto('full'));
+
+    expect(paymentService.initiateCalls[0].amount).toBe(13.4);
+  });
+
+  it('passes the client amount through untouched in partial mode', async () => {
+    const { controller, invoiceService, paymentService } = buildController();
+    invoiceService.invoices.set(ANCHOR, makeInvoice({ status: 'partial' }));
+    invoiceService.paidSums.set(ANCHOR, 20000);
+    paymentService.initiateResult = {
+      payment: makePayment('pmt-part', ANCHOR),
+      redirectUrl: 'https://mock/pay/part',
+    };
+
+    await controller.initiatePay(
+      tenant,
+      user,
+      ANCHOR,
+      makePayDto('partial', 10000),
+    );
+
+    expect(paymentService.initiateCalls[0]).toMatchObject({
+      amount: 10000,
+      paymentMode: 'partial',
     });
   });
 });

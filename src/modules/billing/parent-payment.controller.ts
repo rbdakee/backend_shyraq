@@ -32,6 +32,7 @@ import { JwtAuthGuard } from '@/common/guards/jwt-auth.guard';
 import { PendingRoleSelectGuard } from '@/common/guards/pending-role-select.guard';
 import { RolesGuard } from '@/common/guards/roles.guard';
 import type { JwtPayload } from '@/common/types/jwt-payload';
+import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
 import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-context';
 import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
 import { BccBillingDetailsRequiredError } from './domain/errors/bcc-billing-details-required.error';
@@ -133,9 +134,22 @@ export class ParentPaymentController {
     }
     const billing = await this.prepareBccBillingDetails(user.sub, dto);
 
+    // `payment_mode=full` means "settle the outstanding balance", not "charge
+    // the sticker price": `paymentService.initiate` validates full mode against
+    // `amount_after_discount − paidSum`. On a `partial` invoice those two differ,
+    // so sending `amount_after_discount` here rejected every pay-in-full attempt
+    // with `amount_mismatch_full` — a parent who paid part of a monthly invoice
+    // could not pay the rest. Quantized MoneyKzt arithmetic (not float) so the
+    // service-side `equals(remaining)` check matches exactly.
     const amount =
       dto.payment_mode === 'full'
-        ? invoice.amountAfterDiscount.toNumber()
+        ? invoice.amountAfterDiscount
+            .sub(
+              MoneyKzt.fromKzt(
+                await this.invoiceService.getPaidSum(kgId, invoice.id),
+              ),
+            )
+            .toNumber()
         : dto.amount!;
 
     const result = await this.paymentService.initiate(kgId, {

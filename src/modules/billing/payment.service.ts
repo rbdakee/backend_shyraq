@@ -342,6 +342,14 @@ export class PaymentService {
     const remaining = invoice.amountAfterDiscount.sub(paidSum);
     const inputAmount = MoneyKzt.fromKzt(input.amount);
 
+    // Nothing left to collect — reachable when payments cover the invoice but
+    // its status has not settled to `paid` yet. Callers now derive full-mode
+    // amounts from the remainder, so without this a zero remainder would sail
+    // through the `equals` check below and open a 0 ₸ provider request.
+    if (!remaining.isPositive()) {
+      throw new InvoiceAlreadyPaidError(invoice.id);
+    }
+
     if (input.paymentMode === 'full') {
       if (!inputAmount.equals(remaining)) {
         throw new InvoiceStatusInvalidError(
