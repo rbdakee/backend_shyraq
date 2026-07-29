@@ -1,8 +1,16 @@
+import { Logger } from '@nestjs/common';
 import type { EntityManager } from '@/shared-kernel/application/ports/transaction-runner.port';
 import { TransactionRunnerPort } from '@/shared-kernel/application/ports/transaction-runner.port';
 import { InMemoryNotificationAdapter } from '@/common/notifications/in-memory-notification.adapter';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { MoneyKzt } from '@/shared-kernel/domain/money-kzt';
+import { CustomDiscount } from './domain/entities/custom-discount.entity';
+import { CustomDiscountApplication } from './domain/entities/custom-discount-application.entity';
+import { CustomDiscountRepository } from './custom-discount.repository';
+import {
+  CustomDiscountApplicationRepository,
+  CustomDiscountApplicationStats,
+} from './custom-discount-application.repository';
 import {
   Invoice,
   InvoiceState,
@@ -393,6 +401,30 @@ class FakeInvoiceRepo extends InvoiceRepository {
     return Promise.resolve();
   }
 
+  // P5 — behavioral override of the abstract default stub (which returns []).
+  // Mirrors the relational query: monthly-only, the four live statuses
+  // (cancelled/refunded excluded), `period_start` containment in
+  // [windowStart, windowEnd].
+  findMonthlyInWindow(
+    kg: string,
+    childId: string,
+    windowStart: Date,
+    windowEnd: Date,
+  ): Promise<Invoice[]> {
+    const live: InvoiceStatus[] = ['pending', 'overdue', 'partial', 'paid'];
+    return Promise.resolve(
+      [...this.rows.values()].filter(
+        (i) =>
+          i.kindergartenId === kg &&
+          i.childId === childId &&
+          i.invoiceType === 'monthly' &&
+          live.includes(i.status) &&
+          i.periodStart.getTime() >= windowStart.getTime() &&
+          i.periodStart.getTime() <= windowEnd.getTime(),
+      ),
+    );
+  }
+
   setPaidSum(invoiceId: string, sum: number): void {
     this.paidSums.set(invoiceId, sum);
   }
@@ -447,6 +479,113 @@ class FakePaymentAccountRepo extends PaymentAccountRepository {
   save(a: PaymentAccount): Promise<PaymentAccount> {
     this.rows.set(a.id, a);
     return Promise.resolve(a);
+  }
+}
+
+// P5 — custom-discount fakes for the prepayment settlement hook. Only the
+// surface the hook touches is behavioral (`findById` / `releaseUsage` /
+// `listByInvoiceId`); the rest of the abstract contract rejects loudly so an
+// accidental call fails the test instead of passing silently.
+class FakeCustomDiscountRepo extends CustomDiscountRepository {
+  rows = new Map<string, CustomDiscount>();
+  releaseCalls: Array<{ kindergartenId: string; customDiscountId: string }> =
+    [];
+
+  put(d: CustomDiscount): void {
+    this.rows.set(d.id, d);
+  }
+
+  findById(kindergartenId: string, id: string): Promise<CustomDiscount | null> {
+    const d = this.rows.get(id);
+    return Promise.resolve(d && d.kindergartenId === kindergartenId ? d : null);
+  }
+
+  releaseUsage(kindergartenId: string, id: string): Promise<void> {
+    this.releaseCalls.push({ kindergartenId, customDiscountId: id });
+    const d = this.rows.get(id);
+    if (d && d.kindergartenId === kindergartenId) {
+      const s = d.toState();
+      this.rows.set(
+        id,
+        CustomDiscount.fromState({
+          ...s,
+          usedCount: Math.max(0, s.usedCount - 1),
+        }),
+      );
+    }
+    return Promise.resolve();
+  }
+
+  create(): Promise<CustomDiscount> {
+    return Promise.reject(new Error('not used'));
+  }
+  findByIdForUpdate(): Promise<CustomDiscount | null> {
+    return Promise.reject(new Error('not used'));
+  }
+  update(): Promise<CustomDiscount | null> {
+    return Promise.reject(new Error('not used'));
+  }
+  transitionStatus(): Promise<CustomDiscount | null> {
+    return Promise.reject(new Error('not used'));
+  }
+  list(): Promise<{ rows: CustomDiscount[]; total: number }> {
+    return Promise.reject(new Error('not used'));
+  }
+  incrementUsedCount(): Promise<boolean> {
+    return Promise.reject(new Error('not used'));
+  }
+  tryReserveUsage(): Promise<boolean> {
+    return Promise.reject(new Error('not used'));
+  }
+  findActiveCustomDiscounts(): Promise<CustomDiscount[]> {
+    return Promise.reject(new Error('not used'));
+  }
+  findOverdueActive(): Promise<CustomDiscount[]> {
+    return Promise.reject(new Error('not used'));
+  }
+  markExpiredBatch(): Promise<{ rowIds: string[]; rowCount: number }> {
+    return Promise.reject(new Error('not used'));
+  }
+  acquireDiscountActivationAdvisoryLock(): Promise<void> {
+    return Promise.reject(new Error('not used'));
+  }
+  acquireDiscountApplyAdvisoryLock(): Promise<void> {
+    return Promise.reject(new Error('not used'));
+  }
+}
+
+class FakeCustomDiscountAppRepo extends CustomDiscountApplicationRepository {
+  rows: CustomDiscountApplication[] = [];
+
+  put(a: CustomDiscountApplication): void {
+    this.rows.push(a);
+  }
+
+  listByInvoiceId(
+    kindergartenId: string,
+    invoiceId: string,
+  ): Promise<CustomDiscountApplication[]> {
+    return Promise.resolve(
+      this.rows.filter(
+        (r) => r.kindergartenId === kindergartenId && r.invoiceId === invoiceId,
+      ),
+    );
+  }
+
+  create(): Promise<CustomDiscountApplication> {
+    return Promise.reject(new Error('not used'));
+  }
+  countByChildAndDiscount(): Promise<number> {
+    return Promise.reject(new Error('not used'));
+  }
+  listByDiscountId(): Promise<{
+    rows: CustomDiscountApplication[];
+    total: number;
+  }> {
+    return Promise.reject(new Error('not used'));
+  }
+  getStatsForDiscount(): Promise<CustomDiscountApplicationStats> {
+    return Promise.reject(new Error('not used'));
   }
 }
 
@@ -565,11 +704,16 @@ interface Harness {
   fiscal: FakeFiscalReceiptPort;
   notifier: InMemoryNotificationAdapter;
   clock: FixedClock;
+  // P5 — present only when `withCustomDiscounts` is set; the default harness
+  // shape deliberately omits the two optional ctor deps (legacy wiring).
+  customDiscounts?: FakeCustomDiscountRepo;
+  customDiscountApps?: FakeCustomDiscountAppRepo;
 }
 
 function buildHarness(opts?: {
   kindergartenName?: string;
   adminUserIds?: string[];
+  withCustomDiscounts?: boolean;
 }): Harness {
   const clock = new FixedClock(NOW);
   const paymentRepo = new FakePaymentRepo();
@@ -611,6 +755,13 @@ function buildHarness(opts?: {
           ),
       } as unknown as StaffMemberRepository)
     : undefined;
+  // P5 — the two optional custom-discount deps of the settlement hook.
+  const customDiscounts = opts?.withCustomDiscounts
+    ? new FakeCustomDiscountRepo()
+    : undefined;
+  const customDiscountApps = opts?.withCustomDiscounts
+    ? new FakeCustomDiscountAppRepo()
+    : undefined;
   const service = new PaymentService(
     paymentRepo,
     invoiceRepo,
@@ -632,6 +783,10 @@ function buildHarness(opts?: {
     kindergartens,
     undefined,
     staffRepo,
+    undefined,
+    undefined,
+    customDiscounts,
+    customDiscountApps,
   );
   return {
     service,
@@ -644,6 +799,8 @@ function buildHarness(opts?: {
     fiscal,
     notifier,
     clock,
+    customDiscounts,
+    customDiscountApps,
   };
 }
 
@@ -2177,5 +2334,437 @@ describe('PaymentService.processWebhook — double-payment detection (#5b)', () 
     expect(second?.status).toBe('completed');
     expect(second?.refundRequired).toBe(false);
     expect(second?.duplicateOfPaymentId).toBeNull();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// P5 — prepayment settlement auto-cancel (handoff §2.8 / §5.2). When a
+// `prepayment_*` invoice settles to `paid`, the pending/overdue monthlies its
+// window covers are auto-cancelled (invoice_cancelled notification with
+// reason `covered_by_prepayment` + capped custom-discount slots released);
+// already-paid/partial monthlies hold real parent money and are only
+// warn-logged for manual review. Driven through the public webhook path with
+// the mock provider, same as the #5b describe above — applyCompletedPayment
+// is private.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('PaymentService.processWebhook — prepayment settlement auto-cancel (P5)', () => {
+  const PREPAY = 'rrrrrrrr-rrrr-rrrr-rrrr-rrrrrrrrrrrr';
+  const CHILD_OTHER = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  function makePrepayment(overrides: Partial<InvoiceState> = {}): Invoice {
+    return makeInvoice({
+      id: PREPAY,
+      invoiceType: 'prepayment_3m',
+      periodStart: new Date('2026-07-01T00:00:00.000Z'),
+      periodEnd: new Date('2026-09-30T00:00:00.000Z'),
+      amountDue: m(150_000),
+      amountAfterDiscount: m(135_000),
+      dueDate: new Date('2026-06-22T00:00:00.000Z'),
+      description: 'Prepayment 3m — 2026-07-01..2026-09-30',
+      ...overrides,
+    });
+  }
+
+  function makeMonthly(
+    id: string,
+    periodStart: string,
+    periodEnd: string,
+    status: InvoiceStatus,
+    overrides: Partial<InvoiceState> = {},
+  ): Invoice {
+    return makeInvoice({
+      id,
+      invoiceType: 'monthly',
+      periodStart: new Date(`${periodStart}T00:00:00.000Z`),
+      periodEnd: new Date(`${periodEnd}T00:00:00.000Z`),
+      status,
+      ...overrides,
+    });
+  }
+
+  function seedPrepayPayment(h: Harness, amountKzt = 135_000): void {
+    h.paymentRepo.rows.set(
+      'pmt-prepay',
+      Payment.fromState({
+        id: 'pmt-prepay',
+        kindergartenId: KG,
+        invoiceId: PREPAY,
+        childId: CHILD,
+        payerUserId: PAYER,
+        amount: m(amountKzt),
+        provider: 'mock',
+        providerTxnId: 'tx_prepay',
+        idempotencyKey: 'idem-prepay',
+        status: 'processing',
+        providerPayload: null,
+        paidAt: null,
+        refundId: null,
+        createdAt: NOW,
+        updatedAt: NOW,
+      }),
+    );
+  }
+
+  async function settle(
+    h: Harness,
+    providerTxnId = 'tx_prepay',
+  ): Promise<void> {
+    h.provider.verifyWebhookImpl = () =>
+      Promise.resolve({
+        providerPaymentId: providerTxnId,
+        status: 'completed',
+        raw: {},
+      });
+    await h.service.processWebhook({
+      provider: 'mock',
+      headers: { 'x-mock-signature': 'valid' },
+      body: {},
+    });
+  }
+
+  function cancelledEvents(h: Harness): unknown[] {
+    return h.notifier.events
+      .filter((e) => e.type === 'invoice_cancelled')
+      .map((e) => e.event);
+  }
+
+  function makeDiscount(
+    id: string,
+    totalMaxUses: number | null,
+    usedCount: number,
+  ): CustomDiscount {
+    return CustomDiscount.fromState({
+      id,
+      kindergartenId: KG,
+      name: { ru: 'Скидка' },
+      description: null,
+      discountType: 'percentage',
+      amount: m(10),
+      conditions: {},
+      targetType: 'all',
+      targetIds: null,
+      validFrom: new Date('2026-01-01T00:00:00.000Z'),
+      validUntil: null,
+      maxUsesPerChild: null,
+      totalMaxUses,
+      usedCount,
+      priority: 0,
+      stackable: true,
+      notifyOnActivation: false,
+      notificationTitle: null,
+      notificationBody: null,
+      status: 'active',
+      createdBy: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+  }
+
+  function makeApplication(
+    id: string,
+    customDiscountId: string,
+    invoiceId: string,
+  ): CustomDiscountApplication {
+    return CustomDiscountApplication.fromState({
+      id,
+      kindergartenId: KG,
+      customDiscountId,
+      invoiceId,
+      invoiceLineItemId: null,
+      childId: CHILD,
+      amountApplied: m(5_000),
+      appliedAt: NOW,
+    });
+  }
+
+  it('cancels overlapped pending and overdue monthlies of the same child in the window', async () => {
+    const h = buildHarness();
+    const logSpy = jest
+      .spyOn(Logger.prototype, 'log')
+      .mockImplementation(() => undefined);
+    h.invoiceRepo.rows.set(PREPAY, makePrepayment());
+    h.invoiceRepo.rows.set(
+      'inv-jul',
+      makeMonthly('inv-jul', '2026-07-01', '2026-07-31', 'pending'),
+    );
+    h.invoiceRepo.rows.set(
+      'inv-aug',
+      makeMonthly('inv-aug', '2026-08-01', '2026-08-31', 'overdue'),
+    );
+    h.paymentAccountRepo.put(makeAccount());
+    seedPrepayPayment(h);
+
+    await settle(h);
+
+    expect(h.invoiceRepo.rows.get(PREPAY)?.status).toBe('paid');
+    expect(h.invoiceRepo.rows.get('inv-jul')?.status).toBe('cancelled');
+    expect(h.invoiceRepo.rows.get('inv-aug')?.status).toBe('cancelled');
+    const cancelLogs = logSpy.mock.calls
+      .map((c) => c[0])
+      .filter(
+        (msg): msg is string =>
+          typeof msg === 'string' &&
+          msg.includes('prepayment.settled: cancelled overlapped monthly'),
+      );
+    expect(cancelLogs).toHaveLength(2);
+    expect(cancelLogs[0]).toContain('inv-jul');
+    expect(cancelLogs[1]).toContain('inv-aug');
+  });
+
+  it('emits invoice_cancelled with reason covered_by_prepayment for each auto-cancelled monthly', async () => {
+    const h = buildHarness();
+    h.invoiceRepo.rows.set(PREPAY, makePrepayment());
+    h.invoiceRepo.rows.set(
+      'inv-jul',
+      makeMonthly('inv-jul', '2026-07-01', '2026-07-31', 'pending'),
+    );
+    h.invoiceRepo.rows.set(
+      'inv-aug',
+      makeMonthly('inv-aug', '2026-08-01', '2026-08-31', 'overdue'),
+    );
+    h.paymentAccountRepo.put(makeAccount());
+    seedPrepayPayment(h);
+
+    await settle(h);
+
+    const events = cancelledEvents(h);
+    expect(events).toHaveLength(2);
+    expect(events.map((e) => (e as { invoiceId: string }).invoiceId)).toEqual([
+      'inv-jul',
+      'inv-aug',
+    ]);
+    for (const e of events) {
+      expect(e).toMatchObject({
+        kindergartenId: KG,
+        childId: CHILD,
+        reason: 'covered_by_prepayment',
+      });
+    }
+  });
+
+  it('releases capped custom-discount usages of cancelled monthlies and skips uncapped discounts', async () => {
+    const h = buildHarness({ withCustomDiscounts: true });
+    h.invoiceRepo.rows.set(PREPAY, makePrepayment());
+    h.invoiceRepo.rows.set(
+      'inv-jul',
+      makeMonthly('inv-jul', '2026-07-01', '2026-07-31', 'pending'),
+    );
+    h.paymentAccountRepo.put(makeAccount());
+    seedPrepayPayment(h);
+    h.customDiscounts?.put(makeDiscount('disc-capped', 10, 3));
+    h.customDiscounts?.put(makeDiscount('disc-uncapped', null, 5));
+    h.customDiscountApps?.put(
+      makeApplication('app-1', 'disc-capped', 'inv-jul'),
+    );
+    h.customDiscountApps?.put(
+      makeApplication('app-2', 'disc-uncapped', 'inv-jul'),
+    );
+    // Application on a DIFFERENT (non-cancelled) invoice — must not release.
+    h.customDiscountApps?.put(makeApplication('app-3', 'disc-capped', PREPAY));
+
+    await settle(h);
+
+    expect(h.invoiceRepo.rows.get('inv-jul')?.status).toBe('cancelled');
+    expect(h.customDiscounts?.releaseCalls).toEqual([
+      { kindergartenId: KG, customDiscountId: 'disc-capped' },
+    ]);
+    expect(h.customDiscounts?.rows.get('disc-capped')?.usedCount).toBe(2);
+    expect(h.customDiscounts?.rows.get('disc-uncapped')?.usedCount).toBe(5);
+  });
+
+  it('cancels monthlies without releasing discount slots when the optional custom-discount deps are absent', async () => {
+    // Legacy harness shape — PaymentService built WITHOUT the two optional
+    // custom-discount deps. The release step is a guarded no-op; the
+    // cancellation itself must still go through cleanly.
+    const h = buildHarness();
+    expect(h.customDiscounts).toBeUndefined();
+    h.invoiceRepo.rows.set(PREPAY, makePrepayment());
+    h.invoiceRepo.rows.set(
+      'inv-jul',
+      makeMonthly('inv-jul', '2026-07-01', '2026-07-31', 'pending'),
+    );
+    h.paymentAccountRepo.put(makeAccount());
+    seedPrepayPayment(h);
+
+    await settle(h);
+
+    expect(h.paymentRepo.rows.get('pmt-prepay')?.status).toBe('completed');
+    expect(h.invoiceRepo.rows.get(PREPAY)?.status).toBe('paid');
+    expect(h.invoiceRepo.rows.get('inv-jul')?.status).toBe('cancelled');
+    expect(cancelledEvents(h)).toHaveLength(1);
+  });
+
+  it('leaves paid and partial monthlies untouched and only warns for manual review', async () => {
+    const h = buildHarness();
+    const warnSpy = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+    h.invoiceRepo.rows.set(PREPAY, makePrepayment());
+    h.invoiceRepo.rows.set(
+      'inv-jul',
+      makeMonthly('inv-jul', '2026-07-01', '2026-07-31', 'paid'),
+    );
+    h.invoiceRepo.rows.set(
+      'inv-aug',
+      makeMonthly('inv-aug', '2026-08-01', '2026-08-31', 'partial'),
+    );
+    h.paymentAccountRepo.put(makeAccount());
+    seedPrepayPayment(h);
+
+    await settle(h);
+
+    expect(h.invoiceRepo.rows.get('inv-jul')?.status).toBe('paid');
+    expect(h.invoiceRepo.rows.get('inv-aug')?.status).toBe('partial');
+    expect(cancelledEvents(h)).toHaveLength(0);
+    const warns = warnSpy.mock.calls
+      .map((c) => c[0])
+      .filter(
+        (msg): msg is string =>
+          typeof msg === 'string' && msg.includes('manual review'),
+      );
+    expect(warns).toHaveLength(2);
+    expect(warns[0]).toContain('inv-jul already paid');
+    expect(warns[1]).toContain('inv-aug already partial');
+  });
+
+  it("does not touch other children's monthlies or monthlies outside the window", async () => {
+    const h = buildHarness();
+    h.invoiceRepo.rows.set(PREPAY, makePrepayment());
+    // Other child, inside the window.
+    h.invoiceRepo.rows.set(
+      'inv-other-child',
+      makeMonthly('inv-other-child', '2026-07-01', '2026-07-31', 'pending', {
+        childId: CHILD_OTHER,
+      }),
+    );
+    // Same child, before / after the Jul–Sep window.
+    h.invoiceRepo.rows.set(
+      'inv-jun',
+      makeMonthly('inv-jun', '2026-06-01', '2026-06-30', 'pending'),
+    );
+    h.invoiceRepo.rows.set(
+      'inv-oct',
+      makeMonthly('inv-oct', '2026-10-01', '2026-10-31', 'pending'),
+    );
+    h.paymentAccountRepo.put(makeAccount());
+    seedPrepayPayment(h);
+
+    await settle(h);
+
+    expect(h.invoiceRepo.rows.get(PREPAY)?.status).toBe('paid');
+    expect(h.invoiceRepo.rows.get('inv-other-child')?.status).toBe('pending');
+    expect(h.invoiceRepo.rows.get('inv-jun')?.status).toBe('pending');
+    expect(h.invoiceRepo.rows.get('inv-oct')?.status).toBe('pending');
+    expect(cancelledEvents(h)).toHaveLength(0);
+  });
+
+  it('performs no second cancellation when the same settlement is replayed', async () => {
+    const h = buildHarness();
+    h.invoiceRepo.rows.set(PREPAY, makePrepayment());
+    h.invoiceRepo.rows.set(
+      'inv-jul',
+      makeMonthly('inv-jul', '2026-07-01', '2026-07-31', 'pending'),
+    );
+    h.paymentAccountRepo.put(makeAccount());
+    seedPrepayPayment(h);
+
+    await settle(h);
+    expect(h.invoiceRepo.rows.get('inv-jul')?.status).toBe('cancelled');
+    expect(cancelledEvents(h)).toHaveLength(1);
+
+    // Cron re-bills a covered month AFTER the settlement; a provider replay
+    // of the same webhook must exit at the completed-payment early return
+    // and never reach the hook again.
+    h.invoiceRepo.rows.set(
+      'inv-aug',
+      makeMonthly('inv-aug', '2026-08-01', '2026-08-31', 'pending'),
+    );
+    await settle(h);
+
+    expect(h.paymentRepo.rows.get('pmt-prepay')?.status).toBe('completed');
+    expect(h.invoiceRepo.rows.get('inv-aug')?.status).toBe('pending');
+    expect(cancelledEvents(h)).toHaveLength(1);
+  });
+
+  it('triggers no cancellations when a prepayment settles only partially', async () => {
+    const h = buildHarness();
+    h.invoiceRepo.rows.set(PREPAY, makePrepayment());
+    h.invoiceRepo.rows.set(
+      'inv-jul',
+      makeMonthly('inv-jul', '2026-07-01', '2026-07-31', 'pending'),
+    );
+    h.paymentAccountRepo.put(makeAccount());
+    // paidSum 60 000 < amountAfterDiscount 135 000 → invoice flips to
+    // `partial`; a partial prepayment gives no coverage (§2.7).
+    seedPrepayPayment(h, 60_000);
+
+    await settle(h);
+
+    expect(h.invoiceRepo.rows.get(PREPAY)?.status).toBe('partial');
+    expect(h.invoiceRepo.rows.get('inv-jul')?.status).toBe('pending');
+    expect(cancelledEvents(h)).toHaveLength(0);
+  });
+
+  it('never fires the hook for a non-prepayment invoice settlement', async () => {
+    const h = buildHarness();
+    // The settled invoice is a plain monthly; a second pending monthly sits
+    // inside its period range and must survive the settlement untouched.
+    h.invoiceRepo.rows.set(INVOICE, makeInvoice());
+    h.invoiceRepo.rows.set(
+      'inv-jun-2',
+      makeMonthly('inv-jun-2', '2026-06-01', '2026-06-30', 'pending'),
+    );
+    h.paymentAccountRepo.put(makeAccount());
+    h.paymentRepo.rows.set(
+      'pmt-monthly',
+      Payment.fromState({
+        id: 'pmt-monthly',
+        kindergartenId: KG,
+        invoiceId: INVOICE,
+        childId: CHILD,
+        payerUserId: PAYER,
+        amount: m(50_000),
+        provider: 'mock',
+        providerTxnId: 'tx_monthly',
+        idempotencyKey: 'idem-monthly',
+        status: 'processing',
+        providerPayload: null,
+        paidAt: null,
+        refundId: null,
+        createdAt: NOW,
+        updatedAt: NOW,
+      }),
+    );
+
+    await settle(h, 'tx_monthly');
+
+    expect(h.invoiceRepo.rows.get(INVOICE)?.status).toBe('paid');
+    expect(h.invoiceRepo.rows.get('inv-jun-2')?.status).toBe('pending');
+    expect(cancelledEvents(h)).toHaveLength(0);
+  });
+
+  it('cancels nothing when the paid-flip is lost (prepayment already paid before this settlement)', async () => {
+    const h = buildHarness();
+    // Double-pay shape: the prepayment invoice is ALREADY `paid` (an earlier
+    // settlement flipped it and ran the hook). markPaidConditional returns
+    // null here → paidFlip gate keeps the hook off for this later duplicate.
+    h.invoiceRepo.rows.set(PREPAY, makePrepayment({ status: 'paid' }));
+    h.invoiceRepo.rows.set(
+      'inv-jul',
+      makeMonthly('inv-jul', '2026-07-01', '2026-07-31', 'pending'),
+    );
+    h.paymentAccountRepo.put(makeAccount());
+    seedPrepayPayment(h);
+
+    await settle(h);
+
+    expect(h.paymentRepo.rows.get('pmt-prepay')?.status).toBe('completed');
+    expect(h.invoiceRepo.rows.get('inv-jul')?.status).toBe('pending');
+    expect(cancelledEvents(h)).toHaveLength(0);
   });
 });
