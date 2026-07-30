@@ -280,8 +280,10 @@ PUSH_PROVIDER=mock
 # KASPI_POLL_TAIL_MS=60000
 # KASPI_POLL_AGGRESSIVE_WINDOW_MS=120000
 # KASPI_POLL_BACKOFF_WINDOW_MS=600000
-# Hard-cap fallback when remote/details carries no ExpireDate (default 24h).
-# KASPI_POLL_HARD_CAP_MS=86400000
+# Hard-cap fallback when remote/details carries no ExpireDate (default 23h).
+# 23h, not 24h: Kaspi withdraws an unpaid request at 24h, so an exactly-24h cap
+# raced Kaspi's own expiry and the terminal reason depended on who won.
+# KASPI_POLL_HARD_CAP_MS=82800000
 
 # K9 — Kaspi version-gate health cron (SMS-free probe → /health/ready checks.kaspi).
 KASPI_VERSION_HEALTH_CRON=disabled            # 'enabled' to run the probe cron (API process). Default off (tests/e2e must not hit live Kaspi).

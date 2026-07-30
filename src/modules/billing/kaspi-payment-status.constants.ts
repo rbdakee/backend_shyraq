@@ -53,9 +53,17 @@ export const KASPI_POLL_BACKOFF_WINDOW_MS = numEnv(
   'KASPI_POLL_BACKOFF_WINDOW_MS',
   10 * 60_000,
 );
+/**
+ * Stop polling and `markFailed` after this long. Deliberately 23h, NOT 24h:
+ * Kaspi itself withdraws an unpaid request at the 24h mark, so a cap of
+ * exactly 24h made us force-fail in the same instant Kaspi expired it — a
+ * coin-flip between "we failed it" and "Kaspi expired it", with the payment's
+ * terminal reason depending on which landed first. One hour of margin keeps
+ * our own timeout unambiguously first.
+ */
 export const KASPI_POLL_HARD_CAP_MS = numEnv(
   'KASPI_POLL_HARD_CAP_MS',
-  24 * 60 * 60_000,
+  23 * 60 * 60_000,
 );
 
 // ── env helper ─────────────────────────────────────────────────────────────

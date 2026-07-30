@@ -39,6 +39,21 @@ export abstract class CustomDiscountApplicationRepository {
     manager?: EntityManager,
   ): Promise<number>;
 
+  /**
+   * Application rows tied to one invoice. Used by the invoice-cancel flows
+   * (prepayment retry P2, settlement auto-cancel P5) to release the
+   * `total_max_uses` slots the cancelled invoice reserved — cancelled
+   * invoices must not consume capped discount slots (handoff §5.3).
+   *
+   * Default stub so older in-memory fakes compile; relational overrides.
+   */
+  listByInvoiceId(
+    _kindergartenId: string,
+    _invoiceId: string,
+  ): Promise<CustomDiscountApplication[]> {
+    return Promise.resolve([]);
+  }
+
   abstract listByDiscountId(
     kindergartenId: string,
     customDiscountId: string,

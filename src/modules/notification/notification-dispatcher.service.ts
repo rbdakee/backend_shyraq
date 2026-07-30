@@ -966,24 +966,47 @@ const TEMPLATES: Record<string, EventTemplate> = {
   // flagged `refund_required`; the admin must refund it manually. Recipients
   // are pre-resolved kg admins (resolveRecipientUserIdsFromPayload). Carries
   // both payment ids + amount so the admin app can deep-link the queue item.
-  'payment.refund_required': ({ payload }) => ({
-    titleI18n: {
-      ru: 'Двойная оплата — нужен возврат',
-      kk: 'Қос төлем — қайтару қажет',
-      en: 'Double payment — refund required',
-    },
-    bodyI18n: {
-      ru: 'По счёту прошла повторная оплата. Проверьте и сделайте возврат вручную.',
-      kk: 'Шот бойынша қайталама төлем өтті. Тексеріп, қолмен қайтарыңыз.',
-      en: 'A duplicate payment settled on this invoice. Review and refund it manually.',
-    },
-    data: stringMap({
-      paymentId: payload.paymentId,
-      duplicateOfPaymentId: payload.duplicateOfPaymentId,
-      invoiceId: payload.invoiceId,
-      amount: payload.amount,
-    }),
-  }),
+  // Both reasons mean the same thing to the admin — "real money moved, you
+  // must refund it by hand" — so they share one channel (and one preference
+  // toggle), but NOT one copy: `settled_into_cancelled_invoice` has no
+  // duplicate payment, and rendering the double-payment text for it sent
+  // admins hunting for a second payment that never existed. `stringMap` drops
+  // the null `duplicateOfPaymentId`, so the void-invoice payload carries no
+  // self-referencing id for the app to deep-link.
+  'payment.refund_required': ({ payload }) => {
+    const voidInvoice = payload.reason === 'settled_into_cancelled_invoice';
+    return {
+      titleI18n: voidInvoice
+        ? {
+            ru: 'Оплата по отменённому счёту — нужен возврат',
+            kk: 'Жойылған шот бойынша төлем — қайтару қажет',
+            en: 'Payment on a void invoice — refund required',
+          }
+        : {
+            ru: 'Двойная оплата — нужен возврат',
+            kk: 'Қос төлем — қайтару қажет',
+            en: 'Double payment — refund required',
+          },
+      bodyI18n: voidInvoice
+        ? {
+            ru: 'Деньги поступили по счёту, который уже отменён или возвращён. Проверьте и сделайте возврат вручную.',
+            kk: 'Ақша жойылған немесе қайтарылған шот бойынша түсті. Тексеріп, қолмен қайтарыңыз.',
+            en: 'Money settled on an invoice that is already cancelled or refunded. Review and refund it manually.',
+          }
+        : {
+            ru: 'По счёту прошла повторная оплата. Проверьте и сделайте возврат вручную.',
+            kk: 'Шот бойынша қайталама төлем өтті. Тексеріп, қолмен қайтарыңыз.',
+            en: 'A duplicate payment settled on this invoice. Review and refund it manually.',
+          },
+      data: stringMap({
+        paymentId: payload.paymentId,
+        duplicateOfPaymentId: payload.duplicateOfPaymentId,
+        invoiceId: payload.invoiceId,
+        amount: payload.amount,
+        reason: payload.reason,
+      }),
+    };
+  },
 };
 
 const RECIPIENT_RESOLVERS: Record<string, RecipientResolver> = {

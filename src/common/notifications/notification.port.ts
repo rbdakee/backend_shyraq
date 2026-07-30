@@ -517,12 +517,17 @@ export interface NotifyPaymentRefundRequiredInput {
   kindergartenId: string;
   /** The flagged (later) payment needing a manual refund. */
   paymentId: string;
-  /** The first/kept payment the duplicate settles against. */
-  duplicateOfPaymentId: string;
+  /**
+   * The first/kept payment the duplicate settles against — `double_payment`
+   * only. `null` for `settled_into_cancelled_invoice`, where no duplicate
+   * exists: the field used to self-reference the flagged payment, which made
+   * the dispatcher render the "double payment" copy for a case that had none.
+   */
+  duplicateOfPaymentId: string | null;
   invoiceId: string;
   childId: string;
   amount: number;
-  /** Flag reason — currently always `double_payment`. */
+  /** `double_payment` | `settled_into_cancelled_invoice` — selects the copy. */
   reason: string;
   /**
    * Pre-resolved admin user_ids. Producer reads these from

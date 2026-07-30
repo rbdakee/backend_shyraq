@@ -22,6 +22,10 @@ export { RefundAlreadyProcessedError } from './refund-already-processed.error';
 export { KaspiRefundHistoryAckRequiredError } from './kaspi-refund-history-ack-required.error';
 export { WebhookSignatureInvalidError } from './webhook-signature-invalid.error';
 export { PaymentAccountNotFoundError } from './payment-account-not-found.error';
+export { PrepaymentBlockedOutstandingDebtError } from './prepayment-blocked-outstanding-debt.error';
+export { PrepaymentBlockedPartialPrepaymentError } from './prepayment-blocked-partial-prepayment.error';
+export { PrepaymentBlockedWindowOverlapError } from './prepayment-blocked-window-overlap.error';
+export { PrepaymentPartialNotAllowedError } from './prepayment-partial-not-allowed.error';
 export { KindergartenHolidayAlreadyExistsError } from './kindergarten-holiday-already-exists.error';
 // B16 Custom Discounts
 export { CustomDiscountNotFoundError } from './custom-discount-not-found.error';

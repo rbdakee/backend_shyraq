@@ -413,6 +413,84 @@ describe('Lifecycle E2E (B21 T5)', () => {
   });
 
   // ═══════════════════════════════════════════════════════════════════════════
+  // Scenario B2: activate tariff gate — DI-shadowing regression
+  //
+  // `ChildModule` must NOT register a module-local `BillingLifecyclePort`: a
+  // local provider outranks the @Global() `BillingLifecycleBridgeModule` for
+  // components in the same module, so a local Noop would make EVERY activation
+  // 409 `child_activation_requires_tariff`. That regression once shipped, and
+  // nothing tested it — the string `child_activation_requires_tariff` appeared
+  // in no spec, so a re-introduced Noop would come back silently.
+  //
+  // The positive case is the actual guard: it can only pass if the REAL
+  // adapter is injected and can see the tariff assignment. The negative case
+  // pins the error code so the gate itself cannot be dropped either.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  async function createCardCreatedChild(
+    adminToken: string,
+    suffix: string,
+  ): Promise<string> {
+    const res = await request(server)
+      .post('/api/v1/children')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        full_name: `Activation Child ${suffix}`,
+        date_of_birth: '2021-03-15',
+      })
+      .expect(201);
+    expect(res.body.status).toBe('card_created');
+    return res.body.id as string;
+  }
+
+  async function seedTariffForChild(
+    kgId: string,
+    childId: string,
+    userId: string,
+  ): Promise<void> {
+    await ds.transaction(async (m) => {
+      await m.query(`SET LOCAL app.bypass_rls = 'true'`);
+      const planId = randomUUID();
+      await m.query(
+        `INSERT INTO tariff_plans
+           (id, kindergarten_id, name, tariff_type, amount, applies_to, valid_from)
+         VALUES ($1, $2, 'Activation Plan', 'monthly', 60000, 'all_children', '2025-01-01')`,
+        [planId, kgId],
+      );
+      await m.query(
+        `INSERT INTO tariff_assignments
+           (id, kindergarten_id, child_id, tariff_plan_id, valid_from, assigned_by)
+         VALUES ($1, $2, $3, $4, '2025-01-01', $5)`,
+        [randomUUID(), kgId, childId, planId, userId],
+      );
+    });
+  }
+
+  it('activates a card_created child that has an active tariff assignment', async () => {
+    const childId = await createCardCreatedChild(kgAAdminToken, 'B2-ok');
+    await seedTariffForChild(kgAId, childId, kgAAdminUserId);
+
+    const res = await request(server)
+      .post(`/api/v1/children/${childId}/activate`)
+      .set('Authorization', `Bearer ${kgAAdminToken}`)
+      .expect(200);
+
+    expect(res.body.status).toBe('active');
+    expect(res.body.enrollment_date).not.toBeNull();
+  });
+
+  it('rejects activation without a tariff assignment with 409 child_activation_requires_tariff', async () => {
+    const childId = await createCardCreatedChild(kgAAdminToken, 'B2-no-tariff');
+
+    const res = await request(server)
+      .post(`/api/v1/children/${childId}/activate`)
+      .set('Authorization', `Bearer ${kgAAdminToken}`)
+      .expect(409);
+
+    expect(res.body.error).toBe('child_activation_requires_tariff');
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
   // Scenario C: reactivate happy path
   // ═══════════════════════════════════════════════════════════════════════════
 

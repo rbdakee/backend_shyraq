@@ -602,9 +602,9 @@ export class ChildController {
     };
   }
 
-  // B22b T12: `POST /admin/children/:id/restore` removed entirely. The B22a
+  // B22b T12: `POST /children/:id/restore` removed entirely. The B22a
   // T11 410-Gone shim has been live for one release; clients must now use
-  // `POST /admin/children/:id/reactivate`. Hitting the legacy path falls
+  // `POST /children/:id/reactivate`. Hitting the legacy path falls
   // through to the router-level 404. The `RouteDeprecatedError` class +
   // child-domain error file were deleted in the same commit.
 

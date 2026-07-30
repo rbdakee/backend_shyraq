@@ -547,6 +547,15 @@ class PaymentCalendarMonthDto {
       'Number of public/non-billable holidays in this period (used for pro-rata display).',
   })
   holidays_affected!: number;
+
+  @ApiProperty({
+    example: 'prepayment_3m',
+    nullable: true,
+    enum: INVOICE_TYPES,
+    description:
+      'Type of the backing invoice. Months covered by a paid prepayment carry the prepayment type (frontend renders "paid by prepayment"). Null on projected rows.',
+  })
+  invoice_type!: string | null;
 }
 
 export class PaymentCalendarResponseDto {

@@ -342,4 +342,105 @@ export abstract class InvoiceRepository {
       refunded: { count: 0, amount: 0 },
     });
   }
+
+  // ── Prepayment coverage (handoff §2, PREPAYMENT_BILLING_FIX) ──────────
+
+  /**
+   * Debt-block query (handoff §2.2): the child's unsettled NON-prepayment
+   * invoices — `status IN ('pending','overdue','partial')` AND
+   * `invoice_type NOT IN prepayment_{3,6,12,24}m`. `partial` counts as
+   * outstanding debt (a partially-paid invoice still has a remaining
+   * balance). Unpaid `prepayment_*` invoices are NOT debt — a retry
+   * cancels them instead.
+   *
+   * Default stub so older in-memory fakes compile; relational overrides.
+   */
+  findUnpaidNonPrepaymentByChild(
+    _kindergartenId: string,
+    _childId: string,
+  ): Promise<Invoice[]> {
+    return Promise.resolve([]);
+  }
+
+  /**
+   * The child's PAID `prepayment_*` invoices with `period_end >=
+   * periodEndFrom`, ordered by `period_start ASC`. Feeds the window-shift
+   * walk (§2.3) and the calendar coverage spread (§2.9). Filter is exactly
+   * `status='paid'` — a `partial` prepayment gives no coverage (§2.7).
+   */
+  findPaidPrepaymentsByChild(
+    _kindergartenId: string,
+    _childId: string,
+    _periodEndFrom: Date,
+  ): Promise<Invoice[]> {
+    return Promise.resolve([]);
+  }
+
+  /**
+   * Batch coverage check for the monthly cron (§2.7 / P4): child ids of the
+   * kg that have a PAID `prepayment_*` invoice whose
+   * `[period_start, period_end]` window contains `periodStart`. One query
+   * per kg — the cron loop does a Set lookup per child, never a per-child
+   * query.
+   */
+  listChildIdsWithPaidPrepaymentCovering(
+    _kindergartenId: string,
+    _periodStart: Date,
+  ): Promise<string[]> {
+    return Promise.resolve([]);
+  }
+
+  /**
+   * Monthly invoices of the child whose `period_start` falls inside
+   * `[windowStart, windowEnd]` (monthly periods are whole months, so
+   * period_start containment is sufficient), across the four live statuses
+   * `pending|overdue|partial|paid` — the settlement hook (§2.8 / P5) splits
+   * cancel-vs-warn on status. Excludes cancelled/refunded.
+   */
+  findMonthlyInWindow(
+    _kindergartenId: string,
+    _childId: string,
+    _windowStart: Date,
+    _windowEnd: Date,
+  ): Promise<Invoice[]> {
+    return Promise.resolve([]);
+  }
+
+  /**
+   * The child's stale unpaid `prepayment_*` invoices — `status IN
+   * ('pending','overdue','partial')`. These are the rows a new prepayment
+   * attempt inspects before creating its replacement (§2.2 / P2). The
+   * status filter alone is NOT the money guard: `markOverdueBatch` flips
+   * `partial → overdue`, so a money-holding prepayment can sit in ANY of
+   * the three statuses. The service batches `getPaidSumsForInvoices` over
+   * the result — rows with a completed-paid sum > 0 BLOCK the retry
+   * (review FIX 2, `prepayment_blocked_partial_prepayment`); only
+   * zero-paid rows are cancelled.
+   */
+  findUnpaidPrepaymentsByChild(
+    _kindergartenId: string,
+    _childId: string,
+  ): Promise<Invoice[]> {
+    return Promise.resolve([]);
+  }
+
+  /**
+   * Serialises the per-child prepayment flow (review FIX 6):
+   * `pg_advisory_xact_lock(hashtext('billing:prepayment:'||kg||':'||childId))`.
+   * Held by `prepayInvoice` for the whole create flow and by the
+   * settlement paths (`applyCompletedPayment` paid-flip / covered-monthly
+   * hook, `manualMarkPaid` on a prepayment) so a settling prepayment and a
+   * concurrent `prepayInvoice` for the same child cannot interleave.
+   * Requires an ambient TX; released at COMMIT/ROLLBACK. Lock ordering is
+   * acyclic: payment lock → child lock → monthly-generation lock(s);
+   * `prepayInvoice` takes the child lock only.
+   *
+   * Default no-op so in-memory fakes compile; relational impl overrides.
+   */
+  acquireChildPrepaymentAdvisoryLock(
+    _kindergartenId: string,
+    _childId: string,
+  ): Promise<void> {
+    return Promise.resolve();
+  }
 }

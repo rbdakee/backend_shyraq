@@ -32,6 +32,7 @@
  *     GET    /api/v1/parent/invoices/:id
  *     POST   /api/v1/parent/invoices/:id/pay
  *     POST   /api/v1/parent/invoices/:id/pay/prepayment
+ *     GET    /api/v1/parent/invoices/:id/prepayment-preview
  *     GET    /api/v1/parent/children/:id/payment-calendar
  *   Webhooks:
  *     POST   /api/v1/webhooks/payments/mock
@@ -63,6 +64,11 @@
  *   W. Payment calendar projection
  *   X. List invoices with filter
  *   Y. List payments with filter
+ *   PP1. Prepayment preview — normal quote (window + breakdown + total)
+ *   PP2. Prepayment preview — blocked by outstanding debt (pending monthly)
+ *   PP3. Prepayment preview — window shifted past PAID prepayment coverage
+ *   PP4. Prepayment happy path — pay 3m → settle → calendar coverage → cron skip
+ *        (handoff §3 case 1, local_docs/PREPAYMENT_BILLING_FIX_HANDOFF.md)
  *
  * NOTE on Scenario J (monthly cron):
  *   BullMQ workers do not run automatically in the test environment because
@@ -99,6 +105,36 @@ function isoFuture(days: number): string {
 function firstOfCurrentMonth(): string {
   const now = new Date();
   return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-01`;
+}
+
+/**
+ * Prepayment windows are anchored on the Asia/Almaty calendar month
+ * (`firstOfMonthInTimezone`, handoff §5.4) — Almaty is UTC+5 with no DST,
+ * so shifting "now" by +5h and reading the UTC fields yields the same
+ * month the service resolves, even when UTC and Almaty disagree near
+ * month boundaries. `offsetMonths` counts from the CURRENT Almaty month
+ * (0 = current, 1 = next = default prepayment window start).
+ */
+function almatyMonthStartIso(offsetMonths: number): string {
+  const shifted = new Date(Date.now() + 5 * 3_600_000);
+  return new Date(
+    Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth() + offsetMonths, 1),
+  )
+    .toISOString()
+    .slice(0, 10);
+}
+
+function almatyMonthEndIso(offsetMonths: number): string {
+  const shifted = new Date(Date.now() + 5 * 3_600_000);
+  return new Date(
+    Date.UTC(
+      shifted.getUTCFullYear(),
+      shifted.getUTCMonth() + offsetMonths + 1,
+      0,
+    ),
+  )
+    .toISOString()
+    .slice(0, 10);
 }
 
 interface CreatedKgResp {
@@ -357,6 +393,80 @@ describe('B13 Billing & Invoices (e2e)', () => {
       id: res.body.id as string,
       status: res.body.status as string,
       amount_after_discount: res.body.amount_after_discount as number,
+    };
+  }
+
+  // ── prepayment-coverage seeding (Scenarios PP1–PP4) ───────────────────────
+  //
+  // kg + primary parent + child + tariff plan (prepay_3m_pct) + assignment,
+  // plus a PAID one-off anchor invoice: both `pay/prepayment` and the
+  // preview anchor on "any invoice of the child", and the anchor must NOT
+  // be pending or the §2.2 debt block fires (any pending/overdue/partial
+  // non-prepayment invoice blocks the quote).
+
+  async function setupPrepaymentCoverageChild(opts: {
+    slug: string;
+    adminPhone: string;
+    parentPhone: string;
+    amount: number;
+    prepay3mPct: number;
+  }): Promise<{
+    kgId: string;
+    adminToken: string;
+    parentToken: string;
+    childId: string;
+    paidAnchorInvoiceId: string;
+  }> {
+    const a = await createKgWithAdmin(opts.slug, opts.adminPhone);
+    const parentId = await seedUser(opts.parentPhone);
+    const childId = await createChild(a.adminToken, {
+      full_name: `Child ${opts.slug}`,
+      date_of_birth: '2021-01-10',
+    });
+    await seedApprovedGuardian(a.kgId, childId, parentId);
+    const parentToken = await mintToken({
+      sub: parentId,
+      role: 'parent',
+      kindergartenId: a.kgId,
+    });
+
+    const { id: planId } = await createTariffPlan(a.adminToken, {
+      name: 'Prepay Coverage Plan',
+      amount: opts.amount,
+      discount_rules: { prepay_3m_pct: opts.prepay3mPct },
+    });
+    await createTariffAssignment(a.adminToken, childId, planId);
+
+    const { id: anchorId } = await createOneOffInvoice(
+      a.adminToken,
+      childId,
+      5000,
+    );
+    await request(server)
+      .post(`/api/v1/parent/invoices/${anchorId}/pay`)
+      .set('Authorization', `Bearer ${parentToken}`)
+      .send({
+        payment_mode: 'full',
+        provider: 'mock',
+        idempotency_key: randomUUID(),
+        return_url: 'https://app.shyraq.kz/payment/return',
+      })
+      .expect(201);
+    // Guard: the mock provider settles synchronously (Scenario K). If it
+    // ever stops, every PP scenario would silently degrade into a
+    // debt-block test — fail loudly here instead.
+    const anchorRes = await request(server)
+      .get(`/api/v1/admin/invoices/${anchorId}`)
+      .set('Authorization', `Bearer ${a.adminToken}`)
+      .expect(200);
+    expect(anchorRes.body.status).toBe('paid');
+
+    return {
+      kgId: a.kgId,
+      adminToken: a.adminToken,
+      parentToken,
+      childId,
+      paidAnchorInvoiceId: anchorId,
     };
   }
 
@@ -2220,6 +2330,320 @@ describe('B13 Billing & Invoices (e2e)', () => {
       // overdue rows are excluded by the WHERE status filter.
       const second = await processor.runForKindergarten(a.kgId, new Date());
       expect(second.flippedIds).not.toContain(invoiceId);
+    });
+  });
+
+  // ── PP. Prepayment coverage (P1–P6) ───────────────────────────────────────
+  // Spec: local_docs/PREPAYMENT_BILLING_FIX_HANDOFF.md — §2 rules, §3 cases.
+
+  describe('Scenario PP1: Prepayment preview — normal quote', () => {
+    it('returns a 3-month window starting next month with per-month breakdown, discount_pct and a whole-tenge total', async () => {
+      const s = await setupPrepaymentCoverageChild({
+        slug: 'bi-pp1',
+        adminPhone: '+77020100311',
+        parentPhone: '+77020100312',
+        amount: 45000,
+        prepay3mPct: 10,
+      });
+
+      const res = await request(server)
+        .get(
+          `/api/v1/parent/invoices/${s.paidAnchorInvoiceId}/prepayment-preview?months=3`,
+        )
+        .set('Authorization', `Bearer ${s.parentToken}`)
+        .expect(200);
+
+      expect(res.body.blocked_reason).toBeNull();
+      expect(res.body.outstanding_amount).toBeNull();
+      // §2.1 — window always starts at the 1st of the NEXT Almaty month.
+      expect(res.body.window).toEqual({
+        from: almatyMonthStartIso(1),
+        to: almatyMonthEndIso(3),
+      });
+
+      const months = res.body.months as Array<{
+        period_start: string;
+        period_end: string;
+        base_amount: number;
+        holiday_days: number;
+        amount_share: number;
+      }>;
+      expect(months).toHaveLength(3);
+      months.forEach((m, i) => {
+        expect(m.period_start).toBe(almatyMonthStartIso(1 + i));
+        expect(m.period_end).toBe(almatyMonthEndIso(1 + i));
+        expect(m.holiday_days).toBe(0);
+        // No holidays seeded → full month price, no proration.
+        expect(m.base_amount).toBe(45000);
+        // Equal weights → equal whole-tenge shares of the total.
+        expect(m.amount_share).toBe(40500);
+      });
+
+      expect(res.body.discount_pct).toBe(10);
+      // 3 × 45 000 − 10% = 121 500, whole tenge (§2.5); the per-month
+      // shares sum to it EXACTLY (largest-remainder split, §2.6).
+      expect(res.body.total).toBe(121500);
+      const shareSum = months.reduce((acc, m) => acc + m.amount_share, 0);
+      expect(shareSum).toBe(res.body.total);
+    });
+  });
+
+  describe('Scenario PP2: Prepayment preview — blocked by outstanding debt', () => {
+    it('returns blocked_reason=outstanding_debt with the pending monthly amount and an empty breakdown', async () => {
+      const a = await createKgWithAdmin('bi-pp2', '+77020100321');
+      const parentId = await seedUser('+77020100322');
+      const childId = await createChild(a.adminToken, {
+        full_name: 'Child PP2',
+        date_of_birth: '2021-04-05',
+      });
+      await seedApprovedGuardian(a.kgId, childId, parentId);
+      const parentToken = await mintToken({
+        sub: parentId,
+        role: 'parent',
+        kindergartenId: a.kgId,
+      });
+
+      const { id: planId } = await createTariffPlan(a.adminToken, {
+        name: 'PP2 Plan',
+        amount: 45000,
+        discount_rules: { prepay_3m_pct: 10 },
+      });
+      // valid_from must cover the current period so the monthly cron picks
+      // the assignment up (mirror Scenario J).
+      await request(server)
+        .post('/api/v1/admin/tariff-assignments')
+        .set('Authorization', `Bearer ${a.adminToken}`)
+        .send({
+          child_id: childId,
+          tariff_plan_id: planId,
+          valid_from: firstOfCurrentMonth(),
+        })
+        .expect(201);
+
+      // Generate the current-month monthly → the child now owes it (§3
+      // case 2: "Июльский monthly pending → блок").
+      const processor = ctx.app.get(MonthlyBillingProcessor);
+      const run = await processor.runForKindergarten(
+        a.kgId,
+        new Date(`${firstOfCurrentMonth()}T00:00:00.000Z`),
+      );
+      expect(run.generated).toBe(1);
+
+      const monthlyList = await request(server)
+        .get(`/api/v1/admin/invoices?child_id=${childId}&invoice_type=monthly`)
+        .set('Authorization', `Bearer ${a.adminToken}`)
+        .expect(200);
+      expect(monthlyList.body).toHaveLength(1);
+      const monthly = (
+        monthlyList.body as Array<{
+          id: string;
+          status: string;
+          amount_after_discount: number;
+        }>
+      )[0];
+      expect(monthly.status).toBe('pending');
+
+      const res = await request(server)
+        .get(
+          `/api/v1/parent/invoices/${monthly.id}/prepayment-preview?months=3`,
+        )
+        .set('Authorization', `Bearer ${parentToken}`)
+        .expect(200);
+
+      // HTTP 200 with blocked_reason — NOT a 400 (only the pay endpoint
+      // rejects; the preview reports the block, §2.10).
+      expect(res.body.blocked_reason).toBe('outstanding_debt');
+      expect(res.body.outstanding_amount).toBe(monthly.amount_after_discount);
+      expect(res.body.outstanding_amount).toBe(45000);
+      expect(res.body.months).toEqual([]);
+      expect(res.body.window).toBeNull();
+      expect(res.body.discount_pct).toBeNull();
+      expect(res.body.total).toBeNull();
+    });
+  });
+
+  describe('Scenario PP3: Prepayment preview — window shifted past paid coverage', () => {
+    it('returns a window starting after the months already covered by a PAID prepayment', async () => {
+      const s = await setupPrepaymentCoverageChild({
+        slug: 'bi-pp3',
+        adminPhone: '+77020100331',
+        parentPhone: '+77020100332',
+        amount: 45000,
+        prepay3mPct: 10,
+      });
+
+      // Pay a 3-month prepayment. The mock provider settles synchronously,
+      // so the prepayment invoice flips to paid within this call.
+      const prepayRes = await request(server)
+        .post(`/api/v1/parent/invoices/${s.paidAnchorInvoiceId}/pay/prepayment`)
+        .set('Authorization', `Bearer ${s.parentToken}`)
+        .send({
+          months: 3,
+          provider: 'mock',
+          idempotency_key: randomUUID(),
+          return_url: 'https://app.shyraq.kz/payment/return',
+        })
+        .expect(201);
+      const prepayInvoiceId = prepayRes.body.invoice_id as string;
+
+      const invRes = await request(server)
+        .get(`/api/v1/admin/invoices/${prepayInvoiceId}`)
+        .set('Authorization', `Bearer ${s.adminToken}`)
+        .expect(200);
+      expect(invRes.body.invoice_type).toBe('prepayment_3m');
+      // Must be settled — an UNPAID prepayment does not shift the window
+      // (§2.3 shifts only over PAID coverage).
+      expect(invRes.body.status).toBe('paid');
+
+      const res = await request(server)
+        .get(
+          `/api/v1/parent/invoices/${s.paidAnchorInvoiceId}/prepayment-preview?months=3`,
+        )
+        .set('Authorization', `Bearer ${s.parentToken}`)
+        .expect(200);
+
+      expect(res.body.blocked_reason).toBeNull();
+      // Months +1..+3 are covered by the paid prepayment → the new quote
+      // starts at +4 (§2.3, acceptance case 4 shape).
+      expect(res.body.window).toEqual({
+        from: almatyMonthStartIso(4),
+        to: almatyMonthEndIso(6),
+      });
+      const months = res.body.months as Array<{ period_start: string }>;
+      expect(months).toHaveLength(3);
+      expect(months[0].period_start).toBe(almatyMonthStartIso(4));
+      expect(res.body.discount_pct).toBe(10);
+      expect(res.body.total).toBe(121500);
+    });
+  });
+
+  describe('Scenario PP4: Prepayment happy path — pay 3m, calendar coverage, cron skip', () => {
+    it('settles a 3m prepayment, renders covered months as paid prepayment_3m shares in the calendar, and generateMonthly skips them', async () => {
+      // Handoff §3 case 1 economics: 60 000₸/мес, prepay_3m_pct=10, no
+      // holidays → 180 000 − 10% = 162 000, monthly share 54 000.
+      const s = await setupPrepaymentCoverageChild({
+        slug: 'bi-pp4',
+        adminPhone: '+77020100341',
+        parentPhone: '+77020100342',
+        amount: 60000,
+        prepay3mPct: 10,
+      });
+
+      const prepayRes = await request(server)
+        .post(`/api/v1/parent/invoices/${s.paidAnchorInvoiceId}/pay/prepayment`)
+        .set('Authorization', `Bearer ${s.parentToken}`)
+        .send({
+          months: 3,
+          provider: 'mock',
+          idempotency_key: randomUUID(),
+          return_url: 'https://app.shyraq.kz/payment/return',
+        })
+        .expect(201);
+      const prepayInvoiceId = prepayRes.body.invoice_id as string;
+      expect(prepayRes.body.payment_id).toBeDefined();
+      expect(prepayRes.body.preview.base_amount).toBe(180000);
+      expect(prepayRes.body.preview.discount_pct).toBe(10);
+      expect(prepayRes.body.preview.final_amount).toBe(162000);
+      expect(prepayRes.body.preview.covers_period).toEqual({
+        from: almatyMonthStartIso(1),
+        to: almatyMonthEndIso(3),
+      });
+
+      // Mock settled synchronously → paid; P2 wrote one line item per
+      // covered month, each the month's whole-tenge share (§2.6).
+      const invRes = await request(server)
+        .get(`/api/v1/admin/invoices/${prepayInvoiceId}`)
+        .set('Authorization', `Bearer ${s.adminToken}`)
+        .expect(200);
+      expect(invRes.body.invoice_type).toBe('prepayment_3m');
+      expect(invRes.body.status).toBe('paid');
+      expect(invRes.body.amount_after_discount).toBe(162000);
+      const lineItems = invRes.body.line_items as Array<{
+        description: string;
+        quantity: number;
+        line_total: number;
+      }>;
+      expect(lineItems).toHaveLength(3);
+      lineItems.forEach((li) => {
+        expect(li.quantity).toBe(1);
+        expect(li.line_total).toBe(54000);
+      });
+      for (const offset of [1, 2, 3]) {
+        const key = almatyMonthStartIso(offset).slice(0, 7); // YYYY-MM
+        expect(
+          lineItems.some((li) =>
+            li.description.startsWith(`Prepayment ${key}`),
+          ),
+        ).toBe(true);
+      }
+
+      // P6 — calendar renders every covered month as a PAID row of the
+      // prepayment invoice with the per-month line-item share.
+      const calRes = await request(server)
+        .get(
+          `/api/v1/parent/children/${s.childId}/payment-calendar?months_ahead=4`,
+        )
+        .set('Authorization', `Bearer ${s.parentToken}`)
+        .expect(200);
+      const entries = calRes.body.invoices as Array<{
+        period_start: string;
+        invoice_id: string | null;
+        projected_status: string;
+        amount_after_discount: number | null;
+        is_projection: boolean;
+        invoice_type: string | null;
+      }>;
+      expect(entries).toHaveLength(4);
+      for (const offset of [1, 2, 3]) {
+        const entry = entries.find(
+          (e) => e.period_start === almatyMonthStartIso(offset),
+        );
+        expect(entry).toBeDefined();
+        expect(entry!.projected_status).toBe('paid');
+        expect(entry!.is_projection).toBe(false);
+        expect(entry!.invoice_type).toBe('prepayment_3m');
+        expect(entry!.invoice_id).toBe(prepayInvoiceId);
+        expect(entry!.amount_after_discount).toBe(54000);
+      }
+
+      // P4 — the monthly cron creates NOTHING for the covered months
+      // (per-child coverage skip)...
+      const processor = ctx.app.get(MonthlyBillingProcessor);
+      for (const offset of [1, 2, 3]) {
+        const run = await processor.runForKindergarten(
+          s.kgId,
+          new Date(`${almatyMonthStartIso(offset)}T00:00:00.000Z`),
+        );
+        expect(run.generated).toBe(0);
+        expect(run.skipped).toBe(1);
+      }
+      const monthliesAfterCovered = await request(server)
+        .get(
+          `/api/v1/admin/invoices?child_id=${s.childId}&invoice_type=monthly`,
+        )
+        .set('Authorization', `Bearer ${s.adminToken}`)
+        .expect(200);
+      expect(monthliesAfterCovered.body).toHaveLength(0);
+
+      // ...while the first UNcovered month still bills — proves the runs
+      // above actually executed and the zero rows are the coverage skip,
+      // not a dead processor (no Scenario-M-style silent soft-skip).
+      const uncoveredRun = await processor.runForKindergarten(
+        s.kgId,
+        new Date(`${almatyMonthStartIso(4)}T00:00:00.000Z`),
+      );
+      expect(uncoveredRun.generated).toBe(1);
+      const monthliesAfterUncovered = await request(server)
+        .get(
+          `/api/v1/admin/invoices?child_id=${s.childId}&invoice_type=monthly`,
+        )
+        .set('Authorization', `Bearer ${s.adminToken}`)
+        .expect(200);
+      expect(monthliesAfterUncovered.body).toHaveLength(1);
+      expect(
+        (monthliesAfterUncovered.body as Array<{ period_start: string }>)[0]
+          .period_start,
+      ).toBe(almatyMonthStartIso(4));
     });
   });
 });

@@ -46,8 +46,10 @@ services:
       redis:
         condition: service_healthy
     # migrate + seed run via the no-env-cmd scripts so the container's injected
-    # env (from env_file) is used as-is — env-cmd would override it with the
-    # image's baked .env. Then boot the compiled app.
+    # env (from env_file) is used as-is. The image no longer bakes an .env at
+    # all (see Dockerfile), but keep these variants: env-cmd still fails hard
+    # when no .env file exists, and a future stray one must not shadow env_file.
+    # Then boot the compiled app.
     command: >
       sh -c "npm run db:migrate &&
              npm run db:seed &&
