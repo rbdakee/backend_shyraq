@@ -50,7 +50,7 @@ import { appRoleIdent } from '../app-role.util';
  *      `idx_child_status_history_kg_changed_at (kindergarten_id,
  *      changed_at DESC)` — admin "recent activity" reads (kg-wide).
  *      `idx_child_status_history_child (child_id, changed_at DESC)` —
- *      the per-child GET endpoint (`/admin/children/:id/status-history`).
+ *      the per-child GET endpoint (`/children/:id/status-history`).
  *
  * `created_at` is separate from `changed_at` so `changed_at` carries the
  * actor-supplied timestamp (i.e. `clock.now()` at the service layer)

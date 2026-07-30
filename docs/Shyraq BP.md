@@ -64,7 +64,7 @@
 
 ### Дополнения (B4 manual creation)
 
-- Параллельно с enrollment-машиной admin может создать карточку ребёнка вручную через `POST /admin/children` (статус `card_created`, без `enrollments`-trail, без авто-invoice'а на первый месяц). Этот путь нужен для случаев, когда ребёнок мигрировал из другого садика или enrollment-процесс был оффлайн (бумажный договор, телефонный разговор).
+- Параллельно с enrollment-машиной admin может создать карточку ребёнка вручную через `POST /children` (статус `card_created`, без `enrollments`-trail, без авто-invoice'а на первый месяц). Этот путь нужен для случаев, когда ребёнок мигрировал из другого садика или enrollment-процесс был оффлайн (бумажный договор, телефонный разговор).
 - Различие с enrollment-flow: при manual creation нет лида и `enrollment_status_log`; ребёнок сразу получает `children.status='card_created'`, но без обязательства на оплату — admin отдельно назначает `tariff_assignment` (B13). Все остальные правила (валидация ИИН, привязка к группе, добавление primary guardian с approval-flow) — те же.
 
 ## 2. Parent App Onboarding
@@ -1055,7 +1055,7 @@ Auto-publish at `schedule_pub` time is **silent by design** — no push/WS notif
 
 ### 12.2 Перевод в другую группу
 
-1. **Триггер:** Администратор открывает карточку ребенка и вызывает `POST /admin/children/:id/transfer-group {to_group_id, reason?}`.
+1. **Триггер:** Администратор открывает карточку ребенка и вызывает `POST /children/:id/transfer {to_group_id, reason?}`.
 2. Администратор изменяет группу и при необходимости назначенного Mentor.
 3. Система: `UPDATE children.current_group_id` + INSERT в `child_group_history` (`from_group_id`, `to_group_id`, `transferred_by=staff_member_id`, `reason`) — audit-trail.
 4. В той же транзакции INSERT в `notification_outbox (event_key='child.transferred', payload={childId, fromGroupId, toGroupId, kindergartenId})` — transactional outbox pattern (B21: notification-emit через outbox). `notification-outbox-poll` worker доставляет push/WS к получателям: менторы старой и новой группы + все approved non-revoked guardians ребёнка (nanny НЕ получает lifecycle events — только `attendance.*` и `pickup.*`).
@@ -1063,7 +1063,7 @@ Auto-publish at `schedule_pub` time is **silent by design** — no push/WS notif
 6. Родитель видит новую группу ребенка в `Parent App`.
 7. Система продолжает вести историю ребенка без потери прошлых данных (`child_group_history` хранится навсегда).
 
-**Ограничение (B21 T8):** трансфер архивированного ребёнка запрещён — `Child.transferToGroup()` выбрасывает `ArchivedChildNotTransferableError` (409 `archived_child_not_transferable`). Архивированный ребёнок логически не принадлежит ни одной группе; чтобы перевести его, администратор сначала обязан вызвать `POST /admin/children/:id/reactivate`. Это исключает ложные `child.transferred` уведомления отозванным родителям и мусорные строки в `child_group_history`.
+**Ограничение (B21 T8):** трансфер архивированного ребёнка запрещён — `Child.transferToGroup()` выбрасывает `ArchivedChildNotTransferableError` (409 `archived_child_not_transferable`). Архивированный ребёнок логически не принадлежит ни одной группе; чтобы перевести его, администратор сначала обязан вызвать `POST /children/:id/reactivate`. Это исключает ложные `child.transferred` уведомления отозванным родителям и мусорные строки в `child_group_history`.
 
 ### 12.3 Смена Ментора/Специалиста группы
 
@@ -1088,7 +1088,7 @@ Auto-publish at `schedule_pub` time is **silent by design** — no push/WS notif
 - `rejected` — конечное.
 
 **Approval-flow (B4):**
-1. Admin вызывает `POST /admin/children/:id/guardians` с `{user_phone OR user_id, role, can_pickup, has_approval_rights?}` — find-or-create user by phone (паттерн B2 D10 L3), `child_guardians.status='pending_approval'`.
+1. Admin вызывает `POST /children/:id/guardians` с `{user_phone OR user_id, role, can_pickup, has_approval_rights?}` — find-or-create user by phone (паттерн B2 D10 L3), `child_guardians.status='pending_approval'`.
 2. Primary guardian получает уведомление `guardian.pending_approval` (через `NotificationPort` skeleton).
 3. Primary вызывает `POST /parent/approvals/:guardianId/approve` — система проставляет `status='approved'`, `approved_by=me`, `approved_at=NOW()` и **seed'ит** `permissions` дефолтами из роли (см. `endpoints.md §4.13`). Опционально включает `has_approval_rights` (инвариант: ≤2 на ребёнка). Notify `guardian.approved` admin'у и guardian'у.
 4. Альтернативно `POST /parent/approvals/:guardianId/reject` (notify `guardian.rejected`) или `POST /parent/approvals/:guardianId/revoke` (notify `guardian.revoked`).
@@ -1109,7 +1109,7 @@ Auto-publish at `schedule_pub` time is **silent by design** — no push/WS notif
 
 ### 12.5 Архивирование ребёнка (B21)
 
-**Триггер:** `POST /admin/children/:id/archive`
+**Триггер:** `POST /children/:id/archive`
 
 **Request body:**
 ```json
@@ -1130,7 +1130,7 @@ Auto-publish at `schedule_pub` time is **silent by design** — no push/WS notif
 
 ### 12.6 Реактивация ребёнка (B21)
 
-**Триггер:** `POST /admin/children/:id/reactivate`
+**Триггер:** `POST /children/:id/reactivate`
 
 **Request body:** пустой (нет полей).
 
@@ -1153,9 +1153,9 @@ Auto-publish at `schedule_pub` time is **silent by design** — no push/WS notif
 
 ### 12.6.1 Активация ребёнка вручную (`card_created → active`)
 
-**Триггер:** `POST /admin/children/:id/activate`
+**Триггер:** `POST /children/:id/activate`
 
-**Контекст:** ребёнок, созданный вручную (`POST /admin/children`, BP §1 manual creation), попадает в `card_created`. Это первый forward-переход стейт-машины. Без него ребёнок заморожен: `archive` требует `active`, `reactivate` требует `archived`. Доменный метод `Child.activate()` существовал зарезервированным под enrollment-flow; этот endpoint выводит его наружу для ручной активации.
+**Контекст:** ребёнок, созданный вручную (`POST /children`, BP §1 manual creation), попадает в `card_created`. Это первый forward-переход стейт-машины. Без него ребёнок заморожен: `archive` требует `active`, `reactivate` требует `archived`. Доменный метод `Child.activate()` существовал зарезервированным под enrollment-flow; этот endpoint выводит его наружу для ручной активации.
 
 **Request body:** пустой (нет полей).
 
@@ -1204,7 +1204,7 @@ Auto-publish at `schedule_pub` time is **silent by design** — no push/WS notif
 
 ### 12.8 Status history (audit log) — B22a
 
-**Трекинг:** каждое изменение `children.status` (archive / reactivate / активация `card_created → active` через `POST /admin/children/:id/activate`, §12.6.1) пишется в audit-таблицу `child_status_history` атомарно в той же ambient TX что и conditional UPDATE статуса.
+**Трекинг:** каждое изменение `children.status` (archive / reactivate / активация `card_created → active` через `POST /children/:id/activate`, §12.6.1) пишется в audit-таблицу `child_status_history` атомарно в той же ambient TX что и conditional UPDATE статуса.
 
 **Поля:**
 - `previous_status`, `new_status` — `child_status` до и после транзакции.
@@ -1215,7 +1215,7 @@ Auto-publish at `schedule_pub` time is **silent by design** — no push/WS notif
 
 **Атомарность:** INSERT происходит внутри той же ambient TX что и `UPDATE children`. Если history INSERT throws — archive/reactivate откатывается (test required: simulate INSERT failure → ACID guarantee).
 
-**Endpoint:** `GET /admin/children/:id/status-history?limit=&offset=` (admin scope, paginated) возвращает upo-date историю переходов. Доступно только админу — mentor и parent видят текущий статус через основной child detail endpoint.
+**Endpoint:** `GET /children/:id/status-history?limit=&offset=` (admin scope, paginated) возвращает upo-date историю переходов. Доступно только админу — mentor и parent видят текущий статус через основной child detail endpoint.
 
 **Migration constraint:** CHECK `chk_valid_transition` ограничивает допустимые переходы:
 - `active → archived`
@@ -1236,9 +1236,9 @@ Auto-publish at `schedule_pub` time is **silent by design** — no push/WS notif
 
 | Event key | Получатели | Trigger |
 |---|---|---|
-| `child.archived` | Все approved non-revoked guardians (nanny — нет) | `POST /admin/children/:id/archive` |
-| `child.reactivated` | Все approved non-revoked guardians (nanny — нет) | `POST /admin/children/:id/reactivate` |
-| `child.transferred` | Менторы старой и новой группы + approved non-revoked guardians (nanny — нет) | `POST /admin/children/:id/transfer-group` |
+| `child.archived` | Все approved non-revoked guardians (nanny — нет) | `POST /children/:id/archive` |
+| `child.reactivated` | Все approved non-revoked guardians (nanny — нет) | `POST /children/:id/reactivate` |
+| `child.transferred` | Менторы старой и новой группы + approved non-revoked guardians (nanny — нет) | `POST /children/:id/transfer` |
 
 Все lifecycle-события отправляются через transactional outbox (`notification_outbox`), доставляются `notification-outbox-poll` worker через `NotificationDispatcher`.
 

@@ -3,7 +3,7 @@ import { Transform } from 'class-transformer';
 import { IsString, MaxLength, MinLength } from 'class-validator';
 
 /**
- * Body for POST /admin/children/:id/archive.
+ * Body for POST /children/:id/archive.
  *
  * `archive_reason` is required: 1–500 characters AFTER trim. The
  * @Transform step trims surrounding whitespace before class-validator

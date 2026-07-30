@@ -8,7 +8,7 @@ import { ConflictError } from '@/shared-kernel/domain/errors/conflict.error';
  * notifications to (likely revoked) guardians and add misleading rows to
  * `child_group_history`. Surfaced by `Child.transferToGroup()`; mapped to
  * HTTP 409 by `DomainErrorFilter`. The caller must reactivate the child
- * first (`POST /admin/children/:id/reactivate`) before re-attempting the
+ * first (`POST /children/:id/reactivate`) before re-attempting the
  * transfer.
  */
 export class ArchivedChildNotTransferableError extends ConflictError {

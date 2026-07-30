@@ -504,25 +504,28 @@ Admin-managed справочник — **AUTHORITY** для `staff_members.speci
 
 | Метод | Путь | Назначение |
 |---|---|---|
-| GET | `/admin/children` | Список (фильтр по `status`, `current_group_id`, поиск по ФИО/ИИН). Каждый `ChildDto` несёт `current_group_name` (см. выше). |
-| POST | `/admin/children` | Создать карточку вручную (вне enrollment flow). |
-| GET | `/admin/children/:id` | Полная карточка: гардианы, группа, история групп, timeline (preview), платежи (preview), диагностики (preview). |
-| PATCH | `/admin/children/:id` | Обновить ФИО, ИИН, DOB, photo, `medical_notes`, `allergy_notes`. |
-| POST | `/admin/children/:id/transfer-group` | Перевод в другую группу. Создаёт запись в `child_group_history`. Emits `child.transferred` через outbox (менторы старой+новой группы + guardians). |
-| POST | `/admin/children/:id/activate` | Активировать карточку (`card_created → active`), ставит `enrollment_date`. **Требует активный `tariff_assignment`** на текущую дату — иначе 409 `child_activation_requires_tariff`. Пишет `card_created→active` в `child_status_history`. См. §2.7.2. |
-| POST | `/admin/children/:id/archive` | Архивировать ребёнка. Закрывает `tariff_assignments`, enqueue BullMQ `lifecycle:pro-rata-refund`. |
-| POST | `/admin/children/:id/reactivate` | Реактивировать ребёнка. Возврат в `status='active'`. |
-| GET | `/admin/children/:id/status-history` | История изменений `children.status` (audit). Paginated `?limit=&offset=`. Response: `[{id, previous_status, new_status, previous_archive_reason, archive_reason, changed_by_user_id, changed_at}]` отсортирован `changed_at DESC`. См. §2.7.5. |
-| GET | `/admin/children/:id/guardians` | Все guardians ребёнка (+ статус одобрения, `has_approval_rights`). Каждый `GuardianDto` несёт display-поля `user_full_name` / `user_phone` (nullable), резолвящиеся из связанной строки `users` по `child_guardians.user_id` — тот же приём, что в `/admin/staff` (`full_name`/`phone` из `users`). `null`, если у юзера, приглашённого по телефону, ещё не заполнен профиль. Поля присутствуют во всех ответах с `GuardianDto` (admin + parent approval/child эндпоинты). |
-| POST | `/admin/children/:id/guardians` | Добавить guardian вручную (админ может создать primary с самого начала). |
-| POST | `/admin/children/:id/guardians/:guardianId/approve` | **Одобрить заявку родителя из админки** (без участия primary-опекуна). `pending_approval → approved`, `approved_by = текущий админ`. Body опц. `{ grant_approval_rights?: boolean }`. Для `secondary`/`nanny` — грант под cap ≤2/ребёнка; `primary` всегда получает `has_approval_rights` (и пропускает cap, паритет с OTP auto-approve). Errors: 404 `guardian_not_found`, 409 `max_approval_rights_exceeded`, 422 `invalid_guardian_status_transition` (строка не в `pending_approval`). |
-| POST | `/admin/children/:id/guardians/:guardianId/reject` | **Отклонить заявку родителя из админки** (пара к approve). `pending_approval → rejected` (терминально). Без body. Errors: 404 `guardian_not_found`, 422 `invalid_guardian_status_transition` (строка не в `pending_approval`). |
-| PATCH | `/admin/children/:id/guardians/:guardianId` | Изменить `role`, `can_pickup`. Изменение `has_approval_rights` — через approve выше (admin) или Primary Guardian's approval flow (см. Parent API). |
-| POST | `/admin/children/:id/guardians/:guardianId/revoke` | Отозвать доступ (`revoked_at`, `revoked_by`). |
-| GET | `/admin/children/:id/group-history` | История переводов. |
-| GET | `/admin/children/:id/timeline` | Вся timeline ребёнка. |
+| GET | `/children` | Список (фильтр по `status`, `current_group_id`, поиск по ФИО/ИИН). Каждый `ChildDto` несёт `current_group_name` (см. выше). |
+| POST | `/children` | Создать карточку вручную (вне enrollment flow). |
+| GET | `/children/:id` | Полная карточка: гардианы, группа, история групп, timeline (preview), платежи (preview), диагностики (preview). |
+| PATCH | `/children/:id` | Обновить ФИО, ИИН, DOB, photo, `medical_notes`, `allergy_notes`. |
+| POST | `/children/:id/photo` | Проставить или очистить `photo_url` карточки. Body: `{photo_url: string \| null}`. Response 200: `ChildDto`. Errors: 404 `child_not_found`. |
+| POST | `/children/:id/group` | Назначить ребёнка в группу. **Идемпотентно** (повторный вызов с той же группой — не ошибка). Body: `{group_id: 'uuid'}`. Response 200: `ChildDto`. Errors: 404 `child_not_found` / `group_not_found`. В отличие от `/transfer` — **не** пишет `child_group_history` и не эмитит `child.transferred`; для перевода между группами используй `/transfer`. |
+| DELETE | `/children/:id/group` | Отвязать ребёнка от текущей группы (`current_group_id → null`). Response 200: `ChildDto`. |
+| POST | `/children/:id/transfer` | Перевод в другую группу. Создаёт запись в `child_group_history`. Emits `child.transferred` через outbox (менторы старой+новой группы + guardians). |
+| POST | `/children/:id/activate` | Активировать карточку (`card_created → active`), ставит `enrollment_date`. **Требует активный `tariff_assignment`** на текущую дату — иначе 409 `child_activation_requires_tariff`. Пишет `card_created→active` в `child_status_history`. См. §2.7.2. |
+| POST | `/children/:id/archive` | Архивировать ребёнка. Закрывает `tariff_assignments`, enqueue BullMQ `lifecycle:pro-rata-refund`. |
+| POST | `/children/:id/reactivate` | Реактивировать ребёнка. Возврат в `status='active'`. |
+| GET | `/children/:id/status-history` | История изменений `children.status` (audit). Paginated `?limit=&offset=`. Response: `[{id, previous_status, new_status, previous_archive_reason, archive_reason, changed_by_user_id, changed_at}]` отсортирован `changed_at DESC`. См. §2.7.5. |
+| GET | `/children/:id/guardians` | Все guardians ребёнка (+ статус одобрения, `has_approval_rights`). Каждый `GuardianDto` несёт display-поля `user_full_name` / `user_phone` (nullable), резолвящиеся из связанной строки `users` по `child_guardians.user_id` — тот же приём, что в `/admin/staff` (`full_name`/`phone` из `users`). `null`, если у юзера, приглашённого по телефону, ещё не заполнен профиль. Поля присутствуют во всех ответах с `GuardianDto` (admin + parent approval/child эндпоинты). |
+| POST | `/children/:id/guardians` | Добавить guardian вручную (админ может создать primary с самого начала). |
+| POST | `/children/:id/guardians/:guardianId/approve` | **Одобрить заявку родителя из админки** (без участия primary-опекуна). `pending_approval → approved`, `approved_by = текущий админ`. Body опц. `{ grant_approval_rights?: boolean }`. Для `secondary`/`nanny` — грант под cap ≤2/ребёнка; `primary` всегда получает `has_approval_rights` (и пропускает cap, паритет с OTP auto-approve). Errors: 404 `guardian_not_found`, 409 `max_approval_rights_exceeded`, 422 `invalid_guardian_status_transition` (строка не в `pending_approval`). |
+| POST | `/children/:id/guardians/:guardianId/reject` | **Отклонить заявку родителя из админки** (пара к approve). `pending_approval → rejected` (терминально). Без body. Errors: 404 `guardian_not_found`, 422 `invalid_guardian_status_transition` (строка не в `pending_approval`). |
+| PATCH | `/children/:id/guardians/:guardianId` | Изменить `role`, `can_pickup`. Изменение `has_approval_rights` — через approve выше (admin) или Primary Guardian's approval flow (см. Parent API). |
+| POST | `/children/:id/guardians/:guardianId/revoke` | Отозвать доступ (`revoked_at`, `revoked_by`). |
+| GET | `/children/:id/group-history` | История переводов. |
+| GET | `/admin/children/:childId/timeline` | Вся timeline ребёнка. ⚠️ Единственный child-эндпоинт, который **действительно** живёт под префиксом `/admin` — он объявлен в `AdminAttendanceController` (`@Controller({path:'admin'})`), а не в `ChildController` (`path:'children'`). Не «выравнивать» под остальные строки таблицы. |
 
-#### 2.7.1 POST `/admin/children/:id/transfer-group`
+#### 2.7.1 POST `/children/:id/transfer`
 
 **Auth:** `admin` role + `KindergartenScopeGuard`.
 
@@ -548,7 +551,7 @@ Admin-managed справочник — **AUTHORITY** для `staff_members.speci
 
 ---
 
-#### 2.7.2 POST `/admin/children/:id/activate`
+#### 2.7.2 POST `/children/:id/activate`
 
 Ручная активация карточки: первый forward-переход стейт-машины `card_created → active` (доменный метод `Child.activate()`). Выводит наружу единственный недостающий переход — без него вручную созданный ребёнок навсегда заморожен в `card_created` (archive требует `active`, reactivate требует `archived`).
 
@@ -585,7 +588,7 @@ Admin-managed справочник — **AUTHORITY** для `staff_members.speci
 
 ---
 
-#### 2.7.3 POST `/admin/children/:id/archive`
+#### 2.7.3 POST `/children/:id/archive`
 
 **Auth:** `admin` role + `KindergartenScopeGuard`.
 
@@ -625,7 +628,7 @@ Admin-managed справочник — **AUTHORITY** для `staff_members.speci
 
 ---
 
-#### 2.7.4 POST `/admin/children/:id/reactivate`
+#### 2.7.4 POST `/children/:id/reactivate`
 
 **Auth:** `admin` role + `KindergartenScopeGuard`.
 
@@ -658,7 +661,7 @@ Admin-managed справочник — **AUTHORITY** для `staff_members.speci
 - INSERT `notification_outbox (event_key='child.reactivated')` — guardians (кроме nanny).
 - Новый `tariff_assignments` **не создаётся автоматически**.
 
-#### 2.7.5 GET `/admin/children/:id/status-history` (B22a)
+#### 2.7.5 GET `/children/:id/status-history` (B22a)
 
 **Auth:** `admin` role + `KindergartenScopeGuard`.
 
