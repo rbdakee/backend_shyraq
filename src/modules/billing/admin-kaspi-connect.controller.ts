@@ -124,7 +124,7 @@ export class AdminKaspiConnectController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
-      'Answer Kaspi\'s login+password screen — the SECOND onboarding path.',
+      "Answer Kaspi's login+password screen — the SECOND onboarding path.",
     description:
       'Call this ONLY after send-phone returned 409 ' +
       '`kaspi_password_login_required`, reusing the SAME process_id. The ' +
