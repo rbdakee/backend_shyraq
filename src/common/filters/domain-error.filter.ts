@@ -76,6 +76,7 @@ import {
   KaspiFinishFailedError,
   KaspiInvalidPhoneError,
   KaspiOtpInvalidError,
+  KaspiPasswordInvalidError,
   KaspiPhoneRequiredError,
   KaspiUnknownProcessError,
   KaspiWebhookUnsupportedError,
@@ -245,6 +246,9 @@ export class DomainErrorFilter implements ExceptionFilter {
     if (err instanceof KaspiUnknownProcessError) return HttpStatus.BAD_REQUEST;
     if (err instanceof KaspiInvalidPhoneError) return HttpStatus.BAD_REQUEST;
     if (err instanceof KaspiOtpInvalidError) return HttpStatus.UNAUTHORIZED;
+    // Same class of failure one step earlier — wrong Kaspi password / lockout.
+    if (err instanceof KaspiPasswordInvalidError)
+      return HttpStatus.UNAUTHORIZED;
     // K6 — Kaspi payment adapter errors.
     // kaspi_phone_required → 400 (clean path is the K7 DTO guard; this maps it
     // for direct callers that bypass PaymentService's provider catch-all).

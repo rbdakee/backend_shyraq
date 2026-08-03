@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsString, Matches } from 'class-validator';
+import { IsString, Matches, MinLength } from 'class-validator';
 
 // ─── Request DTOs ─────────────────────────────────────────────────────────
 
@@ -23,6 +23,27 @@ export class KaspiSendPhoneDto {
     message: 'invalid_phone_format',
   })
   phone!: string;
+}
+
+export class KaspiSendPasswordDto {
+  @ApiProperty({
+    example: 'e1b2c3d4-0000-0000-0000-000000000000',
+    description: 'Process id returned by POST /admin/kaspi/connect/init.',
+  })
+  @IsString()
+  process_id!: string;
+
+  @ApiProperty({
+    example: '••••••••',
+    description:
+      "The merchant's Kaspi Pay password, required when Kaspi answers " +
+      'send-phone with `kaspi_password_login_required`. Used for exactly one ' +
+      'upstream request and NEVER persisted, cached or logged — the same ' +
+      'handling the SMS OTP gets.',
+  })
+  @IsString()
+  @MinLength(1, { message: 'password_required' })
+  password!: string;
 }
 
 export class KaspiVerifyOtpDto {

@@ -121,6 +121,20 @@ export class KaspiSessionTakenOverError extends ConflictError {
 }
 
 /**
+ * 401 — Kaspi accepted the password field but did not advance to the OTP step:
+ * a wrong password, or an account lockout. Mirrors `kaspi_otp_invalid`, which
+ * is the same class of failure one step later.
+ *
+ * The password itself is never echoed, logged or stored — only Kaspi's own
+ * business code reaches the server log.
+ */
+export class KaspiPasswordInvalidError extends DomainError {
+  constructor() {
+    super('kaspi_password_invalid');
+  }
+}
+
+/**
  * 502 — the entrance `finish` (or downstream org-context) call failed. The raw
  * Kaspi reason is kept server-side only (`internalReason`), NEVER in the body.
  */

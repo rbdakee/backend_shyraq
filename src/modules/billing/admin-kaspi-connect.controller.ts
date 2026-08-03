@@ -29,6 +29,7 @@ import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
 import {
   KaspiDisconnectResponseDto,
   KaspiInitResponseDto,
+  KaspiSendPasswordDto,
   KaspiSendPhoneDto,
   KaspiSendPhoneResponseDto,
   KaspiStatusResponseDto,
@@ -100,8 +101,9 @@ export class AdminKaspiConnectController {
   @ApiConflictResponse({
     description:
       'kaspi_password_login_required — Kaspi answered with the login+password ' +
-      'screen instead of the OTP step. NO SMS was sent and retrying this step ' +
-      'will not help: the number must be able to sign in to Kaspi Pay by SMS.',
+      'screen instead of the OTP step, so NO SMS was sent. Do not retry this ' +
+      'step: continue on the SAME process_id via POST connect/send-password, ' +
+      'then resume at verify-otp.',
   })
   async sendPhone(
     @Tenant() t: TenantContext,
@@ -112,6 +114,43 @@ export class AdminKaspiConnectController {
       kgId,
       body.process_id,
       body.phone,
+    );
+    return { process_id: result.processId, sms_sent: result.smsSent };
+  }
+
+  // ── POST /admin/kaspi/connect/send-password ─────────────────────────────
+
+  @Post('connect/send-password')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Answer Kaspi\'s login+password screen — the SECOND onboarding path.',
+    description:
+      'Call this ONLY after send-phone returned 409 ' +
+      '`kaspi_password_login_required`, reusing the SAME process_id. The ' +
+      'passwordless path is unchanged: when Kaspi dispatches the SMS, ' +
+      'send-phone returns `sms_sent: true` and this endpoint is not used. ' +
+      'On success the flow rejoins the normal path at verify-otp.',
+  })
+  @ApiOkResponse({ type: KaspiSendPhoneResponseDto })
+  @ApiUnauthorizedResponse({
+    description:
+      'Bearer missing/invalid/revoked, or kaspi_password_invalid (401) — ' +
+      'wrong password or a Kaspi-side lockout.',
+  })
+  @ApiForbiddenResponse({ description: 'Caller is not admin.' })
+  @ApiBadRequestResponse({
+    description: 'kaspi_unknown_process — process_id missing or expired.',
+  })
+  async sendPassword(
+    @Tenant() t: TenantContext,
+    @Body() body: KaspiSendPasswordDto,
+  ): Promise<KaspiSendPhoneResponseDto> {
+    const kgId = requireTenant(t);
+    const result = await this.service.sendPassword(
+      kgId,
+      body.process_id,
+      body.password,
     );
     return { process_id: result.processId, sms_sent: result.smsSent };
   }

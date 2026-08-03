@@ -16,6 +16,7 @@ import {
   KaspiNoBusinessProfileError,
   KaspiNotConnectedError,
   KaspiOtpInvalidError,
+  KaspiPasswordInvalidError,
   KaspiPasswordLoginRequiredError,
   KaspiSessionTakenOverError,
   KaspiUnknownProcessError,
@@ -266,6 +267,16 @@ export class KaspiConnectService {
         `send-phone requires password login (kg=${kindergartenId}, ` +
           `pid=${processId}): ${this.kaspiResponseSummary(json, status)}`,
       );
+      // The process stays OPEN (`isClosed=false`, verified live) — the client
+      // continues on the SAME process_id via send-password. So persist what
+      // that continuation needs before signalling: the rotated user_token, and
+      // the phone, which `doFinish` later reads as the cashier phone. Skipping
+      // this would activate the session with an empty phone.
+      await this.store.put({
+        ...state,
+        phoneNumber: nationalPhone,
+        userToken: this.extractUserToken(setCookie) ?? state.userToken,
+      });
       throw new KaspiPasswordLoginRequiredError();
     }
 
@@ -290,6 +301,101 @@ export class KaspiConnectService {
     });
 
     return { processId, smsSent };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  //  Step 2b — send-password (only when send-phone returned the password
+  //  screen). Rejoins the normal flow at the OTP step.
+  // ═══════════════════════════════════════════════════════════════════════
+
+  /**
+   * Answers Kaspi's `ViewEnterLoginPassword` step with the merchant's Kaspi Pay
+   * password. Since mid-July 2026 Kaspi stopped letting an existing account
+   * register a new device by SMS alone (see §2.25) — the password is the only
+   * way back into the flow, and no SMS is sent until it is accepted.
+   *
+   * The password is used for ONE upstream request: never persisted to the
+   * Redis in-flight blob, never logged, never echoed. `kaspiResponseSummary`
+   * deliberately omits `data`, which is where Kaspi echoes submitted fields.
+   */
+  async sendPassword(
+    kindergartenId: string,
+    processId: string,
+    password: string,
+  ): Promise<{ processId: string; smsSent: boolean }> {
+    const cfg = await this.config.getConfig();
+    const state = await this.requireState(kindergartenId, processId);
+    const device = this.deviceFromState(state);
+
+    const url = `${cfg.entranceUrl}/api/v1/entrance/step`;
+    const referer =
+      `${cfg.entranceUrl}/process/universal-enter-phone-number?pId=${processId}` +
+      `&firstPage=KPUniversalEnterPhoneNumber`;
+
+    let userToken = state.userToken;
+    let last: { json: unknown; status: number } | null = null;
+
+    // Kaspi does not document the field name and the web bundle is minified.
+    // Probing is SAFE with a correct password: a wrong field name leaves the
+    // real one unset, so Kaspi answers with the `PasswordIsEmpty` VALIDATION
+    // error, which does not consume the account's login-retry budget (verified
+    // live 2026-08-03 — the process stays open, `isClosed=false`). We stop at
+    // the first response that is anything else.
+    for (const field of KASPI_PASSWORD_FIELD_CANDIDATES) {
+      const { json, setCookie, status } = await this.http.request('POST', url, {
+        headers: {
+          ...this.entranceHeadersBase(cfg),
+          Referer: referer,
+          Cookie: this.entranceCookie(cfg, device, userToken),
+        },
+        body: {
+          meta: { pId: processId, sn: 'ViewEnterLoginPassword' },
+          data: { [field]: password },
+          actType: 'Success',
+        },
+      });
+      last = { json, status };
+      userToken = this.extractUserToken(setCookie) ?? userToken;
+
+      const body = json as Record<string, unknown> | null;
+      const errorCode = (
+        body?.['error'] as Record<string, unknown> | undefined
+      )?.['code'];
+      if (errorCode === 'PasswordIsEmpty') {
+        continue;
+      }
+
+      const view = body?.['view'] as Record<string, unknown> | undefined;
+      const smsSent = view?.['code'] === 'EnterOtp';
+      if (smsSent) {
+        this.logger.log(
+          `send-password accepted (kg=${kindergartenId}, pid=${processId}, ` +
+            `field=${field}) — OTP step reached`,
+        );
+        await this.store.put({ ...state, userToken });
+        return { processId, smsSent: true };
+      }
+
+      // Password submitted but Kaspi did not advance to the OTP step — a wrong
+      // password, a lockout, or a step we have not modelled. The summary (which
+      // never includes `data`) carries Kaspi's own business code.
+      this.logger.warn(
+        `send-password rejected (kg=${kindergartenId}, pid=${processId}, ` +
+          `field=${field}): ${this.kaspiResponseSummary(json, status)}`,
+      );
+      throw new KaspiPasswordInvalidError();
+    }
+
+    // Every candidate came back `PasswordIsEmpty` — we never actually submitted
+    // the password, so this is OUR contract drift, not a bad credential.
+    this.logger.error(
+      `send-password: no field name accepted (kg=${kindergartenId}, ` +
+        `pid=${processId}, tried=[${KASPI_PASSWORD_FIELD_CANDIDATES.join(',')}]): ` +
+        (last
+          ? this.kaspiResponseSummary(last.json, last.status)
+          : 'no response'),
+    );
+    throw new KaspiFinishFailedError('send_password_field_unknown');
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -1069,6 +1175,24 @@ const KASPI_PLATFORM = 'iOS';
  * build is NOT a factor).
  */
 const KASPI_TOKEN_NOT_VALID_STATUS = -101001;
+
+/**
+ * JSON field names for the password on Kaspi's `ViewEnterLoginPassword` step.
+ *
+ * `password` is CONFIRMED working against live Kaspi (2026-08-03): it was
+ * accepted and the flow advanced to `view.code=EnterOtp`, dispatching the SMS.
+ * The remaining names are kept as a cheap drift guard, not guesswork in the
+ * hot path — they are only tried if Kaspi answers `PasswordIsEmpty`, which is a
+ * validation error that does NOT consume the account's login-retry budget.
+ * Kaspi publishes no schema and the entrance web bundle is minified, so this
+ * list is the contract; drop the tail only if it proves to be dead weight.
+ */
+const KASPI_PASSWORD_FIELD_CANDIDATES = [
+  'password',
+  'Password',
+  'pass',
+  'userPassword',
+] as const;
 
 function generateRequestId(): string {
   return crypto.randomUUID().toUpperCase();

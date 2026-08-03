@@ -14,6 +14,7 @@ import {
   KaspiNoBusinessProfileError,
   KaspiNotConnectedError,
   KaspiOtpInvalidError,
+  KaspiPasswordInvalidError,
   KaspiPasswordLoginRequiredError,
   KaspiSessionTakenOverError,
   KaspiUnknownProcessError,
@@ -399,10 +400,33 @@ describe('KaspiConnectService', () => {
         service.sendPhone(KG, 'PID-1', '77011234567'),
       ).rejects.toBeInstanceOf(KaspiPasswordLoginRequiredError);
 
-      // No SMS went out, so the phone/token must NOT be advanced.
+      // No SMS went out, but the process stays open for the password path —
+      // the state it needs is asserted by the dedicated test below.
+      expect(store.has('PID-1')).toBe(true);
+    });
+
+    it('keeps the phone and rotated token so send-password can continue the SAME process', async () => {
+      const http = new MockHttp();
+      const { service, store } = buildService(http);
+      http.enqueue({
+        json: { meta: { pId: 'PID-1' } },
+        setCookie: ['user_token=UT1'],
+      });
+      await service.init(KG, USER);
+
+      http.enqueue({
+        json: { view: { code: 'KPEnterLoginPassword' }, isClosed: false },
+        setCookie: ['user_token=UT2'],
+      });
+      await expect(
+        service.sendPhone(KG, 'PID-1', '77011234567'),
+      ).rejects.toBeInstanceOf(KaspiPasswordLoginRequiredError);
+
+      // Kaspi keeps the process open, so the continuation needs both: the
+      // rotated token, and the phone that doFinish stores as cashier phone.
       const state = await store.get('PID-1');
-      expect(state?.phoneNumber).toBeNull();
-      expect(state?.userToken).toBe('UT1');
+      expect(state?.userToken).toBe('UT2');
+      expect(state?.phoneNumber).toBe('7011234567');
     });
 
     it('throws kaspi_unknown_process for an unknown process_id', async () => {
@@ -422,6 +446,125 @@ describe('KaspiConnectService', () => {
 
       await expect(
         service.sendPhone('other-kg', 'PID-1', '77011234567'),
+      ).rejects.toBeInstanceOf(KaspiUnknownProcessError);
+    });
+  });
+
+  describe('send-password', () => {
+    /** init → send-phone that lands on the password screen. */
+    const driveToPasswordScreen = async (
+      http: MockHttp,
+      service: KaspiConnectService,
+    ): Promise<void> => {
+      http.enqueue({
+        json: { meta: { pId: 'PID-1' } },
+        setCookie: ['user_token=UT1'],
+      });
+      await service.init(KG, USER);
+      http.enqueue({
+        json: { view: { code: 'KPEnterLoginPassword' }, isClosed: false },
+        setCookie: ['user_token=UT2'],
+      });
+      await service
+        .sendPhone(KG, 'PID-1', '77011234567')
+        .catch(() => undefined);
+    };
+
+    it('reports sms_sent=true when Kaspi accepts the password and reaches EnterOtp', async () => {
+      const http = new MockHttp();
+      const { service, store } = buildService(http);
+      await driveToPasswordScreen(http, service);
+
+      http.enqueue({
+        json: { view: { code: 'EnterOtp' } },
+        setCookie: ['user_token=UT3'],
+      });
+
+      const res = await service.sendPassword(KG, 'PID-1', 's3cret');
+
+      expect(res).toEqual({ processId: 'PID-1', smsSent: true });
+      // Submitted on the SAME step, and the password is never persisted.
+      const call = http.calls[http.calls.length - 1];
+      const body = call.opts.body as { meta: { sn: string } };
+      expect(body.meta.sn).toBe('ViewEnterLoginPassword');
+      const state = await store.get('PID-1');
+      expect(state?.userToken).toBe('UT3');
+      expect(JSON.stringify(state)).not.toContain('s3cret');
+    });
+
+    it('walks past PasswordIsEmpty to the field name Kaspi actually accepts', async () => {
+      const http = new MockHttp();
+      const { service } = buildService(http);
+      await driveToPasswordScreen(http, service);
+
+      // First candidate is not the field → validation error, no login spent.
+      http.enqueue({
+        json: { error: { code: 'PasswordIsEmpty', type: 'Business' } },
+        setCookie: [],
+      });
+      http.enqueue({
+        json: { view: { code: 'EnterOtp' } },
+        setCookie: ['user_token=UT3'],
+      });
+
+      const res = await service.sendPassword(KG, 'PID-1', 's3cret');
+
+      expect(res.smsSent).toBe(true);
+      const bodies = http.calls
+        .slice(-2)
+        .map((c) => c.opts.body as { data: Record<string, unknown> });
+      expect(Object.keys(bodies[0].data)[0]).toBe('password');
+      expect(Object.keys(bodies[1].data)[0]).toBe('Password');
+    });
+
+    it('throws kaspi_password_invalid when Kaspi refuses to advance', async () => {
+      const http = new MockHttp();
+      const { service } = buildService(http);
+      await driveToPasswordScreen(http, service);
+
+      http.enqueue({
+        json: {
+          type: 'Action',
+          actType: 'Alarm',
+          error: { code: 'WrongPassword', type: 'Business' },
+        },
+        setCookie: [],
+      });
+
+      await expect(
+        service.sendPassword(KG, 'PID-1', 'wrong'),
+      ).rejects.toBeInstanceOf(KaspiPasswordInvalidError);
+    });
+
+    it('throws send_password_field_unknown when no candidate field is accepted', async () => {
+      const http = new MockHttp();
+      const { service } = buildService(http);
+      await driveToPasswordScreen(http, service);
+
+      for (let i = 0; i < 4; i += 1) {
+        http.enqueue({
+          json: { error: { code: 'PasswordIsEmpty', type: 'Business' } },
+          setCookie: [],
+        });
+      }
+
+      const err = await service
+        .sendPassword(KG, 'PID-1', 's3cret')
+        .catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(KaspiFinishFailedError);
+      expect((err as KaspiFinishFailedError).internalReason).toBe(
+        'send_password_field_unknown',
+      );
+    });
+
+    it('throws kaspi_unknown_process when the process belongs to another kg', async () => {
+      const http = new MockHttp();
+      const { service } = buildService(http);
+      await driveToPasswordScreen(http, service);
+
+      await expect(
+        service.sendPassword('other-kg', 'PID-1', 's3cret'),
       ).rejects.toBeInstanceOf(KaspiUnknownProcessError);
     });
   });

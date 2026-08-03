@@ -1092,11 +1092,12 @@ Qundylyq реализуется как `content_posts` с `content_type='qundyly
 |---|---|---|
 | POST | `/admin/kaspi/connect/init` | Старт онбординга. Body пустой. Дёргает Kaspi `entrance/step` (SMS НЕ шлётся), кладёт в Redis `userToken` + draft device-fingerprint (свой на садик). Response 201: `{process_id}`. Errors: 409 `kaspi_already_connected` (есть active-сессия — сначала disconnect), 502 `kaspi_app_version_outdated` (гейт `OldVersionToUpdate` — суперадмину поднять `app_build`). |
 | POST | `/admin/kaspi/connect/send-phone` | Body: `{process_id, phone}` — номер кассира. **Формат `phone` гибкий**: принимаются голый 10-значный национальный (`7011234567`), 11-значный с кодом страны (`77011234567`), `8`-префикс (`87011234567`) и E.164 (`+77011234567`). Бэкенд **нормализует к 10-значному национальному** перед вызовом Kaspi — это единственный формат, который Kaspi `EnterPhoneNumber` принимает; 11-значный Kaspi отвергает (`UserPhoneNumberDoesNotBelongToAnyOperator`). Триггерит SMS-код Kaspi. Response 200: `{process_id, sms_sent: true}`. Errors: 400 `kaspi_unknown_process` (нет/протух `process_id`), 400 `kaspi_invalid_phone` (не сводится к 10 цифрам — **в Kaspi не уходит**), 409 `kaspi_password_login_required` (Kaspi увёл номер на экран логин+пароль, SMS **не отправлена** — см. врезку ниже), 422 `invalid_phone_format` (DTO-валидация). |
+| POST | `/admin/kaspi/connect/send-password` | **Второй путь.** Body: `{process_id, password}` — пароль мерчанта от Kaspi Pay. Вызывать ТОЛЬКО после 409 `kaspi_password_login_required`, на том же `process_id`. Kaspi с середины июля 2026 перестал пускать существующий аккаунт регистрировать новое устройство по одной SMS. Успех → SMS всё-таки уходит, ответ `{process_id, sms_sent: true}`, дальше обычный `verify-otp`. Пароль используется в одном запросе и не сохраняется нигде. Errors: 400 `kaspi_unknown_process`, 401 `kaspi_password_invalid` (неверный пароль/блокировка), 502 `send_password_field_unknown`, 422 `password_required`. |
 | POST | `/admin/kaspi/connect/verify-otp` | Body: `{process_id, otp: '1234'}` — Kaspi присылает **4-значный** код (валидатор терпит 4–6 цифр). Подтверждает код → авто-`finish` (ECDH-обмен → `vtokenSecret`) → org-context → сохраняет `kaspi_merchant_session` (всё чувствительное enc), `status=active`. Response 200: `{connected: true, phone, org_name, profile_id}`. Errors: 400 `kaspi_unknown_process`, 401 `kaspi_otp_invalid`, 409 `kaspi_no_business_profile` (устройство зарегистрировалось, но у аккаунта нет мерчант-профиля), 502 `kaspi_finish_failed`. |
 | GET | `/admin/kaspi/status` | Текущее состояние подключения садика. Response 200: `{connected: bool, status: 'pending'\|'active'\|'expired'\|'revoked', phone?, org_name?, last_checked_at?}`. Никаких секретов в ответе. |
 | POST | `/admin/kaspi/disconnect` | Отключить Kaspi: `status=revoked` (+ опц. logout в Kaspi). Реконнект = повторный онбординг (перезапись строки). Response 200: `{status: 'revoked'}`. Errors: 404 `kaspi_not_connected`. |
 
-**Errors (§2.25):** 401, 403 `forbidden`, 400 `kaspi_unknown_process`, 400 `kaspi_invalid_phone`, 401 `kaspi_otp_invalid`, 409 `kaspi_already_connected`, 409 `kaspi_password_login_required`, 409 `kaspi_no_business_profile`, 409 `kaspi_session_taken_over`, 404 `kaspi_not_connected`, 422 `invalid_phone_format`, 502 `kaspi_app_version_outdated` / `kaspi_finish_failed`, 429.
+**Errors (§2.25):** 401, 403 `forbidden`, 400 `kaspi_unknown_process`, 400 `kaspi_invalid_phone`, 401 `kaspi_otp_invalid`, 409 `kaspi_already_connected`, 409 `kaspi_password_login_required`, 409 `kaspi_no_business_profile`, 409 `kaspi_session_taken_over`, 401 `kaspi_password_invalid`, 404 `kaspi_not_connected`, 422 `invalid_phone_format`, 502 `kaspi_app_version_outdated` / `kaspi_finish_failed`, 429.
 
 > **Kaspi Pay = одно активное устройство на аккаунт.** Установлено вживую 03.08.2026 и объясняет обе наблюдавшиеся поломки онбординга разом.
 >
@@ -1115,7 +1116,21 @@ Qundylyq реализуется как `content_posts` с `content_type='qundyly
 >
 > **`app_build` тут ни при чём.** Ответ `-101001` побайтово одинаков на билдах 1076, 1100 и 9999; версионный гейт (`OldVersionToUpdate`, порог ≥1100 на 03.08.2026) отдельная и несвязанная механика. Совпадение по времени со сменой билда 13.07 обманчиво — билд меняли *в ответ* на поломку, а не наоборот.
 >
-> **Коды:** 409 `kaspi_session_taken_over` (`StatusCode=-101001`), 409 `kaspi_password_login_required` (экран пароля на send-phone), 409 `kaspi_no_business_profile` (`StatusCode=0` и пустой `Data.Current` — у аккаунта нет мерчант-профиля), 502 `finish_org_context_rejected` (прочие ненулевые `StatusCode`).
+> **Два пути онбординга, беспарольный остаётся основным.** Ничего из старого поведения не изменилось: если Kaspi отправляет SMS, `send-phone` как и раньше возвращает `sms_sent: true`, и дальше сразу `verify-otp`. Второй путь включается ТОЛЬКО когда Kaspi ответил экраном пароля:
+>
+> ```
+> init → send-phone ─┬─ 200 sms_sent:true ──────────────────────→ verify-otp
+>                    └─ 409 kaspi_password_login_required
+>                            → send-password (тот же process_id) → verify-otp
+> ```
+>
+> Процесс на экране пароля остаётся **открытым** (`isClosed=false`), поэтому `send-password` идёт на тот же `process_id`. На 409 бэкенд сохраняет номер и обновлённый `user_token` — без этого сессия активировалась бы с пустым телефоном кассира. Повторять сам `send-phone` не нужно и вредно.
+>
+> **Имя поля пароля Kaspi не публикует**, а веб-бандл минифицирован, поэтому `send-password` перебирает кандидатов (`password`, `Password`, `pass`, `userPassword`) и останавливается на первом принятом. Перебор безопасен при верном пароле: промах оставляет настоящее поле пустым, Kaspi отвечает валидационной ошибкой `PasswordIsEmpty`, и попытка входа **не тратится** (проверено вживую 03.08.2026). Когда рабочее имя будет видно в проде — свернуть список до одного.
+>
+> **Коды:** 409 `kaspi_session_taken_over` (`StatusCode=-101001`), 409 `kaspi_password_login_required` (экран пароля на send-phone → идти в send-password), 401 `kaspi_password_invalid` (пароль отвергнут либо блокировка), 409 `kaspi_no_business_profile` (`StatusCode=0` и пустой `Data.Current` — у аккаунта нет мерчант-профиля), 502 `finish_org_context_rejected` (прочие ненулевые `StatusCode`), 502 `send_password_field_unknown` (ни один кандидат не принят — дрейф контракта на нашей стороне).
+>
+> **Пароль нигде не оседает:** он живёт один запрос, не попадает ни в Redis-блоб, ни в логи, ни в ответы. `kaspiResponseSummary` намеренно не логирует `data` — именно там Kaspi отражает присланные поля.
 >
 > **Формат конверта mtoken:** `{StatusCode, IsErrorCode, Message, Description}`. Полей `ErrorCode`/`ErrorMessage` там **нет** — не читать их, иначе в логе будет `undefined` вместо причины.
 
