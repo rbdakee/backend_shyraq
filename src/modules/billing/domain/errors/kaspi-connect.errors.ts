@@ -135,6 +135,26 @@ export class KaspiPasswordInvalidError extends DomainError {
 }
 
 /**
+ * 409 — after a correct OTP, Kaspi demands a live-face Kaspi ID check for the
+ * new device (`view.code=UniversalKaspiIdTakePhoto` / `KaspiIdTakePhoto`). The
+ * backend is a server with no camera and no biometric capture, so the SMS
+ * onboarding cannot complete for this account+device. Distinct from
+ * `kaspi_otp_invalid` (the OTP was accepted) — the frontend should tell the
+ * admin that Kaspi requires selfie verification we do not support, not that
+ * the code was wrong.
+ *
+ * Observed live 2026-08-03. Kaspi triggers it when registering a new device on
+ * an account it treats as sensitive; it is part of the same "one trusted
+ * device" tightening as [KaspiSessionTakenOverError] /
+ * [KaspiPasswordLoginRequiredError].
+ */
+export class KaspiDeviceVerificationRequiredError extends ConflictError {
+  constructor() {
+    super('kaspi_device_verification_required');
+  }
+}
+
+/**
  * 502 — the entrance `finish` (or downstream org-context) call failed. The raw
  * Kaspi reason is kept server-side only (`internalReason`), NEVER in the body.
  */

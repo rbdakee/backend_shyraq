@@ -173,9 +173,11 @@ export class AdminKaspiConnectController {
   })
   @ApiConflictResponse({
     description:
-      'kaspi_no_business_profile — the device registered, but the Kaspi ' +
-      'account carries no merchant profile (no ProfileId/OrganizationId), so ' +
-      'payments cannot be signed. Connect the Kaspi Pay business number.',
+      'kaspi_device_verification_required — the OTP was accepted, but Kaspi ' +
+      'then demands a live-face Kaspi ID selfie for the new device, which the ' +
+      'backend cannot provide (no camera). OR kaspi_no_business_profile — the ' +
+      'device registered but the account carries no merchant profile. OR ' +
+      'kaspi_session_taken_over — the account signed in elsewhere.',
   })
   async verifyOtp(
     @Tenant() t: TenantContext,

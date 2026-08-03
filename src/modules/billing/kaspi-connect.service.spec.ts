@@ -9,6 +9,7 @@ import { KaspiMerchantSession } from './domain/entities/kaspi-merchant-session.e
 import {
   KaspiAlreadyConnectedError,
   KaspiAppVersionOutdatedError,
+  KaspiDeviceVerificationRequiredError,
   KaspiFinishFailedError,
   KaspiInvalidPhoneError,
   KaspiNoBusinessProfileError,
@@ -579,6 +580,27 @@ describe('KaspiConnectService', () => {
       await expect(
         service.verifyOtp(KG, 'PID-1', '000000'),
       ).rejects.toBeInstanceOf(KaspiOtpInvalidError);
+    });
+
+    it('throws kaspi_device_verification_required when Kaspi demands a selfie', async () => {
+      const http = new MockHttp();
+      const { service } = buildService(http);
+      await driveToFinish(http, service);
+
+      // Live-observed 2026-08-03: OTP accepted, Kaspi then routes to the Kaspi
+      // ID photo step. Must NOT be reported as a wrong OTP.
+      http.enqueue({
+        json: {
+          meta: { pId: 'PID-1' },
+          type: 'View',
+          isClosed: false,
+          view: { code: 'UniversalKaspiIdTakePhoto' },
+        },
+      });
+
+      await expect(
+        service.verifyOtp(KG, 'PID-1', '1234'),
+      ).rejects.toBeInstanceOf(KaspiDeviceVerificationRequiredError);
     });
 
     it('finishes, persists an active session with encrypted creds, and clears in-flight', async () => {

@@ -11,6 +11,7 @@ import {
 import {
   KaspiAlreadyConnectedError,
   KaspiAppVersionOutdatedError,
+  KaspiDeviceVerificationRequiredError,
   KaspiFinishFailedError,
   KaspiInvalidPhoneError,
   KaspiNoBusinessProfileError,
@@ -432,9 +433,26 @@ export class KaspiConnectService {
     const body = json as Record<string, unknown> | null;
     const data = body?.['data'] as Record<string, unknown> | undefined;
     const view = body?.['view'] as Record<string, unknown> | undefined;
+    const viewCode = view?.['code'];
+
+    // Kaspi ID selfie / video verification. The OTP was ACCEPTED — Kaspi then
+    // demands a live face for this new device (`UniversalKaspiIdTakePhoto` /
+    // `KaspiIdTakePhoto`, both confirmed in the entrance web bundle). We are a
+    // server with no camera, so the flow dead-ends here. Surfacing it as its
+    // own error stops it from masquerading as a wrong OTP.
+    if (
+      viewCode === 'UniversalKaspiIdTakePhoto' ||
+      viewCode === 'KaspiIdTakePhoto'
+    ) {
+      this.logger.warn(
+        `verify-otp needs device biometric (kg=${kindergartenId}, ` +
+          `pid=${processId}): ${this.kaspiResponseSummary(json, status)}`,
+      );
+      throw new KaspiDeviceVerificationRequiredError();
+    }
+
     const otpOk =
-      data?.['type'] === 'kpDeviceRegistration' ||
-      view?.['code'] === 'KPMobileCall';
+      data?.['type'] === 'kpDeviceRegistration' || viewCode === 'KPMobileCall';
     if (!otpOk) {
       // Either a wrong OTP or an upstream shape change — the summary tells which
       // (a genuine bad OTP usually surfaces a view.code / alarm, not 5xx).
