@@ -62,6 +62,42 @@ export class KaspiAppVersionOutdatedError extends DomainError {
 }
 
 /**
+ * 409 — Kaspi answered the `EnterPhoneNumber` step with the login+password
+ * screen (`view.code=KPEnterLoginPassword`, `meta.sn=ViewEnterLoginPassword`)
+ * instead of the SMS OTP step. No SMS is sent, and the 3-step SMS onboarding
+ * cannot continue for this number.
+ *
+ * Observed live 03.08.2026 on entrance-pay.kaspi.kz: reproducible for the same
+ * phone across app_build 1100/1120/9999 and `noPass=0/1`, `sf=registration/
+ * login` — i.e. it is a property of the Kaspi ACCOUNT, not of our build or
+ * flow parameters. Previously this fell into the `send_phone_failed` catch-all
+ * and surfaced to the admin as an opaque 502.
+ */
+export class KaspiPasswordLoginRequiredError extends ConflictError {
+  constructor() {
+    super('kaspi_password_login_required');
+  }
+}
+
+/**
+ * 409 — device registration succeeded (entrance `finish` returned a tokenSN)
+ * but `org-context-otp` answered `StatusCode=0` with an empty `Data.Current`:
+ * the Kaspi account carries no merchant profile (no ProfileId/OrganizationId),
+ * so there is nothing to sign payments with.
+ *
+ * Distinct from `kaspi_finish_failed('finish_org_context_rejected')`, which is
+ * the `StatusCode != 0` case — Kaspi REJECTING the request (bad build, bad
+ * signature, expired token) rather than reporting an account without an org.
+ * The two were indistinguishable before: both logged only `hasOrgId=false
+ * hasOrgName=false` and returned 502.
+ */
+export class KaspiNoBusinessProfileError extends ConflictError {
+  constructor() {
+    super('kaspi_no_business_profile');
+  }
+}
+
+/**
  * 502 — the entrance `finish` (or downstream org-context) call failed. The raw
  * Kaspi reason is kept server-side only (`internalReason`), NEVER in the body.
  */

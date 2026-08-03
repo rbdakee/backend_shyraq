@@ -11,8 +11,10 @@ import {
   KaspiAppVersionOutdatedError,
   KaspiFinishFailedError,
   KaspiInvalidPhoneError,
+  KaspiNoBusinessProfileError,
   KaspiNotConnectedError,
   KaspiOtpInvalidError,
+  KaspiPasswordLoginRequiredError,
   KaspiUnknownProcessError,
 } from './domain/errors/kaspi-connect.errors';
 import { KaspiMerchantSessionRepository } from './infrastructure/persistence/kaspi-merchant-session.repository';
@@ -370,6 +372,38 @@ describe('KaspiConnectService', () => {
       expect(state?.userToken).toBe('UT1');
     });
 
+    it('throws kaspi_password_login_required when Kaspi answers with the password screen', async () => {
+      const http = new MockHttp();
+      const { service, store } = buildService(http);
+      http.enqueue({
+        json: { meta: { pId: 'PID-1' } },
+        setCookie: ['user_token=UT1'],
+      });
+      await service.init(KG, USER);
+
+      // Live-observed 03.08.2026 shape: no alarm, no EnterOtp — Kaspi routes
+      // the account to login+password and sends NO SMS.
+      http.enqueue({
+        json: {
+          meta: { pId: 'PID-1', sn: 'ViewEnterLoginPassword' },
+          data: { headerName: 'Registration', phoneNumber: '7011234567' },
+          type: 'View',
+          isClosed: false,
+          view: { code: 'KPEnterLoginPassword' },
+        },
+        setCookie: ['user_token=UT2'],
+      });
+
+      await expect(
+        service.sendPhone(KG, 'PID-1', '77011234567'),
+      ).rejects.toBeInstanceOf(KaspiPasswordLoginRequiredError);
+
+      // No SMS went out, so the phone/token must NOT be advanced.
+      const state = await store.get('PID-1');
+      expect(state?.phoneNumber).toBeNull();
+      expect(state?.userToken).toBe('UT1');
+    });
+
     it('throws kaspi_unknown_process for an unknown process_id', async () => {
       const http = new MockHttp();
       const { service } = buildService(http);
@@ -503,6 +537,63 @@ describe('KaspiConnectService', () => {
       ).rejects.toBeInstanceOf(KaspiFinishFailedError);
 
       // No session row persisted (fake repo unchanged).
+      expect(repo.current(KG)).toBeUndefined();
+    });
+
+    it('throws kaspi_no_business_profile when Kaspi answers StatusCode=0 with an empty Current', async () => {
+      const http = new MockHttp();
+      const { service, repo } = buildService(http);
+      await driveToFinish(http, service);
+
+      http.enqueue({
+        json: { data: { type: 'kpDeviceRegistration' } },
+        setCookie: ['user_token=UT3'],
+      });
+      http.enqueue({
+        json: {
+          success: true,
+          data: { tokenSN: 'TSN-123', x509: serverEcdhX509() },
+        },
+      });
+      // Kaspi handled the call fine — the account just carries no merchant org.
+      http.enqueue({ json: { StatusCode: 0, Data: { Current: {} } } });
+
+      await expect(
+        service.verifyOtp(KG, 'PID-1', '1234'),
+      ).rejects.toBeInstanceOf(KaspiNoBusinessProfileError);
+
+      expect(repo.current(KG)).toBeUndefined();
+    });
+
+    it('throws kaspi_finish_failed when Kaspi rejects org-context with a non-zero StatusCode', async () => {
+      const http = new MockHttp();
+      const { service, repo } = buildService(http);
+      await driveToFinish(http, service);
+
+      http.enqueue({
+        json: { data: { type: 'kpDeviceRegistration' } },
+        setCookie: ['user_token=UT3'],
+      });
+      http.enqueue({
+        json: {
+          success: true,
+          data: { tokenSN: 'TSN-123', x509: serverEcdhX509() },
+        },
+      });
+      // Kaspi REJECTED the call itself — an upstream fault, not an org-less
+      // account, so it must NOT collapse into kaspi_no_business_profile.
+      http.enqueue({
+        json: { StatusCode: 5, ErrorMessage: 'Invalid application version' },
+      });
+
+      const err = await service
+        .verifyOtp(KG, 'PID-1', '1234')
+        .catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(KaspiFinishFailedError);
+      expect((err as KaspiFinishFailedError).internalReason).toBe(
+        'finish_org_context_rejected',
+      );
       expect(repo.current(KG)).toBeUndefined();
     });
   });

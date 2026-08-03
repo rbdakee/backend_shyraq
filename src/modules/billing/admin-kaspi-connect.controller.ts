@@ -97,6 +97,12 @@ export class AdminKaspiConnectController {
   @ApiBadRequestResponse({
     description: 'kaspi_unknown_process — process_id missing or expired.',
   })
+  @ApiConflictResponse({
+    description:
+      'kaspi_password_login_required — Kaspi answered with the login+password ' +
+      'screen instead of the OTP step. NO SMS was sent and retrying this step ' +
+      'will not help: the number must be able to sign in to Kaspi Pay by SMS.',
+  })
   async sendPhone(
     @Tenant() t: TenantContext,
     @Body() body: KaspiSendPhoneDto,
@@ -125,6 +131,12 @@ export class AdminKaspiConnectController {
   @ApiForbiddenResponse({ description: 'Caller is not admin.' })
   @ApiBadRequestResponse({
     description: 'kaspi_unknown_process — process_id missing or expired.',
+  })
+  @ApiConflictResponse({
+    description:
+      'kaspi_no_business_profile — the device registered, but the Kaspi ' +
+      'account carries no merchant profile (no ProfileId/OrganizationId), so ' +
+      'payments cannot be signed. Connect the Kaspi Pay business number.',
   })
   async verifyOtp(
     @Tenant() t: TenantContext,

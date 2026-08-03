@@ -13,8 +13,10 @@ import {
   KaspiAppVersionOutdatedError,
   KaspiFinishFailedError,
   KaspiInvalidPhoneError,
+  KaspiNoBusinessProfileError,
   KaspiNotConnectedError,
   KaspiOtpInvalidError,
+  KaspiPasswordLoginRequiredError,
   KaspiUnknownProcessError,
 } from './domain/errors/kaspi-connect.errors';
 import { KaspiMerchantSessionRepository } from './infrastructure/persistence/kaspi-merchant-session.repository';
@@ -51,6 +53,20 @@ export interface KaspiConnectStatus {
   phone?: string;
   orgName?: string;
   lastCheckedAt?: Date;
+}
+
+/**
+ * Outcome of `org-context-otp`, including the envelope diagnostics needed to
+ * tell an org-less account apart from a Kaspi-side rejection.
+ */
+interface OrgContextResult {
+  profileId: string | null;
+  organizationId: string | null;
+  orgName: string | null;
+  /** Kaspi's envelope `StatusCode` (0 = handled OK); null when absent. */
+  statusCode: unknown;
+  /** Secrets-safe one-line envelope summary for failure logs. */
+  summary: string;
 }
 
 /** Device fingerprint generated fresh per kindergarten at /init. */
@@ -236,6 +252,22 @@ export class KaspiConnectService {
 
     const body = json as Record<string, unknown> | null;
     const view = body?.['view'] as Record<string, unknown> | undefined;
+
+    // Kaspi routes SOME accounts to a login+password screen instead of the OTP
+    // step — no SMS is sent and the flow is unrecoverable here. Verified live
+    // 03.08.2026 to be account-bound, not build-bound (same result on
+    // app_build 1100/1120/9999, noPass 0/1, sf registration/login). Surfacing
+    // it as its own 409 stops the frontend from retrying the phone step, which
+    // is what previously drove the process into PasswordIsEmpty →
+    // FinishRegistration → BadIncomingRequest (isClosed=true).
+    if (view?.['code'] === 'KPEnterLoginPassword') {
+      this.logger.warn(
+        `send-phone requires password login (kg=${kindergartenId}, ` +
+          `pid=${processId}): ${this.kaspiResponseSummary(json, status)}`,
+      );
+      throw new KaspiPasswordLoginRequiredError();
+    }
+
     const smsSent = view?.['code'] === 'EnterOtp';
     if (!smsSent) {
       // The catch-all that the frontend sees as kaspi_finish_failed (502). The
@@ -431,9 +463,17 @@ export class KaspiConnectService {
       this.logger.error(
         `finish no org-context profileId (kg=${state.kindergartenId}): ` +
           `hasOrgId=${orgContext.organizationId != null} ` +
-          `hasOrgName=${orgContext.orgName != null}`,
+          `hasOrgName=${orgContext.orgName != null} ` +
+          orgContext.summary,
       );
-      throw new KaspiFinishFailedError('finish_no_org_context');
+      // StatusCode 0 = Kaspi answered normally and the account simply has no
+      // merchant profile → a 409 the admin can act on (use the Kaspi Pay
+      // business number). Anything else = Kaspi rejected the call itself
+      // (build, signature, token) → an upstream 502, not the admin's fault.
+      if (orgContext.statusCode === 0) {
+        throw new KaspiNoBusinessProfileError();
+      }
+      throw new KaspiFinishFailedError('finish_org_context_rejected');
     }
 
     // ── Persist the session row (status=active, encrypted creds) ─────────
@@ -638,11 +678,7 @@ export class KaspiConnectService {
     tokenSN: string,
     rawSecret: Buffer | null,
     organizationId: number | null,
-  ): Promise<{
-    profileId: string | null;
-    organizationId: string | null;
-    orgName: string | null;
-  }> {
+  ): Promise<OrgContextResult> {
     const orgUrl = `${cfg.mtokenUrl}/v08/organizations/org-context-otp`;
     // profileId is absent on first onboarding → use the no-PI X-SH variant
     // (the reference branches X-SH on whether profileId is known).
@@ -656,7 +692,7 @@ export class KaspiConnectService {
       null,
     );
 
-    const { json } = await this.http.request('POST', orgUrl, {
+    const { json, status } = await this.http.request('POST', orgUrl, {
       headers: orgHeaders,
       body: {
         DeviceInformation: this.deviceInformation(cfg, state),
@@ -664,18 +700,20 @@ export class KaspiConnectService {
       },
     });
 
-    return this.applyOrgContext(json);
+    return this.applyOrgContext(json, status);
   }
 
   /**
    * Port of `session.js#applyOrgContext` — reads `Data.Current` into the fields
    * we persist (profileId, orgName, organizationId).
+   *
+   * Also carries the envelope's `StatusCode` and a secrets-safe summary so the
+   * caller can tell "Kaspi rejected the call" (StatusCode != 0) apart from
+   * "the account has no merchant profile" (StatusCode 0, empty `Data.Current`).
+   * `sign-in-lite` has always checked `StatusCode`; this call never did, so a
+   * rejected org-context looked identical to an org-less account.
    */
-  private applyOrgContext(json: unknown): {
-    profileId: string | null;
-    organizationId: string | null;
-    orgName: string | null;
-  } {
+  private applyOrgContext(json: unknown, httpStatus: number): OrgContextResult {
     const body = json as Record<string, unknown> | null;
     const data = body?.['Data'] as Record<string, unknown> | undefined;
     const cur = data?.['Current'] as Record<string, unknown> | undefined;
@@ -686,7 +724,31 @@ export class KaspiConnectService {
       profileId: profileId != null ? String(profileId) : null,
       organizationId: orgId != null ? String(orgId) : null,
       orgName: orgName != null ? String(orgName) : null,
+      statusCode: body?.['StatusCode'] ?? null,
+      summary: this.mtokenResponseSummary(json, httpStatus),
     };
+  }
+
+  /**
+   * Secrets-safe one-line summary of an mtoken envelope. Emits only shape
+   * markers and Kaspi's own error code/message — never `Data.Current` values
+   * (which carry the merchant's profile/org identifiers) and never the tokens
+   * used to sign the call.
+   */
+  private mtokenResponseSummary(json: unknown, httpStatus: number): string {
+    const body = json as Record<string, unknown> | null;
+    const data = body?.['Data'] as Record<string, unknown> | undefined;
+    const cur = data?.['Current'] as Record<string, unknown> | undefined;
+    const keys = (o: Record<string, unknown> | undefined | null) =>
+      o ? Object.keys(o).join(',') : 'null';
+    return (
+      `httpStatus=${httpStatus} StatusCode=${String(body?.['StatusCode'])} ` +
+      `errorCode=${String(body?.['ErrorCode'])} ` +
+      `errorMessage=${this.safeStringify(body?.['ErrorMessage'])} ` +
+      `hasData=${data != null} dataKeys=[${keys(data)}] ` +
+      `hasCurrent=${cur != null} currentKeys=[${keys(cur)}] ` +
+      `topKeys=[${keys(body)}]`
+    );
   }
 
   // ═══════════════════════════════════════════════════════════════════════
