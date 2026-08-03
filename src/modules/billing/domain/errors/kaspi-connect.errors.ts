@@ -98,6 +98,29 @@ export class KaspiNoBusinessProfileError extends ConflictError {
 }
 
 /**
+ * 409 — Kaspi invalidated our registered device because the account signed in
+ * from somewhere else (mtoken `StatusCode=-101001`, `Description='Token not
+ * valid'`, `Message='Был выполнен вход с другого устройства…'`).
+ *
+ * Kaspi Pay permits ONE active device per account, so the merchant simply
+ * opening their own Kaspi Pay app displaces us. This is the single root cause
+ * behind both observed onboarding failures (verified live 2026-08-03, and
+ * identical on app_build 1076/1100/9999 — the build is not a factor):
+ *   - every mtoken call (`org-context-otp`, `sign-in-lite`) is rejected, so an
+ *     existing session dies;
+ *   - re-onboarding by SMS is refused too — `EnterPhoneNumber` routes to
+ *     `KPEnterLoginPassword`, which is why [KaspiPasswordLoginRequiredError]
+ *     fires on what looks like an unrelated step.
+ *
+ * Recovery requires a login+password re-registration, not an SMS retry.
+ */
+export class KaspiSessionTakenOverError extends ConflictError {
+  constructor() {
+    super('kaspi_session_taken_over');
+  }
+}
+
+/**
  * 502 — the entrance `finish` (or downstream org-context) call failed. The raw
  * Kaspi reason is kept server-side only (`internalReason`), NEVER in the body.
  */

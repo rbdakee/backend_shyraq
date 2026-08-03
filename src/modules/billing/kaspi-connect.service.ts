@@ -17,6 +17,7 @@ import {
   KaspiNotConnectedError,
   KaspiOtpInvalidError,
   KaspiPasswordLoginRequiredError,
+  KaspiSessionTakenOverError,
   KaspiUnknownProcessError,
 } from './domain/errors/kaspi-connect.errors';
 import { KaspiMerchantSessionRepository } from './infrastructure/persistence/kaspi-merchant-session.repository';
@@ -466,10 +467,15 @@ export class KaspiConnectService {
           `hasOrgName=${orgContext.orgName != null} ` +
           orgContext.summary,
       );
+      // The observed-in-the-wild case first: Kaspi killed our device because
+      // the account signed in elsewhere. Actionable, and NOT an upstream fault.
+      if (orgContext.statusCode === KASPI_TOKEN_NOT_VALID_STATUS) {
+        throw new KaspiSessionTakenOverError();
+      }
       // StatusCode 0 = Kaspi answered normally and the account simply has no
       // merchant profile → a 409 the admin can act on (use the Kaspi Pay
       // business number). Anything else = Kaspi rejected the call itself
-      // (build, signature, token) → an upstream 502, not the admin's fault.
+      // (signature, token, an unmodelled code) → an upstream 502.
       if (orgContext.statusCode === 0) {
         throw new KaspiNoBusinessProfileError();
       }
@@ -575,10 +581,15 @@ export class KaspiConnectService {
     const statusCode = body?.['StatusCode'];
     const data = body?.['Data'] as Record<string, unknown> | undefined;
     if (statusCode !== 0 || !data) {
+      // Use the shared envelope summary — it carries `Message`/`Description`,
+      // which is where Kaspi states the actual reason (e.g. the -101001
+      // "signed in from another device" verdict). Logging only StatusCode hid
+      // that, making a device takeover look like a generic refresh failure.
       this.logger.warn(
         `sign-in-lite failed (kg=${kindergartenId}): ` +
-          `httpStatus=${status} StatusCode=${String(statusCode)} ` +
-          `hasData=${data != null} — marking session expired`,
+          `${this.mtokenResponseSummary(json, status)}` +
+          `${this.isTokenTakenOver(json) ? ' — DEVICE TAKEN OVER (re-onboard with login+password)' : ''}` +
+          ' — marking session expired',
       );
       // SignInLite failed — token likely fully expired; re-auth via SMS needed.
       const now = this.clock.now();
@@ -741,14 +752,36 @@ export class KaspiConnectService {
     const cur = data?.['Current'] as Record<string, unknown> | undefined;
     const keys = (o: Record<string, unknown> | undefined | null) =>
       o ? Object.keys(o).join(',') : 'null';
+    // Field names verified against a live mtoken error envelope (2026-08-03):
+    // `{StatusCode, IsErrorCode, Message, Description}`. It does NOT use
+    // `ErrorCode`/`ErrorMessage` — reading those logged `undefined` and hid the
+    // one string that identifies the failure. `topKeys` stays as the backstop
+    // for shapes we have not seen.
     return (
       `httpStatus=${httpStatus} StatusCode=${String(body?.['StatusCode'])} ` +
-      `errorCode=${String(body?.['ErrorCode'])} ` +
-      `errorMessage=${this.safeStringify(body?.['ErrorMessage'])} ` +
+      `isErrorCode=${String(body?.['IsErrorCode'])} ` +
+      `description=${this.safeStringify(body?.['Description'])} ` +
+      `message=${this.safeStringify(body?.['Message'])} ` +
       `hasData=${data != null} dataKeys=[${keys(data)}] ` +
       `hasCurrent=${cur != null} currentKeys=[${keys(cur)}] ` +
       `topKeys=[${keys(body)}]`
     );
+  }
+
+  /**
+   * Kaspi's "another device signed in" verdict: `StatusCode=-101001`,
+   * `Description='Token not valid'`, `Message='Был выполнен вход с другого
+   * устройства. Для входа в текущее приложение введите логин/пароль'`.
+   *
+   * Kaspi Pay allows ONE active device per account, so any login elsewhere
+   * (the merchant opening the real app, or a second onboarding) invalidates our
+   * registered device. This is the single root cause behind both observed
+   * failures: mtoken then rejects every call, AND re-onboarding by SMS is
+   * refused because `EnterPhoneNumber` routes to `KPEnterLoginPassword`.
+   */
+  private isTokenTakenOver(json: unknown): boolean {
+    const body = json as Record<string, unknown> | null;
+    return body?.['StatusCode'] === KASPI_TOKEN_NOT_VALID_STATUS;
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -1028,6 +1061,14 @@ export class KaspiConnectService {
 // config). `platform` is the iOS cookie/header value. Both mirror config.js.
 const KASPI_LOCALE = 'ru-RU';
 const KASPI_PLATFORM = 'iOS';
+
+/**
+ * mtoken `StatusCode` for "Token not valid" — Kaspi invalidated our registered
+ * device because the account signed in somewhere else. Verified live against
+ * `org-context-otp` on 2026-08-03 (identical on app_build 1076/1100/9999 — the
+ * build is NOT a factor).
+ */
+const KASPI_TOKEN_NOT_VALID_STATUS = -101001;
 
 function generateRequestId(): string {
   return crypto.randomUUID().toUpperCase();

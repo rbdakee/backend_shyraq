@@ -1096,12 +1096,28 @@ Qundylyq реализуется как `content_posts` с `content_type='qundyly
 | GET | `/admin/kaspi/status` | Текущее состояние подключения садика. Response 200: `{connected: bool, status: 'pending'\|'active'\|'expired'\|'revoked', phone?, org_name?, last_checked_at?}`. Никаких секретов в ответе. |
 | POST | `/admin/kaspi/disconnect` | Отключить Kaspi: `status=revoked` (+ опц. logout в Kaspi). Реконнект = повторный онбординг (перезапись строки). Response 200: `{status: 'revoked'}`. Errors: 404 `kaspi_not_connected`. |
 
-**Errors (§2.25):** 401, 403 `forbidden`, 400 `kaspi_unknown_process`, 400 `kaspi_invalid_phone`, 401 `kaspi_otp_invalid`, 409 `kaspi_already_connected`, 409 `kaspi_password_login_required`, 409 `kaspi_no_business_profile`, 404 `kaspi_not_connected`, 422 `invalid_phone_format`, 502 `kaspi_app_version_outdated` / `kaspi_finish_failed`, 429.
+**Errors (§2.25):** 401, 403 `forbidden`, 400 `kaspi_unknown_process`, 400 `kaspi_invalid_phone`, 401 `kaspi_otp_invalid`, 409 `kaspi_already_connected`, 409 `kaspi_password_login_required`, 409 `kaspi_no_business_profile`, 409 `kaspi_session_taken_over`, 404 `kaspi_not_connected`, 422 `invalid_phone_format`, 502 `kaspi_app_version_outdated` / `kaspi_finish_failed`, 429.
 
-> **Две ветки отказа, которые раньше сливались в 502 `kaspi_finish_failed`** (разобрано на живом проде 03.08.2026).
+> **Kaspi Pay = одно активное устройство на аккаунт.** Установлено вживую 03.08.2026 и объясняет обе наблюдавшиеся поломки онбординга разом.
 >
-> 1. **`KPEnterLoginPassword` → 409 `kaspi_password_login_required`.** На шаг `EnterPhoneNumber` Kaspi для части аккаунтов отвечает не `view.code=EnterOtp`, а экраном логин+пароль (`meta.sn=ViewEnterLoginPassword`). **SMS при этом не отправляется вообще.** Проверено вживую: воспроизводится для одного и того же номера на `app_build` 1100/1120/9999, при `noPass=0/1` и `sf=registration/login` — то есть это свойство **аккаунта Kaspi**, а не нашего билда или параметров флоу. Ретрай того же шага только добивал процесс: `PasswordIsEmpty` → `FinishRegistration` → `BadIncomingRequest` (`isClosed=true`). Фронту на 409 нужно останавливать онбординг, а не повторять шаг.
-> 2. **Пустой org-context → 409 `kaspi_no_business_profile` либо 502 `finish_org_context_rejected`.** `finish` возвращает `tokenSN` (устройство регистрируется), а `org-context-otp` отдаёт `Data.Current` без `ProfileId`. Раньше вызов **не проверял `StatusCode`** (в отличие от `sign-in-lite`) и не логировал конверт, поэтому «у аккаунта нет мерчант-профиля» (`StatusCode=0`, пустой `Current`) было неотличимо от «Kaspi отверг запрос» (`StatusCode≠0` — билд/подпись/токен). Теперь это разные коды, а в лог пишется безопасная выжимка конверта (`StatusCode`, `ErrorCode`, `ErrorMessage`, состав ключей).
+> Вызов `org-context-otp` учётными данными существующей сессии возвращает:
+> ```
+> StatusCode=-101001  IsErrorCode=true  Description="Token not valid"
+> Message="Был выполнен вход с другого устройства.
+>          Для входа в текущее приложение введите логин/пароль"
+> ```
+> Как только в аккаунт Kaspi входят с другого устройства (мерчант открыл своё приложение Kaspi Pay, либо параллельная попытка онбординга), наше зарегистрированное устройство аннулируется. Дальше:
+>
+> - **любой mtoken-вызов отвергается** (`org-context-otp`, `sign-in-lite`) → активная сессия умирает;
+> - **переподключение по SMS невозможно** — шаг `EnterPhoneNumber` уводит на `view.code=KPEnterLoginPassword` (`meta.sn=ViewEnterLoginPassword`), SMS не отправляется вовсе. Ретрай того же шага добивает процесс: `PasswordIsEmpty` → `FinishRegistration` → `BadIncomingRequest` (`isClosed=true`).
+>
+> Восстановление требует входа по **логину и паролю**, а не повтора SMS.
+>
+> **`app_build` тут ни при чём.** Ответ `-101001` побайтово одинаков на билдах 1076, 1100 и 9999; версионный гейт (`OldVersionToUpdate`, порог ≥1100 на 03.08.2026) отдельная и несвязанная механика. Совпадение по времени со сменой билда 13.07 обманчиво — билд меняли *в ответ* на поломку, а не наоборот.
+>
+> **Коды:** 409 `kaspi_session_taken_over` (`StatusCode=-101001`), 409 `kaspi_password_login_required` (экран пароля на send-phone), 409 `kaspi_no_business_profile` (`StatusCode=0` и пустой `Data.Current` — у аккаунта нет мерчант-профиля), 502 `finish_org_context_rejected` (прочие ненулевые `StatusCode`).
+>
+> **Формат конверта mtoken:** `{StatusCode, IsErrorCode, Message, Description}`. Полей `ErrorCode`/`ErrorMessage` там **нет** — не читать их, иначе в логе будет `undefined` вместо причины.
 
 > **Формат номера кассира (важно).** Kaspi `entrance/step` (`sn: EnterPhoneNumber`) принимает **только 10-значный национальный** номер (`7772270088`). 11-значная форма с кодом страны (`77772270088`) отвергается бизнес-ошибкой `UserPhoneNumberDoesNotBelongToAnyOperator` (всплывала как `kaspi_finish_failed`). Бэкенд нормализует любой ввод (`+7…`/`8…`/11-значный/10-значный) к 10 цифрам в `toKaspiNationalPhone()` перед запросом; не сводимый к 10 цифрам номер → `kaspi_invalid_phone` (400) **без обращения к Kaspi**.
 

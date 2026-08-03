@@ -15,6 +15,7 @@ import {
   KaspiNotConnectedError,
   KaspiOtpInvalidError,
   KaspiPasswordLoginRequiredError,
+  KaspiSessionTakenOverError,
   KaspiUnknownProcessError,
 } from './domain/errors/kaspi-connect.errors';
 import { KaspiMerchantSessionRepository } from './infrastructure/persistence/kaspi-merchant-session.repository';
@@ -561,6 +562,40 @@ describe('KaspiConnectService', () => {
       await expect(
         service.verifyOtp(KG, 'PID-1', '1234'),
       ).rejects.toBeInstanceOf(KaspiNoBusinessProfileError);
+
+      expect(repo.current(KG)).toBeUndefined();
+    });
+
+    it('throws kaspi_session_taken_over when Kaspi reports the device was displaced', async () => {
+      const http = new MockHttp();
+      const { service, repo } = buildService(http);
+      await driveToFinish(http, service);
+
+      http.enqueue({
+        json: { data: { type: 'kpDeviceRegistration' } },
+        setCookie: ['user_token=UT3'],
+      });
+      http.enqueue({
+        json: {
+          success: true,
+          data: { tokenSN: 'TSN-123', x509: serverEcdhX509() },
+        },
+      });
+      // Verbatim live envelope (2026-08-03) — note Message/Description, NOT
+      // ErrorMessage/ErrorCode.
+      http.enqueue({
+        json: {
+          StatusCode: -101001,
+          IsErrorCode: true,
+          Message:
+            'Был выполнен вход с другого устройства. Для входа в текущее приложение введите логин/пароль',
+          Description: 'Token not valid',
+        },
+      });
+
+      await expect(
+        service.verifyOtp(KG, 'PID-1', '1234'),
+      ).rejects.toBeInstanceOf(KaspiSessionTakenOverError);
 
       expect(repo.current(KG)).toBeUndefined();
     });
