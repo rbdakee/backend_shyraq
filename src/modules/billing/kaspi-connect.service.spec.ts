@@ -9,6 +9,7 @@ import { KaspiMerchantSession } from './domain/entities/kaspi-merchant-session.e
 import {
   KaspiAlreadyConnectedError,
   KaspiAppVersionOutdatedError,
+  KaspiDeviceNotAuthorizedError,
   KaspiDeviceVerificationRequiredError,
   KaspiFinishFailedError,
   KaspiInvalidPhoneError,
@@ -731,7 +732,7 @@ describe('KaspiConnectService', () => {
       expect(repo.current(KG)).toBeUndefined();
     });
 
-    it('throws kaspi_session_taken_over when Kaspi reports the device was displaced', async () => {
+    it('throws kaspi_device_not_authorized — NOT taken_over — when a brand-new token is refused', async () => {
       const http = new MockHttp();
       const { service, repo } = buildService(http);
       await driveToFinish(http, service);
@@ -740,6 +741,8 @@ describe('KaspiConnectService', () => {
         json: { data: { type: 'kpDeviceRegistration' } },
         setCookie: ['user_token=UT3'],
       });
+      // finish DID return x509, so the vtoken MAC is real — the refusal below
+      // cannot be blamed on our own signing.
       http.enqueue({
         json: {
           success: true,
@@ -747,7 +750,9 @@ describe('KaspiConnectService', () => {
         },
       });
       // Verbatim live envelope (2026-08-03) — note Message/Description, NOT
-      // ErrorMessage/ErrorCode.
+      // ErrorMessage/ErrorCode. The Russian Message names another device, but
+      // this token is seconds old and has never been used, so nothing displaced
+      // it: -101001 is Kaspi's generic "token not valid", not a takeover proof.
       http.enqueue({
         json: {
           StatusCode: -101001,
@@ -758,9 +763,45 @@ describe('KaspiConnectService', () => {
         },
       });
 
-      await expect(
-        service.verifyOtp(KG, 'PID-1', '1234'),
-      ).rejects.toBeInstanceOf(KaspiSessionTakenOverError);
+      const err = await service.verifyOtp(KG, 'PID-1', '1234').catch((e) => e);
+      expect(err).toBeInstanceOf(KaspiDeviceNotAuthorizedError);
+      expect(err).not.toBeInstanceOf(KaspiSessionTakenOverError);
+      expect((err as KaspiDeviceNotAuthorizedError).code).toBe(
+        'kaspi_device_not_authorized',
+      );
+
+      expect(repo.current(KG)).toBeUndefined();
+    });
+
+    it('throws kaspi_finish_failed when -101001 follows a finish that omitted x509', async () => {
+      const http = new MockHttp();
+      const { service, repo } = buildService(http);
+      await driveToFinish(http, service);
+
+      http.enqueue({
+        json: { data: { type: 'kpDeviceRegistration' } },
+        setCookie: ['user_token=UT3'],
+      });
+      // No x509 → computeTokenSnMac falls back to the '000000' placeholder, so
+      // the org-context call below goes out effectively unsigned. Kaspi's
+      // refusal is then fully explained by our own request, and blaming a
+      // phantom other device would send the admin chasing nothing.
+      http.enqueue({ json: { success: true, data: { tokenSN: 'TSN-123' } } });
+      http.enqueue({
+        json: {
+          StatusCode: -101001,
+          IsErrorCode: true,
+          Message:
+            'Был выполнен вход с другого устройства. Для входа в текущее приложение введите логин/пароль',
+          Description: 'Token not valid',
+        },
+      });
+
+      const err = await service.verifyOtp(KG, 'PID-1', '1234').catch((e) => e);
+      expect(err).toBeInstanceOf(KaspiFinishFailedError);
+      expect((err as KaspiFinishFailedError).internalReason).toBe(
+        'finish_org_context_unsigned_vtoken',
+      );
 
       expect(repo.current(KG)).toBeUndefined();
     });
@@ -837,9 +878,80 @@ describe('KaspiConnectService', () => {
       );
     });
   });
+
+  describe('refreshSession', () => {
+    it('throws kaspi_session_taken_over when sign-in-lite refuses a token that used to work', async () => {
+      const http = new MockHttp();
+      const { service, repo } = buildService(http);
+      repo.seed(refreshableSession());
+
+      // Same -101001 envelope as onboarding sees — but here the token WAS
+      // accepted before, so "another device signed in" is the sound reading.
+      http.enqueue({
+        json: {
+          StatusCode: -101001,
+          IsErrorCode: true,
+          Message:
+            'Был выполнен вход с другого устройства. Для входа в текущее приложение введите логин/пароль',
+          Description: 'Token not valid',
+        },
+      });
+
+      await expect(service.refreshSession(KG)).rejects.toBeInstanceOf(
+        KaspiSessionTakenOverError,
+      );
+
+      // Still marked expired — the poller's alert path is unchanged.
+      expect(repo.current(KG)!.status).toBe('expired');
+    });
+
+    it('throws kaspi_finish_failed for any other sign-in-lite refusal', async () => {
+      const http = new MockHttp();
+      const { service, repo } = buildService(http);
+      repo.seed(refreshableSession());
+
+      http.enqueue({ json: { StatusCode: -1, IsErrorCode: true } });
+
+      const err = await service.refreshSession(KG).catch((e) => e);
+      expect(err).toBeInstanceOf(KaspiFinishFailedError);
+      expect((err as KaspiFinishFailedError).internalReason).toBe(
+        'sign_in_lite_failed',
+      );
+      expect(repo.current(KG)!.status).toBe('expired');
+    });
+  });
 });
 
 // ─── Fixture builders ────────────────────────────────────────────────────────
+
+/**
+ * An active session carrying credentials `refreshSession` can actually parse:
+ * real EC keypairs in the JSON shape `doFinish` persists, wrapped by FakeCipher.
+ */
+function refreshableSession(): KaspiMerchantSession {
+  const keypairJson = (): string => {
+    const { privateKey, publicKey } = crypto.generateKeyPairSync('ec', {
+      namedCurve: 'prime256v1',
+    });
+    return JSON.stringify({
+      privateKey: privateKey
+        .export({ type: 'pkcs8', format: 'der' })
+        .toString('base64'),
+      publicKey: publicKey
+        .export({ type: 'spki', format: 'der' })
+        .toString('base64'),
+    });
+  };
+  const enc = (s: string): string =>
+    'ENC:' + Buffer.from(s, 'utf8').toString('base64');
+  const session = activeSession();
+  return KaspiMerchantSession.fromState({
+    ...session.toState(),
+    deviceKeypairEnc: enc(keypairJson()),
+    ecdhKeypairEnc: enc(keypairJson()),
+    vtokenSecretEnc: 'ENC:' + crypto.randomBytes(32).toString('base64'),
+  });
+}
 
 function activeSession(): KaspiMerchantSession {
   const now = new Date('2026-06-01T00:00:00.000Z');

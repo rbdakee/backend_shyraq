@@ -177,7 +177,11 @@ export class AdminKaspiConnectController {
       'then demands a live-face Kaspi ID selfie for the new device, which the ' +
       'backend cannot provide (no camera). OR kaspi_no_business_profile — the ' +
       'device registered but the account carries no merchant profile. OR ' +
-      'kaspi_session_taken_over — the account signed in elsewhere.',
+      'kaspi_device_not_authorized — the device registered, but the first call ' +
+      'made with its brand-new token was refused (StatusCode=-101001); the ' +
+      'account never authorized this device. NOT kaspi_session_taken_over, ' +
+      'which onboarding can no longer return — a token seconds old cannot have ' +
+      'been displaced by another login.',
   })
   async verifyOtp(
     @Tenant() t: TenantContext,

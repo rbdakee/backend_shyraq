@@ -11,6 +11,7 @@ import {
 import {
   KaspiAlreadyConnectedError,
   KaspiAppVersionOutdatedError,
+  KaspiDeviceNotAuthorizedError,
   KaspiDeviceVerificationRequiredError,
   KaspiFinishFailedError,
   KaspiInvalidPhoneError,
@@ -569,6 +570,16 @@ export class KaspiConnectService {
     const serverX509 = finishData?.['x509'] as string | undefined;
     if (serverX509) {
       rawSecret = deriveEcdhSecret(ecdh.privateKeyDerB64, serverX509);
+    } else {
+      // Loud on purpose: without x509 every mtoken call below signs with the
+      // '000000' placeholder MAC, which Kaspi rejects as "Token not valid"
+      // (-101001) — the same envelope a displaced device gets. Absent this line
+      // the two were indistinguishable in the log.
+      this.logger.error(
+        `finish returned no x509 (kg=${state.kindergartenId}): ` +
+          `vtoken MAC falls back to '000000' — every mtoken call will be ` +
+          `rejected. dataKeys=[${Object.keys(finishData ?? {}).join(',')}]`,
+      );
     }
 
     // ── org-context-otp ─────────────────────────────────────────────────
@@ -587,14 +598,27 @@ export class KaspiConnectService {
     if (orgContext.profileId == null) {
       this.logger.error(
         `finish no org-context profileId (kg=${state.kindergartenId}): ` +
+          `hasX509=${serverX509 != null} ` +
           `hasOrgId=${orgContext.organizationId != null} ` +
           `hasOrgName=${orgContext.orgName != null} ` +
           orgContext.summary,
       );
-      // The observed-in-the-wild case first: Kaspi killed our device because
-      // the account signed in elsewhere. Actionable, and NOT an upstream fault.
+      // `-101001 / "Token not valid"` on a token entrance/finish minted seconds
+      // ago. NOT a takeover: the token has never been used, so nothing could
+      // have displaced it. Two causes, told apart by whether we even had a
+      // signing key.
       if (orgContext.statusCode === KASPI_TOKEN_NOT_VALID_STATUS) {
-        throw new KaspiSessionTakenOverError();
+        // No x509 → our own MAC was the '000000' placeholder, so Kaspi is
+        // rejecting an unsigned request. That is contract drift on the finish
+        // response, not something the admin can act on → 502.
+        if (rawSecret == null) {
+          throw new KaspiFinishFailedError(
+            'finish_org_context_unsigned_vtoken',
+          );
+        }
+        // Properly signed and still refused → the device registered but never
+        // became authorized for this account.
+        throw new KaspiDeviceNotAuthorizedError();
       }
       // StatusCode 0 = Kaspi answered normally and the account simply has no
       // merchant profile → a 409 the admin can act on (use the Kaspi Pay
@@ -709,10 +733,11 @@ export class KaspiConnectService {
       // which is where Kaspi states the actual reason (e.g. the -101001
       // "signed in from another device" verdict). Logging only StatusCode hid
       // that, making a device takeover look like a generic refresh failure.
+      const takenOver = this.isTokenTakenOver(json);
       this.logger.warn(
         `sign-in-lite failed (kg=${kindergartenId}): ` +
           `${this.mtokenResponseSummary(json, status)}` +
-          `${this.isTokenTakenOver(json) ? ' — DEVICE TAKEN OVER (re-onboard with login+password)' : ''}` +
+          `${takenOver ? ' — DEVICE TAKEN OVER (re-onboard with login+password)' : ''}` +
           ' — marking session expired',
       );
       // SignInLite failed — token likely fully expired; re-auth via SMS needed.
@@ -721,6 +746,12 @@ export class KaspiConnectService {
       // Runs in the K8 worker without an ambient tenant TX — persist under a
       // self-contained bypass-RLS TX or the FORCE-RLS write affects 0 rows.
       await this.repo.saveBypassRls(session);
+      // This is the ONE place the takeover reading is evidence-backed: the token
+      // was accepted before and is refused now, so something displaced it.
+      // Recovery is login+password, not an SMS retry — say so by code.
+      if (takenOver) {
+        throw new KaspiSessionTakenOverError();
+      }
       throw new KaspiFinishFailedError('sign_in_lite_failed');
     }
 
@@ -893,15 +924,24 @@ export class KaspiConnectService {
   }
 
   /**
-   * Kaspi's "another device signed in" verdict: `StatusCode=-101001`,
-   * `Description='Token not valid'`, `Message='Был выполнен вход с другого
-   * устройства. Для входа в текущее приложение введите логин/пароль'`.
+   * Kaspi's token-validity refusal: `StatusCode=-101001`, `Description='Token
+   * not valid'`, `Message='Был выполнен вход с другого устройства. Для входа в
+   * текущее приложение введите логин/пароль'`.
    *
-   * Kaspi Pay allows ONE active device per account, so any login elsewhere
-   * (the merchant opening the real app, or a second onboarding) invalidates our
-   * registered device. This is the single root cause behind both observed
-   * failures: mtoken then rejects every call, AND re-onboarding by SMS is
-   * refused because `EnterPhoneNumber` routes to `KPEnterLoginPassword`.
+   * ⚠️ The predicate is `-101001`, and `-101001` alone does NOT prove a
+   * takeover. `Description` is the literal verdict ("this token is not good");
+   * the Russian `Message` is remediation copy Kaspi staples to it, so it also
+   * shows up on tokens no one ever displaced — an unsigned MAC, or a device
+   * that never became authorized. Only the CALLER knows which reading applies:
+   *
+   *   - on `refreshSession` the token was accepted before → takeover, and
+   *     [KaspiSessionTakenOverError] is right;
+   *   - on `doFinish` the token is seconds old and never used → it is NOT a
+   *     takeover; see the `-101001` branch there.
+   *
+   * Kaspi Pay does allow ONE active device per account (verified live
+   * 2026-08-03), which is what makes the takeover reading correct on the
+   * refresh path — just not universal.
    */
   private isTokenTakenOver(json: unknown): boolean {
     const body = json as Record<string, unknown> | null;

@@ -98,25 +98,52 @@ export class KaspiNoBusinessProfileError extends ConflictError {
 }
 
 /**
- * 409 — Kaspi invalidated our registered device because the account signed in
- * from somewhere else (mtoken `StatusCode=-101001`, `Description='Token not
- * valid'`, `Message='Был выполнен вход с другого устройства…'`).
+ * 409 — a session that WAS working stopped being accepted: `sign-in-lite`
+ * answered mtoken `StatusCode=-101001` (`Description='Token not valid'`,
+ * `Message='Был выполнен вход с другого устройства…'`).
  *
  * Kaspi Pay permits ONE active device per account, so the merchant simply
- * opening their own Kaspi Pay app displaces us. This is the single root cause
- * behind both observed onboarding failures (verified live 2026-08-03, and
- * identical on app_build 1076/1100/9999 — the build is not a factor):
- *   - every mtoken call (`org-context-otp`, `sign-in-lite`) is rejected, so an
- *     existing session dies;
- *   - re-onboarding by SMS is refused too — `EnterPhoneNumber` routes to
- *     `KPEnterLoginPassword`, which is why [KaspiPasswordLoginRequiredError]
- *     fires on what looks like an unrelated step.
+ * opening their own Kaspi Pay app displaces us. Verified live 2026-08-03 by
+ * replaying `org-context-otp` with an EXISTING session's credentials, and
+ * identical on app_build 1076/1100/9999 — the build is not a factor. The same
+ * lockout also explains why re-onboarding by SMS is refused: `EnterPhoneNumber`
+ * routes to `KPEnterLoginPassword` → [KaspiPasswordLoginRequiredError].
  *
  * Recovery requires a login+password re-registration, not an SMS retry.
+ *
+ * ⚠️ Scope: this code is for a **previously valid** token only. `-101001` is
+ * Kaspi's generic token-validity verdict and the Russian `Message` is boilerplate
+ * attached to it, so the "signed in elsewhere" reading is NOT transferable to a
+ * token that was never accepted in the first place — that is
+ * [KaspiDeviceNotAuthorizedError]. Reporting a first-onboarding rejection as a
+ * takeover sent admins hunting for a phantom second device.
  */
 export class KaspiSessionTakenOverError extends ConflictError {
   constructor() {
     super('kaspi_session_taken_over');
+  }
+}
+
+/**
+ * 409 — the device registered (entrance `finish` returned a tokenSN and an
+ * `x509`, so the vtoken MAC is real) but the very FIRST mtoken call made with
+ * that brand-new token came back `StatusCode=-101001` / `Token not valid`.
+ *
+ * The token is seconds old and has never been used, so it was not "displaced by
+ * another login" — Kaspi minted it and then refused it. What is left is that the
+ * device never became authorized: the account keeps a different current device,
+ * or the registration needs a verification step we cannot perform (the same
+ * one-trusted-device tightening as [KaspiDeviceVerificationRequiredError], just
+ * without the `KaspiIdTakePhoto` view to announce it).
+ *
+ * Kept apart from [KaspiSessionTakenOverError] deliberately: the remediation
+ * differs. A takeover is recoverable (re-onboard with login+password); this is a
+ * dead end for the account+device pair, and telling the admin "someone signed in
+ * elsewhere" is a false instruction when nobody did.
+ */
+export class KaspiDeviceNotAuthorizedError extends ConflictError {
+  constructor() {
+    super('kaspi_device_not_authorized');
   }
 }
 
