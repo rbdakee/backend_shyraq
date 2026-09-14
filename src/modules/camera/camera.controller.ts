@@ -81,6 +81,8 @@ export class CameraController {
       name: dto.name,
       rtspUrl: dto.rtsp_url,
       hlsUrl: dto.hls_url ?? null,
+      streamKey: dto.stream_key ?? null,
+      streamKeyHd: dto.stream_key_hd ?? null,
     });
     return CameraPresenter.camera(row);
   }
@@ -101,6 +103,12 @@ export class CameraController {
     if (Object.prototype.hasOwnProperty.call(dto, 'hls_url')) {
       patch.hlsUrl = dto.hls_url ?? null;
     }
+    if (Object.prototype.hasOwnProperty.call(dto, 'stream_key')) {
+      patch.streamKey = dto.stream_key ?? null;
+    }
+    if (Object.prototype.hasOwnProperty.call(dto, 'stream_key_hd')) {
+      patch.streamKeyHd = dto.stream_key_hd ?? null;
+    }
     const row = await this.service.update(tenant.kgId, id, patch);
     return CameraPresenter.camera(row);
   }
@@ -120,6 +128,23 @@ export class CameraController {
       id,
       dto.location_id,
     );
+    return CameraPresenter.camera(row);
+  }
+
+  @Post(':id/refresh-codec')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Re-probe the camera and store the codec it currently emits.',
+    description:
+      'Asks the media gateway what is on the wire right now. The periodic probe does this on its own; this endpoint is for when an installer has just switched a camera and nobody wants to wait for the next tick. A camera with no stream key, or one the gateway cannot reach, comes back unchanged rather than erroring — the stale codec_checked_at is the signal.',
+  })
+  @ApiOkResponse({ type: CameraDto })
+  async refreshCodec(
+    @Tenant() tenant: TenantContext,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<CameraDto> {
+    if (!tenant.kgId) throw new CameraNotFoundError(id);
+    const row = await this.service.refreshCodec(tenant.kgId, id);
     return CameraPresenter.camera(row);
   }
 
