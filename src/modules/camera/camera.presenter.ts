@@ -1,5 +1,7 @@
+import { CctvStreamVariant } from './cctv-stream-urls';
 import { Camera } from './domain/entities/camera.entity';
 import { CameraDto } from './dto/camera-response.dto';
+import { CameraStreamAccessDto } from './dto/camera-stream-response.dto';
 
 export class CameraPresenter {
   static camera(cam: Camera): CameraDto {
@@ -23,6 +25,23 @@ export class CameraPresenter {
       archived_at: s.archivedAt ? s.archivedAt.toISOString() : null,
       created_at: s.createdAt.toISOString(),
       updated_at: s.updatedAt.toISOString(),
+    };
+  }
+
+  static streamAccess(access: {
+    camera: Camera;
+    streams: CctvStreamVariant[];
+    expiresAt: Date | null;
+  }): CameraStreamAccessDto {
+    return {
+      camera_id: access.camera.id,
+      name: access.camera.name,
+      video_codec: access.camera.videoCodec,
+      streams: access.streams.map((s) => ({
+        transport: s.transport,
+        url: s.url,
+      })),
+      expires_at: access.expiresAt ? access.expiresAt.toISOString() : null,
     };
   }
 }
