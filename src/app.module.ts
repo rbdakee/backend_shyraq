@@ -28,6 +28,7 @@ import { ContentModule } from './modules/content/content.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { DiagnosticsModule } from './modules/diagnostics/diagnostics.module';
 import { CameraModule } from './modules/camera/camera.module';
+import cctvConfig from './modules/camera/config/cctv.config';
 import { ChildModule } from './modules/child/child.module';
 import { EnrollmentModule } from './modules/enrollment/enrollment.module';
 import { MealModule } from './modules/meal/meal.module';
@@ -70,6 +71,7 @@ const resolveI18nPath = (): string => {
         redisConfig,
         authConfig,
         kaspiCryptoConfig,
+        cctvConfig,
       ],
       envFilePath: ['.env'],
     }),

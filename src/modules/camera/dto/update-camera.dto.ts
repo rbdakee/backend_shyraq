@@ -3,10 +3,12 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  Matches,
   MaxLength,
   MinLength,
   ValidateIf,
 } from 'class-validator';
+import { STREAM_KEY_PATTERN } from './stream-key.constants';
 
 export class UpdateCameraDto {
   @ApiPropertyOptional({
@@ -44,4 +46,31 @@ export class UpdateCameraDto {
   @IsString()
   @MaxLength(1000)
   hls_url?: string | null;
+
+  @ApiPropertyOptional({
+    example: 'cam02_sub',
+    description:
+      'Media-gateway stream key (sub-stream). Send null to unbind the camera from the gateway. Changing it resets the probed codec — the next probe re-establishes it.',
+    nullable: true,
+    maxLength: 128,
+  })
+  @IsOptional()
+  @ValidateIf((_o, v) => v !== null)
+  @IsString()
+  @MaxLength(128)
+  @Matches(STREAM_KEY_PATTERN)
+  stream_key?: string | null;
+
+  @ApiPropertyOptional({
+    example: 'cam02_main',
+    description: 'Full-resolution stream key. Send null to clear.',
+    nullable: true,
+    maxLength: 128,
+  })
+  @IsOptional()
+  @ValidateIf((_o, v) => v !== null)
+  @IsString()
+  @MaxLength(128)
+  @Matches(STREAM_KEY_PATTERN)
+  stream_key_hd?: string | null;
 }

@@ -11,6 +11,14 @@ export class CameraPresenter {
       name: s.name,
       rtsp_url: s.rtspUrl,
       hls_url: s.hlsUrl,
+      stream_key: s.streamKey,
+      stream_key_hd: s.streamKeyHd,
+      video_codec: s.videoCodec,
+      codec_checked_at: s.codecCheckedAt
+        ? s.codecCheckedAt.toISOString()
+        : null,
+      is_streamable: cam.isStreamable,
+      transports: cam.availableTransports,
       is_active: s.isActive,
       archived_at: s.archivedAt ? s.archivedAt.toISOString() : null,
       created_at: s.createdAt.toISOString(),
