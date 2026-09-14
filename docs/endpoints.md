@@ -486,6 +486,7 @@ Admin-managed справочник — **AUTHORITY** для `staff_members.speci
 | POST | `/cameras` | Создать: body `{location_id, name, rtsp_url?, hls_url?, stream_key?, stream_key_hd?}`. Validate: `location` существует и принадлежит этому садику (иначе 404 `location_not_found` — не 403, чтобы не leak'ать cross-tenant существование). |
 | PATCH | `/cameras/:id` | Обновить `location_id?`, `name?`, `rtsp_url?`, `hls_url?`, `stream_key?`, `stream_key_hd?`. 404 `camera_not_found`, 404 `location_not_found`, 409 `camera_stream_key_taken`. |
 | POST | `/cameras/:id/link-location` | Перепривязать камеру к другой локации. |
+| GET | `/cameras/:id/stream` | Ссылки для просмотра камеры в админ-панели. Выписывает короткоживущий токен на текущего админа — родительский маршрут админу не подходит, он никому не опекун; авторизацией служит tenant-scoped выборка. Ответ: `{camera_id, name, video_codec, streams: [{transport, url}], expires_at}`. Пустой `streams` (не ошибка) — камера архивная, без `stream_key` либо CCTV не сконфигурирован в этом окружении. |
 | POST | `/cameras/:id/refresh-codec` | Спросить media-gateway, какой кодек камера отдаёт прямо сейчас, и сохранить ответ. Нужен, когда установщик только что переключил камеру и ждать периодический проб не хочется. Камера без `stream_key` или недоступная gateway'ю возвращается без изменений (не ошибка). |
 | POST | `/cameras/:id/archive` \| `/restore` | Архивация/восстановление (идемпотентно). Hard delete у камер нет. |
 

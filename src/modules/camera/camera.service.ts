@@ -1,4 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { AllConfigType } from '@/config/config.type';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { LocationRepository } from '@/modules/location/infrastructure/persistence/location.repository';
 import { LocationNotFoundError } from '@/modules/location/domain/errors/location-not-found.error';
@@ -11,6 +13,8 @@ import {
 import { Camera } from './domain/entities/camera.entity';
 import { CameraArchivedError } from './domain/errors/camera-archived.error';
 import { CameraNotFoundError } from './domain/errors/camera-not-found.error';
+import { CctvStreamTokenService } from './cctv-stream-token.service';
+import { buildStreamVariants, CctvStreamVariant } from './cctv-stream-urls';
 import { MediaGatewayPort } from './media-gateway.port';
 
 const PLACEHOLDER_RTSP = 'rtsp://mediamtx:8554/cam-placeholder';
@@ -28,7 +32,40 @@ export class CameraService {
     private readonly locations: LocationRepository,
     @Inject(ClockPort) private readonly clock: ClockPort,
     @Inject(MediaGatewayPort) private readonly gateway: MediaGatewayPort,
+    private readonly tokens: CctvStreamTokenService,
+    private readonly config: ConfigService<AllConfigType>,
   ) {}
+
+  /**
+   * Playable URLs for one camera, for the admin panel's own viewer.
+   *
+   * Admins are not guardians of anybody, so the parent path cannot serve them:
+   * this mints a token against the caller's own user id after the usual
+   * tenant-scoped lookup, which is the authorisation. Same token format, same
+   * proxy, same expiry as a parent's.
+   */
+  async streamAccess(
+    kindergartenId: string,
+    id: string,
+    userId: string,
+  ): Promise<{
+    camera: Camera;
+    streams: CctvStreamVariant[];
+    expiresAt: Date | null;
+  }> {
+    const camera = await this.getById(kindergartenId, id);
+    if (!camera.isStreamable || !this.tokens.isConfigured) {
+      return { camera, streams: [], expiresAt: null };
+    }
+    const minted = this.tokens.mint(camera.id, userId);
+    const publicBase =
+      this.config.get('cctv.streamPublicBase', { infer: true }) ?? null;
+    return {
+      camera,
+      streams: buildStreamVariants(camera, minted.token, publicBase),
+      expiresAt: minted.expiresAt,
+    };
+  }
 
   list(
     kindergartenId: string,

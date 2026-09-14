@@ -1,7 +1,10 @@
+import { ConfigService } from '@nestjs/config';
+import { AllConfigType } from '@/config/config.type';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { Location } from '@/modules/location/domain/entities/location.entity';
 import { LocationRepository } from '@/modules/location/infrastructure/persistence/location.repository';
 import { CameraService } from './camera.service';
+import { CctvStreamTokenService } from './cctv-stream-token.service';
 import { Camera, CameraState } from './domain/entities/camera.entity';
 import { CameraNotFoundError } from './domain/errors/camera-not-found.error';
 import { VideoCodec } from './domain/value-objects/video-codec.vo';
@@ -179,11 +182,21 @@ function build() {
   const cameras = new FakeCameraRepo();
   const locations = new FakeLocationRepo();
   const gateway = new FakeGateway();
+  const clock = new FixedClock();
+  const config = new ConfigService({
+    cctv: {
+      streamPublicBase: 'https://balam-stream.innodev.kz',
+      streamTokenSecret: 'a'.repeat(40),
+      streamTokenTtlSeconds: 3600,
+    },
+  }) as ConfigService<AllConfigType>;
   const service = new CameraService(
     cameras,
     locations,
-    new FixedClock(),
+    clock,
     gateway,
+    new CctvStreamTokenService(config, clock),
+    config,
   );
   return { service, cameras, locations, gateway };
 }
@@ -319,5 +332,39 @@ describe('CameraService.refreshCodecs', () => {
 
     expect(summary.probed).toBe(0);
     expect(gateway.probedKeys).toEqual([]);
+  });
+});
+
+describe('CameraService.streamAccess', () => {
+  it('returns an HLS url for a streamable camera', async () => {
+    const { service, cameras } = build();
+    const seeded = cameras.seed({ streamKey: 'cam04_sub', videoCodec: 'h265' });
+
+    const access = await service.streamAccess(KG, seeded.id, 'admin-1');
+
+    expect(access.streams).toHaveLength(1);
+    expect(access.streams[0].url).toContain(
+      `https://balam-stream.innodev.kz/hls/${seeded.id}/index.m3u8?t=`,
+    );
+    expect(access.expiresAt).toEqual(new Date('2026-09-14T13:00:00.000Z'));
+  });
+
+  it('returns no urls for a camera that is not bound to the gateway', async () => {
+    const { service, cameras } = build();
+    const seeded = cameras.seed({ streamKey: null });
+
+    const access = await service.streamAccess(KG, seeded.id, 'admin-1');
+
+    expect(access.streams).toEqual([]);
+    expect(access.expiresAt).toBeNull();
+  });
+
+  it('throws for a camera in another tenant', async () => {
+    const { service, cameras } = build();
+    const seeded = cameras.seed({ kindergartenId: 'kg-2' });
+
+    await expect(
+      service.streamAccess(KG, seeded.id, 'admin-1'),
+    ).rejects.toBeInstanceOf(CameraNotFoundError);
   });
 });

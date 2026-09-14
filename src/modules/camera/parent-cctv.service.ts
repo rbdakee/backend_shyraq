@@ -9,25 +9,8 @@ import { ChildNotFoundError } from '@/modules/child/domain/errors/child-not-foun
 import { CctvStreamTokenService } from './cctv-stream-token.service';
 import { Camera } from './domain/entities/camera.entity';
 import { CctvAccessDeniedError } from './domain/errors/cctv-access-denied.error';
-import { StreamTransport } from './domain/value-objects/video-codec.vo';
+import { buildStreamVariants, CctvStreamVariant } from './cctv-stream-urls';
 import { CameraRepository } from './infrastructure/persistence/camera.repository';
-
-/**
- * Transports the backend can actually serve today.
- *
- * A camera may *support* WebRTC (that is what `Camera.availableTransports`
- * reports once it emits H.264), but advertising a URL we cannot serve would
- * hand the app a dead link. So the served list is the intersection of what the
- * camera supports and what is wired up here. When the WebRTC path is built,
- * add `'webrtc'` to this set and every H.264 camera starts offering it — no
- * other change.
- */
-const SERVABLE_TRANSPORTS: ReadonlySet<StreamTransport> = new Set(['hls']);
-
-export interface CctvStreamVariant {
-  transport: StreamTransport;
-  url: string;
-}
 
 export interface CctvCameraView {
   camera: Camera;
@@ -105,22 +88,11 @@ export class ParentCctvService {
       return {
         camera,
         locationName,
-        streams: this.streamsFor(camera, minted.token),
+        streams: buildStreamVariants(camera, minted.token, this.publicBase()),
       };
     });
 
     return { cameras: views, expiresAt };
-  }
-
-  private streamsFor(camera: Camera, token: string): CctvStreamVariant[] {
-    const base = this.publicBase();
-    if (!base) return [];
-    return camera.availableTransports
-      .filter((transport) => SERVABLE_TRANSPORTS.has(transport))
-      .map((transport) => ({
-        transport,
-        url: `${base}/hls/${camera.id}/index.m3u8?t=${encodeURIComponent(token)}`,
-      }));
   }
 
   private assertGuardianMayView(guardian: ChildGuardian | undefined): void {

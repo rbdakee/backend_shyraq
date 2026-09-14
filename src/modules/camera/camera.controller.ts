@@ -23,10 +23,13 @@ import { PendingRoleSelectGuard } from '@/common/guards/pending-role-select.guar
 import { RolesGuard } from '@/common/guards/roles.guard';
 import { Tenant } from '@/shared-kernel/interface/decorators/tenant.decorator';
 import type { TenantContext } from '@/shared-kernel/application/tenant/tenant-context';
+import { CurrentUser } from '@/common/decorators/current-user.decorator';
+import type { JwtPayload } from '@/common/types/jwt-payload';
 import { CameraPresenter } from './camera.presenter';
 import { CameraService } from './camera.service';
 import { CameraNotFoundError } from './domain/errors/camera-not-found.error';
 import { CameraDto } from './dto/camera-response.dto';
+import { CameraStreamAccessDto } from './dto/camera-stream-response.dto';
 import { CreateCameraDto } from './dto/create-camera.dto';
 import { LinkLocationDto } from './dto/link-location.dto';
 import { ListCamerasQueryDto } from './dto/list-cameras-query.dto';
@@ -129,6 +132,23 @@ export class CameraController {
       dto.location_id,
     );
     return CameraPresenter.camera(row);
+  }
+
+  @Get(':id/stream')
+  @ApiOperation({
+    summary: 'Playable URLs for this camera, for the admin panel viewer.',
+    description:
+      'Mints a short-lived stream token for the calling admin. Admins are not guardians, so they cannot use the parent route; the tenant-scoped lookup here is the authorisation. `streams` is empty (not an error) when the camera is archived or not bound to the media gateway.',
+  })
+  @ApiOkResponse({ type: CameraStreamAccessDto })
+  async stream(
+    @Tenant() tenant: TenantContext,
+    @CurrentUser() user: JwtPayload,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<CameraStreamAccessDto> {
+    if (!tenant.kgId) throw new CameraNotFoundError(id);
+    const access = await this.service.streamAccess(tenant.kgId, id, user.sub);
+    return CameraPresenter.streamAccess(access);
   }
 
   @Post(':id/refresh-codec')
