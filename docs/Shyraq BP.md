@@ -1017,7 +1017,7 @@ Auto-publish at `schedule_pub` time is **silent by design** — no push/WS notif
 
 - **Только live, без архива/записи** (решение MVP). MediaMTX принимает RTSP → отдаёт HLS, Nginx `auth_request` проверяет Redis-токен `cctv:token:{user_id}:{camera_id}` (TTL 3600s). Запись/playback — вне scope этапа 1.
 - **Привязка камер:** в `cameras` хранится только внутренний RTSP URL (`rtsp://mediamtx:8554/cam-{id}`). Публичный HLS URL с токеном формируется on-demand в `GET /cctv/access`.
-- **Обновление доступных камер:** при смене `groups.current_location_id` (Mentor нажал "Следующее событие") — WS broadcast `group:{id}:location_changed` → Parent App перезапрашивает `/cctv/access`.
+- **Обновление доступных камер (реализовано иначе, B20/C3):** набор камер определяется расписанием — событием группы, чьё окно покрывает текущий момент; ручной `groups.current_location_id` остаётся запасным вариантом для групп без расписания. Ничего не записывается и не рассылается: WS `group:{id}:location_changed` не реализован, Parent App перезапрашивает список при каждом входе на экран (что требуется и так — HLS-сессии gateway'я живут секунды).
 - **Лимит одновременных зрителей** — определяется возможностями MediaMTX и сетью (не на уровне БД).
 
 <!-- B21: demo-ready 2026-05-12 -->
