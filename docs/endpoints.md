@@ -1252,8 +1252,8 @@ Qundylyq реализуется как `content_posts` с `content_type='qundyly
 |---|---|---|
 | GET | `/staff/activity-events/today` | Сегодняшние события моей группы. |
 | GET | `/staff/activity-events/suggested-next` | Предлагаемое "Следующее событие" из шаблона расписания. |
-| POST | `/staff/activity-events` | Создать событие: `group_id`, `activity_name`, `location_id`, `starts_at`, `ends_at`, `notes`. При создании — обновляется `groups.current_location_id` → WS broadcast `group:{id}:location_changed` (триггер перезапроса CCTV у родителей). Ответ-событие несёт computed `location_name` (`locationId → locations.name`; `null` при пустом / не найдено). |
-| POST | `/staff/activity-events/:id/start` | `status='in_progress'`. Обновляет текущую локацию группы. |
+| POST | `/staff/activity-events` | Создать событие: `group_id`, `activity_name`, `location_id`, `starts_at`, `ends_at`, `notes`. Поле `groups.current_location_id` при этом **не** пишется: камеры у родителей следуют за окном самого события (`location_id` + `starts_at`/`ends_at`), см. §4.8. Ответ-событие несёт computed `location_name` (`locationId → locations.name`; `null` при пустом / не найдено). |
+| POST | `/staff/activity-events/:id/start` | `status='in_progress'`. На камеры не влияет — родителям показывается комната события, пока идёт его временное окно, независимо от статуса (кроме `cancelled`). |
 | POST | `/staff/activity-events/:id/complete` | `status='completed'`. |
 | POST | `/staff/activity-events/:id/cancel` | `status='cancelled'`. |
 | GET | `/staff/schedule/week` | Расписание недели моей группы. |
@@ -1658,7 +1658,7 @@ Wire-keys — snake_case (`child_id`, `weekend_dates`, `expected_time`, `is_one_
 
 | Метод | Путь | Назначение |
 |---|---|---|
-| GET | `/parent/children/:childId/cctv` | Камеры, которые родитель может смотреть **прямо сейчас**: `child.current_group_id → groups.current_location_id → cameras WHERE location_id=? AND stream_key IS NOT NULL AND archived_at IS NULL`. Гарды: `ChildAccessGuard` (одобренный опекун) + проверка `view_cctv` — у `nanny` по умолчанию `false` → 403 `cctv_access_denied`. Ответ: `{cameras: [{camera_id, name, location_id, location_name, video_codec, streams: [{transport, url}]}], expires_at}`. Пустой список — это не ошибка: ребёнок вне группы, у группы нет локации или там нет привязанной камеры. |
+| GET | `/parent/children/:childId/cctv` | Камеры, которые родитель может смотреть **прямо сейчас**: `child.current_group_id → где группа сейчас → cameras WHERE location_id=? AND stream_key IS NOT NULL AND archived_at IS NULL`. Локация берётся из расписания — `activity_events` группы, чьё окно `starts_at <= now < ends_at` (отменённые не в счёт, события без `ends_at` игнорируются), — и только если такого события нет или у него пустой `location_id`, используется ручной `groups.current_location_id`. Гарды: `ChildAccessGuard` (одобренный опекун) + проверка `view_cctv` — у `nanny` по умолчанию `false` → 403 `cctv_access_denied`. Ответ: `{cameras: [{camera_id, name, location_id, location_name, video_codec, streams: [{transport, url}]}], expires_at}`. Пустой список — это не ошибка: ребёнок вне группы, у группы нет локации или там нет привязанной камеры. |
 | GET | `/cctv/hls/:cameraId/index.m3u8?t=` | Мастер-плейлист. Публичный маршрут: авторизация — сам токен (плеер не умеет носить `Authorization` по всем запросам плейлистов и сегментов). Проверяет подпись, срок и что токен выписан **на эту камеру**, тянет плейлист у gateway и переписывает URI на наш origin. |
 | GET | `/cctv/hls/media.m3u8?id=&t=` | Медиа-плейлист сессии gateway'я. Тот же токен, те же правила переписывания. |
 | GET | `/cctv/validate?t=` | Для `forward_auth` в Caddy на каждом сегменте. Только проверка подписи — ни БД, ни Redis, ни обращения к gateway. 200/403. Клиентами не вызывается. |
@@ -1667,7 +1667,9 @@ Wire-keys — snake_case (`child_id`, `weekend_dates`, `expected_time`, `is_one_
 
 **Токен.** HMAC-SHA256 от `v1.<camera_id>.<user_id>.<exp>`, ключ `CCTV_STREAM_SECRET`, TTL `CCTV_STREAM_TOKEN_TTL_SECONDS` (по умолчанию 3600). Самопроверяемый — потому что HLS опрашивает плейлист раз в секунду и тянет по два сегмента, и на сотне родителей обращение в Redis на каждый запрос было бы бессмысленной нагрузкой. Обратная сторона — отзыв: снятый `view_cctv` перестаёт действовать только по истечении текущего токена; TTL и есть граница этого окна.
 
-**Обновление списка.** Смена `groups.current_location_id` меняет ответ, поэтому приложение должно перезапрашивать endpoint по WS-событию `group:{id}:location_changed` (ещё не реализовано — B20/C6), а не кэшировать список.
+**Обновление списка.** Ответ меняется сам по ходу дня: набор камер определяется тем событием расписания, которое идёт в момент запроса, поэтому обед переводит родителя на камеры столовой без чьих-либо действий. Ничего не записывается в БД и ничего не рассылается клиентам — WS-события `group:{id}:location_changed` нет и не планируется. Приложение обязано **перезапрашивать** endpoint при каждом возврате на экран, а не кэшировать список: это нужно и само по себе, так как HLS-сессии gateway'я умирают за секунды простоя.
+
+Порядок разрешения локации: событие расписания → ручной `groups.current_location_id` → пустой список. Ручная привязка тем самым работает как поведение по умолчанию для групп без расписания (или вне его часов) и как способ показать всем одни и те же камеры — достаточно не проставлять `location_id` в слотах.
 
 **Error codes (§4.8):** `cctv_access_denied`(403), `child_access_denied`(403), `child_not_found`(404), `cctv_not_configured`(503 — в окружении не заданы `CCTV_STREAM_PUBLIC_BASE`/`CCTV_STREAM_SECRET`), `cctv_token_invalid`(403), `cctv_gateway_unavailable`(502).
 
