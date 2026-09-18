@@ -11,6 +11,8 @@ import { Group } from '@/modules/group/domain/entities/group.entity';
 import { GroupRepository } from '@/modules/group/infrastructure/persistence/group.repository';
 import { Location } from '@/modules/location/domain/entities/location.entity';
 import { LocationRepository } from '@/modules/location/infrastructure/persistence/location.repository';
+import { ActivityEvent } from '@/modules/schedule/domain/entities/activity-event.entity';
+import { ActivityEventRepository } from '@/modules/schedule/infrastructure/persistence/activity-event.repository';
 import { CctvStreamTokenService } from './cctv-stream-token.service';
 import { Camera, CameraState } from './domain/entities/camera.entity';
 import { CctvAccessDeniedError } from './domain/errors/cctv-access-denied.error';
@@ -22,6 +24,8 @@ const CHILD = 'child-1';
 const USER = 'user-1';
 const GROUP = 'group-1';
 const LOCATION = 'loc-1';
+/** Where the schedule says the group is, as opposed to its hand-set location. */
+const SCHEDULED_LOCATION = 'loc-2';
 const NOW = new Date('2026-09-14T12:00:00.000Z');
 const PUBLIC_BASE = 'https://balam-stream.innodev.kz';
 
@@ -68,6 +72,9 @@ interface Fixture {
   cameras: Camera[];
   child: { currentGroupId: string | null } | null;
   group: { currentLocationId: string | null } | null;
+  event: { locationId: string | null } | null;
+  /** The location the camera lookup was actually made against. */
+  askedLocationId: string | null;
 }
 
 function build(
@@ -77,6 +84,8 @@ function build(
     currentLocationId?: string | null;
     publicBase?: string | null;
     secret?: string | null;
+    /** `undefined` = no event covers now; `null` = an event with no room. */
+    eventLocationId?: string | null;
   } = {},
 ): Fixture {
   const state: Fixture = {
@@ -94,6 +103,11 @@ function build(
           ? LOCATION
           : opts.currentLocationId,
     },
+    event:
+      opts.eventLocationId === undefined
+        ? null
+        : { locationId: opts.eventLocationId },
+    askedLocationId: null,
   };
 
   const children = {
@@ -108,8 +122,16 @@ function build(
   } as unknown as GroupRepository;
 
   const cameras = {
-    list: () => Promise.resolve(state.cameras),
+    list: (_kg: string, filter: { locationId?: string }) => {
+      state.askedLocationId = filter.locationId ?? null;
+      return Promise.resolve(state.cameras);
+    },
   } as unknown as CameraRepository;
+
+  const events = {
+    findCurrentForGroup: () =>
+      Promise.resolve((state.event as unknown as ActivityEvent) ?? null),
+  } as unknown as ActivityEventRepository;
 
   const locations = {
     findById: () =>
@@ -134,6 +156,8 @@ function build(
     groups,
     cameras,
     locations,
+    events,
+    new FixedClock(),
     new CctvStreamTokenService(config, new FixedClock()),
     config,
   );
@@ -284,6 +308,66 @@ describe('ParentCctvService resolution', () => {
     await expect(
       service.listForChild(KG, 'other-child', USER, guardian('primary')),
     ).rejects.toBeInstanceOf(ChildNotFoundError);
+  });
+});
+
+describe('ParentCctvService follows the schedule', () => {
+  it('returns the cameras of the room the current event points at', async () => {
+    const state = build({ eventLocationId: SCHEDULED_LOCATION });
+
+    await state.service.listForChild(KG, CHILD, USER, guardian('primary'));
+
+    // The group is still anchored to LOCATION by hand; the schedule wins while
+    // an event is running, which is what makes the list follow the day.
+    expect(state.askedLocationId).toBe(SCHEDULED_LOCATION);
+  });
+
+  it('falls back to the hand-set group location when no event covers now', async () => {
+    const state = build();
+
+    await state.service.listForChild(KG, CHILD, USER, guardian('primary'));
+
+    expect(state.askedLocationId).toBe(LOCATION);
+  });
+
+  it('falls back to the group when the covering event carries no room', async () => {
+    // A lesson with no location says nothing about place. Honouring it would
+    // blank the list out mid-day for no reason.
+    const state = build({ eventLocationId: null });
+
+    await state.service.listForChild(KG, CHILD, USER, guardian('primary'));
+
+    expect(state.askedLocationId).toBe(LOCATION);
+  });
+
+  it('returns an empty list when neither the schedule nor the group has a room', async () => {
+    const state = build({ currentLocationId: null });
+
+    const view = await state.service.listForChild(
+      KG,
+      CHILD,
+      USER,
+      guardian('primary'),
+    );
+
+    expect(view.cameras).toEqual([]);
+  });
+
+  it('serves a scheduled room even when the group was never anchored', async () => {
+    const state = build({
+      currentLocationId: null,
+      eventLocationId: SCHEDULED_LOCATION,
+    });
+
+    const view = await state.service.listForChild(
+      KG,
+      CHILD,
+      USER,
+      guardian('primary'),
+    );
+
+    expect(state.askedLocationId).toBe(SCHEDULED_LOCATION);
+    expect(view.cameras).toHaveLength(1);
   });
 });
 

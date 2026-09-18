@@ -181,6 +181,26 @@ class FakeActivityEventRepo extends ActivityEventRepository {
     this.rows.set(e.id, cloneEvent(e));
     return Promise.resolve(true);
   }
+  findCurrentForGroup(
+    kg: string,
+    groupId: string,
+    at: Date,
+  ): Promise<ActivityEvent | null> {
+    // Mirrors the SQL: half-open window, cancelled excluded, open-ended events
+    // never match, latest start wins when two overlap.
+    const covering = [...this.rows.values()]
+      .filter(
+        (e) =>
+          e.kindergartenId === kg &&
+          e.groupId === groupId &&
+          e.status.value !== 'cancelled' &&
+          e.endsAt !== null &&
+          e.startsAt.getTime() <= at.getTime() &&
+          e.endsAt.getTime() > at.getTime(),
+      )
+      .sort((a, b) => b.startsAt.getTime() - a.startsAt.getTime());
+    return Promise.resolve(covering.length ? cloneEvent(covering[0]) : null);
+  }
   list(kg: string, filter: ListActivityEventsFilter): Promise<ActivityEvent[]> {
     let items = [...this.rows.values()].filter((e) => e.kindergartenId === kg);
     if (filter.groupId !== undefined) {

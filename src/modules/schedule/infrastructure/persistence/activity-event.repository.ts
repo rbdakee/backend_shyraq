@@ -56,6 +56,24 @@ export abstract class ActivityEventRepository {
     filter: ListActivityEventsFilter,
   ): Promise<ActivityEvent[]>;
 
+  /**
+   * The event covering `at` for one group — `starts_at <= at < ends_at`,
+   * cancelled events excluded. This is what answers "which room is this group
+   * in right now", which is how parent CCTV picks the cameras to show.
+   *
+   * Open-ended events (`ends_at IS NULL`) are deliberately NOT candidates: an
+   * event that never ends cannot say when the group left, so honouring one
+   * would pin the group to that room forever, long after the day is over.
+   *
+   * Ordered `starts_at DESC` so overlapping events resolve to the one that
+   * started last — the most recent statement about where the group is.
+   */
+  abstract findCurrentForGroup(
+    kindergartenId: string,
+    groupId: string,
+    at: Date,
+  ): Promise<ActivityEvent | null>;
+
   abstract delete(kindergartenId: string, eventId: string): Promise<void>;
 
   /**
