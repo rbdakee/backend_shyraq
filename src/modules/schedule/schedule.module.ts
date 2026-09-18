@@ -29,7 +29,9 @@ import { ScheduleStaffController } from './schedule.staff.controller';
  *     identity overlay on activity-event responses.
  *
  * Exports `ScheduleService` for B8/B17 cron task wiring (T5: schedule
- * `auto-copy` cron will reuse `copyWeekToNext`).
+ * `auto-copy` cron will reuse `copyWeekToNext`), and `ActivityEventRepository`
+ * so CameraModule can ask where a group is right now — parent CCTV follows the
+ * schedule rather than a hand-set field.
  */
 @Module({
   imports: [
@@ -63,6 +65,6 @@ import { ScheduleStaffController } from './schedule.staff.controller';
       useClass: ScheduleWeekSnapshotRelationalRepository,
     },
   ],
-  exports: [ScheduleService],
+  exports: [ScheduleService, ActivityEventRepository],
 })
 export class ScheduleModule {}
