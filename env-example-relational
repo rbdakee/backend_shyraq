@@ -322,3 +322,37 @@ DATABASE_SUPERADMIN_PASSWORD=shyraq_superadmin
 # because a misconfigured window is more dangerous (silent data loss
 # from a typo) than a hardcoded one. Change the constants when
 # compliance or audit requirements push us to a different horizon.
+
+# ─────────────────────────────────────────────────────────────────────────
+# CCTV (B20) — media gateway the camera streams are served through.
+#
+# CCTV_MEDIA_GATEWAY — `mock` (default) or `go2rtc`. Mock reports every
+#   stream as live H.265 so the module works without a tunnel to a
+#   kindergarten; set MOCK_CCTV_CODEC=h264 to exercise the H.264 path
+#   (WebRTC offered alongside HLS) before any camera is switched over.
+# CCTV_GO2RTC_URL — private address of the go2rtc API. It is bound to
+#   loopback on the media host and MUST stay there: go2rtc has no concept
+#   of tenants, so anything that reaches it sees every kindergarten's
+#   cameras. The public entry point is the streaming proxy, not this.
+# CCTV_GO2RTC_USERNAME / CCTV_GO2RTC_PASSWORD — basic auth for that API.
+# CCTV_STREAM_PUBLIC_BASE — origin the apps fetch streams from, e.g.
+#   https://balam-stream.innodev.kz. Unset until the TLS host exists.
+# CCTV_CODEC_PROBE_CRON — `disabled` turns off the periodic codec probe.
+#   Leave it on: the probe is what makes an H.265→H.264 switch on a camera
+#   show up in the API by itself, with no deploy and no manual DB edit.
+# CCTV_MEDIA_GATEWAY=mock
+# CCTV_GO2RTC_URL=http://127.0.0.1:1984
+# CCTV_GO2RTC_USERNAME=admin
+# CCTV_GO2RTC_PASSWORD=
+# CCTV_GO2RTC_TIMEOUT_MS=10000
+# CCTV_STREAM_SECRET — HMAC key for the tokens that ride in stream URLs.
+#   Unset = parent streaming disabled (the endpoint answers 503) rather than
+#   minting tokens nothing can verify. Min 32 chars. Do NOT reuse
+#   AUTH_JWT_SECRET: these tokens travel in URLs and land in proxy logs.
+# CCTV_STREAM_TOKEN_TTL_SECONDS — lifetime of one stream token, default 3600.
+#   It is also the revocation window: a guardian who loses view_cctv keeps
+#   working URLs until their current token expires.
+# CCTV_STREAM_PUBLIC_BASE=
+# CCTV_STREAM_SECRET=
+# CCTV_STREAM_TOKEN_TTL_SECONDS=3600
+# CCTV_CODEC_PROBE_CRON=enabled

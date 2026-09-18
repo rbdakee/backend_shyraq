@@ -477,15 +477,24 @@ Admin-managed справочник — **AUTHORITY** для `staff_members.speci
 
 ### 2.5 Cameras (CCTV config)
 
+Реальный префикс — `/api/v1/cameras` (не `/admin/cameras`: контроллер объявлен как `@Controller({ path: 'cameras' })`, роль `admin` задаётся `@Roles`, а не путём). Ниже — фактические маршруты.
+
 | Метод | Путь | Назначение |
 |---|---|---|
-| GET | `/admin/cameras` | Список камер (с relation `location`). Фильтр `?location_id=`. |
-| POST | `/admin/cameras` | Создать: body `{location_id, name, stream_url?}` (внутренний RTSP `rtsp://mediamtx:8554/cam-{id}` — формируется на стороне B20 если не передан). Validate: `location` существует и принадлежит этому садику (иначе 404 `location_not_found` — не 403, чтобы не leak'ать cross-tenant существование). |
-| PATCH | `/admin/cameras/:id` | Обновить `name?`, `stream_url?`, `location_id?`. 404 `camera_not_found`, 404 `location_not_found`. |
-| DELETE | `/admin/cameras/:id` | Hard delete. 404 `camera_not_found`. |
-| POST | `/admin/cameras/:id/test` | **Deferred to B20** (MediaMTX probe — только вместе с auth_request / Redis-токен-сторой). В B3 endpoint не реализован и не документируется в Swagger. |
+| GET | `/cameras` | Список камер. Фильтры `?location_id=`, `?archived=`. |
+| GET | `/cameras/:id` | Одна камера. 404 `camera_not_found`. |
+| POST | `/cameras` | Создать: body `{location_id, name, rtsp_url?, hls_url?, stream_key?, stream_key_hd?}`. Validate: `location` существует и принадлежит этому садику (иначе 404 `location_not_found` — не 403, чтобы не leak'ать cross-tenant существование). |
+| PATCH | `/cameras/:id` | Обновить `location_id?`, `name?`, `rtsp_url?`, `hls_url?`, `stream_key?`, `stream_key_hd?`. 404 `camera_not_found`, 404 `location_not_found`, 409 `camera_stream_key_taken`. |
+| POST | `/cameras/:id/link-location` | Перепривязать камеру к другой локации. |
+| GET | `/cameras/:id/stream` | Ссылки для просмотра камеры в админ-панели. Выписывает короткоживущий токен на текущего админа — родительский маршрут админу не подходит, он никому не опекун; авторизацией служит tenant-scoped выборка. Ответ: `{camera_id, name, video_codec, streams: [{transport, url}], expires_at}`. Пустой `streams` (не ошибка) — камера архивная, без `stream_key` либо CCTV не сконфигурирован в этом окружении. |
+| POST | `/cameras/:id/refresh-codec` | Спросить media-gateway, какой кодек камера отдаёт прямо сейчас, и сохранить ответ. Нужен, когда установщик только что переключил камеру и ждать периодический проб не хочется. Камера без `stream_key` или недоступная gateway'ю возвращается без изменений (не ошибка). |
+| POST | `/cameras/:id/archive` \| `/restore` | Архивация/восстановление (идемпотентно). Hard delete у камер нет. |
 
-**Error codes (§2.5):** `camera_not_found`(404), `location_not_found`(404).
+**Поля стрима (B20/C1).** `stream_key` — имя потока в media-gateway (`cam02_sub`, sub-поток 704x576, его смотрят родители), `stream_key_hd` — опциональный main-поток для полноэкранного просмотра. Ключи уникальны **глобально**, не в рамках садика: namespace у gateway плоский и общий для всех тенантов, так что дубль дал бы родителям одного садика доступ к камере другого — единственная cross-tenant дыра, которую RLS закрыть не может, потому что ключ резолвится вне БД.
+
+**Кодек.** `video_codec` (`h264` \| `h265` \| `unknown` \| null) и `codec_checked_at` заполняет **только** фоновый проб (каждые 30 мин) и `refresh-codec` — клиент их не отправляет. Ответ также несёт вычисляемые `is_streamable` и `transports` (`['hls']` для H.265, `['webrtc','hls']` для H.264, `[]` для камеры без ключа/архивной). Клиент выбирает первый транспорт, который умеет, и НЕ проверяет кодек сам: когда садик переключит камеру на H.264, проб запишет это в строку, и WebRTC появится в `transports` без единой правки кода. Пустой `codec_checked_at` при непустом `video_codec` невозможен; давний `codec_checked_at` = gateway не может достучаться до камеры.
+
+**Error codes (§2.5):** `camera_not_found`(404), `location_not_found`(404), `camera_archived`(409), `camera_stream_key_taken`(409).
 
 ### 2.6 Enrollments (Leads)
 
@@ -1645,10 +1654,22 @@ Wire-keys — snake_case (`child_id`, `weekend_dates`, `expected_time`, `is_one_
 
 ### 4.8 CCTV
 
+Реализовано в B20/C2. Отличия от первоначального замысла: путь привязан к ребёнку (а не `/parent/cctv/access`), токен — подписанный HMAC, а не запись в Redis, и перед gateway'ем стоит Caddy, а не Nginx.
+
 | Метод | Путь | Назначение |
 |---|---|---|
-| GET | `/parent/cctv/access` | Определяет камеры: `child.current_group_id → groups.current_location_id → cameras WHERE location_id=? AND is_active`. Генерит Redis `cctv:token:{user_id}:{camera_id}` TTL 3600с. Возвращает `[{camera_id, name, stream_url: "https://stream.shyraq.kz/live/{cam}/index.m3u8?token=xxx"}]`. Клиенту рекомендуется подписаться на WS-комнату `group:{group_id}:location_changed` и при получении события `location_changed` перезапросить этот endpoint. Доступен для `primary`/`secondary`; **403 для `nanny`**. |
-| GET | `/cctv/validate` | Внутренний endpoint для Nginx `auth_request`. Читает `cctv:token:{user_id}:{camera_id}`, сравнивает с `?token=`. Возвращает 200/403. Не вызывается клиентами. |
+| GET | `/parent/children/:childId/cctv` | Камеры, которые родитель может смотреть **прямо сейчас**: `child.current_group_id → groups.current_location_id → cameras WHERE location_id=? AND stream_key IS NOT NULL AND archived_at IS NULL`. Гарды: `ChildAccessGuard` (одобренный опекун) + проверка `view_cctv` — у `nanny` по умолчанию `false` → 403 `cctv_access_denied`. Ответ: `{cameras: [{camera_id, name, location_id, location_name, video_codec, streams: [{transport, url}]}], expires_at}`. Пустой список — это не ошибка: ребёнок вне группы, у группы нет локации или там нет привязанной камеры. |
+| GET | `/cctv/hls/:cameraId/index.m3u8?t=` | Мастер-плейлист. Публичный маршрут: авторизация — сам токен (плеер не умеет носить `Authorization` по всем запросам плейлистов и сегментов). Проверяет подпись, срок и что токен выписан **на эту камеру**, тянет плейлист у gateway и переписывает URI на наш origin. |
+| GET | `/cctv/hls/media.m3u8?id=&t=` | Медиа-плейлист сессии gateway'я. Тот же токен, те же правила переписывания. |
+| GET | `/cctv/validate?t=` | Для `forward_auth` в Caddy на каждом сегменте. Только проверка подписи — ни БД, ни Redis, ни обращения к gateway. 200/403. Клиентами не вызывается. |
+
+**Контракт транспорта.** Клиент берёт **первый элемент `streams[]`, который умеет проигрывать**, и не ветвится по кодеку сам. Сейчас это всегда `hls` (fMP4, играет H.265 на iOS и на Android с аппаратным HEVC-декодером). Когда камеру переключат на H.264, проб кодеков сам проставит `video_codec=h264`, и, как только будет собран WebRTC-путь, в массиве появится `{transport:"webrtc"}` первым элементом — без изменений в приложениях. `video_codec` в ответе — справочный, для диагностики, а не для выбора плеера.
+
+**Токен.** HMAC-SHA256 от `v1.<camera_id>.<user_id>.<exp>`, ключ `CCTV_STREAM_SECRET`, TTL `CCTV_STREAM_TOKEN_TTL_SECONDS` (по умолчанию 3600). Самопроверяемый — потому что HLS опрашивает плейлист раз в секунду и тянет по два сегмента, и на сотне родителей обращение в Redis на каждый запрос было бы бессмысленной нагрузкой. Обратная сторона — отзыв: снятый `view_cctv` перестаёт действовать только по истечении текущего токена; TTL и есть граница этого окна.
+
+**Обновление списка.** Смена `groups.current_location_id` меняет ответ, поэтому приложение должно перезапрашивать endpoint по WS-событию `group:{id}:location_changed` (ещё не реализовано — B20/C6), а не кэшировать список.
+
+**Error codes (§4.8):** `cctv_access_denied`(403), `child_access_denied`(403), `child_not_found`(404), `cctv_not_configured`(503 — в окружении не заданы `CCTV_STREAM_PUBLIC_BASE`/`CCTV_STREAM_SECRET`), `cctv_token_invalid`(403), `cctv_gateway_unavailable`(502).
 
 ### 4.9 Content Feed — B17
 
