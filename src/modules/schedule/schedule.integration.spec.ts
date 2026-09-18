@@ -487,5 +487,163 @@ describeIntegration(
         expect(['42501', '23514']).toContain(pg.code);
       });
     });
+
+    // ── findCurrentForGroup ────────────────────────────────────────────────
+    //
+    // The window query behind parent CCTV: which room is this group in right
+    // now. Unit tests exercise a fake; this pins the SQL itself — half-open
+    // bounds, the NULL `ends_at` exclusion and the tie-break all live there.
+
+    describe('findCurrentForGroup', () => {
+      const AT = new Date('2026-05-04T10:00:00.000Z');
+
+      async function seed(overrides: {
+        startsAt: Date;
+        endsAt?: Date | null;
+        name: string;
+        cancel?: boolean;
+        locationId?: string | null;
+      }): Promise<string> {
+        const repo = makeEventRepo();
+        const id = randomUUID();
+        const event = ActivityEvent.createScheduled(
+          {
+            id,
+            kindergartenId: kgA,
+            groupId: groupA,
+            origin: 'adhoc',
+            activityName: overrides.name,
+            locationId: overrides.locationId ?? null,
+            startsAt: overrides.startsAt,
+            endsAt: overrides.endsAt ?? null,
+          },
+          fixedClock,
+        );
+        await runScoped(
+          { kgId: kgA, bypass: false },
+          async () => await repo.create(kgA, event),
+        );
+        if (overrides.cancel) {
+          event.cancel('тест', fixedClock);
+          await runScoped(
+            { kgId: kgA, bypass: false },
+            async () => await repo.update(kgA, event),
+          );
+        }
+        return id;
+      }
+
+      async function find(at: Date): Promise<ActivityEvent | null> {
+        const repo = makeEventRepo();
+        return runScoped(
+          { kgId: kgA, bypass: false },
+          async () => await repo.findCurrentForGroup(kgA, groupA, at),
+        );
+      }
+
+      afterEach(async () => {
+        // Each case states its own timeline; leftovers would bleed across.
+        await runScoped({ kgId: kgA, bypass: false }, async () => {
+          await dataSource.getRepository(ActivityEventEntity).delete({
+            kindergarten_id: kgA,
+            group_id: groupA,
+            origin: 'adhoc',
+          });
+        });
+      });
+
+      it('returns the event whose window covers the instant', async () => {
+        const id = await seed({
+          name: 'Обед',
+          startsAt: new Date('2026-05-04T09:30:00.000Z'),
+          endsAt: new Date('2026-05-04T10:30:00.000Z'),
+        });
+
+        expect((await find(AT))?.id).toBe(id);
+      });
+
+      it('treats the window as half-open: the end instant is already outside', async () => {
+        await seed({
+          name: 'Закончился ровно сейчас',
+          startsAt: new Date('2026-05-04T09:00:00.000Z'),
+          endsAt: AT,
+        });
+
+        expect(await find(AT)).toBeNull();
+      });
+
+      it('returns the event that started at exactly this instant', async () => {
+        const id = await seed({
+          name: 'Начался ровно сейчас',
+          startsAt: AT,
+          endsAt: new Date('2026-05-04T11:00:00.000Z'),
+        });
+
+        expect((await find(AT))?.id).toBe(id);
+      });
+
+      it('ignores an open-ended event, which could never say when it stopped', async () => {
+        await seed({
+          name: 'Без конца',
+          startsAt: new Date('2026-05-04T08:00:00.000Z'),
+          endsAt: null,
+        });
+
+        expect(await find(AT)).toBeNull();
+      });
+
+      it('ignores a cancelled event even while its window is open', async () => {
+        await seed({
+          name: 'Отменён',
+          startsAt: new Date('2026-05-04T09:30:00.000Z'),
+          endsAt: new Date('2026-05-04T10:30:00.000Z'),
+          cancel: true,
+        });
+
+        expect(await find(AT)).toBeNull();
+      });
+
+      it('prefers the latest start when two events overlap', async () => {
+        await seed({
+          name: 'Длинный',
+          startsAt: new Date('2026-05-04T08:00:00.000Z'),
+          endsAt: new Date('2026-05-04T12:00:00.000Z'),
+        });
+        const later = await seed({
+          name: 'Начался позже',
+          startsAt: new Date('2026-05-04T09:45:00.000Z'),
+          endsAt: new Date('2026-05-04T10:15:00.000Z'),
+        });
+
+        expect((await find(AT))?.id).toBe(later);
+      });
+
+      it("does not reach another tenant's event under KG-A scope", async () => {
+        const repo = makeEventRepo();
+        const stranger = ActivityEvent.createScheduled(
+          {
+            id: randomUUID(),
+            kindergartenId: kgB,
+            groupId: groupB,
+            origin: 'adhoc',
+            activityName: 'Чужой',
+            startsAt: new Date('2026-05-04T09:30:00.000Z'),
+            endsAt: new Date('2026-05-04T10:30:00.000Z'),
+          },
+          fixedClock,
+        );
+        await runScoped(
+          { kgId: kgB, bypass: false },
+          async () => await repo.create(kgB, stranger),
+        );
+
+        const found = await runScoped(
+          { kgId: kgA, bypass: false },
+          async () => await repo.findCurrentForGroup(kgA, groupB, AT),
+        );
+
+        expect(found).toBeNull();
+      });
+    });
   },
 );
