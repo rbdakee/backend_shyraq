@@ -542,9 +542,14 @@ describeIntegration(
       }
 
       afterEach(async () => {
-        // Each case states its own timeline; leftovers would bleed across.
-        await runScoped({ kgId: kgA, bypass: false }, async () => {
-          await dataSource.getRepository(ActivityEventEntity).delete({
+        // Each case states its own timeline, so leftovers must not bleed
+        // across. The delete runs under `bypass_rls` in its own transaction:
+        // `dataSource.getRepository()` would execute OUTSIDE the tenant
+        // context, where the RLS qual matches nothing and the cleanup silently
+        // deletes zero rows — every case then inherits the previous timeline.
+        await dataSource.transaction(async (m) => {
+          await m.query(`SET LOCAL app.bypass_rls = 'true'`);
+          await m.delete(ActivityEventEntity, {
             kindergarten_id: kgA,
             group_id: groupA,
             origin: 'adhoc',
