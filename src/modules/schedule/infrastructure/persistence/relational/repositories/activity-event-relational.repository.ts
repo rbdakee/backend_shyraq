@@ -182,6 +182,27 @@ export class ActivityEventRelationalRepository extends ActivityEventRepository {
     return rows.map((r) => ActivityEventMapper.toDomain(r));
   }
 
+  async findCurrentForGroup(
+    kindergartenId: string,
+    groupId: string,
+    at: Date,
+  ): Promise<ActivityEvent | null> {
+    const cancelled: ActivityEventStatusValue = 'cancelled';
+    // `ends_at > :at` doubles as the NULL guard: an open-ended event never
+    // satisfies it, which is the intended exclusion (see the port's contract).
+    const row = await this.manager()
+      .getRepository(ActivityEventEntity)
+      .createQueryBuilder('e')
+      .where('e.kindergarten_id = :kg', { kg: kindergartenId })
+      .andWhere('e.group_id = :gid', { gid: groupId })
+      .andWhere('e.starts_at <= :at', { at })
+      .andWhere('e.ends_at > :at', { at })
+      .andWhere('e.status <> :cancelled', { cancelled })
+      .orderBy('e.starts_at', 'DESC')
+      .getOne();
+    return row ? ActivityEventMapper.toDomain(row) : null;
+  }
+
   async delete(kindergartenId: string, eventId: string): Promise<void> {
     await this.manager()
       .getRepository(ActivityEventEntity)
