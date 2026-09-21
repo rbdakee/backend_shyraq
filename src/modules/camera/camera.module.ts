@@ -13,13 +13,18 @@ import {
   CameraCodecProbeScheduler,
 } from './camera-codec-probe.processor';
 import { CameraController } from './camera.controller';
+import { CctvDisplayPolicyController } from './cctv-display-policy.controller';
+import { CctvDisplayPolicyService } from './cctv-display-policy.service';
 import { CctvStreamController } from './cctv-stream.controller';
 import { CctvStreamTokenService } from './cctv-stream-token.service';
 import { ParentCctvController } from './parent-cctv.controller';
 import { ParentCctvService } from './parent-cctv.service';
 import { CameraRepository } from './infrastructure/persistence/camera.repository';
 import { CameraService } from './camera.service';
+import { CctvDisplayPolicyRepository } from './infrastructure/persistence/cctv-display-policy.repository';
 import { CameraEntity } from './infrastructure/persistence/relational/entities/camera.entity';
+import { CctvDisplayPolicyEntity } from './infrastructure/persistence/relational/entities/cctv-display-policy.entity';
+import { CctvDisplayPolicyRelationalRepository } from './infrastructure/persistence/relational/repositories/cctv-display-policy.repository';
 import { CameraRelationalRepository } from './infrastructure/persistence/relational/repositories/camera.repository';
 import { Go2rtcMediaGatewayAdapter } from './infrastructure/media-gateway/go2rtc-media-gateway.adapter';
 import { MockMediaGatewayAdapter } from './infrastructure/media-gateway/mock-media-gateway.adapter';
@@ -27,7 +32,7 @@ import { MediaGatewayPort } from './media-gateway.port';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([CameraEntity]),
+    TypeOrmModule.forFeature([CameraEntity, CctvDisplayPolicyEntity]),
     BullModule.registerQueue({ name: CAMERA_CODEC_PROBE_QUEUE }),
     LocationModule,
     // Parent CCTV walks child → group → location before it reaches a camera.
@@ -37,14 +42,24 @@ import { MediaGatewayPort } from './media-gateway.port';
     // back to the group's hand-set one only when nothing is scheduled.
     ScheduleModule,
   ],
-  controllers: [CameraController, ParentCctvController, CctvStreamController],
+  controllers: [
+    CameraController,
+    CctvDisplayPolicyController,
+    ParentCctvController,
+    CctvStreamController,
+  ],
   providers: [
     CameraService,
+    CctvDisplayPolicyService,
     ParentCctvService,
     CctvStreamTokenService,
     {
       provide: CameraRepository,
       useClass: CameraRelationalRepository,
+    },
+    {
+      provide: CctvDisplayPolicyRepository,
+      useClass: CctvDisplayPolicyRelationalRepository,
     },
     {
       // Mirrors the SmsPort wiring in AuthModule: mock by default so a
@@ -68,6 +83,11 @@ import { MediaGatewayPort } from './media-gateway.port';
     CameraCodecProbeProcessor,
     CameraCodecProbeScheduler,
   ],
-  exports: [CameraRepository, CameraService, MediaGatewayPort],
+  exports: [
+    CameraRepository,
+    CameraService,
+    CctvDisplayPolicyService,
+    MediaGatewayPort,
+  ],
 })
 export class CameraModule {}

@@ -13,10 +13,16 @@ import { Location } from '@/modules/location/domain/entities/location.entity';
 import { LocationRepository } from '@/modules/location/infrastructure/persistence/location.repository';
 import { ActivityEvent } from '@/modules/schedule/domain/entities/activity-event.entity';
 import { ActivityEventRepository } from '@/modules/schedule/infrastructure/persistence/activity-event.repository';
+import { CctvDisplayPolicyService } from './cctv-display-policy.service';
 import { CctvStreamTokenService } from './cctv-stream-token.service';
 import { Camera, CameraState } from './domain/entities/camera.entity';
+import {
+  CctvDisplayPolicy,
+  CctvDisplaySlot,
+} from './domain/entities/cctv-display-policy.entity';
 import { CctvAccessDeniedError } from './domain/errors/cctv-access-denied.error';
 import { CameraRepository } from './infrastructure/persistence/camera.repository';
+import { CctvDisplayPolicyRepository } from './infrastructure/persistence/cctv-display-policy.repository';
 import { ParentCctvService } from './parent-cctv.service';
 
 const KG = 'kg-1';
@@ -26,12 +32,22 @@ const GROUP = 'group-1';
 const LOCATION = 'loc-1';
 /** Where the schedule says the group is, as opposed to its hand-set location. */
 const SCHEDULED_LOCATION = 'loc-2';
+/** Where the entrance cameras hang — nothing routes a group there. */
+const OUTDOOR_LOCATION = 'loc-3';
+/** Monday 17:00 Asia/Almaty — inside the default 07:00–19:00 Mon–Fri window. */
 const NOW = new Date('2026-09-14T12:00:00.000Z');
+/** Same Monday, 20:00 Asia/Almaty — after closing. */
+const EVENING = new Date('2026-09-14T15:00:00.000Z');
+/** Saturday 11:00 Asia/Almaty — a working hour on a non-working day. */
+const WEEKEND = new Date('2026-09-19T06:00:00.000Z');
 const PUBLIC_BASE = 'https://balam-stream.innodev.kz';
 
 class FixedClock extends ClockPort {
+  constructor(private readonly at: Date = NOW) {
+    super();
+  }
   now(): Date {
-    return NOW;
+    return this.at;
   }
 }
 
@@ -75,6 +91,8 @@ interface Fixture {
   event: { locationId: string | null } | null;
   /** The location the camera lookup was actually made against. */
   askedLocationId: string | null;
+  /** The ids a by-id lookup was made for — null while none happened. */
+  askedCameraIds: string[] | null;
 }
 
 function build(
@@ -86,6 +104,15 @@ function build(
     secret?: string | null;
     /** `undefined` = no event covers now; `null` = an event with no room. */
     eventLocationId?: string | null;
+    /** Omitted = the kindergarten never saved a policy. */
+    policy?: {
+      workDays?: number[];
+      opensAt?: string;
+      closesAt?: string;
+      workHours?: CctvDisplaySlot;
+      offHours?: CctvDisplaySlot;
+    };
+    now?: Date;
   } = {},
 ): Fixture {
   const state: Fixture = {
@@ -108,6 +135,7 @@ function build(
         ? null
         : { locationId: opts.eventLocationId },
     askedLocationId: null,
+    askedCameraIds: null,
   };
 
   const children = {
@@ -126,6 +154,14 @@ function build(
       state.askedLocationId = filter.locationId ?? null;
       return Promise.resolve(state.cameras);
     },
+    listByIds: (_kg: string, ids: string[]) => {
+      state.askedCameraIds = ids;
+      return Promise.resolve(
+        ids
+          .map((id) => state.cameras.find((cam) => cam.id === id))
+          .filter((cam): cam is Camera => cam !== undefined),
+      );
+    },
   } as unknown as CameraRepository;
 
   const events = {
@@ -134,12 +170,29 @@ function build(
   } as unknown as ActivityEventRepository;
 
   const locations = {
-    findById: () =>
-      Promise.resolve({
-        id: LOCATION,
-        name: 'Столовая',
-      } as unknown as Location),
+    list: () =>
+      Promise.resolve([
+        { id: LOCATION, name: 'Столовая' },
+        { id: SCHEDULED_LOCATION, name: 'Спортзал' },
+        { id: OUTDOOR_LOCATION, name: 'Вход' },
+      ] as unknown as Location[]),
   } as unknown as LocationRepository;
+
+  const stored = opts.policy
+    ? CctvDisplayPolicy.hydrate({
+        kindergartenId: KG,
+        workDays: opts.policy.workDays ?? [1, 2, 3, 4, 5],
+        opensAt: opts.policy.opensAt ?? '07:00',
+        closesAt: opts.policy.closesAt ?? '19:00',
+        workHours: opts.policy.workHours ?? { mode: 'schedule', cameraIds: [] },
+        offHours: opts.policy.offHours ?? { mode: 'schedule', cameraIds: [] },
+        createdAt: NOW,
+        updatedAt: NOW,
+      })
+    : null;
+  const policies = {
+    findByKindergarten: () => Promise.resolve(stored),
+  } as unknown as CctvDisplayPolicyRepository;
 
   const config = new ConfigService({
     cctv: {
@@ -151,14 +204,18 @@ function build(
     },
   }) as ConfigService<AllConfigType>;
 
+  const clock = new FixedClock(opts.now ?? NOW);
   state.service = new ParentCctvService(
     children,
     groups,
     cameras,
     locations,
     events,
-    new FixedClock(),
-    new CctvStreamTokenService(config, new FixedClock()),
+    clock,
+    new CctvStreamTokenService(config, clock),
+    // The real policy service, not a fake: the decision this suite exercises
+    // lives in the entity behind it, and stubbing it would test nothing.
+    new CctvDisplayPolicyService(policies, cameras, clock),
     config,
   );
   return state;
@@ -273,7 +330,11 @@ describe('ParentCctvService resolution', () => {
       guardian('primary'),
     );
 
-    expect(view).toEqual({ cameras: [], expiresAt: null });
+    expect(view).toEqual({
+      cameras: [],
+      expiresAt: null,
+      displayMode: 'schedule',
+    });
   });
 
   it('returns nothing when the group is not anchored to a location', async () => {
@@ -382,5 +443,166 @@ describe('ParentCctvService configuration', () => {
 
   it('reports configured once both are present', () => {
     expect(build().service.isConfigured).toBe(true);
+  });
+});
+
+describe('ParentCctvService display policy', () => {
+  /** An entrance camera nothing routes a group to — only a policy names it. */
+  function outdoor(): Camera {
+    return camera({
+      id: 'cam-outdoor',
+      locationId: OUTDOOR_LOCATION,
+      name: 'Dala kiris',
+      streamKey: 'cam20_sub',
+    });
+  }
+
+  it('shows the pinned cameras to every parent, whatever the schedule says', async () => {
+    const state = build({
+      cameras: [outdoor()],
+      policy: {
+        workHours: { mode: 'cameras', cameraIds: ['cam-outdoor'] },
+      },
+    });
+
+    const view = await state.service.listForChild(
+      KG,
+      CHILD,
+      USER,
+      guardian('primary'),
+    );
+
+    expect(view.displayMode).toBe('cameras');
+    expect(view.cameras.map((c) => c.camera.name)).toEqual(['Dala kiris']);
+    expect(view.cameras[0].locationName).toBe('Вход');
+    // The group chain is never walked in this mode — that is the whole point
+    // of it while the per-room cameras are not live yet.
+    expect(state.askedLocationId).toBeNull();
+  });
+
+  it('shows nothing at all when the slot is off', async () => {
+    const state = build({
+      policy: { workHours: { mode: 'off', cameraIds: [] } },
+    });
+
+    const view = await state.service.listForChild(
+      KG,
+      CHILD,
+      USER,
+      guardian('primary'),
+    );
+
+    expect(view).toEqual({ cameras: [], expiresAt: null, displayMode: 'off' });
+    expect(state.askedLocationId).toBeNull();
+  });
+
+  it('falls back to the policy cameras when the group leads nowhere', async () => {
+    const state = build({
+      cameras: [outdoor()],
+      currentGroupId: null,
+      policy: {
+        workHours: { mode: 'schedule', cameraIds: ['cam-outdoor'] },
+      },
+    });
+
+    const view = await state.service.listForChild(
+      KG,
+      CHILD,
+      USER,
+      guardian('primary'),
+    );
+
+    expect(view.displayMode).toBe('schedule');
+    expect(view.cameras.map((c) => c.camera.id)).toEqual(['cam-outdoor']);
+  });
+
+  it('prefers the room the group is in over the fallback list', async () => {
+    const state = build({
+      policy: {
+        workHours: { mode: 'schedule', cameraIds: ['cam-outdoor'] },
+      },
+    });
+
+    const view = await state.service.listForChild(
+      KG,
+      CHILD,
+      USER,
+      guardian('primary'),
+    );
+
+    expect(view.cameras.map((c) => c.camera.id)).toEqual(['cam-1']);
+    expect(state.askedCameraIds).toBeNull();
+  });
+
+  it('drops a fallback camera that is no longer bound to the gateway', async () => {
+    const state = build({
+      cameras: [camera({ id: 'cam-outdoor', streamKey: null })],
+      currentGroupId: null,
+      policy: {
+        workHours: { mode: 'schedule', cameraIds: ['cam-outdoor'] },
+      },
+    });
+
+    const view = await state.service.listForChild(
+      KG,
+      CHILD,
+      USER,
+      guardian('primary'),
+    );
+
+    expect(view.cameras).toEqual([]);
+  });
+
+  it('switches to the off-hours slot after closing time', async () => {
+    const state = build({
+      cameras: [outdoor()],
+      now: EVENING,
+      policy: {
+        workHours: { mode: 'schedule', cameraIds: [] },
+        offHours: { mode: 'cameras', cameraIds: ['cam-outdoor'] },
+      },
+    });
+
+    const view = await state.service.listForChild(
+      KG,
+      CHILD,
+      USER,
+      guardian('primary'),
+    );
+
+    expect(view.displayMode).toBe('cameras');
+    expect(view.cameras.map((c) => c.camera.id)).toEqual(['cam-outdoor']);
+  });
+
+  it('treats a non-working day as off-hours even at midday', async () => {
+    const state = build({
+      now: WEEKEND,
+      policy: { offHours: { mode: 'off', cameraIds: [] } },
+    });
+
+    const view = await state.service.listForChild(
+      KG,
+      CHILD,
+      USER,
+      guardian('primary'),
+    );
+
+    expect(view.displayMode).toBe('off');
+    expect(view.cameras).toEqual([]);
+  });
+
+  it('keeps the schedule-driven list when no policy was ever saved', async () => {
+    const state = build();
+
+    const view = await state.service.listForChild(
+      KG,
+      CHILD,
+      USER,
+      guardian('primary'),
+    );
+
+    expect(view.displayMode).toBe('schedule');
+    expect(view.cameras).toHaveLength(1);
+    expect(state.askedLocationId).toBe(LOCATION);
   });
 });

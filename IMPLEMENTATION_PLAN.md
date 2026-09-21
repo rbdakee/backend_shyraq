@@ -230,7 +230,7 @@ Cloud-only функционал прода живой. Edge-стек разво�
 | ✅ **Real File Storage** | **S3 / Yandex Object Storage** *(Phase B — DONE)* | — | `S3FileStorageAdapter` (`@aws-sdk/client-s3`) к `FileStoragePort` из B17. ps.kz Object Storage (`object.pscloud.io`, контейнер `balam-media`, virtual-hosted). Бакет PRIVATE → раздача через auth-gated `MediaController`. |
 | ⏸ **B18.5** | **Edge Bootstrap** *(Phase C — отложено до закрытия Phase B)* | архитектура (D15) — cloud↔edge protocol | edge-agent skeleton, pairing-flow, mTLS, `edge_commands` / `edge_health` / `kindergarten_edge_credentials` tables. Блокирует B19/B20. |
 | ⏸ **B19** | **Face ID** *(Phase C — отложено)* | BP §5 (Face-часть) | Consent → enrollment → identification → check-in. Edge-attached. |
-| 🔄 **B20** | **CCTV** *(начат — НЕ по D15)* | BP §11 целиком | **Топология изменилась:** вместо edge-бокса с MediaMTX в садике построен облачный go2rtc + WireGuard-туннель (см. `docs/architecture.md` — там ещё старый вариант). B18.5 в блокерах больше не числится: туннель не требует edge-агента. **C1 сделан:** `cameras.stream_key/stream_key_hd/video_codec/codec_checked_at`, `MediaGatewayPort` + go2rtc/mock адаптеры, codec-probe cron, `POST /cameras/:id/refresh-codec`, `transports[]` в DTO. **Осталось:** parent `/cctv/access` + токены, стриминг-прокси и `balam-stream.innodev.kz` в Caddy, WS `group:{id}:location_changed`, заведение 15 камер первого садика. |
+| 🔄 **B20** | **CCTV** *(начат — НЕ по D15)* | BP §11 целиком | **Топология изменилась:** вместо edge-бокса с MediaMTX в садике построен облачный go2rtc + WireGuard-туннель (см. `docs/architecture.md` — там ещё старый вариант). B18.5 в блокерах больше не числится: туннель не требует edge-агента. **C1 сделан:** `cameras.stream_key/stream_key_hd/video_codec/codec_checked_at`, `MediaGatewayPort` + go2rtc/mock адаптеры, codec-probe cron, `POST /cameras/:id/refresh-codec`, `transports[]` в DTO. **C2 сделан:** parent `/parent/children/:id/cctv` + HMAC-токены, стриминг-прокси, `/cameras/:id/stream` для админки. **C3 сделан:** список следует расписанию группы. **C4 сделан:** политика показа — `cctv_display_policies`, `GET/PUT /cctv/display-policy`, режимы schedule/cameras/off по рабочим и нерабочим часам, `display_mode` в родительском ответе (docs/endpoints.md §2.5.1, BP §11.3). **Осталось:** заведение камер первого садика и подъём prod-CCTV. |
 
 **Параллелизация в Phase A:** B17 ⊥ B18 — могут идти параллельно если есть руки. B13 → (B16, B21) → B22.
 
@@ -351,7 +351,7 @@ Kaspi не шлёт webhook → завершение оплаты узнаём �
 
 - [⏸] **B18.5** — Edge Bootstrap *(cloud↔edge protocol, pairing, mTLS — блокирует B19/B20)*
 - [⏸] **B19** — Face ID
-- [🔄] **B20** — CCTV *(C1 — метаданные потоков + codec-probe — сделан; parent-доступ, прокси и Caddy впереди)*
+- [🔄] **B20** — CCTV *(C1 метаданные + codec-probe, C2 parent-доступ и прокси, C3 следование расписанию, C4 политика показа — сделаны; осталось заведение камер садика и prod)*
 
 ### Demo-able BP
 

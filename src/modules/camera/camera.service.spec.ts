@@ -97,6 +97,16 @@ class FakeCameraRepo extends CameraRepository {
     return Promise.resolve(this.rows.find((r) => r.id === id) ?? null);
   }
 
+  listByIds(kg: string, ids: string[]): Promise<Camera[]> {
+    return Promise.resolve(
+      ids
+        .map((id) =>
+          this.rows.find((r) => r.kindergartenId === kg && r.id === id),
+        )
+        .filter((r): r is Camera => r !== undefined),
+    );
+  }
+
   list(kg: string, filters?: ListCamerasFilters): Promise<Camera[]> {
     return Promise.resolve(
       this.rows.filter(

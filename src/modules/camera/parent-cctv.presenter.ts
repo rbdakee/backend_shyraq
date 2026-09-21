@@ -16,6 +16,7 @@ export class ParentCctvPresenter {
         })),
       })),
       expires_at: view.expiresAt ? view.expiresAt.toISOString() : null,
+      display_mode: view.displayMode,
     };
   }
 }
