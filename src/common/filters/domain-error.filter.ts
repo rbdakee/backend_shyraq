@@ -4,8 +4,10 @@ import {
   ExceptionFilter,
   HttpException,
   HttpStatus,
+  Logger,
 } from '@nestjs/common';
 import type { Response } from 'express';
+import { QueryFailedError } from 'typeorm';
 import {
   ConflictError,
   DomainError,
@@ -105,8 +107,13 @@ import {
  * Note: the OTP errors extend `Error` (not DomainError) for legacy reasons;
  * they all expose a `code: string` property which we duck-type on.
  */
+const PG_UNIQUE_VIOLATION = '23505';
+const PG_FOREIGN_KEY_VIOLATION = '23503';
+
 @Catch()
 export class DomainErrorFilter implements ExceptionFilter {
+  private readonly logger = new Logger(DomainErrorFilter.name);
+
   catch(exception: unknown, host: ArgumentsHost): void {
     if (host.getType() !== 'http') throw exception;
     const ctx = host.switchToHttp();
@@ -131,8 +138,12 @@ export class DomainErrorFilter implements ExceptionFilter {
 
     const status = this.statusFor(exception);
     if (status === null) {
-      // Not a known domain error — let other filters / global handlers run.
-      throw exception;
+      // WHY no rethrow: this @Catch() filter is the only one registered, so a
+      // rethrow escapes Nest's ExceptionsHandler and Express answers with an
+      // HTML 500 (stack trace included outside production). Clients can only
+      // map a JSON envelope, so unknown failures are answered here.
+      this.respondUnhandled(exception, res);
+      return;
     }
     const code = (exception as { code?: string }).code ?? 'domain_error';
     const body: {
@@ -151,6 +162,48 @@ export class DomainErrorFilter implements ExceptionFilter {
       body.details = details as Record<string, unknown>;
     }
     res.status(status).json(body);
+  }
+
+  private respondUnhandled(exception: unknown, res: Response): void {
+    if (res.headersSent) {
+      // A streaming response (e.g. the CCTV proxy) failed mid-body — nothing
+      // left to answer with; just record it.
+      this.logger.error(
+        exception instanceof Error ? exception.message : String(exception),
+      );
+      return;
+    }
+    if (exception instanceof QueryFailedError) {
+      const pgCode = (exception.driverError as { code?: string } | undefined)
+        ?.code;
+      if (pgCode === PG_UNIQUE_VIOLATION) {
+        this.logger.warn(`unique violation: ${exception.message}`);
+        res.status(HttpStatus.CONFLICT).json({
+          statusCode: HttpStatus.CONFLICT,
+          error: 'unique_violation',
+          message: 'unique_violation',
+        });
+        return;
+      }
+      if (pgCode === PG_FOREIGN_KEY_VIOLATION) {
+        this.logger.warn(`foreign key violation: ${exception.message}`);
+        res.status(HttpStatus.CONFLICT).json({
+          statusCode: HttpStatus.CONFLICT,
+          error: 'foreign_key_violation',
+          message: 'foreign_key_violation',
+        });
+        return;
+      }
+    }
+    this.logger.error(
+      exception instanceof Error ? exception.message : String(exception),
+      exception instanceof Error ? exception.stack : undefined,
+    );
+    res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({
+      statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
+      error: 'server_error',
+      message: 'server_error',
+    });
   }
 
   private statusFor(err: unknown): number | null {
