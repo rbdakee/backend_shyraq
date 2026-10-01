@@ -737,6 +737,42 @@ Table cameras {
   '''
 }
 
+Table cctv_display_policies {
+  id                uuid       [pk, default: `gen_random_uuid()`]
+  kindergarten_id   uuid       [not null, unique, ref: > kindergartens.id]
+  common_camera_ids "uuid[]"   [not null, default: `'{}'`] // всем родителям, в этом порядке
+  hide_rules        jsonb      [not null, default: `'[]'`] // CHECK jsonb_typeof = array
+  created_at        timestamptz [not null, default: `now()`]
+  updated_at        timestamptz [not null, default: `now()`]
+
+  indexes {
+    (kindergarten_id) [unique]
+  }
+
+  Note: '''
+  FORCE ROW LEVEL SECURITY — tenant_isolation policy на kindergarten_id.
+
+  Одна строка на садик решает, что родитель видит в приложении и когда.
+  Камера группы ребёнка (groups.current_location_id) показывается всегда и
+  в таблице не хранится. Здесь — общие камеры для всех родителей и правила,
+  которые их прячут по времени:
+    hide_rules: [{name, enabled, days: [1..7], from: 'HH:MM', to: 'HH:MM',
+                  all_cameras, camera_ids}]
+  Время — локальное время садика (Asia/Almaty); to < from — окно через
+  полночь, относится к дню начала. camera_ids правила ⊆ common_camera_ids.
+
+  Строки может не быть: тогда общих камер нет, а ночное правило 19:00–08:00
+  заготовлено выключенным.
+
+  common_camera_ids — массив uuid без FK намеренно: политику читает КАЖДЫЙ
+  родительский запрос CCTV, и один ряд дешевле join'а. Камеры не удаляются,
+  только архивируются, а на чтении список и так фильтруется по is_streamable —
+  «протухший» id деградирует в «не показали», а не в битую ссылку. Что id
+  принадлежит этому садику и камера живая, проверяет запись
+  (CctvDisplayPolicyService.save → 404 not_found / 422 camera_archived).
+  '''
+}
+
 // ─────────────────────────────────────────
 // PAYMENTS
 // ─────────────────────────────────────────

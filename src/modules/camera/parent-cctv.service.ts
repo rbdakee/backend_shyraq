@@ -5,9 +5,9 @@ import { ChildRepository } from '@/modules/child/infrastructure/persistence/chil
 import { ChildGuardian } from '@/modules/child/domain/entities/child-guardian.entity';
 import { GroupRepository } from '@/modules/group/infrastructure/persistence/group.repository';
 import { LocationRepository } from '@/modules/location/infrastructure/persistence/location.repository';
-import { ActivityEventRepository } from '@/modules/schedule/infrastructure/persistence/activity-event.repository';
 import { ClockPort } from '@/shared-kernel/application/ports/clock.port';
 import { ChildNotFoundError } from '@/modules/child/domain/errors/child-not-found.error';
+import { CctvDisplayPolicyService } from './cctv-display-policy.service';
 import { CctvStreamTokenService } from './cctv-stream-token.service';
 import { Camera } from './domain/entities/camera.entity';
 import { CctvAccessDeniedError } from './domain/errors/cctv-access-denied.error';
@@ -28,18 +28,19 @@ export interface CctvAccessView {
 /**
  * ParentCctvService — resolves which cameras a parent may watch right now.
  *
- * The chain is deliberately "where the child is *now*", not "where the child
- * belongs": child → current group → where that group is at this instant →
- * cameras anchored to that location.
- *
- * "At this instant" is read from the schedule, not stored: the activity event
- * covering now carries the room, so the list follows the day on its own — the
- * group eats in the canteen at noon and the canteen cameras appear, with no
- * cron writing a field and no staff action required. `current_location_id` is
- * the fallback for groups that have no schedule (or none right now).
+ * Two parts, in this order:
+ *  1. The child's group camera — every camera in the location the group is
+ *     assigned to (`groups.current_location_id`). Always shown; the display
+ *     policy cannot hide it. Group schedules are not consulted: kindergartens
+ *     do not run them, and a scheduled room would move the camera away from
+ *     the group's own.
+ *  2. The kindergarten's common cameras (canteen, clubs) from the display
+ *     policy, minus those its time rules hide at this instant.
  *
  * Nothing pushes this to clients, so the app must re-request rather than cache
  * — which it has to do anyway, since go2rtc HLS sessions expire in seconds.
+ * That is also what makes a policy change take effect: the next request reads
+ * the new row.
  */
 @Injectable()
 export class ParentCctvService {
@@ -48,9 +49,9 @@ export class ParentCctvService {
     private readonly groups: GroupRepository,
     private readonly cameras: CameraRepository,
     private readonly locations: LocationRepository,
-    private readonly events: ActivityEventRepository,
     private readonly clock: ClockPort,
     private readonly tokens: CctvStreamTokenService,
+    private readonly policies: CctvDisplayPolicyService,
     private readonly config: ConfigService<AllConfigType>,
   ) {}
 
@@ -70,24 +71,23 @@ export class ParentCctvService {
     const child = await this.children.findById(kindergartenId, childId);
     if (!child) throw new ChildNotFoundError(childId);
 
-    // No group, or a group that is not anchored anywhere, means there is
-    // nothing to point a camera at — an empty list, not an error.
-    const groupId = child.currentGroupId;
-    if (!groupId) return { cameras: [], expiresAt: null };
+    const now = this.clock.now();
+    const policy = await this.policies.get(kindergartenId);
+    const groupCameras = await this.groupCameras(
+      kindergartenId,
+      child.currentGroupId ?? null,
+    );
+    const shown = new Set(groupCameras.map((camera) => camera.id));
+    const commonCameras = (
+      await this.pinnedCameras(
+        kindergartenId,
+        policy.visibleCommonCameraIds(now),
+      )
+    ).filter((camera) => !shown.has(camera.id));
+    const cameras = [...groupCameras, ...commonCameras];
+    if (cameras.length === 0) return this.empty();
 
-    const locationId = await this.resolveLocationId(kindergartenId, groupId);
-    if (!locationId) return { cameras: [], expiresAt: null };
-
-    const cameras = (
-      await this.cameras.list(kindergartenId, {
-        locationId,
-        archived: false,
-      })
-    ).filter((camera) => camera.isStreamable);
-    if (cameras.length === 0) return { cameras: [], expiresAt: null };
-
-    const location = await this.locations.findById(kindergartenId, locationId);
-    const locationName = location?.name ?? null;
+    const locationNames = await this.locationNames(kindergartenId);
 
     let expiresAt: Date | null = null;
     const views: CctvCameraView[] = cameras.map((camera) => {
@@ -97,7 +97,7 @@ export class ParentCctvService {
       expiresAt = minted.expiresAt;
       return {
         camera,
-        locationName,
+        locationName: locationNames.get(camera.locationId) ?? null,
         streams: buildStreamVariants(camera, minted.token, this.publicBase()),
       };
     });
@@ -106,26 +106,54 @@ export class ParentCctvService {
   }
 
   /**
-   * Where the group is right now. The schedule answers first — its event
-   * carries the room and expires on its own — and the hand-set
-   * `current_location_id` answers when no event covers this instant.
-   *
-   * An event whose own `location_id` is empty says nothing about place, so it
-   * falls through to the group as well; it must not blank out the list.
+   * Cameras in the room the child's group is assigned to. No group, or a
+   * group not anchored anywhere, is not an error — the parent then sees only
+   * the common cameras.
    */
-  private async resolveLocationId(
+  private async groupCameras(
     kindergartenId: string,
-    groupId: string,
-  ): Promise<string | null> {
-    const current = await this.events.findCurrentForGroup(
-      kindergartenId,
-      groupId,
-      this.clock.now(),
-    );
-    if (current?.locationId) return current.locationId;
-
+    groupId: string | null,
+  ): Promise<Camera[]> {
+    if (!groupId) return [];
     const group = await this.groups.findById(kindergartenId, groupId);
-    return group?.currentLocationId ?? null;
+    if (!group?.currentLocationId) return [];
+    const atLocation = await this.cameras.list(kindergartenId, {
+      locationId: group.currentLocationId,
+      archived: false,
+    });
+    return atLocation.filter((camera) => camera.isStreamable);
+  }
+
+  /**
+   * Cameras the policy names, in the admin's order, minus anything that is no
+   * longer playable. An id that does not resolve is dropped rather than
+   * raised: the policy holds ids without a foreign key, and an archived or
+   * unkeyed camera must not blank out the rest of the list.
+   */
+  private async pinnedCameras(
+    kindergartenId: string,
+    cameraIds: string[],
+  ): Promise<Camera[]> {
+    if (cameraIds.length === 0) return [];
+    const rows = await this.cameras.listByIds(kindergartenId, cameraIds);
+    return rows.filter((camera) => camera.isStreamable);
+  }
+
+  /**
+   * Location id → name for the whole tenant, in one read. A fixed camera list
+   * can span rooms, so per-camera `findById` would be a query per camera;
+   * archived locations are included on purpose, since a camera may still hang
+   * in one and the parent should see its name rather than a blank.
+   */
+  private async locationNames(
+    kindergartenId: string,
+  ): Promise<Map<string, string>> {
+    const rows = await this.locations.list(kindergartenId);
+    return new Map(rows.map((location) => [location.id, location.name]));
+  }
+
+  private empty(): CctvAccessView {
+    return { cameras: [], expiresAt: null };
   }
 
   private assertGuardianMayView(guardian: ChildGuardian | undefined): void {

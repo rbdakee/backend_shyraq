@@ -48,6 +48,16 @@ export abstract class CameraRepository {
   ): Promise<Camera[]>;
 
   /**
+   * Cameras named by id, tenant-scoped, in the order the ids were given.
+   *
+   * Ids that name nothing (archived-then-purged, another tenant's camera, a
+   * stale entry in a display policy) are simply absent from the result — the
+   * display policy stores camera ids without a foreign key, so an id that no
+   * longer resolves has to degrade to "not shown", not to an error.
+   */
+  abstract listByIds(kindergartenId: string, ids: string[]): Promise<Camera[]>;
+
+  /**
    * Live cameras that carry a media-gateway stream key — the codec-probe
    * job's work list. Archived rows and rows without a key are skipped: there
    * is nothing on the gateway to ask about.

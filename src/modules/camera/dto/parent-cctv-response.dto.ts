@@ -52,7 +52,7 @@ export class CctvAccessDto {
   @ApiProperty({
     type: [CctvCameraDto],
     description:
-      'Cameras covering the location the child`s group is in RIGHT NOW. Empty when the group has no location, the location has no camera, or no camera there is bound to the media gateway.',
+      'Cameras the parent may watch RIGHT NOW: the cameras of the room the child`s group is assigned to (always), then the kindergarten`s common cameras that its display rules do not hide at this hour. Empty is a normal answer — no group camera and every common camera hidden or unplayable.',
   })
   cameras!: CctvCameraDto[];
 

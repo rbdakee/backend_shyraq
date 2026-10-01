@@ -108,6 +108,21 @@ export class CameraRelationalRepository extends CameraRepository {
     return rows.map((r) => CameraMapper.toDomain(r));
   }
 
+  async listByIds(kindergartenId: string, ids: string[]): Promise<Camera[]> {
+    if (ids.length === 0) return [];
+    const rows = await this.manager()
+      .getRepository(CameraEntity)
+      .createQueryBuilder('c')
+      .where('c.kindergarten_id = :kg', { kg: kindergartenId })
+      .andWhere('c.id IN (:...ids)', { ids })
+      .getMany();
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    return ids
+      .map((id) => byId.get(id))
+      .filter((row): row is CameraEntity => row !== undefined)
+      .map((row) => CameraMapper.toDomain(row));
+  }
+
   async listStreamable(kindergartenId: string): Promise<Camera[]> {
     const rows = await this.manager()
       .getRepository(CameraEntity)
