@@ -44,25 +44,13 @@ export class CctvDisplayPolicyRelationalRepository extends CctvDisplayPolicyRepo
       .into(CctvDisplayPolicyEntity)
       .values({
         kindergarten_id: kindergartenId,
-        work_days: input.workDays,
-        opens_at: input.opensAt,
-        closes_at: input.closesAt,
-        work_hours_mode: input.workHours.mode,
-        work_hours_camera_ids: input.workHours.cameraIds,
-        off_hours_mode: input.offHours.mode,
-        off_hours_camera_ids: input.offHours.cameraIds,
+        common_camera_ids: input.commonCameraIds,
+        hide_rules: input.hideRules.map((rule) =>
+          CctvDisplayPolicyMapper.ruleToRow(rule),
+        ),
       })
       .orUpdate(
-        [
-          'work_days',
-          'opens_at',
-          'closes_at',
-          'work_hours_mode',
-          'work_hours_camera_ids',
-          'off_hours_mode',
-          'off_hours_camera_ids',
-          'updated_at',
-        ],
+        ['common_camera_ids', 'hide_rules', 'updated_at'],
         ['kindergarten_id'],
       )
       .execute();

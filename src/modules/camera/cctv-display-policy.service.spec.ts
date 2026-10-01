@@ -43,14 +43,7 @@ function camera(overrides: Partial<CameraState> = {}): Camera {
 function input(
   overrides: Partial<SaveCctvDisplayPolicyInput> = {},
 ): SaveCctvDisplayPolicyInput {
-  return {
-    workDays: [1, 2, 3, 4, 5],
-    opensAt: '07:00',
-    closesAt: '19:00',
-    workHours: { mode: 'schedule', cameraIds: [] },
-    offHours: { mode: 'off', cameraIds: [] },
-    ...overrides,
-  };
+  return { commonCameraIds: [], hideRules: [], ...overrides };
 }
 
 interface Fixture {
@@ -104,25 +97,31 @@ function build(
   return state;
 }
 
+const lunch = {
+  name: 'Обед',
+  enabled: true,
+  days: [1, 2, 3, 4, 5, 6, 7],
+  from: '12:30',
+  to: '15:00',
+  allCameras: false,
+  cameraIds: ['cam-1'],
+};
+
 describe('CctvDisplayPolicyService.get', () => {
   it('returns the defaults for a kindergarten that never saved a policy', async () => {
     const { service } = build();
 
     const policy = await service.get(KG);
 
-    expect(policy.workHours).toEqual({ mode: 'schedule', cameraIds: [] });
-    expect(policy.offHours).toEqual({ mode: 'schedule', cameraIds: [] });
-    expect(policy.opensAt).toBe('07:00');
+    expect(policy.commonCameraIds).toEqual([]);
+    expect(policy.hideRules).toEqual([CctvDisplayPolicy.defaultNightRule()]);
   });
 
   it('returns the stored policy once one exists', async () => {
     const stored = CctvDisplayPolicy.hydrate({
       kindergartenId: KG,
-      workDays: [1, 2, 3, 4, 5, 6],
-      opensAt: '08:00',
-      closesAt: '18:00',
-      workHours: { mode: 'cameras', cameraIds: ['cam-1'] },
-      offHours: { mode: 'off', cameraIds: [] },
+      commonCameraIds: ['cam-1'],
+      hideRules: [lunch],
       createdAt: NOW,
       updatedAt: NOW,
     });
@@ -130,8 +129,8 @@ describe('CctvDisplayPolicyService.get', () => {
 
     const policy = await service.get(KG);
 
-    expect(policy.workHours).toEqual({ mode: 'cameras', cameraIds: ['cam-1'] });
-    expect(policy.closesAt).toBe('18:00');
+    expect(policy.commonCameraIds).toEqual(['cam-1']);
+    expect(policy.hideRules).toEqual([lunch]);
   });
 });
 
@@ -141,24 +140,21 @@ describe('CctvDisplayPolicyService.save', () => {
 
     const policy = await state.service.save(
       KG,
-      input({ offHours: { mode: 'cameras', cameraIds: ['cam-1'] } }),
+      input({ commonCameraIds: ['cam-1'], hideRules: [lunch] }),
     );
 
-    expect(state.saved?.offHours).toEqual({
-      mode: 'cameras',
-      cameraIds: ['cam-1'],
+    expect(state.saved).toEqual({
+      commonCameraIds: ['cam-1'],
+      hideRules: [lunch],
     });
-    expect(policy.offHours.cameraIds).toEqual(['cam-1']);
+    expect(policy.commonCameraIds).toEqual(['cam-1']);
   });
 
   it('rejects a camera id that names nothing in this tenant', async () => {
     const state = build();
 
     await expect(
-      state.service.save(
-        KG,
-        input({ workHours: { mode: 'cameras', cameraIds: ['cam-elsewhere'] } }),
-      ),
+      state.service.save(KG, input({ commonCameraIds: ['cam-elsewhere'] })),
     ).rejects.toBeInstanceOf(CameraNotFoundError);
     expect(state.saved).toBeNull();
   });
@@ -169,45 +165,34 @@ describe('CctvDisplayPolicyService.save', () => {
     });
 
     await expect(
-      state.service.save(
-        KG,
-        input({ workHours: { mode: 'cameras', cameraIds: ['cam-1'] } }),
-      ),
+      state.service.save(KG, input({ commonCameraIds: ['cam-1'] })),
     ).rejects.toBeInstanceOf(CameraArchivedError);
   });
 
-  it('rejects a window that closes before it opens', async () => {
+  it('rejects a rule hiding a camera that is not common', async () => {
     const state = build();
 
     await expect(
-      state.service.save(KG, input({ opensAt: '19:00', closesAt: '07:00' })),
+      state.service.save(KG, input({ hideRules: [lunch] })),
     ).rejects.toBeInstanceOf(InvariantViolationError);
     expect(state.saved).toBeNull();
   });
 
-  it('normalises the days before storing them', async () => {
-    const state = build();
-
-    await state.service.save(KG, input({ workDays: [3, 1, 3] }));
-
-    expect(state.saved?.workDays).toEqual([1, 3]);
-  });
-
-  it('checks each camera once even when both slots name it', async () => {
+  it('normalises rule days before storing them', async () => {
     const state = build();
 
     await state.service.save(
       KG,
       input({
-        workHours: { mode: 'cameras', cameraIds: ['cam-1'] },
-        offHours: { mode: 'cameras', cameraIds: ['cam-1'] },
+        commonCameraIds: ['cam-1'],
+        hideRules: [{ ...lunch, days: [3, 1, 3] }],
       }),
     );
 
-    expect(state.askedCameraIds).toEqual(['cam-1']);
+    expect(state.saved?.hideRules[0].days).toEqual([1, 3]);
   });
 
-  it('touches no camera at all when neither slot names one', async () => {
+  it('touches no camera at all when the policy names none', async () => {
     const state = build();
 
     await state.service.save(KG, input());

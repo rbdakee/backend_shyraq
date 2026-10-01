@@ -11,14 +11,12 @@ import { Group } from '@/modules/group/domain/entities/group.entity';
 import { GroupRepository } from '@/modules/group/infrastructure/persistence/group.repository';
 import { Location } from '@/modules/location/domain/entities/location.entity';
 import { LocationRepository } from '@/modules/location/infrastructure/persistence/location.repository';
-import { ActivityEvent } from '@/modules/schedule/domain/entities/activity-event.entity';
-import { ActivityEventRepository } from '@/modules/schedule/infrastructure/persistence/activity-event.repository';
 import { CctvDisplayPolicyService } from './cctv-display-policy.service';
 import { CctvStreamTokenService } from './cctv-stream-token.service';
 import { Camera, CameraState } from './domain/entities/camera.entity';
 import {
   CctvDisplayPolicy,
-  CctvDisplaySlot,
+  CctvHideRule,
 } from './domain/entities/cctv-display-policy.entity';
 import { CctvAccessDeniedError } from './domain/errors/cctv-access-denied.error';
 import { CameraRepository } from './infrastructure/persistence/camera.repository';
@@ -30,16 +28,13 @@ const CHILD = 'child-1';
 const USER = 'user-1';
 const GROUP = 'group-1';
 const LOCATION = 'loc-1';
-/** Where the schedule says the group is, as opposed to its hand-set location. */
-const SCHEDULED_LOCATION = 'loc-2';
-/** Where the entrance cameras hang — nothing routes a group there. */
-const OUTDOOR_LOCATION = 'loc-3';
-/** Monday 17:00 Asia/Almaty — inside the default 07:00–19:00 Mon–Fri window. */
+/** Where the common cameras hang — no group is assigned there. */
+const CANTEEN_LOCATION = 'loc-2';
+const CLUBS_LOCATION = 'loc-3';
+/** Monday 17:00 Asia/Almaty. */
 const NOW = new Date('2026-09-14T12:00:00.000Z');
-/** Same Monday, 20:00 Asia/Almaty — after closing. */
-const EVENING = new Date('2026-09-14T15:00:00.000Z');
-/** Saturday 11:00 Asia/Almaty — a working hour on a non-working day. */
-const WEEKEND = new Date('2026-09-19T06:00:00.000Z');
+/** Same Monday, 13:00 Asia/Almaty — inside a 12:30–15:00 lunch rule. */
+const LUNCH = new Date('2026-09-14T08:00:00.000Z');
 const PUBLIC_BASE = 'https://balam-stream.innodev.kz';
 
 class FixedClock extends ClockPort {
@@ -88,7 +83,6 @@ interface Fixture {
   cameras: Camera[];
   child: { currentGroupId: string | null } | null;
   group: { currentLocationId: string | null } | null;
-  event: { locationId: string | null } | null;
   /** The location the camera lookup was actually made against. */
   askedLocationId: string | null;
   /** The ids a by-id lookup was made for — null while none happened. */
@@ -102,16 +96,8 @@ function build(
     currentLocationId?: string | null;
     publicBase?: string | null;
     secret?: string | null;
-    /** `undefined` = no event covers now; `null` = an event with no room. */
-    eventLocationId?: string | null;
     /** Omitted = the kindergarten never saved a policy. */
-    policy?: {
-      workDays?: number[];
-      opensAt?: string;
-      closesAt?: string;
-      workHours?: CctvDisplaySlot;
-      offHours?: CctvDisplaySlot;
-    };
+    policy?: { commonCameraIds?: string[]; hideRules?: CctvHideRule[] };
     now?: Date;
   } = {},
 ): Fixture {
@@ -130,10 +116,6 @@ function build(
           ? LOCATION
           : opts.currentLocationId,
     },
-    event:
-      opts.eventLocationId === undefined
-        ? null
-        : { locationId: opts.eventLocationId },
     askedLocationId: null,
     askedCameraIds: null,
   };
@@ -152,7 +134,9 @@ function build(
   const cameras = {
     list: (_kg: string, filter: { locationId?: string }) => {
       state.askedLocationId = filter.locationId ?? null;
-      return Promise.resolve(state.cameras);
+      return Promise.resolve(
+        state.cameras.filter((cam) => cam.locationId === filter.locationId),
+      );
     },
     listByIds: (_kg: string, ids: string[]) => {
       state.askedCameraIds = ids;
@@ -164,28 +148,20 @@ function build(
     },
   } as unknown as CameraRepository;
 
-  const events = {
-    findCurrentForGroup: () =>
-      Promise.resolve((state.event as unknown as ActivityEvent) ?? null),
-  } as unknown as ActivityEventRepository;
-
   const locations = {
     list: () =>
       Promise.resolve([
         { id: LOCATION, name: 'Столовая' },
-        { id: SCHEDULED_LOCATION, name: 'Спортзал' },
-        { id: OUTDOOR_LOCATION, name: 'Вход' },
+        { id: CANTEEN_LOCATION, name: 'Асхана' },
+        { id: CLUBS_LOCATION, name: 'Үйірмелер' },
       ] as unknown as Location[]),
   } as unknown as LocationRepository;
 
   const stored = opts.policy
     ? CctvDisplayPolicy.hydrate({
         kindergartenId: KG,
-        workDays: opts.policy.workDays ?? [1, 2, 3, 4, 5],
-        opensAt: opts.policy.opensAt ?? '07:00',
-        closesAt: opts.policy.closesAt ?? '19:00',
-        workHours: opts.policy.workHours ?? { mode: 'schedule', cameraIds: [] },
-        offHours: opts.policy.offHours ?? { mode: 'schedule', cameraIds: [] },
+        commonCameraIds: opts.policy.commonCameraIds ?? [],
+        hideRules: opts.policy.hideRules ?? [],
         createdAt: NOW,
         updatedAt: NOW,
       })
@@ -210,7 +186,6 @@ function build(
     groups,
     cameras,
     locations,
-    events,
     clock,
     new CctvStreamTokenService(config, clock),
     // The real policy service, not a fake: the decision this suite exercises
@@ -330,11 +305,7 @@ describe('ParentCctvService resolution', () => {
       guardian('primary'),
     );
 
-    expect(view).toEqual({
-      cameras: [],
-      expiresAt: null,
-      displayMode: 'schedule',
-    });
+    expect(view).toEqual({ cameras: [], expiresAt: null });
   });
 
   it('returns nothing when the group is not anchored to a location', async () => {
@@ -372,66 +343,6 @@ describe('ParentCctvService resolution', () => {
   });
 });
 
-describe('ParentCctvService follows the schedule', () => {
-  it('returns the cameras of the room the current event points at', async () => {
-    const state = build({ eventLocationId: SCHEDULED_LOCATION });
-
-    await state.service.listForChild(KG, CHILD, USER, guardian('primary'));
-
-    // The group is still anchored to LOCATION by hand; the schedule wins while
-    // an event is running, which is what makes the list follow the day.
-    expect(state.askedLocationId).toBe(SCHEDULED_LOCATION);
-  });
-
-  it('falls back to the hand-set group location when no event covers now', async () => {
-    const state = build();
-
-    await state.service.listForChild(KG, CHILD, USER, guardian('primary'));
-
-    expect(state.askedLocationId).toBe(LOCATION);
-  });
-
-  it('falls back to the group when the covering event carries no room', async () => {
-    // A lesson with no location says nothing about place. Honouring it would
-    // blank the list out mid-day for no reason.
-    const state = build({ eventLocationId: null });
-
-    await state.service.listForChild(KG, CHILD, USER, guardian('primary'));
-
-    expect(state.askedLocationId).toBe(LOCATION);
-  });
-
-  it('returns an empty list when neither the schedule nor the group has a room', async () => {
-    const state = build({ currentLocationId: null });
-
-    const view = await state.service.listForChild(
-      KG,
-      CHILD,
-      USER,
-      guardian('primary'),
-    );
-
-    expect(view.cameras).toEqual([]);
-  });
-
-  it('serves a scheduled room even when the group was never anchored', async () => {
-    const state = build({
-      currentLocationId: null,
-      eventLocationId: SCHEDULED_LOCATION,
-    });
-
-    const view = await state.service.listForChild(
-      KG,
-      CHILD,
-      USER,
-      guardian('primary'),
-    );
-
-    expect(state.askedLocationId).toBe(SCHEDULED_LOCATION);
-    expect(view.cameras).toHaveLength(1);
-  });
-});
-
 describe('ParentCctvService configuration', () => {
   it('reports unconfigured when no streaming host is set', () => {
     expect(build({ publicBase: null }).service.isConfigured).toBe(false);
@@ -447,162 +358,114 @@ describe('ParentCctvService configuration', () => {
 });
 
 describe('ParentCctvService display policy', () => {
-  /** An entrance camera nothing routes a group to — only a policy names it. */
-  function outdoor(): Camera {
-    return camera({
-      id: 'cam-outdoor',
-      locationId: OUTDOOR_LOCATION,
-      name: 'Dala kiris',
-      streamKey: 'cam20_sub',
+  const canteen = (): Camera =>
+    camera({
+      id: 'cam-canteen',
+      locationId: CANTEEN_LOCATION,
+      name: 'Асхана',
+      streamKey: 'cam05_sub',
     });
+  const clubs = (): Camera =>
+    camera({
+      id: 'cam-clubs',
+      locationId: CLUBS_LOCATION,
+      name: 'Үйірмелер',
+      streamKey: 'cam06_sub',
+    });
+  const lunchRule: CctvHideRule = {
+    name: 'Обед',
+    enabled: true,
+    days: [1, 2, 3, 4, 5, 6, 7],
+    from: '12:30',
+    to: '15:00',
+    allCameras: false,
+    cameraIds: ['cam-canteen', 'cam-clubs'],
+  };
+
+  async function names(state: Fixture): Promise<string[]> {
+    const view = await state.service.listForChild(
+      KG,
+      CHILD,
+      USER,
+      guardian('primary'),
+    );
+    return view.cameras.map((v) => v.camera.name);
   }
 
-  it('shows the pinned cameras to every parent, whatever the schedule says', async () => {
+  it('shows the group camera first, then the common cameras in admin order', async () => {
     const state = build({
-      cameras: [outdoor()],
+      cameras: [camera(), canteen(), clubs()],
+      policy: { commonCameraIds: ['cam-clubs', 'cam-canteen'] },
+    });
+
+    expect(await names(state)).toEqual(['Ashana', 'Үйірмелер', 'Асхана']);
+  });
+
+  it('hides the common cameras a rule covers and keeps the group camera', async () => {
+    const state = build({
+      cameras: [camera(), canteen(), clubs()],
       policy: {
-        workHours: { mode: 'cameras', cameraIds: ['cam-outdoor'] },
+        commonCameraIds: ['cam-canteen', 'cam-clubs'],
+        hideRules: [lunchRule],
       },
+      now: LUNCH,
     });
 
-    const view = await state.service.listForChild(
-      KG,
-      CHILD,
-      USER,
-      guardian('primary'),
-    );
-
-    expect(view.displayMode).toBe('cameras');
-    expect(view.cameras.map((c) => c.camera.name)).toEqual(['Dala kiris']);
-    expect(view.cameras[0].locationName).toBe('Вход');
-    // The group chain is never walked in this mode — that is the whole point
-    // of it while the per-room cameras are not live yet.
-    expect(state.askedLocationId).toBeNull();
+    expect(await names(state)).toEqual(['Ashana']);
   });
 
-  it('shows nothing at all when the slot is off', async () => {
+  it('ignores a disabled rule', async () => {
     const state = build({
-      policy: { workHours: { mode: 'off', cameraIds: [] } },
+      cameras: [camera(), canteen()],
+      policy: {
+        commonCameraIds: ['cam-canteen'],
+        hideRules: [
+          { ...lunchRule, enabled: false, cameraIds: ['cam-canteen'] },
+        ],
+      },
+      now: LUNCH,
     });
 
-    const view = await state.service.listForChild(
-      KG,
-      CHILD,
-      USER,
-      guardian('primary'),
-    );
-
-    expect(view).toEqual({ cameras: [], expiresAt: null, displayMode: 'off' });
-    expect(state.askedLocationId).toBeNull();
+    expect(await names(state)).toEqual(['Ashana', 'Асхана']);
   });
 
-  it('falls back to the policy cameras when the group leads nowhere', async () => {
+  it('shows only common cameras to a child with no group', async () => {
     const state = build({
-      cameras: [outdoor()],
+      cameras: [camera(), canteen()],
       currentGroupId: null,
-      policy: {
-        workHours: { mode: 'schedule', cameraIds: ['cam-outdoor'] },
-      },
+      policy: { commonCameraIds: ['cam-canteen'] },
     });
 
-    const view = await state.service.listForChild(
-      KG,
-      CHILD,
-      USER,
-      guardian('primary'),
-    );
-
-    expect(view.displayMode).toBe('schedule');
-    expect(view.cameras.map((c) => c.camera.id)).toEqual(['cam-outdoor']);
+    expect(await names(state)).toEqual(['Асхана']);
   });
 
-  it('prefers the room the group is in over the fallback list', async () => {
+  it('does not list a common camera twice when it is also the group camera', async () => {
     const state = build({
-      policy: {
-        workHours: { mode: 'schedule', cameraIds: ['cam-outdoor'] },
-      },
+      cameras: [camera()],
+      policy: { commonCameraIds: ['cam-1'] },
     });
 
-    const view = await state.service.listForChild(
-      KG,
-      CHILD,
-      USER,
-      guardian('primary'),
-    );
-
-    expect(view.cameras.map((c) => c.camera.id)).toEqual(['cam-1']);
-    expect(state.askedCameraIds).toBeNull();
+    expect(await names(state)).toEqual(['Ashana']);
   });
 
-  it('drops a fallback camera that is no longer bound to the gateway', async () => {
+  it('drops a common camera that is no longer bound to the gateway', async () => {
+    const unbound = camera({
+      id: 'cam-clubs',
+      locationId: CLUBS_LOCATION,
+      name: 'Үйірмелер',
+      streamKey: null,
+    });
     const state = build({
-      cameras: [camera({ id: 'cam-outdoor', streamKey: null })],
-      currentGroupId: null,
-      policy: {
-        workHours: { mode: 'schedule', cameraIds: ['cam-outdoor'] },
-      },
+      cameras: [camera(), canteen(), unbound],
+      policy: { commonCameraIds: ['cam-canteen', 'cam-clubs'] },
     });
 
-    const view = await state.service.listForChild(
-      KG,
-      CHILD,
-      USER,
-      guardian('primary'),
-    );
-
-    expect(view.cameras).toEqual([]);
+    expect(await names(state)).toEqual(['Ashana', 'Асхана']);
   });
 
-  it('switches to the off-hours slot after closing time', async () => {
-    const state = build({
-      cameras: [outdoor()],
-      now: EVENING,
-      policy: {
-        workHours: { mode: 'schedule', cameraIds: [] },
-        offHours: { mode: 'cameras', cameraIds: ['cam-outdoor'] },
-      },
-    });
+  it('shows only the group camera when no policy was ever saved', async () => {
+    const state = build({ cameras: [camera(), canteen()] });
 
-    const view = await state.service.listForChild(
-      KG,
-      CHILD,
-      USER,
-      guardian('primary'),
-    );
-
-    expect(view.displayMode).toBe('cameras');
-    expect(view.cameras.map((c) => c.camera.id)).toEqual(['cam-outdoor']);
-  });
-
-  it('treats a non-working day as off-hours even at midday', async () => {
-    const state = build({
-      now: WEEKEND,
-      policy: { offHours: { mode: 'off', cameraIds: [] } },
-    });
-
-    const view = await state.service.listForChild(
-      KG,
-      CHILD,
-      USER,
-      guardian('primary'),
-    );
-
-    expect(view.displayMode).toBe('off');
-    expect(view.cameras).toEqual([]);
-  });
-
-  it('keeps the schedule-driven list when no policy was ever saved', async () => {
-    const state = build();
-
-    const view = await state.service.listForChild(
-      KG,
-      CHILD,
-      USER,
-      guardian('primary'),
-    );
-
-    expect(view.displayMode).toBe('schedule');
-    expect(view.cameras).toHaveLength(1);
-    expect(state.askedLocationId).toBe(LOCATION);
+    expect(await names(state)).toEqual(['Ashana']);
   });
 });

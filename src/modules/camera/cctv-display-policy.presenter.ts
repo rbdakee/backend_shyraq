@@ -4,18 +4,21 @@ import { CctvDisplayPolicyDto } from './dto/cctv-display-policy-response.dto';
 
 export class CctvDisplayPolicyPresenter {
   static policy(policy: CctvDisplayPolicy): CctvDisplayPolicyDto {
-    const workHours = policy.workHours;
-    const offHours = policy.offHours;
     return {
-      work_days: policy.workDays,
-      opens_at: policy.opensAt,
-      closes_at: policy.closesAt,
-      // Single-region MVP: the window is read in the app's fixed zone, the
+      common_camera_ids: policy.commonCameraIds,
+      hide_rules: policy.hideRules.map((rule) => ({
+        name: rule.name,
+        enabled: rule.enabled,
+        days: rule.days,
+        from: rule.from,
+        to: rule.to,
+        all_cameras: rule.allCameras,
+        camera_ids: rule.cameraIds,
+      })),
+      // Single-region MVP: rule windows are read in the app's fixed zone, the
       // same one every other date-only rule uses. Exposed so the UI can label
       // the times instead of implying the admin's own browser zone.
       timezone: KG_DEFAULT_TIMEZONE,
-      work_hours: { mode: workHours.mode, camera_ids: workHours.cameraIds },
-      off_hours: { mode: offHours.mode, camera_ids: offHours.cameraIds },
       updated_at: policy.updatedAt.toISOString(),
     };
   }

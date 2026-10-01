@@ -36,8 +36,8 @@ export class CctvDisplayPolicyService {
   /**
    * Replaces the whole policy. The admin screen always posts every field, so
    * there is no patch semantics to get wrong — and validating the assembled
-   * entity means an inverted window or a bad weekday is refused by the domain
-   * before it reaches the CHECK constraints.
+   * entity means an empty window, a bad weekday or a rule naming a camera that
+   * is not common is refused by the domain before anything is written.
    */
   async save(
     kindergartenId: string,
@@ -46,11 +46,8 @@ export class CctvDisplayPolicyService {
     const now = this.clock.now();
     const candidate = CctvDisplayPolicy.hydrate({
       kindergartenId,
-      workDays: input.workDays,
-      opensAt: input.opensAt,
-      closesAt: input.closesAt,
-      workHours: input.workHours,
-      offHours: input.offHours,
+      commonCameraIds: input.commonCameraIds,
+      hideRules: input.hideRules,
       createdAt: now,
       updatedAt: now,
     });
@@ -61,11 +58,8 @@ export class CctvDisplayPolicyService {
     );
 
     return this.policies.upsert(kindergartenId, {
-      workDays: candidate.workDays,
-      opensAt: candidate.opensAt,
-      closesAt: candidate.closesAt,
-      workHours: candidate.workHours,
-      offHours: candidate.offHours,
+      commonCameraIds: candidate.commonCameraIds,
+      hideRules: candidate.hideRules,
     });
   }
 

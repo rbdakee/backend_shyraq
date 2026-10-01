@@ -4,49 +4,39 @@ import {
   ArrayMaxSize,
   ArrayUnique,
   IsArray,
-  IsIn,
+  IsBoolean,
   IsInt,
+  IsString,
   IsUUID,
   Matches,
   Max,
+  MaxLength,
   Min,
   ValidateNested,
 } from 'class-validator';
-import {
-  CCTV_DISPLAY_MODES,
-  CctvDisplayMode,
-} from '../domain/value-objects/cctv-display-mode.vo';
 
 /** `HH:MM`, 24h, zero-padded — what an `<input type="time">` posts. */
 const WALL_CLOCK_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 
-/** No kindergarten points parents at more cameras than this in one slot. */
-const MAX_SLOT_CAMERAS = 50;
+/** No kindergarten shows parents more common cameras than this. */
+const MAX_COMMON_CAMERAS = 50;
+const MAX_HIDE_RULES = 20;
 
-export class UpdateCctvDisplaySlotDto {
-  @ApiProperty({ example: 'cameras', enum: CCTV_DISPLAY_MODES })
-  @IsIn(CCTV_DISPLAY_MODES)
-  mode!: CctvDisplayMode;
+export class UpdateCctvHideRuleDto {
+  @ApiProperty({ example: 'Обед', description: 'Admin label. May be empty.' })
+  @IsString()
+  @MaxLength(60)
+  name!: string;
 
-  @ApiProperty({
-    type: [String],
-    example: ['c1d2e3f4-3456-7890-cdef-3456789012cd'],
-    description:
-      'Cameras for this slot, in display order. Send `[]` for `off`, or for `schedule` with no fallback. Every id must be a live camera of this kindergarten (404 `camera_not_found`, 409 `camera_archived`).',
-  })
-  @IsArray()
-  @ArrayMaxSize(MAX_SLOT_CAMERAS)
-  @ArrayUnique()
-  @IsUUID('all', { each: true })
-  camera_ids!: string[];
-}
+  @ApiProperty({ example: true })
+  @IsBoolean()
+  enabled!: boolean;
 
-export class UpdateCctvDisplayPolicyDto {
   @ApiProperty({
     type: [Number],
-    example: [1, 2, 3, 4, 5],
+    example: [1, 2, 3, 4, 5, 6, 7],
     description:
-      'ISO weekdays the kindergarten works: 1=Mon … 7=Sun. `[]` makes every day an off-hours day.',
+      'ISO weekdays the window starts on: 1=Mon … 7=Sun. A past-midnight window started on Friday also covers early Saturday.',
   })
   @IsArray()
   @ArrayMaxSize(7)
@@ -54,29 +44,57 @@ export class UpdateCctvDisplayPolicyDto {
   @IsInt({ each: true })
   @Min(1, { each: true })
   @Max(7, { each: true })
-  work_days!: number[];
+  days!: number[];
+
+  @ApiProperty({ example: '12:30', description: 'Kindergarten-local `HH:MM`.' })
+  @Matches(WALL_CLOCK_PATTERN)
+  from!: string;
 
   @ApiProperty({
-    example: '07:00',
-    description: 'Opening wall clock in kindergarten-local time, `HH:MM`.',
+    example: '15:00',
+    description:
+      'Kindergarten-local `HH:MM`. Earlier than `from` means the window runs past midnight (19:00–08:00). Equal to `from` is refused (400 `cctv_policy_window_invalid`).',
   })
   @Matches(WALL_CLOCK_PATTERN)
-  opens_at!: string;
+  to!: string;
 
   @ApiProperty({
-    example: '19:00',
-    description: 'Closing wall clock. Must be later than `opens_at`.',
+    example: false,
+    description: 'Hide every common camera; `camera_ids` is then ignored.',
   })
-  @Matches(WALL_CLOCK_PATTERN)
-  closes_at!: string;
+  @IsBoolean()
+  all_cameras!: boolean;
 
-  @ApiProperty({ type: UpdateCctvDisplaySlotDto })
-  @ValidateNested()
-  @Type(() => UpdateCctvDisplaySlotDto)
-  work_hours!: UpdateCctvDisplaySlotDto;
+  @ApiProperty({
+    type: [String],
+    example: ['c1d2e3f4-3456-7890-cdef-3456789012cd'],
+    description:
+      'Common cameras to hide. Each must also be in `common_camera_ids` (400 `cctv_policy_rule_camera_not_common`).',
+  })
+  @IsArray()
+  @ArrayMaxSize(MAX_COMMON_CAMERAS)
+  @ArrayUnique()
+  @IsUUID('all', { each: true })
+  camera_ids!: string[];
+}
 
-  @ApiProperty({ type: UpdateCctvDisplaySlotDto })
-  @ValidateNested()
-  @Type(() => UpdateCctvDisplaySlotDto)
-  off_hours!: UpdateCctvDisplaySlotDto;
+export class UpdateCctvDisplayPolicyDto {
+  @ApiProperty({
+    type: [String],
+    example: ['c1d2e3f4-3456-7890-cdef-3456789012cd'],
+    description:
+      'Cameras every parent sees on top of their own group camera, in display order. Every id must be a live camera of this kindergarten (404 `not_found`, 422 `camera_archived`).',
+  })
+  @IsArray()
+  @ArrayMaxSize(MAX_COMMON_CAMERAS)
+  @ArrayUnique()
+  @IsUUID('all', { each: true })
+  common_camera_ids!: string[];
+
+  @ApiProperty({ type: [UpdateCctvHideRuleDto] })
+  @IsArray()
+  @ArrayMaxSize(MAX_HIDE_RULES)
+  @ValidateNested({ each: true })
+  @Type(() => UpdateCctvHideRuleDto)
+  hide_rules!: UpdateCctvHideRuleDto[];
 }

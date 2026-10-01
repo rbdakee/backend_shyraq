@@ -1,14 +1,11 @@
 import {
   CctvDisplayPolicy,
-  CctvDisplaySlot,
+  CctvHideRule,
 } from '../../domain/entities/cctv-display-policy.entity';
 
 export interface SaveCctvDisplayPolicyInput {
-  workDays: number[];
-  opensAt: string;
-  closesAt: string;
-  workHours: CctvDisplaySlot;
-  offHours: CctvDisplaySlot;
+  commonCameraIds: string[];
+  hideRules: CctvHideRule[];
 }
 
 /**

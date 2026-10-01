@@ -41,7 +41,7 @@ export class CctvDisplayPolicyController {
   @ApiOperation({
     summary: 'What parents currently see, and when.',
     description:
-      'Always answers: a kindergarten that has never saved a policy gets the defaults (schedule-driven around the clock, Mon–Fri 07:00–19:00 window, no fallback cameras), which is the behaviour that predates this endpoint.',
+      'Always answers: a kindergarten that has never saved a policy gets the defaults — no common cameras and a disabled night rule. The group camera is always shown to the parent and is not part of the policy.',
   })
   @ApiOkResponse({ type: CctvDisplayPolicyDto })
   @ApiUnauthorizedResponse({ description: 'Bearer missing/invalid/revoked.' })
@@ -61,7 +61,7 @@ export class CctvDisplayPolicyController {
   @ApiOkResponse({ type: CctvDisplayPolicyDto })
   @ApiBadRequestResponse({
     description:
-      '`cctv_policy_window_invalid` — `closes_at` is not later than `opens_at`. `cctv_policy_time_invalid` — malformed wall clock. `cctv_policy_work_day_invalid` — weekday outside 1..7.',
+      '`cctv_policy_window_invalid` — a rule with `from` equal to `to`. `cctv_policy_time_invalid` — malformed wall clock. `cctv_policy_work_day_invalid` — weekday outside 1..7. `cctv_policy_rule_camera_not_common` — a rule hides a camera that is not in `common_camera_ids`.',
   })
   @ApiUnauthorizedResponse({ description: 'Bearer missing/invalid/revoked.' })
   @ApiForbiddenResponse({ description: 'Caller is not an admin.' })
@@ -78,17 +78,16 @@ export class CctvDisplayPolicyController {
   ): Promise<CctvDisplayPolicyDto> {
     if (!tenant.kgId) throw new CameraNotFoundError('<no-tenant>');
     const policy = await this.service.save(tenant.kgId, {
-      workDays: dto.work_days,
-      opensAt: dto.opens_at,
-      closesAt: dto.closes_at,
-      workHours: {
-        mode: dto.work_hours.mode,
-        cameraIds: dto.work_hours.camera_ids,
-      },
-      offHours: {
-        mode: dto.off_hours.mode,
-        cameraIds: dto.off_hours.camera_ids,
-      },
+      commonCameraIds: dto.common_camera_ids,
+      hideRules: dto.hide_rules.map((rule) => ({
+        name: rule.name,
+        enabled: rule.enabled,
+        days: rule.days,
+        from: rule.from,
+        to: rule.to,
+        allCameras: rule.all_cameras,
+        cameraIds: rule.camera_ids,
+      })),
     });
     return CctvDisplayPolicyPresenter.policy(policy);
   }

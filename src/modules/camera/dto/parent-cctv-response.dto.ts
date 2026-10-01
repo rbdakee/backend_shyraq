@@ -1,9 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
 import {
-  CCTV_DISPLAY_MODES,
-  CctvDisplayMode,
-} from '../domain/value-objects/cctv-display-mode.vo';
-import {
   StreamTransport,
   VideoCodec,
 } from '../domain/value-objects/video-codec.vo';
@@ -56,7 +52,7 @@ export class CctvAccessDto {
   @ApiProperty({
     type: [CctvCameraDto],
     description:
-      'Cameras the parent may watch RIGHT NOW, picked by the kindergarten`s display policy — usually the location the child`s group is in at this moment, or a fixed set the kindergarten pins for everyone. Empty is a normal answer: viewing may be closed for the hour, or the group has no location, no camera there, or no camera bound to the media gateway. `display_mode` says which of those it was.',
+      'Cameras the parent may watch RIGHT NOW: the cameras of the room the child`s group is assigned to (always), then the kindergarten`s common cameras that its display rules do not hide at this hour. Empty is a normal answer — no group camera and every common camera hidden or unplayable.',
   })
   cameras!: CctvCameraDto[];
 
@@ -67,12 +63,4 @@ export class CctvAccessDto {
       'When the URLs above stop working. Null when the list is empty. Re-request this endpoint before it passes, and also whenever the group`s location-changed event arrives.',
   })
   expires_at!: string | null;
-
-  @ApiProperty({
-    example: 'schedule',
-    enum: CCTV_DISPLAY_MODES,
-    description:
-      'Which rule produced this list, per the kindergarten`s display policy: `schedule` — the room the child`s group is in now (or the fallback cameras); `cameras` — a fixed set the kindergarten shows every parent; `off` — viewing is closed right now, so an empty list is the intended answer and not a failure. Use it to word the empty state; do not branch playback on it.',
-  })
-  display_mode!: CctvDisplayMode;
 }

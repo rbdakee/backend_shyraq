@@ -9,7 +9,16 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 import { KindergartenEntity } from '@/modules/kindergarten/infrastructure/persistence/relational/entities/kindergarten.entity';
-import { CctvDisplayMode } from '../../../../domain/value-objects/cctv-display-mode.vo';
+
+export interface CctvHideRuleRow {
+  name: string;
+  enabled: boolean;
+  days: number[];
+  from: string;
+  to: string;
+  all_cameras: boolean;
+  camera_ids: string[];
+}
 
 @Entity({ name: 'cctv_display_policies' })
 @Index('idx_cctv_display_policies_kg', ['kindergarten_id'], { unique: true })
@@ -24,29 +33,13 @@ export class CctvDisplayPolicyEntity {
   @JoinColumn({ name: 'kindergarten_id', referencedColumnName: 'id' })
   kindergarten?: KindergartenEntity;
 
-  // ISO weekdays, 1=Mon … 7=Sun. node-postgres hands smallint[] back as
-  // strings on some driver versions, so the mapper coerces rather than
-  // trusting the element type here.
-  @Column({ type: 'smallint', array: true })
-  work_days!: number[];
-
-  @Column({ type: 'time' })
-  opens_at!: string;
-
-  @Column({ type: 'time' })
-  closes_at!: string;
-
-  @Column({ type: 'varchar', length: 16 })
-  work_hours_mode!: CctvDisplayMode;
-
   @Column({ type: 'uuid', array: true })
-  work_hours_camera_ids!: string[];
+  common_camera_ids!: string[];
 
-  @Column({ type: 'varchar', length: 16 })
-  off_hours_mode!: CctvDisplayMode;
-
-  @Column({ type: 'uuid', array: true })
-  off_hours_camera_ids!: string[];
+  // Small, always read whole with the row; jsonb keeps the parent hot path a
+  // single-row lookup. Shape: `CctvHideRuleRow[]` (snake_case on purpose).
+  @Column({ type: 'jsonb' })
+  hide_rules!: CctvHideRuleRow[];
 
   @CreateDateColumn({ type: 'timestamptz' })
   created_at!: Date;
