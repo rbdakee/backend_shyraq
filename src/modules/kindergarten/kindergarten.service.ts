@@ -219,8 +219,18 @@ export class KindergartenService {
     if (!existing) throw new KindergartenNotFoundError(kindergartenId);
     if (existing.isArchived)
       throw new KindergartenArchivedError(kindergartenId);
+    // WHY carry fiscal_* over: settings are replaced wholesale, and the admin
+    // path may not send fiscal_* at all — without this every admin save wiped
+    // the fiscal setup SuperAdmin configured.
+    const preservedFiscal = input.allowFiscalKeys
+      ? {}
+      : Object.fromEntries(
+          Object.entries(existing.settings).filter(([key]) =>
+            key.startsWith('fiscal_'),
+          ),
+        );
     return this.kindergartens.update(kindergartenId, {
-      settings: input.settings,
+      settings: { ...input.settings, ...preservedFiscal },
     });
   }
 

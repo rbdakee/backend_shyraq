@@ -661,6 +661,26 @@ describe('KindergartenService', () => {
       expect(updated.settings).toEqual({ fiscal_ofd_provider: 'kassa24' });
     });
 
+    it('keeps SuperAdmin fiscal_* keys when an admin saves other settings', async () => {
+      const { service } = buildService();
+      const created = await service.createKindergarten({
+        name: 'X',
+        slug: 'x-fisc-keep',
+        admin: { fullName: 'A', phone: '+77011110013' },
+      });
+      await service.updateSettings(created.kindergarten.id, {
+        settings: { timezone: 'Asia/Almaty', fiscal_bin: '123456789012' },
+        allowFiscalKeys: true,
+      });
+      const updated = await service.updateSettings(created.kindergarten.id, {
+        settings: { timezone: 'Asia/Aqtobe' },
+      });
+      expect(updated.settings).toEqual({
+        timezone: 'Asia/Aqtobe',
+        fiscal_bin: '123456789012',
+      });
+    });
+
     it('throws KindergartenNotFoundError when kg does not exist', async () => {
       const { service } = buildService();
       await expect(
