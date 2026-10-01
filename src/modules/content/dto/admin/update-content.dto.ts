@@ -11,6 +11,7 @@ import {
   ValidateIf,
 } from 'class-validator';
 import { normalizeLegacyKzLocale } from '../../../../shared-kernel/utils/i18n-locale-normalizer';
+import { parseMultipartJson } from './parse-multipart-json';
 
 /**
  * Partial patch DTO for `PATCH /admin/content/:id`.
@@ -80,7 +81,7 @@ export class UpdateContentDto {
     nullable: true,
   })
   @IsOptional()
-  @Transform(({ value }) => normalizeLegacyKzLocale(value))
+  @Transform(({ value }) => normalizeLegacyKzLocale(parseMultipartJson(value)))
   @IsObject()
   title_i18n?: Record<string, string> | null;
 
@@ -91,7 +92,7 @@ export class UpdateContentDto {
     nullable: true,
   })
   @IsOptional()
-  @Transform(({ value }) => normalizeLegacyKzLocale(value))
+  @Transform(({ value }) => normalizeLegacyKzLocale(parseMultipartJson(value)))
   @IsObject()
   body_i18n?: Record<string, string> | null;
 
@@ -102,6 +103,7 @@ export class UpdateContentDto {
     nullable: true,
   })
   @IsOptional()
+  @Transform(({ value }) => parseMultipartJson(value))
   @IsObject()
   metadata?: Record<string, unknown> | null;
 
